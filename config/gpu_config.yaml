@@ -1,0 +1,77 @@
+# GPU Configuration for AutoVoice - CUDA 12.9 Optimized
+
+cuda:
+  home: "/usr/local/cuda"
+  toolkit_path: "/usr/local/cuda"
+  library_path: "/usr/local/cuda/lib64"
+  include_path: "/usr/local/cuda/include"
+
+devices:
+  visible_devices: "all"
+  default_device: 0
+  multi_gpu: true
+  topology_detection: true
+
+memory:
+  allocation_strategy: "unified"
+  pool_size_gb: 8  # Adjust based on GPU VRAM
+  pinned_memory: true
+  async_transfers: true
+  garbage_collection: true
+  max_usage_threshold: 0.9
+  min_free_threshold: 0.1
+
+streams:
+  num_streams: 4
+  default_stream_priority: 0
+  async_copy: true
+
+kernels:
+  launch_config:
+    block_size: 256
+    grid_size: "auto"
+    shared_mem_per_block: 49152  # 48KB
+  optimization:
+    fast_math: true
+    cooperative_groups: true
+    dynamic_parallelism: false
+    persistent: true
+  architecture: "sm_80"  # Ampere/Ada, adjust for your GPUs (e.g., sm_89 for RTX 40 series)
+
+multi_gpu:
+  nccl_backend: true
+  load_balancing: "round_robin"
+  model_parallelism: false
+  data_parallelism: true
+  sync_frequency: 1
+
+performance:
+  mixed_precision: "fp16"
+  tensor_cores: true
+  rt_cores: true
+  profiling: true
+  nsight_integration: true
+  benchmark_mode: false
+
+monitoring:
+  gpu_utilization: true
+  memory_usage: true
+  temperature: true
+  power_usage: true
+  update_interval_ms: 1000
+
+error_handling:
+  auto_recovery: true
+  cuda_error_logging: true
+  ooms_strategy: "retry_lower_batch"
+
+advanced:
+  unified_memory: true
+  peer_access: true
+  migration_policy: "prefer_none"
+  l2_cache_size: "default"
+
+server:
+  host: "0.0.0.0"
+  port: 5000
+  debug: false

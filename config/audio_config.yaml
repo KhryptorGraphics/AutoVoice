@@ -1,0 +1,104 @@
+# Audio Configuration for AutoVoice - GPU-Optimized Real-Time Processing
+
+# General Audio Settings
+audio:
+  sample_rate: 22050  # Hz, standard for voice synthesis
+  num_channels: 1  # Mono for voice processing
+  bit_depth: 16
+  duration_max: 60.0  # Maximum audio duration in seconds
+  silence_threshold: -40  # dB for silence detection
+  silence_duration: 0.5  # Seconds
+
+# Real-Time Processing
+realtime:
+  buffer_size: 1024  # Samples, optimized for low latency
+  overlap: 0.25  # 25% overlap for STFT
+  latency_ms: 20  # Target latency for real-time
+  frame_size_ms: 46.4  # Based on 1024 samples at 22.05kHz
+  hop_size_ms: 11.6
+  cuda_streaming: true
+  gpu_buffer: true
+  num_buffers: 8  # For ring buffer management
+
+# FFT and Spectral Parameters
+fft:
+  n_fft: 1024
+  hop_length: 256
+  win_length: 1024
+  window_type: "hann"
+  center: true
+  pad_mode: "reflect"
+  normalized: false
+  onesided: true
+  boundary: "zeros"
+  cuda_fft: true  # Use cuFFT library for GPU acceleration
+  batch_size: 32  # Parallel FFT batches
+
+# Mel-Spectrogram Settings
+mel:
+  n_mels: 80
+  fmin: 0.0
+  fmax: 8000.0  # Hz, focused on voice frequency range
+  htk: false  # Use librosa mel scale
+  norm: "slaney"
+  cuda_optimized: true
+  precompute: false  # For real-time
+
+# Pitch Detection Parameters
+pitch:
+  algorithm: "pyin"  # Probabilistic YIN for accuracy
+  frame_length: 2048
+  hop_length: 512
+  fmin: 75.0  # Lowest expected pitch in Hz
+  fmax: 600.0  # Highest expected pitch in Hz
+  threshold: 0.1
+  gpu_acceleration: true
+  parallel_threads: 4
+
+# Formant Analysis
+formant:
+  num_formants: 5
+  f1_range: [300, 1000]  # Hz for first formant
+  f2_range: [800, 2500]
+  f3_range: [2000, 4000]
+  bandwidth_threshold: 100  # Hz
+  gpu_parallel: true
+
+# Vocoder and Synthesis Parameters
+vocoder:
+  sample_rate: 22050
+  sigma: 0.9  # Noise scale for HiFi-GAN
+  upsample_factor: 256
+  gpu_convolutions: true
+
+# Noise Reduction and Enhancement
+noise_reduction:
+  threshold: -30  # dB
+  reduction_strength: 0.8
+  rtx_voice: true  # Use RTX Voice if available
+  cuda_kernels: true
+
+# Recording Settings
+recording:
+  device: "default"  # Use default audio input
+  channels: 1
+  rate: 22050
+  chunk_size: 1024
+  format: "S16_LE"
+  gpu_transfer: true
+  noise_gate: true
+
+# Playback Settings
+playback:
+  device: "default"
+  channels: 2  # Stereo for output
+  rate: 22050
+  buffer_size: 512
+  latency: "low"
+
+# GPU Optimization for Audio
+gpu_audio:
+  memory_pool_size: 2  # GB for audio buffers
+  async_io: true
+  pinned_host_memory: true
+  stream_count: 2

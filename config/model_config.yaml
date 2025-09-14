@@ -1,0 +1,140 @@
+# Model Configuration for AutoVoice - CUDA 12.9 Optimized Neural Networks
+
+# General Model Settings
+model:
+  version: "1.0.0"
+  framework: "pytorch"
+  precision: "fp16"  # Mixed precision for Tensor Cores
+  device: "cuda"
+  seed: 42
+
+# Transformer Model Configuration for Voice Synthesis
+transformer:
+  architecture: "encoder-decoder"
+  num_layers: 12
+  d_model: 512
+  n_heads: 8
+  d_ff: 2048
+  dropout: 0.1
+  activation: "gelu"
+  attention_type: "grouped_query"  # GQA for efficiency
+  flash_attention: true  # Flash Attention 2 integration
+  max_seq_len: 1024
+  vocab_size: 10000  # For phoneme or token embeddings
+  pos_encoding: "relative"
+  cuda_optimized: true
+  tensor_cores: true
+
+# HiFi-GAN Vocoder Configuration
+hifigan:
+  generator:
+    type: "HiFi-GAN"
+    upsample_rates: [8, 8, 2, 2]
+    upsample_kernel_sizes: [16, 16, 4, 4]
+    upsample_initial_channel: 512
+    resblock_kernel_sizes: [3, 7, 11]
+    resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+    generator_conv_kernel_size: 3
+    generator_upsample_kernel_size: 7
+    generator_conv_dilation_size: [1, 2, 4, 8, 16]
+    generator_conv_kernel_integral: 3
+    generator_conv_padding: 3
+  discriminator:
+    type: "Multi-Period Discriminator"
+    periods: [2, 3, 5, 7, 11]
+    kernel_sizes: [3, 7, 11, 13, 17]
+  cuda_optimized: true
+  fp16: true
+  sample_rate: 22050
+
+# Pitch Corrector Model Configuration
+pitch_corrector:
+  architecture: "CNN-Transformer Hybrid"
+  input_channels: 80  # Mel-spectrogram
+  output_channels: 80
+  num_layers: 6
+  kernel_size: 3
+  stride: 1
+  dilation: [1, 2, 4, 8, 16, 32]
+  transformer_layers: 4
+  d_model: 256
+  n_heads: 4
+  d_ff: 1024
+  correction_modes:
+    - "auto"
+    - "manual_scale"
+    - "vibrato_preserve"
+  pitch_detection: "pyin"
+  formant_shift: true
+  cuda_optimized: true
+  real_time: true
+  latency_ms: 10
+
+# Training Parameters
+training:
+  batch_size: 16  # Adjust based on GPU memory
+  num_epochs: 1000
+  learning_rate: 0.0002
+  optimizer: "adamw"
+  weight_decay: 1e-6
+  scheduler: "cosine_annealing"
+  warmup_steps: 4000
+  gradient_accumulation: 4
+  max_grad_norm: 1.0
+  mixed_precision: true
+  amp: true  # Automatic Mixed Precision
+  distributed: true
+  backend: "nccl"
+  world_size: "auto"  # Detected from multi-GPU
+  log_interval: 100
+  save_interval: 1000
+  eval_interval: 500
+  early_stopping_patience: 10
+  loss_functions:
+    - "l1_mel"
+    - "discriminator_loss"
+    - "feature_matching"
+  metrics:
+    - "mel_loss"
+    - "pitch_accuracy"
+    - "mos_score"
+
+# Inference Settings
+inference:
+  batch_size: 1  # For real-time
+  max_length: 1024
+  temperature: 1.0
+  top_k: 50
+  top_p: 0.95
+  tensorrt:
+    enabled: true
+    fp16: true
+    dynamic_shapes: true
+    max_workspace_size: 1GiB
+    optimization_level: 3
+    cuda_graphs: true
+  vocoder: "hifigan"
+  pitch_correction: true
+  real_time_mode: true
+  buffer_size: 1024
+  overlap: 0.25
+
+# Dataset Configuration
+dataset:
+  sample_rate: 22050
+  n_fft: 1024
+  hop_length: 256
+  win_length: 1024
+  n_mels: 80
+  mel_fmin: 0
+  mel_fmax: 8000
+  normalize: true
+  power: 1.2
+  preemphasis: 0.97
+
+# Checkpoint and Model Paths
+paths:
+  checkpoint_dir: "data/models/checkpoints"
+  pretrained_dir: "data/models/pretrained"
+  tensorrt_engines: "data/models/engines"
+  logs_dir: "logs/training"
