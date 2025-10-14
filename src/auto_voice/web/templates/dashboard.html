@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - AutoVoice GPU Monitor{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <h1 class="page-title">
+        <i class="fas fa-tachometer-alt"></i>
+        GPU Performance Dashboard
+    </h1>
+
+    <!-- GPU Stats Cards -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-icon gpu">
+                <i class="fas fa-microchip"></i>
+            </div>
+            <div class="stat-content">
+                <h3>GPU Utilization</h3>
+                <p class="stat-value" id="gpu-utilization">--</p>
+                <p class="stat-label">Compute Usage</p>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon memory">
+                <i class="fas fa-memory"></i>
+            </div>
+            <div class="stat-content">
+                <h3>Memory Usage</h3>
+                <p class="stat-value" id="gpu-memory">--</p>
+                <p class="stat-label">VRAM Allocated</p>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon temperature">
+                <i class="fas fa-thermometer-half"></i>
+            </div>
+            <div class="stat-content">
+                <h3>Temperature</h3>
+                <p class="stat-value" id="gpu-temperature">--</p>
+                <p class="stat-label">GPU Temp</p>
+            </div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-icon processing">
+                <i class="fas fa-wave-square"></i>
+            </div>
+            <div class="stat-content">
+                <h3>Audio Processing</h3>
+                <p class="stat-value" id="audio-throughput">--</p>
+                <p class="stat-label">Samples/sec</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Performance Charts -->
+    <div class="charts-section">
+        <div class="chart-container">
+            <h3><i class="fas fa-chart-line"></i> GPU Utilization Over Time</h3>
+            <canvas id="gpu-chart"></canvas>
+        </div>
+
+        <div class="chart-container">
+            <h3><i class="fas fa-chart-area"></i> Memory Usage Trend</h3>
+            <canvas id="memory-chart"></canvas>
+        </div>
+    </div>
+
+    <!-- Kernel Performance Table -->
+    <div class="performance-section">
+        <h2><i class="fas fa-rocket"></i> Kernel Performance Metrics</h2>
+        <table class="performance-table">
+            <thead>
+                <tr>
+                    <th>Kernel Name</th>
+                    <th>Executions</th>
+                    <th>Avg Time (ms)</th>
+                    <th>Min Time (ms)</th>
+                    <th>Max Time (ms)</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="kernel-metrics">
+                <tr>
+                    <td colspan="6" class="loading">Loading kernel metrics...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- System Information -->
+    <div class="system-info">
+        <h2><i class="fas fa-info-circle"></i> System Information</h2>
+        <div class="info-grid">
+            <div class="info-item">
+                <span class="info-label">GPU Model:</span>
+                <span class="info-value" id="gpu-model">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Driver Version:</span>
+                <span class="info-value" id="driver-version">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">CUDA Version:</span>
+                <span class="info-value" id="cuda-version">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">PyTorch Version:</span>
+                <span class="info-value" id="pytorch-version">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Compute Capability:</span>
+                <span class="info-value" id="compute-capability">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Total Memory:</span>
+                <span class="info-value" id="total-memory">--</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Processing Queue -->
+    <div class="queue-section">
+        <h2><i class="fas fa-list"></i> Processing Queue</h2>
+        <div id="processing-queue" class="queue-container">
+            <div class="queue-empty">
+                <i class="fas fa-inbox"></i>
+                <p>No active processing tasks</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

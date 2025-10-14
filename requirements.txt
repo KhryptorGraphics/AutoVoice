@@ -1,18 +1,52 @@
+# Core ML/Deep Learning dependencies (CUDA-enabled)
+torch>=2.0.0,<2.2.0  # PyTorch with CUDA support
+torchaudio>=2.0.0,<2.2.0  # Audio processing extensions for PyTorch
+torchvision>=0.15.0,<0.17.0  # Vision utilities (for potential visual features)
+
+# TensorRT for optimized inference (optional but recommended)
+# Note: Install tensorrt separately with: pip install tensorrt~=8.6.0 --index-url https://pypi.nvidia.com
+# tensorrt>=8.6.0,<9.0.0  # Uncomment if NVIDIA index is configured
+
+# ONNX for model conversion
+onnx>=1.14.0,<1.16.0
+onnxruntime-gpu>=1.16.0,<1.18.0  # GPU-accelerated ONNX runtime
+
 # Core dependencies with relaxed version constraints
 numpy>=1.24,<1.27
 librosa>=0.10,<0.11
 soundfile>=0.12,<0.13
 scipy>=1.10,<1.12
 matplotlib>=3.7,<3.9
+
+# Web framework dependencies
 flask>=2.3,<3.0
 flask-socketio>=5.3,<6.0
+flask-cors>=4.0,<5.0
+python-socketio>=5.10,<6.0
+
+# Configuration and utilities
 pyyaml>=6.0,<7.0
 psutil>=5.9,<6.0
 pynvml>=11.5,<12.0
 websockets>=12.0,<13.0
 aiohttp>=3.9,<4.0
+
+# Audio processing and ML utilities
+webrtcvad>=2.0,<3.0  # Voice activity detection
+crepe>=0.0.12  # Pitch detection
+praat-parselmouth>=0.4.0  # Advanced audio analysis
+noisereduce>=3.0.0  # Noise reduction
+
+# Development and testing
 pytest>=7.4,<8.0
+pytest-cov>=4.1,<5.0
 black>=23.7,<24.0
 isort>=5.12,<6.0
+
 # GPU monitoring and profiling
 nvitop>=1.3,<2.0
+py3nvml>=0.2.0  # Alternative NVIDIA management library
+
+# Build dependencies
+ninja>=1.11.0
+pybind11>=2.11.0

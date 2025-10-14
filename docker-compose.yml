@@ -5,54 +5,153 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: auto-voice:latest
-    container_name: auto_voice_container
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - PYTHONPATH=/app/src
-      # Removed FLASK_APP since we're not using 'flask run'
-      - FLASK_ENV=production
-    volumes:
-      - ./data:/app/data
-      - ./config:/app/config
-      - ./logs:/app/logs
+    image: autovoice/autovoice:latest
+    container_name: auto_voice_app
+    restart: unless-stopped
+
     ports:
       - "5000:5000"
-      - "8080:8080"  # For WebSocket if needed
+      - "8080:8080"
+
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - PROMETHEUS_ENABLED=${PROMETHEUS_ENABLED:-true}
+      - METRICS_PORT=5000
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - FLASK_ENV=production
+
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+
     networks:
       - auto-voice-net
-    restart: unless-stopped
-    command: ["python3", "main.py"]
+
     deploy:
       resources:
+        limits:
+          cpus: '4'
+          memory: 8G
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
               capabilities: [gpu]
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: auto_voice_redis
+    restart: unless-stopped
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis-data:/data
+
+    networks:
+      - auto-voice-net
+
+    command: redis-server --appendonly yes
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Monitoring services (optional, use with --profile monitoring)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: auto_voice_prometheus
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+    ports:
+      - "9090:9090"
+
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+    networks:
+      - auto-voice-net
+
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+
+    depends_on:
+      - auto-voice-app
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: auto_voice_grafana
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+
+    networks:
+      - auto-voice-net
+
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+
+    depends_on:
+      - prometheus
 
   # Optional: Separate service for training if needed
   auto-voice-training:
     build:
       context: .
       dockerfile: Dockerfile
-    image: auto-voice-training:latest
+    image: autovoice/autovoice:latest
     container_name: auto_voice_training
+    restart: "no"
+    profiles: ["training"]
+
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - PYTHONPATH=/app/src
+
     volumes:
       - ./data:/app/data
       - ./config:/app/config
       - ./scripts:/app/scripts
+
     networks:
       - auto-voice-net
-    depends_on:
-      - auto-voice-app
-    profiles:
-      - training
+
     deploy:
       resources:
         reservations:
@@ -64,6 +163,19 @@ services:
 networks:
   auto-voice-net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
+    name: auto-voice-net
+
+volumes:
+  redis-data:
+    name: auto_voice_redis_data
+  prometheus-data:
+    name: auto_voice_prometheus_data
+  grafana-data:
+    name: auto_voice_grafana_data
+
+# Usage examples:
+# Development: docker-compose up
+# With monitoring: docker-compose --profile monitoring up
+# Production: docker-compose --profile production --profile monitoring up
+# Stop all: docker-compose down
+# Clean volumes: docker-compose down -v

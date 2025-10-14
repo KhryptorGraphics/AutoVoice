@@ -13,58 +13,74 @@ using namespace cooperative_groups;
 __global__ void pitch_detection_kernel(float *audio, float *pitch, int n_samples, int frame_length, int hop_length, float fmin, float fmax, float threshold, float sample_rate) {
     int frame_idx = blockIdx.x;
     int tid = threadIdx.x;
-    
+
     extern __shared__ float shared_audio[];
     int frame_start = frame_idx * hop_length;
 
-    // Load frame into shared memory with bounds check
-    bool in_bounds = (frame_start + tid < n_samples) && (tid < frame_length);
+    // Load frame into shared memory with strict bounds checking
+    bool in_bounds = (frame_start + tid < n_samples) && (tid < frame_length) && 
+                     (frame_start + tid >= 0) && (frame_start >= 0);
     if (in_bounds) {
         shared_audio[tid] = audio[frame_start + tid];
     } else if (tid < frame_length) {
         shared_audio[tid] = 0.0f;  // Zero padding
     }
     __syncthreads();
-    
+
     int tau_min = (int)(sample_rate / fmax);
     int tau_max = (int)(sample_rate / fmin);
 
+    float best_tau = 0.0f;
+    float best_measure = 1.0f;
     float diff_mean = 0.0f;
-    float cum = 0.0f;
-    float bottom = 0.0f;
 
     for (int tau = tau_min; tau <= tau_max; ++tau) {
         float acf = 0.0f;
 
-        // Compute autocorrelation
+        // Compute autocorrelation difference
         for (int j = 0; j < frame_length - tau; j += blockDim.x) {
             if (tid + j < frame_length - tau) {
                 float diff = shared_audio[tid + j] - shared_audio[tid + j + tau];
                 acf += diff * diff;
             }
         }
-        acf = warp_reduce_sum(acf);
 
-        if (frame_idx == 0 && tau == tau_min) {
-            diff_mean = acf;
+        // Use block-wide reduction to get the full sum across all threads
+        acf = block_reduce_sum(acf);
+
+        // Only thread 0 performs the final calculations to avoid race conditions
+        if (tid == 0) {
+            // Normalize by the number of valid samples
+            float normalized_acf = acf / (float)(frame_length - tau);
+
+            // For the first tau, set the baseline
+            if (tau == tau_min) {
+                diff_mean = normalized_acf;
+            }
+
+            // Calculate cumulative mean normalized difference (simplified YIN)
+            float cumulative_mean = 0.0f;
+            if (diff_mean > EPSILON) {
+                cumulative_mean = normalized_acf / diff_mean;
+            }
+
+            // Check if this is the best pitch candidate
+            if (cumulative_mean < best_measure && cumulative_mean < threshold) {
+                best_measure = cumulative_mean;
+                best_tau = (float)tau;
+            }
         }
-
-        float diff = acf / frame_length;
-        cum += diff;
-        if (tau > tau_min) {
-            bottom += diff * diff;
-        }
-
-        float running_measure = cum / (float)tau;
-        float normalized = diff / diff_mean;
-
-        if (running_measure < threshold) {
-            pitch[frame_idx] = sample_rate / (float)tau;
-            return;
-        }
+        __syncthreads(); // Ensure all threads wait before next iteration
     }
 
-    pitch[frame_idx] = 0.0f; // No pitch detected
+    // Only thread 0 writes the final pitch value
+    if (tid == 0) {
+        if (best_tau > 0.0f) {
+            pitch[frame_idx] = sample_rate / best_tau;
+        } else {
+            pitch[frame_idx] = 0.0f; // No pitch detected
+        }
+    }
 }
 
 // Voice Activity Detection kernel
@@ -75,19 +91,24 @@ __global__ void vad_kernel(float *audio, float *vad, int n_samples, int frame_le
     int frame_start = frame_idx * hop_length;
 
     // Compute frame energy
-    extern __shared__ float shared_energy[];
-    bool in_bounds = (frame_start + tid) < n_samples;
-    float sample = in_bounds ? audio[frame_start + tid] : 0.0f;
-    shared_energy[tid] = in_bounds ? sample * sample : 0.0f;
+    float energy = 0.0f;
 
-    __syncthreads();
+    // Each thread processes multiple samples if needed
+    for (int i = tid; i < frame_length; i += blockDim.x) {
+        int sample_idx = frame_start + i;
+        if (sample_idx < n_samples) {
+            float sample = audio[sample_idx];
+            energy += sample * sample;
+        }
+    }
 
-    // Reduce energy
-    float frame_energy = warp_reduce_sum(shared_energy[tid]);
+    // Use block-wide reduction to sum energy across all threads
+    float total_energy = block_reduce_sum(energy);
 
+    // Only thread 0 writes the final VAD result
     if (tid == 0) {
-        frame_energy = frame_energy / frame_length;
-        vad[frame_idx] = (frame_energy > threshold) ? 1.0f : 0.0f;
+        float normalized_energy = total_energy / (float)frame_length;
+        vad[frame_idx] = (normalized_energy > threshold) ? 1.0f : 0.0f;
     }
 }
 
@@ -155,12 +176,12 @@ __global__ void window_and_pack_kernel(float *audio, float *windowed, int n_samp
 
     int frame_start = frame_idx * hop_length;
 
-    // Apply Hann window
-    if (tid < n_fft) {
-        float window_val = 0.5f * (1.0f - cosf(2.0f * PI * tid / (n_fft - 1.0f))); // Hann window
-        int audio_idx = frame_start + tid;
+    // Apply Hann window with proper loop to handle n_fft > blockDim.x
+    for (int i = tid; i < n_fft; i += blockDim.x) {
+        float window_val = 0.5f * (1.0f - cosf(2.0f * PI * i / (n_fft - 1.0f))); // Hann window
+        int audio_idx = frame_start + i;
         float sample = (audio_idx < n_samples) ? audio[audio_idx] : 0.0f;
-        windowed[frame_idx * n_fft + tid] = sample * window_val;
+        windowed[frame_idx * n_fft + i] = sample * window_val;
     }
 }
 
@@ -170,10 +191,11 @@ __global__ void compute_magnitude_from_complex_kernel(cufftComplex *complex_spec
     int tid = threadIdx.x;
     int n_bins = n_fft / 2 + 1;
 
-    if (tid < n_bins) {
-        int idx = frame_idx * n_bins + tid;
+    // Loop to handle cases where n_bins > blockDim.x
+    for (int i = tid; i < n_bins; i += blockDim.x) {
+        int idx = frame_idx * n_bins + i;
         // Correct indexing for R2C output: n_bins per frame
-        cufftComplex c = complex_spec[frame_idx * n_bins + tid];
+        cufftComplex c = complex_spec[frame_idx * n_bins + i];
         magnitude[idx] = sqrtf(c.x * c.x + c.y * c.y);
     }
 }
@@ -247,8 +269,8 @@ void launch_voice_activity_detection(torch::Tensor& input, torch::Tensor& output
 
     dim3 block(256);
     dim3 grid(n_frames);
-    size_t shared_mem = 256 * sizeof(float);
-    vad_kernel<<<grid, block, shared_mem>>>(d_audio, d_vad, n_samples, frame_length, hop_length, threshold);
+    // VAD kernel no longer needs shared memory for energy, block_reduce_sum uses its own shared memory internally
+    vad_kernel<<<grid, block>>>(d_audio, d_vad, n_samples, frame_length, hop_length, threshold);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -264,12 +286,23 @@ void launch_spectrogram_computation(torch::Tensor& input, torch::Tensor& output,
         return;
     }
 
-    // Allocate temporary buffers
-    float *d_windowed;
-    cufftComplex *d_fft_output;
-    CUDA_CHECK(cudaMalloc(&d_windowed, n_frames * n_fft * sizeof(float)));
+    // Allocate temporary buffers with error checking
+    float *d_windowed = nullptr;
+    cufftComplex *d_fft_output = nullptr;
+    
+    cudaError_t err1 = cudaMalloc(&d_windowed, n_frames * n_fft * sizeof(float));
+    if (err1 != cudaSuccess) {
+        CUDA_CHECK(err1);
+        return;
+    }
+    
     // R2C transform outputs (n_fft/2 + 1) complex numbers per frame
-    CUDA_CHECK(cudaMalloc(&d_fft_output, n_frames * (n_fft/2 + 1) * sizeof(cufftComplex)));
+    cudaError_t err2 = cudaMalloc(&d_fft_output, n_frames * (n_fft/2 + 1) * sizeof(cufftComplex));
+    if (err2 != cudaSuccess) {
+        CUDA_CHECK(cudaFree(d_windowed));
+        CUDA_CHECK(err2);
+        return;
+    }
 
     // Step 1: Apply windowing and pack frames
     dim3 block(256);

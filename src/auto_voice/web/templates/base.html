@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}AutoVoice - GPU-Accelerated Voice Processing{% endblock %}</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Chart.js for monitoring graphs -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation -->
+        <nav class="navbar">
+            <div class="nav-brand">
+                <i class="fas fa-microphone-alt"></i>
+                <span>AutoVoice</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}">
+                    <i class="fas fa-tachometer-alt"></i> Dashboard
+                </a></li>
+                <li><a href="{{ url_for('voice_synthesis') }}" class="nav-link {% if request.endpoint == 'voice_synthesis' %}active{% endif %}">
+                    <i class="fas fa-waveform"></i> Voice Synthesis
+                </a></li>
+                <li><a href="#" class="nav-link" id="api-docs-link">
+                    <i class="fas fa-book"></i> API Docs
+                </a></li>
+            </ul>
+            <div class="nav-status">
+                <span id="gpu-status" class="status-indicator">
+                    <i class="fas fa-microchip"></i>
+                    <span id="gpu-status-text">Checking...</span>
+                </span>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">
+                        <i class="fas fa-{% if category == 'error' %}exclamation-triangle{% elif category == 'success' %}check-circle{% else %}info-circle{% endif %}"></i>
+                        {{ message }}
+                        <button class="alert-close">&times;</button>
+                    </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+
+            {% block content %}{% endblock %}
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>&copy; 2024 AutoVoice - GPU-Accelerated Voice Processing System</p>
+            <p class="footer-stats">
+                <span id="ws-status">
+                    <i class="fas fa-plug"></i> WebSocket: <span id="ws-status-text">Disconnected</span>
+                </span>
+                <span class="separator">|</span>
+                <span id="api-latency">
+                    <i class="fas fa-clock"></i> Latency: <span id="latency-text">--</span> ms
+                </span>
+            </p>
+        </footer>
+    </div>
+
+    <!-- WebSocket connection -->
+    <script src="{{ url_for('static', filename='js/websocket.js') }}"></script>
+
+    <!-- Base JavaScript -->
+    <script src="{{ url_for('static', filename='js/base.js') }}"></script>
+
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

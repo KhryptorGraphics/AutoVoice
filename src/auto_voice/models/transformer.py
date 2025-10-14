@@ -4,7 +4,7 @@ Transformer model for voice synthesis
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 import math
 
 class MultiHeadAttention(nn.Module):
@@ -26,11 +26,28 @@ class MultiHeadAttention(nn.Module):
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
                 mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         batch_size = query.size(0)
+        seq_len = query.size(1)
 
         # Linear transformations
         Q = self.w_q(query).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         K = self.w_k(key).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         V = self.w_v(value).view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+
+        # Handle mask dimensions for multi-head attention
+        if mask is not None:
+            if mask.dim() == 2:
+                if mask.shape[0] == batch_size:  # (batch, seq_len)
+                    # Convert to (batch, 1, 1, seq_len) for broadcasting
+                    mask = mask.unsqueeze(1).unsqueeze(1)
+                else:  # (seq_len, seq_len) - causal mask
+                    # Add batch dimension: (1, seq_len, seq_len) then broadcast
+                    mask = mask.unsqueeze(0).expand(batch_size, -1, -1).unsqueeze(1)
+            elif mask.dim() == 3:  # (batch, seq_len, seq_len)
+                # Convert to (batch, 1, seq_len, seq_len) for broadcasting
+                mask = mask.unsqueeze(1)
+            # Invert mask: 1 means attend, 0 means mask out
+            mask = mask.bool()
+            mask = ~mask  # Invert for F.scaled_dot_product_attention
 
         # Attention
         attn = F.scaled_dot_product_attention(Q, K, V, attn_mask=mask)
@@ -70,11 +87,31 @@ class TransformerBlock(nn.Module):
 class VoiceTransformer(nn.Module):
     """Transformer model for voice synthesis"""
 
-    def __init__(self, input_dim: int, d_model: int = 512, n_heads: int = 8,
+    def __init__(self, input_dim: int = 80, d_model: int = 512, n_heads: int = 8,
                  n_layers: int = 6, d_ff: int = 2048, max_seq_len: int = 5000,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1, vocab_size: int = None, hidden_size: int = None,
+                 num_layers: int = None, num_heads: int = None, 
+                 max_sequence_length: int = None):
         super().__init__()
+        
+        # Support both parameter styles for compatibility
+        if hidden_size is not None:
+            d_model = hidden_size
+        if num_layers is not None:
+            n_layers = num_layers
+        if num_heads is not None:
+            n_heads = num_heads
+        if max_sequence_length is not None:
+            max_seq_len = max_sequence_length
+        if vocab_size is not None:
+            input_dim = vocab_size
+            
         self.d_model = d_model
+        self.hidden_size = d_model
+        self.num_layers = n_layers
+        self.num_heads = n_heads
+        self.input_dim = input_dim
+        
         self.input_projection = nn.Linear(input_dim, d_model)
         self.pos_encoding = self._create_positional_encoding(max_seq_len, d_model)
 
@@ -99,7 +136,18 @@ class VoiceTransformer(nn.Module):
 
         return pe.unsqueeze(0)
 
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, speaker_id: Optional[torch.Tensor] = None,
+                mask: Optional[torch.Tensor] = None, 
+                attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Handle different input formats
+        if x.dtype in [torch.long, torch.int64]:  # Token IDs
+            # Convert to one-hot encoding for embedding
+            x = F.one_hot(x.clamp(0, self.input_dim - 1), num_classes=self.input_dim).float()
+        
+        # Use attention_mask if provided (for test compatibility)
+        if attention_mask is not None:
+            mask = attention_mask
+            
         seq_len = x.size(1)
 
         # Input projection and positional encoding
@@ -113,3 +161,74 @@ class VoiceTransformer(nn.Module):
 
         # Output projection
         return self.output_projection(x)
+
+    def forward_for_training(self, mel_spec: torch.Tensor, speaker_id: Optional[torch.Tensor] = None,
+                            mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Forward pass for training with trainer-compatible signature.
+
+        Args:
+            mel_spec: Input mel-spectrogram features (batch, seq_len, input_dim)
+            speaker_id: Speaker IDs (optional, not used in base model)
+            mask: Attention mask (optional)
+
+        Returns:
+            Model predictions (batch, seq_len, output_dim)
+        """
+        # Call the standard forward method
+        # mel_spec is already the input features (x parameter)
+        return self.forward(mel_spec, speaker_id, mask)
+
+    def export_to_onnx(self, output_path: str, input_shape: Tuple[int, int, int] = (1, 100, 80),
+                      dynamic_axes: Optional[Dict[str, Dict[int, str]]] = None,
+                      opset_version: int = 17, verbose: bool = True) -> None:
+        """Export model to ONNX format for TensorRT conversion.
+
+        Args:
+            output_path: Path to save ONNX model
+            input_shape: Input tensor shape (batch, seq_len, input_dim)
+            dynamic_axes: Dynamic axes configuration for variable-length sequences
+            opset_version: ONNX opset version (17 for TensorRT 8.6+ compatibility)
+            verbose: Enable verbose logging
+        """
+        import os
+        from pathlib import Path
+
+        # Set model to eval mode
+        self.eval()
+
+        # Create dummy input matching expected format
+        batch_size, seq_len, input_dim = input_shape
+        dummy_input = torch.randn(batch_size, seq_len, input_dim)
+
+        # Default dynamic axes for variable-length sequences
+        if dynamic_axes is None:
+            dynamic_axes = {
+                'input': {0: 'batch_size', 1: 'sequence_length'},
+                'output': {0: 'batch_size', 1: 'sequence_length'}
+            }
+
+        # Ensure output directory exists
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # Export to ONNX
+        if verbose:
+            print(f"Exporting VoiceTransformer to ONNX: {output_path}")
+            print(f"  Input shape: {input_shape}")
+            print(f"  Dynamic axes: {dynamic_axes}")
+            print(f"  Opset version: {opset_version}")
+
+        torch.onnx.export(
+            self,
+            dummy_input,
+            output_path,
+            input_names=['input'],
+            output_names=['output'],
+            dynamic_axes=dynamic_axes,
+            opset_version=opset_version,
+            do_constant_folding=True,
+            verbose=verbose
+        )
+
+        if verbose:
+            print(f"✓ ONNX export completed: {output_path}")
+            print(f"  File size: {os.path.getsize(output_path) / (1024*1024):.2f} MB")

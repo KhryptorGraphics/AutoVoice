@@ -1,0 +1,56 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'autovoice-cluster'
+    environment: 'production'
+
+scrape_configs:
+  # AutoVoice application metrics
+  - job_name: 'autovoice'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['auto-voice-app:5000']
+    metrics_path: '/metrics'
+    scheme: http
+
+  # Node exporter for system metrics (optional)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # cAdvisor for container metrics (optional)
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+# Alerting configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+          # - 'alertmanager:9093'  # Uncomment if using alertmanager
+
+# Rule files for alerting
+rule_files:
+  # - 'alerts/*.yml'  # Uncomment and create alert rules
+
+# Remote write for long-term storage (optional)
+# remote_write:
+#   - url: http://remote-storage:9009/api/v1/push
+#     queue_config:
+#       max_samples_per_send: 1000
+#       max_shards: 200
+#       capacity: 2500
+
+# Storage configuration
+storage:
+  tsdb:
+    retention:
+      time: 30d
+      size: 10GB

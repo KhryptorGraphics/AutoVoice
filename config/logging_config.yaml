@@ -1,0 +1,115 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  json:
+    class: auto_voice.utils.logging_config.JSONFormatter
+
+  detailed:
+    format: '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+
+  simple:
+    format: '%(levelname)s - %(message)s'
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: detailed
+    stream: ext://sys.stdout
+
+  file:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: json
+    filename: logs/autovoice.log
+    maxBytes: 10485760  # 10MB
+    backupCount: 5
+    encoding: utf8
+
+  error_file:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: json
+    filename: logs/error.log
+    maxBytes: 10485760  # 10MB
+    backupCount: 5
+    encoding: utf8
+
+loggers:
+  auto_voice:
+    level: DEBUG
+    handlers: [console, file, error_file]
+    propagate: false
+
+  auto_voice.web:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+  auto_voice.inference:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+  auto_voice.training:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+  werkzeug:
+    level: WARNING
+    handlers: [console]
+    propagate: false
+
+  socketio:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+  engineio:
+    level: INFO
+    handlers: [console, file]
+    propagate: false
+
+root:
+  level: INFO
+  handlers: [console, file]
+
+# Environment-specific overrides (can be selected via LOG_PROFILE env var)
+profiles:
+  development:
+    handlers:
+      console:
+        level: DEBUG
+        formatter: detailed
+    loggers:
+      auto_voice:
+        level: DEBUG
+
+  production:
+    handlers:
+      console:
+        level: INFO
+        formatter: json
+      file:
+        level: INFO
+    loggers:
+      auto_voice:
+        level: INFO
+      werkzeug:
+        level: ERROR
+
+  debug:
+    handlers:
+      console:
+        level: DEBUG
+        formatter: detailed
+    loggers:
+      auto_voice:
+        level: DEBUG
+      werkzeug:
+        level: DEBUG
+      socketio:
+        level: DEBUG

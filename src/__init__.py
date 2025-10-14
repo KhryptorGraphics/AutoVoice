@@ -20,7 +20,7 @@ except ImportError:
     pass  # Extensions built during setup
 
 # Main entry points
-from .main import initialize_system, run_app
+# from .main import initialize_system, run_app  # TODO: Implement main.py
 
 # Constants
 SAMPLE_RATE = 22050

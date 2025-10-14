@@ -1,8 +1,10 @@
-"""CUDA graphs for optimized inference."""
+"""CUDA graphs for optimized inference with <100ms latency targets."""
 
 import logging
 import torch
-from typing import Dict, List, Optional, Callable, Any
+import time
+from typing import Dict, List, Optional, Callable, Any, Union, Tuple
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 

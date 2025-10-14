@@ -82,7 +82,8 @@ class TensorRTEngine:
             self.bindings.append(None)  # Will be filled with device pointers
 
     def build_engine(self, onnx_path: Union[str, Path], max_batch_size: int = 1,
-                    fp16: bool = True, workspace_size: int = 1 << 30) -> None:
+                    fp16: bool = True, workspace_size: int = 1 << 30,
+                    dynamic_shapes: Optional[Dict[str, Tuple[Tuple, Tuple, Tuple]]] = None) -> None:
         """Build TensorRT engine from ONNX model."""
         if not TRT_AVAILABLE:
             raise RuntimeError("TensorRT not available")
@@ -107,8 +108,27 @@ class TensorRTEngine:
             logger.info("FP16 mode enabled")
 
         # Parse ONNX
-        network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+        network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        network = builder.create_network(network_flags)
         parser = trt.OnnxParser(network, trt_logger)
+
+        # Setup dynamic shapes if provided
+        if dynamic_shapes:
+            profile = builder.create_optimization_profile()
+
+            for input_name, (min_shape, opt_shape, max_shape) in dynamic_shapes.items():
+                # Find input index
+                for i in range(network.num_inputs):
+                    if network.get_input(i).name == input_name:
+                        profile.set_shape(input_name, min_shape, opt_shape, max_shape)
+                        logger.info(f"Dynamic shape for {input_name}:")
+                        logger.info(f"  Min: {min_shape}")
+                        logger.info(f"  Opt: {opt_shape}")
+                        logger.info(f"  Max: {max_shape}")
+                        break
+
+            config.add_optimization_profile(profile)
+            logger.info("Dynamic shape optimization profile added")
 
         with open(onnx_path, 'rb') as model:
             if not parser.parse(model.read()):
@@ -205,3 +225,143 @@ class TensorRTEngine:
             output_tensors[name] = torch.from_numpy(array)
 
         return output_tensors
+    
+    def __del__(self):
+        """Cleanup allocated resources."""
+        try:
+            # Free GPU memory
+            for buffer in self.input_buffers.values():
+                if isinstance(buffer, int):
+                    cuda.mem_free(buffer)
+            
+            for buffer in self.output_buffers.values():
+                if isinstance(buffer, int):
+                    cuda.mem_free(buffer)
+            
+            logger.info("TensorRT engine resources cleaned up")
+        except Exception as e:
+            logger.warning(f"Error during TensorRT cleanup: {e}")
+
+
+class TensorRTEngineBuilder:
+    """Builder class for creating latency-optimized TensorRT engines."""
+    
+    def __init__(self, logger_severity=None):
+        if not TRT_AVAILABLE:
+            raise RuntimeError("TensorRT not available")
+            
+        if logger_severity is None:
+            logger_severity = trt.Logger.WARNING
+            
+        self.logger = trt.Logger(logger_severity)
+        self.builder = trt.Builder(self.logger)
+        self.config = self.builder.create_builder_config()
+        
+    def build_from_onnx(self, onnx_path: Union[str, Path], 
+                       engine_path: Union[str, Path],
+                       max_batch_size: int = 1,
+                       fp16: bool = True,
+                       int8: bool = False,
+                       workspace_size: int = 2 << 30,  # 2GB for better optimization
+                       dynamic_shapes: Optional[Dict[str, Tuple[Tuple, Tuple, Tuple]]] = None,
+                       optimize_for_latency: bool = True) -> bool:
+        """Build latency-optimized TensorRT engine from ONNX model."""
+        
+        onnx_path = Path(onnx_path)
+        engine_path = Path(engine_path)
+        
+        if not onnx_path.exists():
+            logger.error(f"ONNX file not found: {onnx_path}")
+            return False
+            
+        logger.info(f"Building latency-optimized TensorRT engine from {onnx_path}")
+        
+        # Configure builder for maximum performance
+        self.config.max_workspace_size = workspace_size
+        
+        # Enable precision modes
+        if fp16 and self.builder.platform_has_fast_fp16:
+            self.config.set_flag(trt.BuilderFlag.FP16)
+            logger.info("FP16 precision enabled for latency optimization")
+            
+        if int8 and self.builder.platform_has_fast_int8:
+            self.config.set_flag(trt.BuilderFlag.INT8)
+            logger.info("INT8 precision enabled")
+            
+        # Latency-specific optimizations
+        if optimize_for_latency:
+            if TRT_AVAILABLE:
+                self.config.set_flag(trt.BuilderFlag.STRICT_TYPES)
+                self.config.set_flag(trt.BuilderFlag.PREFER_PRECISION_CONSTRAINTS)
+                # Optimize for single batch inference
+                # Note: DISABLE_TIMING_CACHE may not be available in all TensorRT versions
+                try:
+                    self.config.set_flag(trt.BuilderFlag.DISABLE_TIMING_CACHE)
+                except AttributeError:
+                    logger.debug("DISABLE_TIMING_CACHE not available in this TensorRT version")
+                
+                # Set optimization level for latency
+                if hasattr(self.config, 'builder_optimization_level'):
+                    self.config.builder_optimization_level = 5  # Maximum optimization
+                    
+                logger.info("Latency optimization flags enabled")
+        
+        # Create network
+        network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        network = self.builder.create_network(network_flags)
+        parser = trt.OnnxParser(network, self.logger)
+        
+        # Parse ONNX
+        with open(onnx_path, 'rb') as model:
+            if not parser.parse(model.read()):
+                logger.error("Failed to parse ONNX model")
+                for error in range(parser.num_errors):
+                    logger.error(parser.get_error(error))
+                return False
+                
+        # Configure dynamic shapes if provided
+        if dynamic_shapes:
+            profile = self.builder.create_optimization_profile()
+            
+            for input_name, (min_shape, opt_shape, max_shape) in dynamic_shapes.items():
+                # Find input in network
+                for i in range(network.num_inputs):
+                    if network.get_input(i).name == input_name:
+                        profile.set_shape(input_name, min_shape, opt_shape, max_shape)
+                        logger.info(f"Dynamic shape for {input_name}: {min_shape} -> {opt_shape} -> {max_shape}")
+                        break
+                        
+            self.config.add_optimization_profile(profile)
+            
+        # Build engine with error handling
+        try:
+            logger.info("Building TensorRT engine (this may take several minutes)...")
+            serialized_engine = self.builder.build_serialized_network(network, self.config)
+            
+            if serialized_engine is None:
+                logger.error("Failed to build TensorRT engine")
+                return False
+                
+            # Save engine
+            engine_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(engine_path, 'wb') as f:
+                f.write(serialized_engine)
+                
+            logger.info(f"Latency-optimized TensorRT engine saved to {engine_path}")
+            logger.info(f"Engine size: {len(serialized_engine) / (1024*1024):.2f} MB")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Engine build failed: {e}")
+            return False
+    
+    def create_calibration_dataset(self, onnx_path: Union[str, Path], 
+                                 dataset_path: Union[str, Path],
+                                 num_samples: int = 500) -> bool:
+        """Create calibration dataset for INT8 optimization."""
+        # This would create a calibration dataset for INT8 quantization
+        # Implementation depends on specific model and data format
+        logger.info(f"Creating calibration dataset with {num_samples} samples")
+        # Placeholder implementation
+        return True

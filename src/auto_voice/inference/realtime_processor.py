@@ -116,3 +116,37 @@ class RealtimeProcessor:
         except Exception as e:
             self.logger.error(f"Process audio error: {e}")
             return None
+
+
+class AsyncRealtimeProcessor:
+    """Async version of real-time processor for integration with async frameworks."""
+    
+    def __init__(self, model: torch.nn.Module, device: str = 'cuda', **kwargs):
+        self.processor = RealtimeProcessor(model, device, **kwargs)
+        self.loop = None
+        
+    async def start(self):
+        """Start async processing."""
+        self.loop = asyncio.get_event_loop()
+        await self.loop.run_in_executor(None, self.processor.start)
+    
+    async def stop(self):
+        """Stop async processing."""
+        if self.loop:
+            await self.loop.run_in_executor(None, self.processor.stop)
+    
+    async def process_audio(self, audio_chunk: np.ndarray) -> Optional[np.ndarray]:
+        """Process audio chunk asynchronously."""
+        if self.loop:
+            return await self.loop.run_in_executor(
+                None, self.processor.process_audio, audio_chunk
+            )
+        return None
+    
+    async def get_performance_stats(self) -> dict:
+        """Get performance stats asynchronously."""
+        if self.loop:
+            return await self.loop.run_in_executor(
+                None, self.processor.get_performance_stats
+            )
+        return {}

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoVoice - Advanced Voice Synthesis</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>AutoVoice</h1>
+            <p>Advanced Voice Synthesis and Processing System</p>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab-button active" onclick="showTab('synthesize')">Text to Speech</button>
+            <button class="tab-button" onclick="showTab('convert')">Voice Conversion</button>
+            <button class="tab-button" onclick="showTab('clone')">Voice Cloning</button>
+            <button class="tab-button" onclick="showTab('status')">System Status</button>
+        </nav>
+
+        <div class="content">
+            <!-- Text to Speech Tab -->
+            <div id="synthesize" class="tab-content active">
+                <h2>Text to Speech</h2>
+                <form id="synthesize-form">
+                    <div class="form-group">
+                        <label for="text">Text to synthesize:</label>
+                        <textarea id="text" name="text" rows="5" required>Hello, this is AutoVoice speaking!</textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="speaker">Speaker Voice:</label>
+                        <select id="speaker" name="speaker_id">
+                            <option value="0">Speaker 1</option>
+                            <option value="1">Speaker 2</option>
+                            <option value="2">Speaker 3</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="speed">Speed: <span id="speed-value">1.0</span></label>
+                        <input type="range" id="speed" name="speed" min="0.5" max="2.0" step="0.1" value="1.0">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="pitch">Pitch: <span id="pitch-value">1.0</span></label>
+                        <input type="range" id="pitch" name="pitch" min="0.5" max="2.0" step="0.1" value="1.0">
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary">Synthesize</button>
+                </form>
+                
+                <div id="synthesize-result" class="result" style="display: none;">
+                    <h3>Result:</h3>
+                    <audio id="synthesize-audio" controls></audio>
+                    <button onclick="downloadAudio('synthesize-audio')" class="btn btn-secondary">Download</button>
+                </div>
+            </div>
+
+            <!-- Voice Conversion Tab -->
+            <div id="convert" class="tab-content">
+                <h2>Voice Conversion</h2>
+                <form id="convert-form" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="audio-file">Upload Audio File:</label>
+                        <input type="file" id="audio-file" name="audio" accept="audio/*" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="target-speaker">Target Speaker:</label>
+                        <select id="target-speaker" name="target_speaker_id">
+                            <option value="0">Speaker 1</option>
+                            <option value="1">Speaker 2</option>
+                            <option value="2">Speaker 3</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="pitch-shift">Pitch Shift: <span id="pitch-shift-value">1.0</span></label>
+                        <input type="range" id="pitch-shift" name="pitch_shift" min="0.5" max="2.0" step="0.1" value="1.0">
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary">Convert Voice</button>
+                </form>
+                
+                <div id="convert-result" class="result" style="display: none;">
+                    <h3>Result:</h3>
+                    <audio id="convert-audio" controls></audio>
+                    <button onclick="downloadAudio('convert-audio')" class="btn btn-secondary">Download</button>
+                </div>
+            </div>
+
+            <!-- Voice Cloning Tab -->
+            <div id="clone" class="tab-content">
+                <h2>Voice Cloning</h2>
+                <form id="clone-form" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="reference-audio">Reference Audio (voice to clone):</label>
+                        <input type="file" id="reference-audio" name="reference" accept="audio/*" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="clone-text">Text to synthesize with cloned voice:</label>
+                        <textarea id="clone-text" name="text" rows="5" required>This is my cloned voice speaking!</textarea>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary">Clone & Synthesize</button>
+                </form>
+                
+                <div id="clone-result" class="result" style="display: none;">
+                    <h3>Result:</h3>
+                    <audio id="clone-audio" controls></audio>
+                    <button onclick="downloadAudio('clone-audio')" class="btn btn-secondary">Download</button>
+                </div>
+            </div>
+
+            <!-- System Status Tab -->
+            <div id="status" class="tab-content">
+                <h2>System Status</h2>
+                <div id="gpu-status">
+                    <h3>GPU Information</h3>
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <span class="label">CUDA Available:</span>
+                            <span id="cuda-available" class="value">-</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="label">Device:</span>
+                            <span id="device-name" class="value">-</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="label">Memory Used:</span>
+                            <span id="memory-used" class="value">-</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="label">Memory Total:</span>
+                            <span id="memory-total" class="value">-</span>
+                        </div>
+                    </div>
+                    <button onclick="updateStatus()" class="btn btn-secondary">Refresh Status</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

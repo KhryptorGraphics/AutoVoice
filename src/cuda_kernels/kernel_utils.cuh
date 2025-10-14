@@ -149,6 +149,35 @@ __device__ __forceinline__ float warp_reduce_sum(float val) {
     return val;
 }
 
+// Block-wide reduction using shared memory
+__device__ __forceinline__ float block_reduce_sum(float val) {
+    // Shared memory for reduction (one value per warp)
+    __shared__ float warp_sums[32]; // Maximum 32 warps per block (1024 threads)
+
+    int lane = threadIdx.x % WARP_SIZE;
+    int warp_id = threadIdx.x / WARP_SIZE;
+    int num_warps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
+
+    // First reduce within each warp
+    val = warp_reduce_sum(val);
+
+    // Write reduced value to shared memory (only first thread in each warp)
+    if (lane == 0) {
+        warp_sums[warp_id] = val;
+    }
+    __syncthreads();
+
+    // Only the first warp performs the final reduction
+    if (warp_id == 0) {
+        // Read from shared memory only if within valid range
+        val = (lane < num_warps) ? warp_sums[lane] : 0.0f;
+        // Final warp reduction
+        val = warp_reduce_sum(val);
+    }
+
+    return val;
+}
+
 // Common constants
 static const float PI = 3.141592653589793f;
 static const float EPSILON = 1e-8f;

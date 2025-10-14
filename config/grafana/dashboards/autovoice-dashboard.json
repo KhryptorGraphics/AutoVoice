@@ -1,0 +1,85 @@
+{
+  "dashboard": {
+    "title": "AutoVoice Monitoring Dashboard",
+    "tags": ["autovoice", "voice-synthesis", "gpu"],
+    "timezone": "browser",
+    "refresh": "30s",
+    "schemaVersion": 38,
+    "version": 1,
+    "panels": [
+      {
+        "id": 1,
+        "title": "HTTP Requests per Second",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[5m])",
+            "legendFormat": "{{method}} {{endpoint}} ({{status}})"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Active WebSocket Connections",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "active_websocket_connections"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "GPU Utilization",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "gpu_utilization_percent",
+            "legendFormat": "GPU {{device_id}}"
+          }
+        ],
+        "yaxes": [{"max": 100, "min": 0, "format": "percent"}]
+      },
+      {
+        "id": 4,
+        "title": "Synthesis Duration (p95)",
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(synthesis_duration_seconds_bucket[5m]))"
+          }
+        ],
+        "unit": "s"
+      },
+      {
+        "id": 5,
+        "title": "GPU Memory Usage",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "gpu_memory_used_bytes / (1024*1024*1024)",
+            "legendFormat": "GPU {{device_id}}"
+          }
+        ],
+        "yaxes": [{"format": "decgbytes"}]
+      },
+      {
+        "id": 6,
+        "title": "Error Rate",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{status=~\"5..\"}[5m])",
+            "legendFormat": "5xx errors"
+          }
+        ]
+      }
+    ]
+  }
+}

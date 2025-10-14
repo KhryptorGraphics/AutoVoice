@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+
+{% block title %}Voice Synthesis - AutoVoice{% endblock %}
+
+{% block content %}
+<div class="voice-synthesis">
+    <h1 class="page-title">
+        <i class="fas fa-waveform"></i>
+        Voice Synthesis & Processing
+    </h1>
+
+    <!-- Input Section -->
+    <div class="synthesis-panel">
+        <h2><i class="fas fa-microphone"></i> Audio Input</h2>
+        <div class="input-options">
+            <div class="option-group">
+                <input type="radio" id="record-audio" name="input-type" value="record" checked>
+                <label for="record-audio">
+                    <i class="fas fa-microphone"></i> Record Audio
+                </label>
+            </div>
+            <div class="option-group">
+                <input type="radio" id="upload-audio" name="input-type" value="upload">
+                <label for="upload-audio">
+                    <i class="fas fa-upload"></i> Upload File
+                </label>
+            </div>
+            <div class="option-group">
+                <input type="radio" id="text-input" name="input-type" value="text">
+                <label for="text-input">
+                    <i class="fas fa-keyboard"></i> Text to Speech
+                </label>
+            </div>
+        </div>
+
+        <!-- Recording Controls -->
+        <div id="recording-controls" class="control-section">
+            <button id="record-btn" class="btn btn-primary">
+                <i class="fas fa-circle"></i> Start Recording
+            </button>
+            <div class="recording-timer" id="recording-timer" style="display: none;">
+                <span class="recording-dot"></span>
+                <span id="timer-display">00:00</span>
+            </div>
+            <div class="audio-visualizer">
+                <canvas id="waveform-canvas"></canvas>
+            </div>
+        </div>
+
+        <!-- File Upload -->
+        <div id="upload-controls" class="control-section" style="display: none;">
+            <div class="upload-area" id="upload-area">
+                <i class="fas fa-cloud-upload-alt"></i>
+                <p>Drag & drop audio file here or click to browse</p>
+                <input type="file" id="audio-file-input" accept="audio/*" hidden>
+            </div>
+            <div id="file-info" class="file-info" style="display: none;">
+                <i class="fas fa-file-audio"></i>
+                <span id="file-name"></span>
+                <button id="remove-file" class="btn-small">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Text Input -->
+        <div id="text-controls" class="control-section" style="display: none;">
+            <textarea id="text-to-synthesize"
+                      placeholder="Enter text to synthesize..."
+                      rows="5"></textarea>
+            <div class="text-options">
+                <label for="voice-model">Voice Model:</label>
+                <select id="voice-model">
+                    <option value="default">Default</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="robotic">Robotic</option>
+                </select>
+
+                <label for="speaking-rate">Speaking Rate:</label>
+                <input type="range" id="speaking-rate" min="0.5" max="2" step="0.1" value="1">
+                <span id="rate-value">1.0x</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Processing Options -->
+    <div class="processing-panel">
+        <h2><i class="fas fa-sliders-h"></i> Processing Options</h2>
+
+        <div class="options-grid">
+            <div class="option-card">
+                <h3>Pitch Detection</h3>
+                <label class="switch">
+                    <input type="checkbox" id="enable-pitch" checked>
+                    <span class="slider"></span>
+                </label>
+                <div class="option-controls">
+                    <label>F0 Range (Hz):</label>
+                    <input type="number" id="pitch-min" value="80" min="50" max="300">
+                    <span>-</span>
+                    <input type="number" id="pitch-max" value="400" min="100" max="600">
+                </div>
+            </div>
+
+            <div class="option-card">
+                <h3>Voice Activity Detection</h3>
+                <label class="switch">
+                    <input type="checkbox" id="enable-vad" checked>
+                    <span class="slider"></span>
+                </label>
+                <div class="option-controls">
+                    <label>Threshold:</label>
+                    <input type="range" id="vad-threshold" min="0" max="1" step="0.01" value="0.5">
+                    <span id="vad-value">0.5</span>
+                </div>
+            </div>
+
+            <div class="option-card">
+                <h3>Noise Reduction</h3>
+                <label class="switch">
+                    <input type="checkbox" id="enable-denoise" checked>
+                    <span class="slider"></span>
+                </label>
+                <div class="option-controls">
+                    <label>Strength:</label>
+                    <select id="denoise-strength">
+                        <option value="light">Light</option>
+                        <option value="medium" selected>Medium</option>
+                        <option value="heavy">Heavy</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="option-card">
+                <h3>Voice Enhancement</h3>
+                <label class="switch">
+                    <input type="checkbox" id="enable-enhance">
+                    <span class="slider"></span>
+                </label>
+                <div class="option-controls">
+                    <label>Model:</label>
+                    <select id="enhance-model">
+                        <option value="basic">Basic</option>
+                        <option value="neural">Neural</option>
+                        <option value="hifi">HiFi-GAN</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Process Button -->
+    <div class="action-section">
+        <button id="process-btn" class="btn btn-large btn-primary" disabled>
+            <i class="fas fa-magic"></i> Process Audio
+        </button>
+        <div id="processing-status" class="processing-status" style="display: none;">
+            <div class="spinner"></div>
+            <span id="status-text">Processing...</span>
+        </div>
+    </div>
+
+    <!-- Results Section -->
+    <div id="results-section" class="results-panel" style="display: none;">
+        <h2><i class="fas fa-chart-bar"></i> Processing Results</h2>
+
+        <!-- Audio Player -->
+        <div class="audio-player-section">
+            <h3>Processed Audio</h3>
+            <audio id="result-audio" controls></audio>
+            <div class="player-actions">
+                <button id="download-audio" class="btn btn-secondary">
+                    <i class="fas fa-download"></i> Download
+                </button>
+                <button id="compare-audio" class="btn btn-secondary">
+                    <i class="fas fa-exchange-alt"></i> Compare
+                </button>
+            </div>
+        </div>
+
+        <!-- Spectrogram Visualization -->
+        <div class="visualization-section">
+            <h3>Spectrogram Analysis</h3>
+            <canvas id="spectrogram-canvas"></canvas>
+            <div class="viz-controls">
+                <button class="viz-btn active" data-viz="spectrogram">Spectrogram</button>
+                <button class="viz-btn" data-viz="pitch">Pitch Contour</button>
+                <button class="viz-btn" data-viz="formants">Formants</button>
+                <button class="viz-btn" data-viz="energy">Energy</button>
+            </div>
+        </div>
+
+        <!-- Metrics Display -->
+        <div class="metrics-section">
+            <h3>Analysis Metrics</h3>
+            <div class="metrics-grid">
+                <div class="metric">
+                    <span class="metric-label">Average Pitch:</span>
+                    <span class="metric-value" id="avg-pitch">-- Hz</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Speech Rate:</span>
+                    <span class="metric-value" id="speech-rate">-- words/min</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">SNR:</span>
+                    <span class="metric-value" id="snr">-- dB</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Processing Time:</span>
+                    <span class="metric-value" id="proc-time">-- ms</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">GPU Memory:</span>
+                    <span class="metric-value" id="gpu-mem-used">-- MB</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Quality Score:</span>
+                    <span class="metric-value" id="quality-score">--/100</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Export Options -->
+        <div class="export-section">
+            <h3>Export Options</h3>
+            <div class="export-options">
+                <button class="export-btn" data-format="wav">
+                    <i class="fas fa-file-audio"></i> WAV
+                </button>
+                <button class="export-btn" data-format="mp3">
+                    <i class="fas fa-file-audio"></i> MP3
+                </button>
+                <button class="export-btn" data-format="flac">
+                    <i class="fas fa-file-audio"></i> FLAC
+                </button>
+                <button class="export-btn" data-format="json">
+                    <i class="fas fa-file-code"></i> JSON
+                </button>
+                <button class="export-btn" data-format="csv">
+                    <i class="fas fa-file-csv"></i> CSV
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/voice_synthesis.js') }}"></script>
+<script src="{{ url_for('static', filename='js/audio_visualizer.js') }}"></script>
+{% endblock %}

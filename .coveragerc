@@ -1,0 +1,59 @@
+[run]
+source = src/auto_voice
+branch = True
+data_file = .coverage
+omit =
+    tests/*
+    */__pycache__/*
+    */__init__.py
+    */setup.py
+    */example_*.py
+    */examples/*
+    */web/static/*
+    */web/templates/*
+    */.venv/*
+    */venv/*
+    */build/*
+    */dist/*
+    */.eggs/*
+
+[report]
+precision = 2
+show_missing = True
+skip_covered = False
+skip_empty = True
+sort = Cover
+fail_under = 80.0
+
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    def __str__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    if typing.TYPE_CHECKING:
+    @abstractmethod
+    @abc.abstractmethod
+    \.\.\.
+    pass
+
+partial_branches =
+    pragma: no branch
+    if not debug:
+    if debug:
+    if TYPE_CHECKING:
+
+[html]
+directory = htmlcov
+title = AutoVoice Test Coverage Report
+show_contexts = True
+
+[xml]
+output = coverage.xml
+
+[json]
+output = coverage.json
+pretty_print = True
+show_contexts = True
