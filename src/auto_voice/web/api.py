@@ -4,6 +4,7 @@ import io
 import os
 import json
 import logging
+import time
 from flask import Blueprint, request, jsonify, current_app
 from werkzeug.utils import secure_filename
 from typing import Optional, Dict, Any
@@ -743,14 +744,24 @@ def convert_voice():
 
 @api_bp.route('/clone', methods=['POST'])
 def clone_voice():
-    """Clone a voice from reference audio.
-    
+    """Clone a voice from reference audio and create voice profile.
+
     Request (multipart/form-data):
-        reference_audio (file): Reference audio for cloning (required)
-        target_text (str): Text to synthesize with cloned voice (required)
-        
+        audio (file): Reference audio for cloning (required, 5-60 seconds)
+        user_id (str): Optional user identifier for profile management
+
     Returns:
-        JSON with cloned voice audio and metadata
+        JSON with voice profile information:
+        {
+            'status': 'success',
+            'profile_id': str,
+            'user_id': str or null,
+            'audio_duration': float,
+            'vocal_range': {'min_f0': float, 'max_f0': float, 'range_semitones': float},
+            'timbre_features': {'spectral_centroid': float, 'spectral_rolloff': float},
+            'embedding_stats': {'mean': float, 'std': float, 'norm': float},
+            'created_at': str (ISO timestamp)
+        }
     """
     if not TORCH_AVAILABLE:
         return jsonify({
@@ -758,35 +769,88 @@ def clone_voice():
             'message': 'PyTorch not installed'
         }), 503
 
-    # Check for audio file
-    if 'reference_audio' not in request.files:
-        return jsonify({'error': 'No reference audio file provided'}), 400
+    # Get voice cloner from app context
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if not voice_cloner:
+        return jsonify({
+            'error': 'Voice cloning service unavailable',
+            'message': 'Voice cloner not initialized'
+        }), 503
 
-    file = request.files['reference_audio']
+    # Check for audio file
+    if 'audio' not in request.files:
+        return jsonify({'error': 'No audio file provided'}), 400
+
+    file = request.files['audio']
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
 
-    target_text = request.form.get('target_text')
-    if not target_text:
-        return jsonify({'error': 'No target text provided'}), 400
+    # Get optional user_id
+    user_id = request.form.get('user_id')
 
     if file and allowed_file(file.filename):
         try:
-            # For now, return a placeholder response since voice cloning is complex
-            return jsonify({
-                'status': 'success', 
-                'message': 'Voice cloning not yet implemented',
-                'target_text': target_text,
-                'reference_filename': file.filename
-            })
+            # Save to temporary file with secure filename
+            secure_name = secure_filename(file.filename)
+            if not secure_name:
+                return jsonify({'error': 'Invalid filename'}), 400
+
+            with tempfile.NamedTemporaryFile(suffix=os.path.splitext(secure_name)[1], delete=False) as tmp_file:
+                file.save(tmp_file.name)
+
+                try:
+                    # Create voice profile
+                    logger.info(f"Creating voice profile from {secure_name}")
+
+                    profile = voice_cloner.create_voice_profile(
+                        audio=tmp_file.name,
+                        user_id=user_id,
+                        metadata={
+                            'filename': secure_name,
+                            'format': os.path.splitext(secure_name)[1][1:],  # Remove leading dot
+                            'upload_time': time.time()
+                        }
+                    )
+
+                    # Remove embedding from response (too large, stored on disk)
+                    response_profile = {k: v for k, v in profile.items() if k != 'embedding'}
+
+                    logger.info(f"Voice profile created: {profile['profile_id']}")
+
+                    return jsonify({
+                        'status': 'success',
+                        **response_profile
+                    }), 201
+
+                finally:
+                    # Clean up temporary file
+                    try:
+                        os.unlink(tmp_file.name)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp file: {e}")
+
         except Exception as e:
             logger.error(f"Voice cloning error: {e}", exc_info=True)
-            return jsonify({
-                'error': 'Voice cloning failed',
-                'message': str(e) if current_app.debug else 'Internal processing error'
-            }), 500
+
+            # Provide specific error messages for common issues
+            error_message = str(e)
+            if 'duration' in error_message.lower():
+                return jsonify({
+                    'error': 'Invalid audio duration',
+                    'message': 'Audio must be between 5 and 60 seconds long'
+                }), 400
+            elif 'format' in error_message.lower() or 'sample rate' in error_message.lower():
+                return jsonify({
+                    'error': 'Invalid audio format',
+                    'message': 'Please provide a valid audio file (WAV, MP3, FLAC, OGG)'
+                }), 400
+            else:
+                return jsonify({
+                    'error': 'Voice cloning failed',
+                    'message': error_message if current_app.debug else 'Internal processing error'
+                }), 500
     else:
-        return jsonify({'error': 'Invalid file format'}), 400
+        return jsonify({'error': 'Invalid file format. Allowed: WAV, MP3, FLAC, OGG, M4A'}), 400
 
 
 @api_bp.route('/speakers', methods=['GET'])
@@ -836,6 +900,95 @@ def get_speakers():
         }]
     
     return jsonify(speakers)
+
+
+@api_bp.route('/voice/profiles', methods=['GET'])
+def get_voice_profiles():
+    """Get list of voice profiles.
+
+    Query parameters:
+        user_id (str): Filter by user ID (optional)
+
+    Returns:
+        JSON array of voice profiles (without embeddings)
+    """
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if not voice_cloner:
+        return jsonify({
+            'error': 'Voice cloning service unavailable',
+            'message': 'Voice cloner not initialized'
+        }), 503
+
+    try:
+        user_id = request.args.get('user_id')
+        profiles = voice_cloner.list_voice_profiles(user_id=user_id)
+
+        return jsonify(profiles), 200
+
+    except Exception as e:
+        logger.error(f"Failed to list voice profiles: {e}")
+        return jsonify({
+            'error': 'Failed to list profiles',
+            'message': str(e) if current_app.debug else 'Internal error'
+        }), 500
+
+
+@api_bp.route('/voice/profiles/<profile_id>', methods=['GET'])
+def get_voice_profile(profile_id: str):
+    """Get specific voice profile.
+
+    Returns:
+        JSON with voice profile information (without embedding)
+    """
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if not voice_cloner:
+        return jsonify({
+            'error': 'Voice cloning service unavailable'
+        }), 503
+
+    try:
+        profile = voice_cloner.load_voice_profile(profile_id)
+        # Remove embedding from response
+        response_profile = {k: v for k, v in profile.items() if k != 'embedding'}
+
+        return jsonify(response_profile), 200
+
+    except Exception as e:
+        if 'not found' in str(e).lower():
+            return jsonify({'error': 'Profile not found'}), 404
+        else:
+            logger.error(f"Failed to get voice profile: {e}")
+            return jsonify({'error': 'Internal error'}), 500
+
+
+@api_bp.route('/voice/profiles/<profile_id>', methods=['DELETE'])
+def delete_voice_profile(profile_id: str):
+    """Delete voice profile.
+
+    Returns:
+        JSON with deletion status
+    """
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if not voice_cloner:
+        return jsonify({
+            'error': 'Voice cloning service unavailable'
+        }), 503
+
+    try:
+        deleted = voice_cloner.delete_voice_profile(profile_id)
+
+        if deleted:
+            return jsonify({
+                'status': 'success',
+                'message': 'Profile deleted',
+                'profile_id': profile_id
+            }), 200
+        else:
+            return jsonify({'error': 'Profile not found'}), 404
+
+    except Exception as e:
+        logger.error(f"Failed to delete voice profile: {e}")
+        return jsonify({'error': 'Internal error'}), 500
 
 
 @api_bp.route('/gpu_status', methods=['GET'])

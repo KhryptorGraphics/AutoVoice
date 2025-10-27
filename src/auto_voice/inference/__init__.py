@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .realtime_processor import RealtimeProcessor, AsyncRealtimeProcessor
     from .cuda_graphs import CUDAGraphManager, GraphOptimizedModel
     from .inference_manager import InferenceManager
+    from .voice_cloner import VoiceCloner
 
 __all__ = [
     'VoiceInferenceEngine',
@@ -22,7 +23,8 @@ __all__ = [
     'AsyncRealtimeProcessor',
     'CUDAGraphManager',
     'GraphOptimizedModel',
-    'InferenceManager'
+    'InferenceManager',
+    'VoiceCloner'
 ]
 
 # Module-level cache for lazy-loaded classes
@@ -93,7 +95,12 @@ def __getattr__(name):
             from .inference_manager import InferenceManager
             _module_cache[name] = InferenceManager
             return InferenceManager
-            
+
+        elif name == 'VoiceCloner':
+            from .voice_cloner import VoiceCloner
+            _module_cache[name] = VoiceCloner
+            return VoiceCloner
+
     except Exception as e:
         import logging
         logger = logging.getLogger(__name__)

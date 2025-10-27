@@ -41,6 +41,7 @@ from ..gpu.gpu_manager import GPUManager
 from ..audio.processor import AudioProcessor
 from ..models.voice_model import VoiceModel
 from ..inference.synthesizer import VoiceSynthesizer
+from ..inference.voice_cloner import VoiceCloner
 from .api import api_bp
 from .websocket_handler import WebSocketHandler
 
@@ -55,6 +56,7 @@ gpu_manager = None
 audio_processor = None
 voice_model = None
 synthesizer = None
+voice_cloner = None
 config = None
 
 UPLOAD_FOLDER = '/tmp/autovoice_uploads'
@@ -66,7 +68,7 @@ def allowed_file(filename):
 
 def create_app(config_path=None, config=None):
     """Create and configure Flask application"""
-    global app, socketio, gpu_manager, audio_processor, voice_model, synthesizer
+    global app, socketio, gpu_manager, audio_processor, voice_model, synthesizer, voice_cloner
 
     if not FLASK_AVAILABLE:
         logger.warning("Flask not installed. Web interface not available.")
@@ -130,6 +132,19 @@ def create_app(config_path=None, config=None):
             'synthesize_speech': lambda self, text, speaker_id=0: np.random.rand(22050) if NUMPY_AVAILABLE else [0] * 22050,
             'text_to_speech': lambda self, text, speaker_id=0, **kwargs: np.random.rand(22050) if NUMPY_AVAILABLE else [0] * 22050
         })()
+
+        voice_cloner = type('MockVoiceCloner', (), {
+            'create_voice_profile': lambda self, audio, **kwargs: {
+                'profile_id': 'test-profile-123',
+                'user_id': kwargs.get('user_id'),
+                'audio_duration': 30.0,
+                'vocal_range': {'min_f0': 100.0, 'max_f0': 400.0},
+                'created_at': '2025-01-15T10:00:00Z'
+            },
+            'list_voice_profiles': lambda self, user_id=None: [],
+            'load_voice_profile': lambda self, profile_id: {'profile_id': profile_id},
+            'delete_voice_profile': lambda self, profile_id: True
+        })()
     else:
         # Initialize real components
         try:
@@ -145,6 +160,13 @@ def create_app(config_path=None, config=None):
             logger.info("Initializing Synthesizer...")
             synthesizer = VoiceSynthesizer(voice_model, audio_processor, gpu_manager)
 
+            logger.info("Initializing Voice Cloner...")
+            voice_cloner = VoiceCloner(
+                config=app_config.get('voice_cloning', {}),
+                device=gpu_manager.get_device() if hasattr(gpu_manager, 'get_device') else None,
+                gpu_manager=gpu_manager
+            )
+
             # Update metrics
             set_model_loaded(voice_model.is_loaded() if hasattr(voice_model, 'is_loaded') else True)
 
@@ -159,6 +181,7 @@ def create_app(config_path=None, config=None):
             audio_processor = type('MockAudioProcessor', (), {})()
             voice_model = type('MockVoiceModel', (), {'is_loaded': lambda: False})()
             synthesizer = type('MockSynthesizer', (), {})()
+            voice_cloner = type('MockVoiceCloner', (), {})()
 
     # Set app context attributes for blueprints
     app.app_config = app_config
@@ -166,6 +189,7 @@ def create_app(config_path=None, config=None):
     app.inference_engine = synthesizer  # API expects this name
     app.gpu_manager = gpu_manager
     app.voice_model = voice_model
+    app.voice_cloner = voice_cloner
 
     # Register API blueprint
     app.register_blueprint(api_bp)

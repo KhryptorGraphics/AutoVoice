@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from .transformer import VoiceTransformer
     from .hifigan import HiFiGANGenerator
     from .voice_model import VoiceModel
+    from .speaker_encoder import SpeakerEncoder
 
 class LazyImportError(ImportError):
     """Raised when a lazy import fails due to missing optional dependencies."""
@@ -17,7 +18,7 @@ class LazyImportError(ImportError):
 import logging
 logger = logging.getLogger(__name__)
 
-__all__ = ['VoiceModel', 'VoiceTransformer', 'HiFiGANGenerator']
+__all__ = ['VoiceModel', 'VoiceTransformer', 'HiFiGANGenerator', 'SpeakerEncoder']
 
 # Module-level cache for lazy-loaded classes
 _module_cache = {}
@@ -50,6 +51,10 @@ def __getattr__(name):
             from .hifigan import HiFiGANGenerator
             _module_cache[name] = HiFiGANGenerator
             return HiFiGANGenerator
+        elif name == 'SpeakerEncoder':
+            from .speaker_encoder import SpeakerEncoder
+            _module_cache[name] = SpeakerEncoder
+            return SpeakerEncoder
     except Exception as e:
         logger.warning(f"Failed to import {name}: {e}")
         raise LazyImportError(f"{name} is unavailable due to missing dependencies: {e}") from e

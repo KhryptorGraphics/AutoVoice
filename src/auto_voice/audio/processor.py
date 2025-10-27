@@ -84,26 +84,28 @@ class AudioProcessor:
             self.mel_transform = None
             self.amplitude_to_db = None
     
-    def load_audio(self, path: str, target_sr: Optional[int] = None) -> Union[torch.Tensor, np.ndarray]:
+    def load_audio(self, path: str, target_sr: Optional[int] = None, return_sr: bool = False) -> Union[torch.Tensor, np.ndarray, Tuple[Union[torch.Tensor, np.ndarray], int]]:
         """Load audio from file
-        
+
         Args:
             path: Path to audio file
             target_sr: Target sample rate (uses self.sample_rate if None)
-            
+            return_sr: If True, return (audio, original_sample_rate) tuple
+
         Returns:
-            Audio tensor or array
+            Audio tensor/array, or (audio, original_sr) if return_sr=True
         """
         if target_sr is None:
             target_sr = self.sample_rate
-            
+
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Audio file not found: {path}")
-            
+
         try:
             if TORCHAUDIO_AVAILABLE:
                 waveform, sample_rate = torchaudio.load(str(path))
+                original_sr = sample_rate
                 # Convert to mono if stereo
                 if waveform.shape[0] > 1:
                     waveform = torch.mean(waveform, dim=0, keepdim=True)
@@ -111,13 +113,22 @@ class AudioProcessor:
                 if sample_rate != target_sr:
                     resampler = T.Resample(sample_rate, target_sr)
                     waveform = resampler(waveform)
-                return waveform.squeeze(0)  # Remove channel dimension
+                result = waveform.squeeze(0)  # Remove channel dimension
+                return (result, original_sr) if return_sr else result
             elif LIBROSA_AVAILABLE:
-                audio, sr = librosa.load(str(path), sr=target_sr)
-                return torch.from_numpy(audio.astype(np.float32))
+                # Load without resampling first to get original SR
+                audio_orig, original_sr = librosa.load(str(path), sr=None)
+                # Resample if needed
+                if original_sr != target_sr:
+                    audio = librosa.resample(audio_orig, orig_sr=original_sr, target_sr=target_sr)
+                else:
+                    audio = audio_orig
+                result = torch.from_numpy(audio.astype(np.float32))
+                return (result, original_sr) if return_sr else result
             else:
                 logger.warning("Neither torchaudio nor librosa available. Using dummy audio.")
-                return torch.randn(target_sr * 3)  # 3 seconds of dummy audio
+                result = torch.randn(target_sr * 3)  # 3 seconds of dummy audio
+                return (result, target_sr) if return_sr else result
         except Exception as e:
             logger.error(f"Error loading audio from {path}: {e}")
             raise

@@ -34,8 +34,12 @@ aiohttp>=3.9,<4.0
 # Audio processing and ML utilities
 webrtcvad>=2.0,<3.0  # Voice activity detection
 crepe>=0.0.12  # Pitch detection
+torchcrepe>=0.3.0  # PyTorch-based CREPE for GPU-accelerated pitch detection
 praat-parselmouth>=0.4.0  # Advanced audio analysis
+resemblyzer>=0.1.1  # Pre-trained speaker encoder for voice cloning (Apache-2.0 license)
 noisereduce>=3.0.0  # Noise reduction
+demucs>=4.0.0,<5.0.0  # State-of-the-art music source separation (Meta/Facebook)
+# spleeter>=2.4.0,<3.0.0  # Fast music separation fallback (Deezer) - Optional: Install with `pip install spleeter` if needed
 
 # Development and testing
 pytest>=7.4,<8.0

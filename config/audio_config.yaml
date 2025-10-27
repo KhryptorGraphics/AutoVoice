@@ -102,3 +102,134 @@ gpu_audio:
   async_io: true
   pinned_host_memory: true
   stream_count: 2
+
+# Vocal Separation Settings
+vocal_separation:
+  # Model selection: 'htdemucs', 'htdemucs_ft', 'mdx_extra', 'spleeter:2stems'
+  model: 'htdemucs'  # Hybrid Transformer Demucs (best quality)
+
+  # Processing parameters
+  sample_rate: 44100  # Native Demucs sample rate
+  shifts: 1  # Number of random shifts for better quality (0-10)
+  overlap: 0.25  # Overlap between chunks (0.0-0.5)
+  split: true  # Split audio into chunks to save memory
+
+  # Backend preferences
+  backend_priority: ['demucs', 'spleeter']  # Try in order
+  fallback_enabled: true  # Auto-fallback if primary fails
+
+  # Caching configuration
+  cache_enabled: true
+  cache_dir: '~/.cache/autovoice/separated/'
+  cache_size_limit_gb: 10  # Maximum cache size
+  cache_ttl_days: 30  # Time-to-live for cached files
+
+  # GPU optimization
+  gpu_acceleration: true
+  mixed_precision: true  # Use FP16 for faster inference
+  batch_size: 1  # Batch size for processing
+
+  # Output settings
+  output_format: 'numpy'  # 'numpy' or 'torch'
+  normalize_output: true  # Normalize separated stems
+  preserve_sample_rate: true  # Match input sample rate
+
+# Singing Pitch Extraction (CREPE/torchcrepe)
+singing_pitch:
+  # Model selection: 'tiny' (faster) or 'full' (more accurate)
+  model: 'full'  # Use full model for best accuracy
+
+  # Pitch range for singing voice (Hz)
+  fmin: 80.0   # Lowest singing pitch (E2)
+  fmax: 1000.0 # Highest singing pitch (C6, covers soprano)
+
+  # Time resolution
+  hop_length_ms: 10.0  # 10ms hop for high time resolution
+
+  # Processing parameters
+  batch_size: 2048  # GPU batch size for torchcrepe
+  decoder: 'viterbi'  # 'viterbi', 'argmax', or 'weighted_argmax'
+
+  # Post-processing
+  confidence_threshold: 0.21  # Periodicity threshold for voiced/unvoiced
+  median_filter_width: 3      # Frames for median filtering
+  mean_filter_width: 3        # Frames for mean smoothing
+
+  # Vibrato detection
+  vibrato_rate_range: [4.0, 8.0]  # Hz, typical singing vibrato
+  vibrato_min_depth_cents: 20.0   # Minimum depth to consider vibrato
+  vibrato_min_duration_ms: 250.0  # Minimum segment duration
+
+  # GPU optimization
+  gpu_acceleration: true
+  mixed_precision: true  # Use FP16 for faster inference
+  use_cuda_kernel_fallback: true  # Use CUDA kernel for real-time
+
+# Singing Voice Analysis
+singing_analysis:
+  # Time resolution
+  hop_length_ms: 10.0
+  frame_length_ms: 25.0
+
+  # Breathiness detection
+  breathiness_method: 'cpp'  # 'cpp', 'hnr', or 'combined'
+  use_parselmouth: true      # Use praat-parselmouth for CPP/HNR
+  cpp_fmin: 60.0             # Hz, minimum F0 for CPP
+  cpp_fmax: 300.0            # Hz, maximum F0 for CPP
+  hnr_min_pitch: 75.0        # Hz, minimum pitch for HNR
+
+  # Breathiness score weights (for 'combined' method)
+  breathiness_weights:
+    cpp: 0.5      # Cepstral Peak Prominence (primary)
+    hnr: 0.3      # Harmonic-to-Noise Ratio
+    spectral: 0.2 # Spectral tilt (H1-H2)
+
+  # Dynamics analysis
+  dynamics_smoothing_ms: 50.0  # RMS smoothing window
+  dynamic_range_threshold_db: 3.0  # Minimum change for crescendo/diminuendo
+  accent_threshold_db: 6.0     # Minimum peak for accent detection
+
+  # Vocal quality
+  compute_jitter: true   # Pitch perturbation
+  compute_shimmer: true  # Amplitude perturbation
+  compute_spectral: true # Spectral features
+
+  # Technique detection thresholds
+  technique_thresholds:
+    breathy_score: 0.6      # Breathiness score threshold
+    belting_energy_db: -10.0 # Minimum energy for belting
+    falsetto_f0_hz: 400.0   # Minimum F0 for falsetto
+    vocal_fry_f0_hz: 80.0   # Maximum F0 for vocal fry
+
+  # GPU optimization
+  gpu_acceleration: true
+
+# Voice Cloning Settings
+voice_cloning:
+  # Audio duration constraints
+  min_duration: 5.0   # Minimum audio length in seconds
+  max_duration: 60.0  # Maximum audio length in seconds
+
+  # Speaker embedding
+  embedding_dim: 256  # Resemblyzer embedding dimension
+
+  # Storage configuration
+  storage_dir: '~/.cache/autovoice/voice_profiles/'  # Profile storage location
+  cache_enabled: true  # Enable in-memory caching
+  cache_size: 100      # Maximum cached profiles
+
+  # Feature extraction
+  extract_vocal_range: true   # Extract F0 range using SingingPitchExtractor
+  extract_timbre_features: true  # Extract spectral features
+
+  # Validation thresholds
+  min_sample_rate: 8000   # Minimum acceptable sample rate (Hz)
+  max_sample_rate: 48000  # Maximum acceptable sample rate (Hz)
+  silence_threshold: 0.01  # Minimum RMS for non-silent audio
+
+  # Speaker similarity
+  similarity_threshold: 0.75  # Cosine similarity threshold for same speaker
+
+  # GPU optimization
+  gpu_acceleration: true
+  device: 'cuda'  # 'cuda' or 'cpu'

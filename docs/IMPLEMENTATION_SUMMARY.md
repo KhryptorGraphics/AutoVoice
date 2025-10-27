@@ -1,217 +1,170 @@
-# AutoVoice DevOps Infrastructure - Implementation Summary
+# Implementation Summary: Verification Comments Resolution
 
 ## Overview
-This document summarizes the comprehensive DevOps infrastructure implementation for the AutoVoice project, including CI/CD pipelines, Docker optimization, monitoring, and documentation.
+This document summarizes the implementation of all verification comments for the AutoVoice source separator module.
 
-## Implemented Components
+## Latest Round: 7 Additional Verification Comments (2025-10-27)
 
-### 1. GitHub Actions Workflows
+### Comment 1: Fixed LIBROSA_AVAILABLE NameError ✅
+**File**: `src/auto_voice/audio/source_separator.py:41-45`
 
-#### CI Workflow (`.github/workflows/ci.yml`)
-- **Test Matrix**: Python 3.8, 3.9, 3.10 with unit and integration tests
-- **CPU-Only Testing**: Configured for GitHub Actions runners without GPUs
-- **Code Quality**: Black, isort, flake8 linting
-- **Security**: Bandit and safety scans
-- **Coverage**: Automated coverage reporting to Codecov
+**Change**: Added module-level try/except block to import librosa and set LIBROSA_AVAILABLE flag.
 
-#### Docker Build Workflow (`.github/workflows/docker-build.yml`)
-- **Multi-Registry**: Pushes to Docker Hub and GitHub Container Registry
-- **Image Tags**: Latest, SHA, semantic versioning
-- **Security**: Trivy vulnerability scanning
-- **Build Cache**: Optimized with GitHub Actions cache
+**Impact**: Prevents NameError when librosa is referenced but not imported in the resample fallback path.
 
-#### Deployment Workflow (`.github/workflows/deploy.yml`)
-- **Environment-Based**: Staging and production deployments
-- **Health Checks**: Automated service health verification
-- **Rollback**: Automatic rollback on failure
-- **SSH Deployment**: Secure deployment via SSH
+### Comment 2: Fixed vocals_idx UnboundLocalError ✅
+**File**: `src/auto_voice/audio/source_separator.py:469-484`
 
-#### Release Workflow (`.github/workflows/release.yml`)
-- **Automated Releases**: Triggered by version tags
-- **Artifacts**: Python wheels, checksums, SBOM
-- **PyPI Publishing**: Automated package publishing
-- **Release Notes**: Auto-generated from commits
+**Change**: Made vocals_idx assignment more robust by setting it in all code paths, and changed 2-stem path to use `accompaniment_idx = 1 - vocals_idx`.
 
-### 2. Docker Infrastructure
+**Impact**: Ensures vocals_idx is always defined before use in 2-stem branch, preventing UnboundLocalError.
 
-#### Multi-Stage Dockerfile
-- **Builder Stage**: Compiles CUDA extensions with development image
-- **Runtime Stage**: Minimal runtime image (60% smaller)
-- **Security**: Non-root user, minimal dependencies
-- **Health Check**: Built-in health check endpoint
-- **Metadata**: OCI-compliant labels for tracking
+### Comment 3: Made Demucs Progress Output Configurable ✅
+**File**: `src/auto_voice/audio/source_separator.py:172,462`
 
-#### .dockerignore
-- Comprehensive exclusions for faster builds
-- Excludes tests, docs, and development files
-- Reduces build context by ~70%
+**Change**: Added `show_progress` config option (default: False) and passed it to apply_model().
 
-#### Enhanced docker-compose.yml
-- **Main Service**: AutoVoice app with GPU support
-- **Redis**: For caching and session management
-- **Prometheus**: Metrics collection (optional)
-- **Grafana**: Visualization dashboards (optional)
-- **Profiles**: Development, monitoring, training
-- **Health Checks**: All services have health checks
-- **Log Rotation**: Prevents disk space issues
+**Impact**: Progress output no longer clutters logs by default. Can be enabled via config or environment variable.
 
-### 3. Structured Logging & Monitoring
+### Comment 4: Made Spleeter Optional Dependency ✅
+**File**: `requirements.txt:40`
 
-#### Logging Module (`src/auto_voice/utils/logging_config.py`)
-- **JSON Formatting**: Structured logs for production
-- **Colored Output**: Human-readable logs for development
-- **Log Rotation**: 10MB files, 5 backups
-- **Context Managers**: Request tracing, execution timing
-- **Sensitive Data Filtering**: Auto-redacts passwords/tokens
+**Change**: Commented out spleeter with installation instructions.
 
-#### Metrics Module (`src/auto_voice/monitoring/metrics.py`)
-- **HTTP Metrics**: Request count, latency, errors
-- **WebSocket Metrics**: Connections, events
-- **Synthesis Metrics**: Duration, success rate
-- **GPU Metrics**: Utilization, memory, temperature
-- **Decorator Functions**: Easy metric tracking
-- **Prometheus Integration**: Native Prometheus format
+**Impact**: Reduces heavy TensorFlow dependency. Spleeter can be installed optionally when needed.
 
-#### Configuration Files
-- `config/logging_config.yaml`: Centralized logging configuration
-- `config/prometheus.yml`: Prometheus scraping configuration
+### Comment 5: Wired YAML Config with Environment Overrides ✅
+**File**: `src/auto_voice/audio/source_separator.py:181-224`
 
-### 4. Documentation
+**Change**: Added `_load_yaml_config()` method that reads config/audio_config.yaml and environment variables.
 
-All documentation files are ready to be created in the `docs/` directory:
-- **README.md**: Comprehensive project overview with quickstart
-- **deployment-guide.md**: Docker, Kubernetes, cloud deployment instructions
-- **api-documentation.md**: Complete REST and WebSocket API reference
-- **monitoring-guide.md**: Prometheus, Grafana, logging setup
-- **runbook.md**: Operational procedures for common scenarios
+**Environment Variables Supported**:
+- AUTOVOICE_SEPARATION_MODEL
+- AUTOVOICE_SEPARATION_BACKEND
+- AUTOVOICE_SEPARATION_CACHE_DIR
+- AUTOVOICE_SEPARATION_CACHE_ENABLED
+- AUTOVOICE_SEPARATION_SAMPLE_RATE
+- AUTOVOICE_SEPARATION_SHIFTS
+- AUTOVOICE_SEPARATION_OVERLAP
+- AUTOVOICE_SEPARATION_SPLIT
+- AUTOVOICE_SEPARATION_SHOW_PROGRESS
 
-### 5. GitHub Templates
-- **Bug Report Template**: Structured bug reporting
-- **Feature Request Template**: Feature proposal format
+**Priority**: User config > Environment variables > YAML config > Defaults
 
-## Key Improvements
+**Impact**: Users can now configure separation via YAML file or environment variables without code changes.
 
-### Performance
-- **Build Time**: 40% faster with multi-stage builds
-- **Image Size**: 60% smaller runtime images
-- **Cache Efficiency**: Layered caching reduces rebuilds
+### Comment 6: Added Integration Test Markers and Mocking ✅
+**File**: `tests/test_source_separator.py:111-255`
 
-### Security
-- **Vulnerability Scanning**: Automated Trivy scans
-- **Non-Root User**: Containers run as non-root
-- **Secret Management**: Environment variable based secrets
-- **Minimal Attack Surface**: Runtime image has only essentials
+**Change**: Added `@pytest.mark.integration` and `@pytest.mark.slow` markers, mocked heavy separation methods.
 
-### Observability
-- **Structured Logging**: JSON logs with context
-- **Metrics Exposure**: Prometheus-compatible metrics
-- **Health Checks**: Liveness and readiness probes
-- **GPU Monitoring**: Real-time GPU utilization tracking
+**Modified Tests**:
+- test_separate_vocals_wav()
+- test_supported_audio_formats()
+- test_mono_to_stereo_conversion()
+- test_stereo_audio_handling()
 
-### Automation
-- **CI/CD**: Fully automated testing and deployment
-- **Release Management**: Automated versioning and publishing
-- **Rollback**: Automatic failure recovery
-- **Notifications**: Deployment status tracking
+**Impact**: Unit tests run fast without model downloads. Real execution via `pytest -m integration`.
 
-## Integration Points
+### Comment 7: Added Edge-Case Tests ✅
+**File**: `tests/test_source_separator.py:817-929`
 
-### Application Code
-The following application files need to be enhanced with the new monitoring and logging:
+**Change**: Added TestEdgeCaseInputs class with tests for silent and noise-only audio.
 
-1. **main.py**: Add `setup_logging()` call at startup
-2. **src/auto_voice/web/app.py**:
-   - Import metrics module
-   - Add `/metrics` endpoint
-   - Add request logging middleware
-3. **src/auto_voice/web/api.py**: Add metrics decorators to endpoints
-4. **src/auto_voice/web/websocket_handler.py**: Track WebSocket events
+**New Tests**:
+- test_silent_audio() - Tests completely silent input
+- test_noise_only_audio() - Tests white noise input
 
-### Configuration
-- Update `requirements.txt` with: `prometheus-client`, `pynvml`
-- Set environment variables for logging and metrics
-- Configure log directories and permissions
-
-## Usage Examples
-
-### Development
-```bash
-# Start with logging
-docker-compose up
-
-# With monitoring
-docker-compose --profile monitoring up
-```
-
-### Production Deployment
-```bash
-# Build and deploy
-git tag v1.0.0
-git push --tags
-# GitHub Actions handles: build → test → deploy
-
-# Manual deployment
-./scripts/deploy.sh production v1.0.0
-```
-
-### Monitoring
-- **Prometheus**: http://localhost:9090
-- **Grafana**: http://localhost:3000 (admin/admin)
-- **Metrics**: http://localhost:5000/metrics
-- **Health**: http://localhost:5000/health
-
-## Next Steps
-
-1. **Application Integration**: Add monitoring code to Flask app
-2. **Test Workflows**: Trigger CI/CD workflows with test commits
-3. **Configure Secrets**: Add Docker Hub, PyPI tokens to GitHub Secrets
-4. **Create Dashboards**: Import Grafana dashboards
-5. **Documentation**: Complete all documentation files
-6. **Alert Rules**: Define Prometheus alert rules
-
-## Files Created
-
-### GitHub Actions (4 files)
-- `.github/workflows/ci.yml`
-- `.github/workflows/docker-build.yml`
-- `.github/workflows/deploy.yml`
-- `.github/workflows/release.yml`
-
-### Docker (3 files)
-- `Dockerfile` (enhanced)
-- `.dockerignore`
-- `docker-compose.yml` (enhanced)
-
-### Monitoring & Logging (4 files)
-- `src/auto_voice/utils/logging_config.py`
-- `src/auto_voice/monitoring/metrics.py`
-- `config/logging_config.yaml`
-- `config/prometheus.yml`
-
-### Templates (2 files)
-- `.github/ISSUE_TEMPLATE/bug_report.md`
-- `.github/ISSUE_TEMPLATE/feature_request.md`
-
-### Documentation (1 file)
-- `docs/IMPLEMENTATION_SUMMARY.md` (this file)
-
-## Resources
-
-- **Prometheus Documentation**: https://prometheus.io/docs/
-- **Grafana Dashboards**: https://grafana.com/grafana/dashboards/
-- **GitHub Actions**: https://docs.github.com/actions
-- **Docker Best Practices**: https://docs.docker.com/develop/dev-best-practices/
-
-## Support
-
-For issues or questions:
-1. Check documentation in `docs/`
-2. Review runbook in `docs/runbook.md` (to be created)
-3. Create GitHub issue using templates
-4. Consult deployment guide for troubleshooting
+**Impact**: Ensures separator handles edge cases gracefully without crashes or invalid outputs.
 
 ---
 
-**Implementation Date**: 2025-10-11
-**Version**: 1.0.0
-**Status**: Core infrastructure complete, application integration pending
+## Previous Round: 11 Verification Comments
+
+## Changes Implemented
+
+### 1. Fixed torch.cuda.amp.autocast Usage (Comment 1)
+**File**: `src/auto_voice/audio/source_separator.py:367-383`
+
+**Change**: Modified `_separate_with_demucs()` to explicitly check device type before enabling AMP.
+
+**Impact**: Prevents crashes when running on CPU by only enabling AMP on CUDA devices.
+
+### 2. Dynamic Demucs Source Indices (Comment 2)
+**File**: `src/auto_voice/audio/source_separator.py:385-411`
+
+**Change**: Dynamically derive source indices from `model.sources` instead of hard-coding.
+
+**Impact**: Supports different Demucs model architectures (2-stem, 4-stem, custom source orders).
+
+### 3. GPUManager Device Context and OOM Fallback (Comment 3)
+**File**: `src/auto_voice/audio/source_separator.py:358-451`
+
+**Change**: Integrated GPUManager device context and added OOM fallback to CPU.
+
+**Impact**: Automatic recovery from GPU OOM errors with CPU fallback.
+
+### 4. Spleeter GPU and Sample Rate Handling (Comment 4)
+**File**: `src/auto_voice/audio/source_separator.py:453-522`
+
+**Change**: Added TensorFlow GPU detection and sample rate warnings for Spleeter.
+
+**Impact**: Better GPU utilization awareness and quality warnings for Spleeter.
+
+### 5. Sample Rate Preservation (Comment 5)
+**Files**: `src/auto_voice/audio/processor.py:87-134` and `src/auto_voice/audio/source_separator.py:272-368`
+
+**Change**: Updated AudioProcessor to return original sample rate and modified separate_vocals to resample outputs.
+
+**Impact**: Outputs now match input sample rate when preserve_sample_rate=True.
+
+### 6. Cache TTL Enforcement (Comment 6)
+**File**: `src/auto_voice/audio/source_separator.py:642-783`
+
+**Change**: Updated cache loading and enforcement to check and delete expired entries.
+
+**Impact**: Automatic cleanup of stale cache entries based on age.
+
+### 7. Fixed Cache-Key Test (Comment 7)
+**File**: `tests/test_source_separator.py:284-298`
+
+**Change**: Create temporary file for cache key test instead of using non-existent path.
+
+**Impact**: Test no longer fails with FileNotFoundError.
+
+### 8. Comprehensive Format Tests (Comment 8)
+**File**: `tests/test_source_separator.py:123-175`
+
+**Change**: Added parametrized tests for WAV, FLAC, and MP3 formats.
+
+**Impact**: Better format compatibility coverage with graceful skipping.
+
+### 9. Fallback Behavior Tests (Comment 9)
+**File**: `tests/test_source_separator.py:516-620`
+
+**Change**: Added comprehensive fallback tests using monkeypatch.
+
+**Impact**: Validates fallback mechanism and error handling.
+
+### 10. GPU and AMP Tests (Comment 10)
+**File**: `tests/test_source_separator.py:623-703`
+
+**Change**: Added GPU-specific tests with AMP validation.
+
+**Impact**: GPU code paths are now tested with proper guards.
+
+### 11. Multi-Channel Handling Tests and Documentation (Comment 11)
+**Files**: Multiple files with docstrings and tests
+
+**Change**: Added comprehensive documentation and multi-channel tests.
+
+**Impact**: Clear documentation and test coverage for multi-channel handling.
+
+## Summary Statistics
+
+- **Files Modified**: 3
+- **Total Changes**: 11 verification comments fully implemented
+- **New Tests Added**: 8 test classes/methods
+- **Backward Compatibility**: Maintained through default parameters
+
+All implementations follow the verification comments exactly as specified.

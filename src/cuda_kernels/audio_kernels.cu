@@ -9,21 +9,50 @@
 
 using namespace cooperative_groups;
 
-// Pitch detection kernel using autocorrelation (simplified YIN)
-__global__ void pitch_detection_kernel(float *audio, float *pitch, int n_samples, int frame_length, int hop_length, float fmin, float fmax, float threshold, float sample_rate) {
+// Enhanced pitch detection kernel - only pitch and confidence, no vibrato
+__global__ void pitch_detection_kernel(
+    float *audio,
+    float *pitch,
+    float *confidence,      // NEW: confidence output
+    float *vibrato_flag,    // Placeholder, set to 0 (computed in separate pass)
+    int n_samples,
+    int frame_length,       // Increased to 2048 for better resolution
+    int hop_length,
+    float fmin,
+    float fmax,
+    float threshold,
+    float sample_rate
+) {
     int frame_idx = blockIdx.x;
     int tid = threadIdx.x;
 
-    extern __shared__ float shared_audio[];
+    extern __shared__ float shared_data[];
+    float *shared_audio = shared_data;
+
     int frame_start = frame_idx * hop_length;
 
     // Load frame into shared memory with strict bounds checking
-    bool in_bounds = (frame_start + tid < n_samples) && (tid < frame_length) && 
+    bool in_bounds = (frame_start + tid < n_samples) && (tid < frame_length) &&
                      (frame_start + tid >= 0) && (frame_start >= 0);
     if (in_bounds) {
         shared_audio[tid] = audio[frame_start + tid];
     } else if (tid < frame_length) {
         shared_audio[tid] = 0.0f;  // Zero padding
+    }
+    __syncthreads();
+
+    // Early exit for silence
+    if (tid == 0) {
+        float energy = 0.0f;
+        for (int i = 0; i < frame_length; i++) {
+            energy += shared_audio[i] * shared_audio[i];
+        }
+        if (energy < 1e-6f) {
+            pitch[frame_idx] = 0.0f;
+            confidence[frame_idx] = 0.0f;
+            vibrato_flag[frame_idx] = 0.0f;
+            return;
+        }
     }
     __syncthreads();
 
@@ -33,6 +62,7 @@ __global__ void pitch_detection_kernel(float *audio, float *pitch, int n_samples
     float best_tau = 0.0f;
     float best_measure = 1.0f;
     float diff_mean = 0.0f;
+    float acf_storage[512];  // Store autocorrelation values for parabolic interpolation
 
     for (int tau = tau_min; tau <= tau_max; ++tau) {
         float acf = 0.0f;
@@ -48,10 +78,15 @@ __global__ void pitch_detection_kernel(float *audio, float *pitch, int n_samples
         // Use block-wide reduction to get the full sum across all threads
         acf = block_reduce_sum(acf);
 
-        // Only thread 0 performs the final calculations to avoid race conditions
+        // Only thread 0 performs the final calculations
         if (tid == 0) {
             // Normalize by the number of valid samples
             float normalized_acf = acf / (float)(frame_length - tau);
+
+            // Store for later use
+            if (tau - tau_min < 512) {
+                acf_storage[tau - tau_min] = normalized_acf;
+            }
 
             // For the first tau, set the baseline
             if (tau == tau_min) {
@@ -70,17 +105,117 @@ __global__ void pitch_detection_kernel(float *audio, float *pitch, int n_samples
                 best_tau = (float)tau;
             }
         }
-        __syncthreads(); // Ensure all threads wait before next iteration
+        __syncthreads();
     }
 
-    // Only thread 0 writes the final pitch value
+    // Only thread 0 performs parabolic interpolation and writes results
     if (tid == 0) {
         if (best_tau > 0.0f) {
+            // Parabolic interpolation for sub-sample accuracy
+            int tau_idx = (int)best_tau - tau_min;
+            if (tau_idx > 0 && tau_idx < 511) {
+                float prev = acf_storage[tau_idx - 1];
+                float curr = acf_storage[tau_idx];
+                float next = acf_storage[tau_idx + 1];
+
+                // Parabolic peak refinement
+                float denom = 2.0f * curr - prev - next;
+                if (fabsf(denom) > EPSILON) {
+                    float delta = 0.5f * (next - prev) / denom;
+                    best_tau += delta;
+                }
+            }
+
             pitch[frame_idx] = sample_rate / best_tau;
+            confidence[frame_idx] = clamp(1.0f - best_measure, 0.0f, 1.0f);
+            // Vibrato computed in separate pass, set to 0 for now
+            vibrato_flag[frame_idx] = 0.0f;
         } else {
-            pitch[frame_idx] = 0.0f; // No pitch detected
+            pitch[frame_idx] = 0.0f;
+            confidence[frame_idx] = 0.0f;
+            vibrato_flag[frame_idx] = 0.0f;
         }
     }
+}
+
+// Vibrato analysis kernel - runs after pitch detection completes
+__global__ void vibrato_analysis_kernel(
+    float *pitch_contour,
+    float *vibrato_rate,
+    float *vibrato_depth,
+    int n_frames,
+    int hop_length,
+    float sample_rate
+) {
+    int frame_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (frame_idx >= n_frames) return;
+
+    // Window size for vibrato analysis (~200ms)
+    int window_size = 20;
+    int half_window = window_size / 2;
+
+    // Need enough history
+    if (frame_idx < half_window || frame_idx >= n_frames - half_window) {
+        vibrato_rate[frame_idx] = 0.0f;
+        vibrato_depth[frame_idx] = 0.0f;
+        return;
+    }
+
+    // Extract windowed pitch contour
+    float window_pitches[20];
+    bool all_valid = true;
+    for (int i = 0; i < window_size; i++) {
+        int idx = frame_idx - half_window + i;
+        window_pitches[i] = pitch_contour[idx];
+        if (window_pitches[i] <= 0.0f) {
+            all_valid = false;
+            break;
+        }
+    }
+
+    if (!all_valid) {
+        vibrato_rate[frame_idx] = 0.0f;
+        vibrato_depth[frame_idx] = 0.0f;
+        return;
+    }
+
+    // Convert to cents relative to mean
+    float mean_pitch = 0.0f;
+    for (int i = 0; i < window_size; i++) {
+        mean_pitch += window_pitches[i];
+    }
+    mean_pitch /= window_size;
+
+    float cents[20];
+    for (int i = 0; i < window_size; i++) {
+        cents[i] = 1200.0f * log2f(window_pitches[i] / mean_pitch);
+    }
+
+    // Compute variance for depth estimate
+    float variance = 0.0f;
+    for (int i = 0; i < window_size; i++) {
+        variance += cents[i] * cents[i];
+    }
+    variance /= window_size;
+    float std_dev = sqrtf(variance);
+
+    // Simple rate estimation via zero crossings
+    int zero_crossings = 0;
+    for (int i = 1; i < window_size; i++) {
+        if ((cents[i-1] < 0 && cents[i] >= 0) || (cents[i-1] >= 0 && cents[i] < 0)) {
+            zero_crossings++;
+        }
+    }
+
+    float frame_rate = sample_rate / (float)hop_length;
+    float window_duration = window_size / frame_rate;
+    float estimated_rate = zero_crossings / (2.0f * window_duration);
+
+    // Vibrato typically 4-8 Hz and depth > 20 cents
+    bool is_vibrato = (estimated_rate >= 4.0f && estimated_rate <= 8.0f) && (std_dev >= 20.0f);
+
+    vibrato_rate[frame_idx] = is_vibrato ? estimated_rate : 0.0f;
+    vibrato_depth[frame_idx] = is_vibrato ? std_dev : 0.0f;
 }
 
 // Voice Activity Detection kernel
@@ -200,27 +335,245 @@ __global__ void compute_magnitude_from_complex_kernel(cufftComplex *complex_spec
     }
 }
 
-// Host function to launch pitch detection (updated signature to match bindings)
-void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output, float sample_rate) {
+// Host function to launch pitch detection with separate outputs
+void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch,
+                           torch::Tensor& output_confidence, torch::Tensor& output_vibrato,
+                           float sample_rate, int frame_length, int hop_length) {
+    // ==========================================
+    // CRITICAL: Input Validation (No Hidden Defaults)
+    // ==========================================
+
+    // Validate required parameters - no defaults allowed
+    if (frame_length <= 0) {
+        throw std::invalid_argument(
+            "frame_length must be > 0 (got " + std::to_string(frame_length) +
+            "). Valid range: typically 512-4096 samples."
+        );
+    }
+    if (hop_length <= 0) {
+        throw std::invalid_argument(
+            "hop_length must be > 0 (got " + std::to_string(hop_length) +
+            "). Valid range: typically 64-1024 samples."
+        );
+    }
+    if (sample_rate <= 0.0f) {
+        throw std::invalid_argument(
+            "sample_rate must be > 0 (got " + std::to_string(sample_rate) +
+            " Hz). Valid range: typically 8000-48000 Hz."
+        );
+    }
+
+    // Validate tensors are on CUDA device
+    if (!input.is_cuda()) {
+        throw std::runtime_error(
+            "input tensor must be on CUDA device (got device: " +
+            input.device().str() + "). Use tensor.cuda() to move to GPU."
+        );
+    }
+    if (!output_pitch.is_cuda()) {
+        throw std::runtime_error(
+            "output_pitch tensor must be on CUDA device (got device: " +
+            output_pitch.device().str() + "). Use tensor.cuda() to move to GPU."
+        );
+    }
+    if (!output_confidence.is_cuda()) {
+        throw std::runtime_error(
+            "output_confidence tensor must be on CUDA device (got device: " +
+            output_confidence.device().str() + "). Use tensor.cuda() to move to GPU."
+        );
+    }
+    if (!output_vibrato.is_cuda()) {
+        throw std::runtime_error(
+            "output_vibrato tensor must be on CUDA device (got device: " +
+            output_vibrato.device().str() + "). Use tensor.cuda() to move to GPU."
+        );
+    }
+
+    // Validate tensors are contiguous
+    if (!input.is_contiguous()) {
+        throw std::runtime_error(
+            "input tensor must be contiguous. Use tensor.contiguous() to fix."
+        );
+    }
+    if (!output_pitch.is_contiguous()) {
+        throw std::runtime_error(
+            "output_pitch tensor must be contiguous. Use tensor.contiguous() to fix."
+        );
+    }
+    if (!output_confidence.is_contiguous()) {
+        throw std::runtime_error(
+            "output_confidence tensor must be contiguous. Use tensor.contiguous() to fix."
+        );
+    }
+    if (!output_vibrato.is_contiguous()) {
+        throw std::runtime_error(
+            "output_vibrato tensor must be contiguous. Use tensor.contiguous() to fix."
+        );
+    }
+
+    // Validate tensors have correct dtype (float32)
+    if (input.dtype() != torch::kFloat32) {
+        throw std::runtime_error(
+            "input tensor must be float32 (got " +
+            std::string(torch::toString(input.dtype())) +
+            "). Use tensor.to(torch.float32) to convert."
+        );
+    }
+    if (output_pitch.dtype() != torch::kFloat32) {
+        throw std::runtime_error(
+            "output_pitch tensor must be float32 (got " +
+            std::string(torch::toString(output_pitch.dtype())) +
+            "). Use tensor.to(torch.float32) to convert."
+        );
+    }
+    if (output_confidence.dtype() != torch::kFloat32) {
+        throw std::runtime_error(
+            "output_confidence tensor must be float32 (got " +
+            std::string(torch::toString(output_confidence.dtype())) +
+            "). Use tensor.to(torch.float32) to convert."
+        );
+    }
+    if (output_vibrato.dtype() != torch::kFloat32) {
+        throw std::runtime_error(
+            "output_vibrato tensor must be float32 (got " +
+            std::string(torch::toString(output_vibrato.dtype())) +
+            "). Use tensor.to(torch.float32) to convert."
+        );
+    }
+
+    // ==========================================
+    // End Validation - Proceed with Processing
+    // ==========================================
+
     float *d_audio = input.data_ptr<float>();
-    float *d_pitch = output.data_ptr<float>();
+    float *d_pitch = output_pitch.data_ptr<float>();
+    float *d_confidence = output_confidence.data_ptr<float>();
+    float *d_vibrato = output_vibrato.data_ptr<float>();
     int n_samples = input.size(0);
-    int frame_length = 1024;
-    int hop_length = 256;
+
     float fmin = 80.0f;
-    float fmax = 400.0f;
+    float fmax = 1000.0f;  // Extended range for singing
     float threshold = 0.1f;
 
     int n_frames = std::max<int>(0, (n_samples - frame_length) / hop_length + 1);
     if (n_frames <= 0) {
-        CUDA_CHECK(cudaMemset(d_pitch, 0, output.numel() * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_pitch, 0, output_pitch.numel() * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_confidence, 0, output_confidence.numel() * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_vibrato, 0, output_vibrato.numel() * sizeof(float)));
         return;
     }
 
     dim3 block(256);
     dim3 grid(n_frames);
+    // Shared memory: frame_length for audio only (no pitch history needed)
     size_t shared_mem = frame_length * sizeof(float);
-    pitch_detection_kernel<<<grid, block, shared_mem>>>(d_audio, d_pitch, n_samples, frame_length, hop_length, fmin, fmax, threshold, sample_rate);
+    pitch_detection_kernel<<<grid, block, shared_mem>>>(
+        d_audio, d_pitch, d_confidence, d_vibrato,
+        n_samples, frame_length, hop_length, fmin, fmax, threshold, sample_rate
+    );
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// Host function for vibrato analysis - runs after pitch detection
+void launch_vibrato_analysis(torch::Tensor& pitch_contour, torch::Tensor& vibrato_rate,
+                            torch::Tensor& vibrato_depth, int hop_length, float sample_rate) {
+    // ==========================================
+    // CRITICAL: Input Validation (No Hidden Defaults)
+    // ==========================================
+
+    // Validate required parameters - no defaults allowed
+    if (hop_length <= 0) {
+        throw std::invalid_argument(
+            "hop_length must be > 0 (got " + std::to_string(hop_length) +
+            "). Valid range: typically 64-1024 samples."
+        );
+    }
+    if (sample_rate <= 0.0f) {
+        throw std::invalid_argument(
+            "sample_rate must be > 0 (got " + std::to_string(sample_rate) +
+            " Hz). Valid range: typically 8000-48000 Hz."
+        );
+    }
+
+    // Validate tensors are on CUDA device
+    if (!pitch_contour.is_cuda()) {
+        throw std::runtime_error(
+            "pitch_contour tensor must be on CUDA device (got device: " +
+            pitch_contour.device().str() + "). Use tensor.cuda() to move to GPU."
+        );
+    }
+    if (!vibrato_rate.is_cuda()) {
+        throw std::runtime_error(
+            "vibrato_rate tensor must be on CUDA device (got device: " +
+            vibrato_rate.device().str() + "). Use tensor.cuda() to move to GPU."
+        );
+    }
+    if (!vibrato_depth.is_cuda()) {
+        throw std::runtime_error(
+            "vibrato_depth tensor must be on CUDA device (got device: " +
+            vibrato_depth.device().str() + "). Use tensor.cuda() to move to GPU."
+        );
+    }
+
+    // Validate tensors are contiguous
+    if (!pitch_contour.is_contiguous()) {
+        throw std::runtime_error(
+            "pitch_contour tensor must be contiguous. Use tensor.contiguous() to fix."
+        );
+    }
+    if (!vibrato_rate.is_contiguous()) {
+        throw std::runtime_error(
+            "vibrato_rate tensor must be contiguous. Use tensor.contiguous() to fix."
+        );
+    }
+    if (!vibrato_depth.is_contiguous()) {
+        throw std::runtime_error(
+            "vibrato_depth tensor must be contiguous. Use tensor.contiguous() to fix."
+        );
+    }
+
+    // Validate tensors have correct dtype (float32)
+    if (pitch_contour.dtype() != torch::kFloat32) {
+        throw std::runtime_error(
+            "pitch_contour tensor must be float32 (got " +
+            std::string(torch::toString(pitch_contour.dtype())) +
+            "). Use tensor.to(torch.float32) to convert."
+        );
+    }
+    if (vibrato_rate.dtype() != torch::kFloat32) {
+        throw std::runtime_error(
+            "vibrato_rate tensor must be float32 (got " +
+            std::string(torch::toString(vibrato_rate.dtype())) +
+            "). Use tensor.to(torch.float32) to convert."
+        );
+    }
+    if (vibrato_depth.dtype() != torch::kFloat32) {
+        throw std::runtime_error(
+            "vibrato_depth tensor must be float32 (got " +
+            std::string(torch::toString(vibrato_depth.dtype())) +
+            "). Use tensor.to(torch.float32) to convert."
+        );
+    }
+
+    // ==========================================
+    // End Validation - Proceed with Processing
+    // ==========================================
+
+    float *d_pitch = pitch_contour.data_ptr<float>();
+    float *d_rate = vibrato_rate.data_ptr<float>();
+    float *d_depth = vibrato_depth.data_ptr<float>();
+    int n_frames = pitch_contour.size(0);
+
+    if (n_frames <= 0) {
+        return;
+    }
+
+    int threads = 256;
+    int blocks = (n_frames + threads - 1) / threads;
+
+    vibrato_analysis_kernel<<<blocks, threads>>>(
+        d_pitch, d_rate, d_depth, n_frames, hop_length, sample_rate
+    );
     CUDA_CHECK(cudaGetLastError());
 }
 

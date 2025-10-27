@@ -36,6 +36,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "performance: Performance benchmarks"
     )
+    config.addinivalue_line(
+        "markers", "audio: Audio processing tests"
+    )
 
 
 # ============================================================================
@@ -221,6 +224,153 @@ def gpu_audio_processor(cuda_available: bool):
         return GPUAudioProcessor(device="cuda")
     except ImportError:
         pytest.skip("GPUAudioProcessor not available")
+
+
+@pytest.fixture
+def singing_pitch_extractor(cuda_available: bool):
+    """Instantiate SingingPitchExtractor for testing."""
+    try:
+        from src.auto_voice.audio.pitch_extractor import SingingPitchExtractor
+        device = 'cuda' if cuda_available else 'cpu'
+        return SingingPitchExtractor(device=device)
+    except ImportError:
+        pytest.skip("SingingPitchExtractor not available")
+
+
+@pytest.fixture
+def singing_analyzer(cuda_available: bool):
+    """Instantiate SingingAnalyzer for testing."""
+    try:
+        from src.auto_voice.audio.singing_analyzer import SingingAnalyzer
+        device = 'cuda' if cuda_available else 'cpu'
+        return SingingAnalyzer(device=device)
+    except ImportError:
+        pytest.skip("SingingAnalyzer not available")
+
+
+@pytest.fixture
+def sample_vibrato_audio():
+    """Generate synthetic audio with vibrato for testing.
+
+    Returns:
+        Tuple of (audio, ground_truth) where ground_truth contains
+        'rate_hz' and 'depth_cents' of the vibrato.
+    """
+    sample_rate = 22050
+    duration = 2.0
+    base_freq = 440.0  # A4
+    vibrato_rate = 5.5  # Hz
+    vibrato_depth_cents = 60.0  # cents
+
+    t = np.linspace(0, duration, int(sample_rate * duration))
+
+    # Convert vibrato depth from cents to frequency ratio
+    depth_ratio = 2 ** (vibrato_depth_cents / 1200.0)
+
+    # Generate vibrato modulation
+    vibrato = depth_ratio ** np.sin(2 * np.pi * vibrato_rate * t)
+
+    # Generate audio with vibrato
+    audio = np.sin(2 * np.pi * base_freq * vibrato * t).astype(np.float32)
+
+    ground_truth = {
+        'rate_hz': vibrato_rate,
+        'depth_cents': vibrato_depth_cents,
+        'base_freq': base_freq
+    }
+
+    return audio, ground_truth
+
+
+@pytest.fixture
+def sample_breathy_audio():
+    """Generate synthetic breathy voice for testing.
+
+    Breathy voice has lower HNR (more noise relative to harmonics).
+    """
+    sample_rate = 22050
+    duration = 1.0
+    base_freq = 220.0  # A3
+
+    t = np.linspace(0, duration, int(sample_rate * duration))
+
+    # Generate harmonic signal
+    harmonic = np.sin(2 * np.pi * base_freq * t)
+
+    # Add significant noise for breathiness
+    noise = np.random.randn(len(t)) * 0.5
+
+    # Mix harmonic and noise (breathy = more noise)
+    audio = (0.5 * harmonic + 0.5 * noise).astype(np.float32)
+
+    # Normalize
+    audio = audio / np.max(np.abs(audio))
+
+    return audio
+
+
+@pytest.fixture
+def sample_clear_voice():
+    """Generate synthetic clear voice for testing.
+
+    Clear voice has high HNR (strong harmonics, little noise).
+    """
+    sample_rate = 22050
+    duration = 1.0
+    base_freq = 220.0  # A3
+
+    t = np.linspace(0, duration, int(sample_rate * duration))
+
+    # Generate harmonic signal with multiple harmonics
+    audio = np.zeros(len(t))
+    for harmonic_num in range(1, 6):
+        amplitude = 1.0 / harmonic_num
+        audio += amplitude * np.sin(2 * np.pi * base_freq * harmonic_num * t)
+
+    # Add minimal noise
+    noise = np.random.randn(len(t)) * 0.01
+    audio = (audio + noise).astype(np.float32)
+
+    # Normalize
+    audio = audio / np.max(np.abs(audio))
+
+    return audio
+
+
+@pytest.fixture
+def sample_crescendo_audio():
+    """Generate audio with crescendo (increasing amplitude)."""
+    sample_rate = 22050
+    duration = 2.0
+    base_freq = 330.0  # E4
+
+    t = np.linspace(0, duration, int(sample_rate * duration))
+
+    # Linear amplitude increase
+    amplitude = np.linspace(0.1, 1.0, len(t))
+
+    # Generate audio
+    audio = (amplitude * np.sin(2 * np.pi * base_freq * t)).astype(np.float32)
+
+    return audio
+
+
+@pytest.fixture
+def sample_diminuendo_audio():
+    """Generate audio with diminuendo (decreasing amplitude)."""
+    sample_rate = 22050
+    duration = 2.0
+    base_freq = 330.0  # E4
+
+    t = np.linspace(0, duration, int(sample_rate * duration))
+
+    # Linear amplitude decrease
+    amplitude = np.linspace(1.0, 0.1, len(t))
+
+    # Generate audio
+    audio = (amplitude * np.sin(2 * np.pi * base_freq * t)).astype(np.float32)
+
+    return audio
 
 
 # ============================================================================

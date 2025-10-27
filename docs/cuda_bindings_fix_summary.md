@@ -77,6 +77,25 @@ void launch_vibrato_analysis(torch::Tensor& pitch_contour, torch::Tensor& vibrat
 - Consistent across CPU/GPU paths
 - Python caller passes explicit values: `frame_length=2048`, `hop_length=256`
 
+### Input Validation (CRITICAL FIX)
+Both `launch_pitch_detection` and `launch_vibrato_analysis` now have comprehensive input validation:
+
+**Parameter Validation:**
+- `frame_length > 0` (no hidden defaults, throws `std::invalid_argument`)
+- `hop_length > 0` (no hidden defaults, throws `std::invalid_argument`)
+- `sample_rate > 0` (throws `std::invalid_argument`)
+
+**Tensor Validation:**
+- All tensors must be on CUDA device (throws `std::runtime_error` with device info)
+- All tensors must be contiguous (throws `std::runtime_error` with fix suggestion)
+- All tensors must be float32 dtype (throws `std::runtime_error` with actual dtype)
+
+**Error Messages Include:**
+- What parameter/tensor is invalid
+- What value was provided (for parameters)
+- What the valid requirement is
+- Suggested fix (e.g., "Use tensor.cuda() to move to GPU")
+
 ### Kernel Architecture
 - **Pitch detection**: YIN algorithm with parabolic interpolation, outputs pitch and confidence only
 - **Vibrato analysis**: Separate pass to avoid race conditions, analyzes pitch contour after extraction
