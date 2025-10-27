@@ -34,7 +34,11 @@ void transfer_to_host_async(torch::Tensor device_tensor, torch::Tensor host_tens
 void synchronize_stream();
 
 // Forward declarations for new launch_* functions from audio_kernels.cu and memory_kernels.cu
-void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output, float sample_rate);
+void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch,
+                           torch::Tensor& output_confidence, torch::Tensor& output_vibrato,
+                           float sample_rate, int frame_length, int hop_length);
+void launch_vibrato_analysis(torch::Tensor& pitch_contour, torch::Tensor& vibrato_rate,
+                            torch::Tensor& vibrato_depth, int hop_length, float sample_rate);
 void launch_voice_activity_detection(torch::Tensor& input, torch::Tensor& output, float threshold);
 void launch_spectrogram_computation(torch::Tensor& input, torch::Tensor& output, int n_fft, int hop_length, int win_length);
 void launch_formant_extraction(torch::Tensor& input, torch::Tensor& output, float sample_rate);
@@ -122,4 +126,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("device_tensor"), py::arg("host_tensor"));
 
     m.def("synchronize_stream", &synchronize_stream, "Synchronize CUDA stream");
+
+    // Enhanced pitch detection and vibrato analysis bindings
+    m.def("launch_pitch_detection", &launch_pitch_detection,
+          "Enhanced pitch detection (GPU)",
+          py::arg("input"), py::arg("output_pitch"), py::arg("output_confidence"),
+          py::arg("output_vibrato"), py::arg("sample_rate"),
+          py::arg("frame_length"), py::arg("hop_length"));
+
+    m.def("launch_vibrato_analysis", &launch_vibrato_analysis,
+          "Vibrato analysis (GPU)",
+          py::arg("pitch_contour"), py::arg("vibrato_rate"), py::arg("vibrato_depth"),
+          py::arg("hop_length"), py::arg("sample_rate"));
 }
