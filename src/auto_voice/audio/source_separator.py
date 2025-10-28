@@ -8,9 +8,10 @@ import shutil
 import threading
 import time
 import yaml
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, Union, Callable
+from typing import Dict, Any, Optional, Tuple, Union, Callable, List
 
 try:
     import numpy as np
@@ -72,10 +73,11 @@ class VocalSeparator:
     with intelligent caching, GPU acceleration, and comprehensive error handling.
 
     Multi-Channel Audio Handling:
-        - Input audio with more than 2 channels is automatically downmixed to mono by AudioProcessor
-        - The mono audio is then converted to stereo for separation (Demucs expects stereo)
+        - Input audio with more than 2 channels is automatically downmixed to stereo
+        - Downmixing is performed by averaging all channels to mono, then duplicating to stereo
+        - Mono audio is converted to stereo by duplicating the single channel
         - Output is always stereo (2 channels) regardless of input channel count
-        - For best results with multi-channel audio, consider pre-mixing to stereo
+        - For best results with multi-channel audio, consider pre-mixing to stereo with custom weights
 
     Sample Rate Preservation:
         - When preserve_sample_rate=True (default), outputs are resampled to match input sample rate
@@ -84,7 +86,7 @@ class VocalSeparator:
 
     Example:
         >>> separator = VocalSeparator(device='cuda', gpu_manager=gpu_manager)
-        >>> vocals, instrumental = separator.separate_vocals('song.mp3')
+        >>> vocals, instrumental, sr = separator.separate_vocals(\'song.mp3\')
         >>> # vocals and instrumental are numpy arrays of the separated tracks
 
     Attributes:
@@ -170,7 +172,11 @@ class VocalSeparator:
             'normalize_output': True,
             'preserve_sample_rate': True,
             'mixed_precision': True,
-            'show_progress': False
+            'show_progress': False,
+            'defer_model_load': True,
+            'quality_preset': 'balanced',
+            'batch_max_workers': 4,
+            'lru_access_tracking': True
         }
 
         # Merge with user config (user config takes precedence)
@@ -239,25 +245,39 @@ class VocalSeparator:
             'normalize_output': True,
             'preserve_sample_rate': True,
             'mixed_precision': True,
-            'show_progress': False
+            'show_progress': False,
+            'quality_preset': 'balanced',
+            'batch_max_workers': 4,
+            'lru_access_tracking': True
         }
         return defaults.get(key)
 
     def _initialize_backend(self):
-        """Initialize separation backend (Demucs or Spleeter)"""
+        """Initialize separation backend (Demucs or Spleeter)
+
+        When defer_model_load=True (default), only sets self.backend without loading models.
+        Models are loaded lazily on first use in separate_vocals().
+        """
         backend_priority = self.config.get('backend_priority', ['demucs', 'spleeter'])
+        defer_load = self.config.get('defer_model_load', True)
 
         for backend_name in backend_priority:
             try:
                 if backend_name == 'demucs' and DEMUCS_AVAILABLE:
-                    self._load_demucs_model()
+                    if not defer_load:
+                        self._load_demucs_model()
+                        logger.info(f"Loaded Demucs model: {self.config['model']}")
+                    else:
+                        logger.debug("Demucs backend selected, model loading deferred")
                     self.backend = 'demucs'
-                    logger.info(f"Loaded Demucs model: {self.config['model']}")
                     return
                 elif backend_name == 'spleeter' and SPLEETER_AVAILABLE:
-                    self._load_spleeter_model()
+                    if not defer_load:
+                        self._load_spleeter_model()
+                        logger.info("Loaded Spleeter model: 2stems")
+                    else:
+                        logger.debug("Spleeter backend selected, model loading deferred")
                     self.backend = 'spleeter'
-                    logger.info("Loaded Spleeter model: 2stems")
                     return
             except Exception as e:
                 logger.warning(f"Failed to load {backend_name} backend: {e}")
@@ -266,7 +286,9 @@ class VocalSeparator:
         # No backend available
         error_msg = "No separation backend available. Install demucs or spleeter."
         if not DEMUCS_AVAILABLE and not SPLEETER_AVAILABLE:
-            error_msg += "\n  pip install demucs spleeter"
+            error_msg += "\n  pip install demucs"
+            if not SPLEETER_AVAILABLE:
+                error_msg += "\n  pip install spleeter>=2.4.0,<3.0.0"
         logger.error(error_msg)
         raise ModelLoadError(error_msg)
 
@@ -310,7 +332,7 @@ class VocalSeparator:
         audio_path: str,
         use_cache: bool = True,
         progress_callback: Optional[Callable[[float], None]] = None
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, int]:
         """Separate vocals from instrumental in audio file
 
         This is the primary method for vocal separation. It handles caching,
@@ -330,7 +352,12 @@ class VocalSeparator:
             progress_callback: Optional callback for progress updates (0.0 to 1.0)
 
         Returns:
-            Tuple of (vocals, instrumental) as numpy arrays. Sample rate matches
+            Tuple of (vocals, instrumental, sample_rate) where:
+            - vocals: numpy array (2, samples)
+            - instrumental: numpy array (2, samples)
+            - sample_rate: actual sample rate of returned arrays (Hz)
+
+            Previously: as numpy arrays. Sample rate matches
             original input if preserve_sample_rate=True, otherwise at configured
             processing sample rate. Always returns stereo (2 channels).
 
@@ -339,9 +366,9 @@ class VocalSeparator:
             SeparationError: If separation fails on all backends
 
         Example:
-            >>> vocals, instrumental = separator.separate_vocals('song.mp3')
-            >>> print(vocals.shape, instrumental.shape)
-            (2, 3528000) (2, 3528000)  # Stereo, ~80 seconds at 44.1kHz
+            >>> vocals, instrumental, sr = separator.separate_vocals(\'song.mp3\')
+            >>> print(vocals.shape, instrumental.shape, sr)
+            (2, 3528000) (2, 3528000) 44100  # Stereo, ~80 seconds at 44.1kHz
         """
         audio_path = Path(audio_path)
 
@@ -357,7 +384,23 @@ class VocalSeparator:
                 logger.info(f"Cache hit for {audio_path.name}")
                 if progress_callback:
                     progress_callback(1.0)
-                return cached_result
+                # Unpack cache result - if it's a 2-tuple, add default sample rate
+                if len(cached_result) == 2:
+                    vocals_cached, instrumental_cached = cached_result
+                    # Determine sample rate from config
+                    output_sr = self.config.get('sample_rate', 44100)
+                    if self.config.get('preserve_sample_rate', True):
+                        # Try to get original sample rate from file
+                        try:
+                            _, original_sr = self.audio_processor.load_audio(
+                                str(audio_path), target_sr=None, return_sr=True
+                            )
+                            output_sr = original_sr
+                        except Exception:
+                            pass
+                    return vocals_cached, instrumental_cached, output_sr
+                else:
+                    return cached_result
 
         # Load audio
         if progress_callback:
@@ -376,21 +419,51 @@ class VocalSeparator:
             # Store processing sample rate
             processing_sr = self.config['sample_rate']
 
+            # Determine final output sample rate
+            if self.config.get('preserve_sample_rate', True):
+                output_sr = original_sr
+            else:
+                output_sr = processing_sr
+
             if progress_callback:
                 progress_callback(0.2)
 
-            # Convert to stereo if mono (Demucs expects stereo)
+            # Handle multi-channel inputs (>2 channels)
+            # Downmix to stereo by averaging channels if necessary
             if TORCH_AVAILABLE:
                 if audio.dim() == 1:
-                    audio = audio.unsqueeze(0).repeat(2, 1)  # Convert to stereo
-                elif audio.dim() == 2 and audio.shape[0] == 1:
-                    audio = audio.repeat(2, 1)
+                    # Mono: convert to stereo
+                    audio = audio.unsqueeze(0).repeat(2, 1)
+                elif audio.dim() == 2:
+                    if audio.shape[0] == 1:
+                        # Single channel: duplicate to stereo
+                        audio = audio.repeat(2, 1)
+                    elif audio.shape[0] > 2:
+                        # Multi-channel (>2): downmix to stereo by averaging
+                        logger.info(f"Downmixing {audio.shape[0]} channels to stereo")
+                        audio = audio.mean(dim=0, keepdim=True).repeat(2, 1)
             else:
                 if audio.ndim == 1:
+                    # Mono: convert to stereo
                     audio = np.stack([audio, audio])
+                elif audio.ndim == 2 and audio.shape[0] > 2:
+                    # Multi-channel (>2): downmix to stereo by averaging
+                    logger.info(f"Downmixing {audio.shape[0]} channels to stereo")
+                    mono = audio.mean(axis=0, keepdims=True)
+                    audio = np.repeat(mono, 2, axis=0)
 
             if progress_callback:
                 progress_callback(0.3)
+
+            # Lazy load model if not already loaded
+            if self.model is None:
+                logger.info(f"Lazy loading {self.backend} model on first use...")
+                if self.backend == 'demucs':
+                    self._load_demucs_model()
+                elif self.backend == 'spleeter':
+                    self._load_spleeter_model()
+                else:
+                    raise SeparationError(f"Unknown backend: {self.backend}")
 
             # Perform separation based on backend
             try:
@@ -435,7 +508,11 @@ class VocalSeparator:
                             vocals_tensor = vocals
                             instrumental_tensor = instrumental
 
-                        # Resample
+                        # Move tensors to CPU before resampling (torchaudio Resample expects CPU tensors)
+                        vocals_tensor = vocals_tensor.detach().cpu()
+                        instrumental_tensor = instrumental_tensor.detach().cpu()
+
+                        # Resample on CPU
                         vocals = resampler(vocals_tensor)
                         instrumental = resampler(instrumental_tensor)
 
@@ -476,8 +553,8 @@ class VocalSeparator:
             if progress_callback:
                 progress_callback(1.0)
 
-            logger.info(f"Separation complete for {audio_path.name}")
-            return vocals, instrumental
+            logger.info(f"Separation complete for {audio_path.name} at {output_sr} Hz")
+            return vocals, instrumental, output_sr
 
         except Exception as e:
             logger.error(f"Separation failed for {audio_path.name}: {e}")
@@ -495,7 +572,12 @@ class VocalSeparator:
             progress_callback: Optional progress callback
 
         Returns:
-            Tuple of (vocals, instrumental) tensors
+            Tuple of (vocals, instrumental, sample_rate) where:
+            - vocals: numpy array (2, samples)
+            - instrumental: numpy array (2, samples)
+            - sample_rate: actual sample rate of returned arrays (Hz)
+
+            Previously: tensors
         """
         if not DEMUCS_AVAILABLE or self.backend != 'demucs':
             raise SeparationError("Demucs backend not available")
@@ -504,19 +586,28 @@ class VocalSeparator:
         context_manager = self.gpu_manager.device_context() if self.gpu_manager else torch.no_grad()
 
         try:
-            with context_manager:
+            with context_manager as device:
+                # Use the yielded device from context or fallback to self.device
+                if device is None or not self.gpu_manager:
+                    device = torch.device(self.device)
+
                 # Ensure audio is on correct device
-                device = torch.device(self.device)
                 audio = audio.to(device)
+
+                # Ensure model is on same device as audio
+                if self.model is not None and hasattr(self.model, 'to'):
+                    if next(self.model.parameters(), None) is not None:
+                        model_device = next(self.model.parameters()).device
+                        if model_device != device:
+                            self.model.to(device)
 
                 # Add batch dimension: (1, channels, samples)
                 if audio.dim() == 2:
                     audio = audio.unsqueeze(0)
 
-                # Run separation with GPU acceleration
                 # Determine if we can use AMP (only on CUDA devices)
-                device_obj = torch.device(self.device)
-                use_amp = (device_obj.type == 'cuda' and
+                # Use the same device variable that was yielded/assigned above
+                use_amp = (getattr(device, 'type', 'cpu') == 'cuda' and
                           torch.cuda.is_available() and
                           self.config.get('mixed_precision', True))
 
@@ -604,12 +695,21 @@ class VocalSeparator:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Separate vocals using Spleeter model
 
+        Spleeter was trained on 44.1kHz audio. If input sample rate differs,
+        this method resamples to 44100 Hz before separation and stores
+        the original rate for later resampling in separate_vocals().
+
         Args:
             audio: Input audio array (channels, samples) or tensor
             progress_callback: Optional progress callback
 
         Returns:
-            Tuple of (vocals, instrumental) arrays
+            Tuple of (vocals, instrumental, sample_rate) where:
+            - vocals: numpy array (2, samples)
+            - instrumental: numpy array (2, samples)
+            - sample_rate: actual sample rate of returned arrays (Hz)
+
+            Previously: arrays at 44100 Hz
         """
         if not SPLEETER_AVAILABLE or self.backend != 'spleeter':
             raise SeparationError("Spleeter backend not available")
@@ -641,16 +741,27 @@ class VocalSeparator:
             except Exception:
                 logger.warning("Could not detect TensorFlow GPU availability; assuming CPU-only")
 
-            # Note: Spleeter's separate() method doesn't directly accept sample_rate parameter
-            # The model was trained on 44.1kHz; mismatched rates may reduce quality
-            # Consider resampling audio to 44100 Hz if needed for best results
+            # Resample to 44.1kHz if needed (Spleeter expects 44100 Hz)
             expected_sr = 44100
-            if self.config.get('sample_rate', 44100) != expected_sr:
-                logger.warning(
-                    f"Spleeter expects {expected_sr} Hz audio but config specifies "
-                    f"{self.config['sample_rate']} Hz. Quality may be affected. "
-                    f"Consider resampling before separation."
-                )
+            input_sr = self.config.get('sample_rate', 44100)
+            if input_sr != expected_sr:
+                logger.info(f"Resampling audio from {input_sr} Hz to {expected_sr} Hz for Spleeter")
+
+                if LIBROSA_AVAILABLE:
+                    import librosa
+                    # Resample each channel
+                    if audio.shape[1] == 2:  # Stereo
+                        audio = np.stack([
+                            librosa.resample(audio[:, 0], orig_sr=input_sr, target_sr=expected_sr),
+                            librosa.resample(audio[:, 1], orig_sr=input_sr, target_sr=expected_sr)
+                        ], axis=1)
+                    else:  # Mono
+                        audio = librosa.resample(audio[:, 0], orig_sr=input_sr, target_sr=expected_sr).reshape(-1, 1)
+                else:
+                    logger.warning(
+                        f"librosa not available; cannot resample from {input_sr} Hz to {expected_sr} Hz. "
+                        f"Separation quality may be affected."
+                    )
 
             # Run separation
             prediction = self.model.separate(audio)
@@ -678,10 +789,12 @@ class VocalSeparator:
             logger.warning("Falling back to Spleeter")
             try:
                 old_backend = self.backend
+                original_model = self.model
                 self._load_spleeter_model()
                 self.backend = 'spleeter'
                 result = self._separate_with_spleeter(audio, progress_callback)
                 self.backend = old_backend  # Restore original backend
+                self.model = original_model  # Restore original model
                 return result
             except Exception as e:
                 logger.error(f"Spleeter fallback failed: {e}")
@@ -691,10 +804,12 @@ class VocalSeparator:
             logger.warning("Falling back to Demucs")
             try:
                 old_backend = self.backend
+                original_model = self.model
                 self._load_demucs_model()
                 self.backend = 'demucs'
                 result = self._separate_with_demucs(audio, progress_callback)
                 self.backend = old_backend  # Restore original backend
+                self.model = original_model  # Restore original model
                 return result
             except Exception as e:
                 logger.error(f"Demucs fallback failed: {e}")
@@ -738,6 +853,27 @@ class VocalSeparator:
         key_string = '|'.join(key_components)
         return hashlib.md5(key_string.encode()).hexdigest()
 
+    def _update_cache_access_time(self, cache_key: str):
+        """Update cache access time for LRU tracking
+
+        Writes a timestamp file to track when cache entries are accessed.
+        This provides more accurate LRU tracking than relying solely on filesystem atime.
+
+        Args:
+            cache_key: Cache key hash
+        """
+        if not self.config.get('lru_access_tracking', True):
+            return
+
+        access_time_path = self.cache_dir / f"{cache_key}_access.timestamp"
+
+        try:
+            # Write current timestamp
+            with open(access_time_path, 'w') as f:
+                f.write(str(time.time()))
+        except Exception as e:
+            logger.warning(f"Failed to update cache access time for {cache_key}: {e}")
+
     def _load_from_cache(self, cache_key: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """Load separated audio from cache
 
@@ -745,7 +881,12 @@ class VocalSeparator:
             cache_key: Cache key hash
 
         Returns:
-            Tuple of (vocals, instrumental) or None if cache miss
+            Tuple of (vocals, instrumental, sample_rate) where:
+            - vocals: numpy array (2, samples)
+            - instrumental: numpy array (2, samples)
+            - sample_rate: actual sample rate of returned arrays (Hz)
+
+            Previously: or None if cache miss
         """
         if not NUMPY_AVAILABLE:
             return None
@@ -776,7 +917,10 @@ class VocalSeparator:
                 vocals = np.load(vocals_path)
                 instrumental = np.load(instrumental_path)
 
-                # Update access time for LRU
+                # Update access time for LRU tracking
+                self._update_cache_access_time(cache_key)
+
+                # Also touch the files for filesystem-level tracking (fallback)
                 vocals_path.touch()
                 instrumental_path.touch()
 
@@ -822,6 +966,37 @@ class VocalSeparator:
             except Exception as e:
                 logger.warning(f"Failed to save to cache: {e}")
 
+    def _get_cache_access_time(self, cache_key: str) -> float:
+        """Get the last access time for a cache entry
+
+        Reads from timestamp file if available, otherwise falls back to file mtime.
+
+        Args:
+            cache_key: Cache key hash
+
+        Returns:
+            Access timestamp (seconds since epoch)
+        """
+        access_time_path = self.cache_dir / f"{cache_key}_access.timestamp"
+
+        # Try to read from timestamp file first
+        if access_time_path.exists():
+            try:
+                with open(access_time_path, 'r') as f:
+                    return float(f.read().strip())
+            except Exception as e:
+                logger.warning(f"Failed to read access timestamp for {cache_key}: {e}")
+
+        # Fallback to file modification time
+        vocals_path = self.cache_dir / f"{cache_key}_vocals.npy"
+        if vocals_path.exists():
+            try:
+                return vocals_path.stat().st_mtime
+            except Exception:
+                pass
+
+        return 0.0
+
     def _enforce_cache_limit(self):
         """Enforce cache size limit using LRU eviction and TTL-based deletion"""
         if not self.cache_dir.exists():
@@ -829,57 +1004,97 @@ class VocalSeparator:
 
         limit_bytes = self.config.get('cache_size_limit_gb', 10) * 1024**3
         ttl_days = self.config.get('cache_ttl_days')
+        lru_tracking = self.config.get('lru_access_tracking', True)
 
-        # Get all cache files with their sizes, access times, and modification times
-        cache_files = []
-        total_size = 0
+        # Get all cache entries (grouped by cache_key)
+        cache_entries = {}  # cache_key -> (vocals_path, instrumental_path, total_size, access_time, mtime)
         current_time = time.time()
 
-        for file_path in self.cache_dir.glob("*.npy"):
+        for file_path in self.cache_dir.glob("*_vocals.npy"):
             try:
-                stat = file_path.stat()
-                cache_files.append((file_path, stat.st_atime, stat.st_mtime, stat.st_size))
-                total_size += stat.st_size
+                # Extract cache_key from filename
+                cache_key = file_path.stem.replace('_vocals', '')
+                instrumental_path = self.cache_dir / f"{cache_key}_instrumental.npy"
+
+                if not instrumental_path.exists():
+                    # Orphaned file, skip
+                    continue
+
+                # Get file sizes
+                vocals_size = file_path.stat().st_size
+                instrumental_size = instrumental_path.stat().st_size
+                total_size = vocals_size + instrumental_size
+
+                # Get access time (use LRU tracking if enabled)
+                if lru_tracking:
+                    access_time = self._get_cache_access_time(cache_key)
+                else:
+                    access_time = file_path.stat().st_atime
+
+                mtime = file_path.stat().st_mtime
+
+                cache_entries[cache_key] = (file_path, instrumental_path, total_size, access_time, mtime)
+
             except Exception as e:
-                logger.warning(f"Failed to stat cache file {file_path}: {e}")
+                logger.warning(f"Failed to process cache file {file_path}: {e}")
                 continue
+
+        # Calculate total cache size
+        total_size = sum(entry[2] for entry in cache_entries.values())
 
         # First pass: Delete expired files based on TTL
         if ttl_days is not None and ttl_days > 0:
             ttl_seconds = ttl_days * 86400
-            files_to_keep = []
+            keys_to_delete = []
 
-            for file_path, atime, mtime, size in cache_files:
+            for cache_key, (vocals_path, instrumental_path, size, _, mtime) in cache_entries.items():
                 file_age = current_time - mtime
                 if file_age > ttl_seconds:
                     try:
-                        file_path.unlink()
-                        total_size -= size
-                        logger.debug(f"Deleted expired cache file (age: {file_age/86400:.1f} days): {file_path.name}")
-                    except Exception as e:
-                        logger.warning(f"Failed to delete expired cache file: {e}")
-                        files_to_keep.append((file_path, atime, mtime, size))
-                else:
-                    files_to_keep.append((file_path, atime, mtime, size))
+                        vocals_path.unlink()
+                        instrumental_path.unlink()
 
-            cache_files = files_to_keep
+                        # Delete timestamp file if exists
+                        access_time_path = self.cache_dir / f"{cache_key}_access.timestamp"
+                        if access_time_path.exists():
+                            access_time_path.unlink()
+
+                        total_size -= size
+                        keys_to_delete.append(cache_key)
+                        logger.debug(f"Deleted expired cache entry (age: {file_age/86400:.1f} days): {cache_key}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete expired cache entry: {e}")
+
+            # Remove deleted entries
+            for cache_key in keys_to_delete:
+                del cache_entries[cache_key]
 
         # Second pass: If still over limit, use LRU eviction
         if total_size > limit_bytes:
-            # Sort by access time (oldest first)
-            cache_files.sort(key=lambda x: x[1])
+            # Sort by access time (oldest first), fallback to mtime if access_time is 0
+            sorted_entries = sorted(
+                cache_entries.items(),
+                key=lambda x: x[1][3] if x[1][3] > 0 else x[1][4]  # access_time or mtime
+            )
 
-            # Remove oldest files until under limit
-            for file_path, _, _, size in cache_files:
+            # Remove oldest entries until under limit
+            for cache_key, (vocals_path, instrumental_path, size, _, _) in sorted_entries:
                 if total_size <= limit_bytes:
                     break
 
                 try:
-                    file_path.unlink()
+                    vocals_path.unlink()
+                    instrumental_path.unlink()
+
+                    # Delete timestamp file if exists
+                    access_time_path = self.cache_dir / f"{cache_key}_access.timestamp"
+                    if access_time_path.exists():
+                        access_time_path.unlink()
+
                     total_size -= size
-                    logger.debug(f"Evicted from cache (LRU): {file_path.name}")
+                    logger.debug(f"Evicted from cache (LRU): {cache_key}")
                 except Exception as e:
-                    logger.warning(f"Failed to evict cache file: {e}")
+                    logger.warning(f"Failed to evict cache entry: {e}")
 
     def clear_cache(self, max_age_days: Optional[int] = None):
         """Clear cached separation results
@@ -971,3 +1186,296 @@ class VocalSeparator:
             self.clear_cache()
 
             logger.info(f"Switched to model: {model_name} (backend: {self.backend})")
+
+    def separate_vocals_batch(
+        self,
+        audio_files: List[str],
+        use_cache: bool = True,
+        max_workers: Optional[int] = None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """Separate vocals from multiple audio files in parallel
+
+        Uses ThreadPoolExecutor for concurrent processing. Each file is processed
+        independently, leveraging multiple CPU cores and GPU parallelism.
+
+        Args:
+            audio_files: List of audio file paths
+            use_cache: Whether to use cached results if available
+            max_workers: Maximum number of parallel workers (default: from config)
+            progress_callback: Optional callback(completed, total, current_file)
+
+        Returns:
+            List of (vocals, instrumental) tuples, in same order as input files
+
+        Raises:
+            ValueError: If audio_files is empty
+            SeparationError: If any separation fails (includes partial results)
+
+        Example:
+            >>> files = ['song1.mp3', 'song2.mp3', 'song3.mp3']
+            >>> results = separator.separate_vocals_batch(files, max_workers=4)
+            >>> for vocals, instrumental in results:
+            ...     print(vocals.shape, instrumental.shape)
+        """
+        if not audio_files:
+            raise ValueError("audio_files list cannot be empty")
+
+        max_workers = max_workers or self.config.get('batch_max_workers', 4)
+        results = [None] * len(audio_files)
+        errors = {}
+
+        logger.info(f"Starting batch separation of {len(audio_files)} files with {max_workers} workers")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_index = {
+                executor.submit(self.separate_vocals, audio_path, use_cache): i
+                for i, audio_path in enumerate(audio_files)
+            }
+
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                audio_path = audio_files[index]
+
+                try:
+                    result = future.result()
+                    results[index] = result
+                    completed += 1
+
+                    if progress_callback:
+                        progress_callback(completed, len(audio_files), audio_path)
+
+                    logger.debug(f"Completed {completed}/{len(audio_files)}: {audio_path}")
+
+                except Exception as e:
+                    errors[audio_path] = str(e)
+                    completed += 1
+                    logger.error(f"Failed to separate {audio_path}: {e}")
+
+                    if progress_callback:
+                        progress_callback(completed, len(audio_files), audio_path)
+
+        # Check for errors
+        if errors:
+            error_msg = f"Batch separation completed with {len(errors)} error(s):\n"
+            for path, err in errors.items():
+                error_msg += f"  - {path}: {err}\n"
+
+            # Filter out None results (failed files)
+            successful_results = [r for r in results if r is not None]
+
+            if not successful_results:
+                raise SeparationError(f"All batch separations failed:\n{error_msg}")
+            else:
+                logger.warning(error_msg)
+                # Return results with None for failed entries
+                return results
+
+        logger.info(f"Batch separation completed successfully: {len(audio_files)} files")
+        return results
+
+    def separate_vocals_batch_sequential(
+        self,
+        audio_files: List[str],
+        use_cache: bool = True,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """Separate vocals from multiple audio files sequentially
+
+        Processes files one at a time. Useful for debugging or when parallel
+        processing causes resource contention.
+
+        Args:
+            audio_files: List of audio file paths
+            use_cache: Whether to use cached results if available
+            progress_callback: Optional callback(completed, total, current_file)
+
+        Returns:
+            List of (vocals, instrumental) tuples, in same order as input files
+
+        Raises:
+            ValueError: If audio_files is empty
+            SeparationError: If any separation fails
+
+        Example:
+            >>> files = ['song1.mp3', 'song2.mp3']
+            >>> results = separator.separate_vocals_batch_sequential(files)
+        """
+        if not audio_files:
+            raise ValueError("audio_files list cannot be empty")
+
+        results = []
+        errors = {}
+
+        logger.info(f"Starting sequential separation of {len(audio_files)} files")
+
+        for i, audio_path in enumerate(audio_files):
+            try:
+                result = self.separate_vocals(audio_path, use_cache)
+                results.append(result)
+
+                if progress_callback:
+                    progress_callback(i + 1, len(audio_files), audio_path)
+
+                logger.debug(f"Completed {i + 1}/{len(audio_files)}: {audio_path}")
+
+            except Exception as e:
+                errors[audio_path] = str(e)
+                results.append(None)
+                logger.error(f"Failed to separate {audio_path}: {e}")
+
+                if progress_callback:
+                    progress_callback(i + 1, len(audio_files), audio_path)
+
+        # Check for errors
+        if errors:
+            error_msg = f"Sequential separation completed with {len(errors)} error(s):\n"
+            for path, err in errors.items():
+                error_msg += f"  - {path}: {err}\n"
+
+            successful_results = [r for r in results if r is not None]
+
+            if not successful_results:
+                raise SeparationError(f"All sequential separations failed:\n{error_msg}")
+            else:
+                logger.warning(error_msg)
+
+        logger.info(f"Sequential separation completed: {len(audio_files)} files")
+        return results
+
+    def set_quality_preset(self, preset_name: str):
+        """Set quality preset for separation
+
+        Presets adjust processing parameters for different quality/speed tradeoffs.
+
+        Available presets:
+            - 'fast': Fastest processing, lower quality (shifts=0, split=False)
+            - 'balanced': Balanced quality/speed (shifts=1, split=True) [default]
+            - 'quality': Best quality, slower (shifts=10, split=True, overlap=0.5)
+
+        Args:
+            preset_name: Name of preset ('fast', 'balanced', 'quality')
+
+        Raises:
+            ValueError: If preset_name is not recognized
+
+        Example:
+            >>> separator.set_quality_preset('quality')
+            >>> vocals, instrumental, sr = separator.separate_vocals(\'song.mp3\')
+        """
+        presets = {
+            'fast': {
+                'shifts': 0,
+                'overlap': 0.25,
+                'split': False,
+                'mixed_precision': True
+            },
+            'balanced': {
+                'shifts': 1,
+                'overlap': 0.25,
+                'split': True,
+                'mixed_precision': True
+            },
+            'quality': {
+                'shifts': 10,
+                'overlap': 0.5,
+                'split': True,
+                'mixed_precision': False
+            }
+        }
+
+        preset_name = preset_name.lower()
+        if preset_name not in presets:
+            raise ValueError(
+                f"Invalid preset '{preset_name}'. "
+                f"Available presets: {', '.join(presets.keys())}"
+            )
+
+        # Apply preset settings
+        preset_config = presets[preset_name]
+        for key, value in preset_config.items():
+            self.config[key] = value
+
+        self.config['quality_preset'] = preset_name
+
+        logger.info(f"Quality preset set to '{preset_name}': {preset_config}")
+
+    def get_current_quality_preset(self) -> str:
+        """Get the current quality preset name
+
+        Returns:
+            Current preset name ('fast', 'balanced', 'quality', or 'custom')
+
+        Example:
+            >>> separator.get_current_quality_preset()
+            'balanced'
+        """
+        return self.config.get('quality_preset', 'custom')
+
+    def estimate_separation_time(
+        self,
+        audio_duration: float,
+        preset: Optional[str] = None
+    ) -> float:
+        """Estimate separation time for given audio duration
+
+        Provides rough time estimate based on preset and typical GPU performance.
+        Actual time varies based on hardware, model, and system load.
+
+        Estimates are based on typical NVIDIA RTX 3080 performance:
+            - fast: ~0.1x realtime (10s audio -> 1s processing)
+            - balanced: ~0.3x realtime (10s audio -> 3s processing)
+            - quality: ~2.0x realtime (10s audio -> 20s processing)
+
+        Args:
+            audio_duration: Duration of audio in seconds
+            preset: Optional preset name (uses current if not specified)
+
+        Returns:
+            Estimated processing time in seconds
+
+        Raises:
+            ValueError: If preset is invalid
+
+        Example:
+            >>> separator.estimate_separation_time(180.0, 'balanced')
+            54.0  # ~54 seconds for 3-minute song
+        """
+        preset = preset or self.get_current_quality_preset()
+
+        # Time multipliers based on typical GPU performance
+        time_multipliers = {
+            'fast': 0.1,      # 10x faster than realtime
+            'balanced': 0.3,  # 3.3x faster than realtime
+            'quality': 2.0    # 2x slower than realtime
+        }
+
+        if preset not in time_multipliers and preset != 'custom':
+            raise ValueError(
+                f"Invalid preset '{preset}'. "
+                f"Available presets: {', '.join(time_multipliers.keys())}"
+            )
+
+        # For custom preset, estimate based on shifts parameter
+        if preset == 'custom':
+            shifts = self.config.get('shifts', 1)
+            # Base time + additional time per shift
+            multiplier = 0.2 + (shifts * 0.15)
+        else:
+            multiplier = time_multipliers[preset]
+
+        # Apply CPU multiplier if not using GPU
+        if self.device == 'cpu':
+            multiplier *= 5.0  # CPU is roughly 5x slower
+
+        estimated_time = audio_duration * multiplier
+
+        logger.debug(
+            f"Estimated separation time for {audio_duration:.1f}s audio "
+            f"with preset '{preset}': {estimated_time:.1f}s"
+        )
+
+        return estimated_time

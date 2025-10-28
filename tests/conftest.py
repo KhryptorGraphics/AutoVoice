@@ -761,3 +761,571 @@ def performance_logger():
             return summary
 
     return PerformanceLogger()
+
+
+# ============================================================================
+# CUDA Bindings Fixtures
+# ============================================================================
+
+@pytest.fixture
+def cuda_kernels_module():
+    """Import and return cuda_kernels module if available."""
+    try:
+        import cuda_kernels
+        return cuda_kernels
+    except ImportError:
+        try:
+            from auto_voice import cuda_kernels
+            return cuda_kernels
+        except ImportError:
+            pytest.skip("cuda_kernels module not available")
+
+
+@pytest.fixture
+def cuda_pitch_detection_params():
+    """Standard parameters for pitch detection tests."""
+    return {
+        'sample_rate': 22050.0,
+        'frame_length': 2048,
+        'hop_length': 512,
+        'fmin': 80.0,
+        'fmax': 800.0,
+    }
+
+
+@pytest.fixture
+def synthetic_sine_wave():
+    """Generate synthetic sine wave for testing.
+
+    Returns:
+        Tuple of (audio, frequency, sample_rate)
+    """
+    sample_rate = 22050.0
+    duration = 2.0
+    frequency = 440.0  # A4 note
+
+    t = np.linspace(0, duration, int(sample_rate * duration), dtype=np.float32)
+    audio = np.sin(2 * np.pi * frequency * t).astype(np.float32)
+
+    return audio, frequency, sample_rate
+
+
+@pytest.fixture
+def synthetic_audio_with_vibrato():
+    """Generate synthetic audio with known vibrato.
+
+    Returns:
+        Tuple of (audio, base_freq, vibrato_rate, vibrato_depth, sample_rate)
+    """
+    sample_rate = 22050.0
+    duration = 2.0
+    base_freq = 440.0
+    vibrato_rate = 5.5  # Hz
+    vibrato_depth_cents = 50.0  # cents
+
+    t = np.linspace(0, duration, int(sample_rate * duration), dtype=np.float32)
+
+    # Apply vibrato
+    depth_ratio = 2 ** (vibrato_depth_cents / 1200.0)
+    vibrato = depth_ratio ** np.sin(2 * np.pi * vibrato_rate * t)
+
+    # Generate audio
+    audio = np.sin(2 * np.pi * base_freq * vibrato * t).astype(np.float32)
+
+    return audio, base_freq, vibrato_rate, vibrato_depth_cents, sample_rate
+
+
+@pytest.fixture
+def cuda_tensors_for_pitch_detection(cuda_available: bool):
+    """Create CUDA tensors for pitch detection testing.
+
+    Returns:
+        Dict with pre-allocated tensors
+    """
+    if not cuda_available:
+        pytest.skip("CUDA not available")
+
+    sample_rate = 22050.0
+    duration = 1.0
+    audio_length = int(sample_rate * duration)
+
+    frame_length = 2048
+    hop_length = 512
+    n_frames = max(0, (audio_length - frame_length) // hop_length + 1)
+
+    # Generate test audio
+    t = np.linspace(0, duration, audio_length, dtype=np.float32)
+    audio = np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
+
+    return {
+        'audio': torch.from_numpy(audio).cuda(),
+        'output_pitch': torch.zeros(n_frames, device='cuda'),
+        'output_confidence': torch.zeros(n_frames, device='cuda'),
+        'output_vibrato': torch.zeros(n_frames, device='cuda'),
+        'sample_rate': sample_rate,
+        'frame_length': frame_length,
+        'hop_length': hop_length,
+        'n_frames': n_frames,
+    }
+
+
+@pytest.fixture
+def various_test_frequencies():
+    """List of test frequencies (musical notes) for validation."""
+    return [
+        (110.0, "A2"),
+        (220.0, "A3"),
+        (440.0, "A4"),
+        (880.0, "A5"),
+        (261.63, "C4"),
+        (329.63, "E4"),
+        (392.0, "G4"),
+        (523.25, "C5"),
+    ]
+
+
+@pytest.fixture
+def test_sample_rates():
+    """Common sample rates for testing."""
+    return [8000.0, 16000.0, 22050.0, 44100.0, 48000.0]
+
+
+@pytest.fixture
+def cuda_kernel_performance_tracker(cuda_available: bool):
+    """Track CUDA kernel performance metrics."""
+    if not cuda_available:
+        pytest.skip("CUDA not available")
+
+    class PerformanceTracker:
+        def __init__(self):
+            self.timings = []
+            self.memory_snapshots = []
+
+        def start(self):
+            """Start timing measurement."""
+            torch.cuda.synchronize()
+            self.start_time = time.perf_counter()
+            self.start_memory = torch.cuda.memory_allocated()
+
+        def stop(self):
+            """Stop timing measurement."""
+            torch.cuda.synchronize()
+            self.end_time = time.perf_counter()
+            self.end_memory = torch.cuda.memory_allocated()
+
+            duration = self.end_time - self.start_time
+            memory_delta = self.end_memory - self.start_memory
+
+            self.timings.append(duration)
+            self.memory_snapshots.append(memory_delta)
+
+            return duration, memory_delta
+
+        def get_stats(self):
+            """Get performance statistics."""
+            return {
+                'mean_time': np.mean(self.timings) if self.timings else 0,
+                'std_time': np.std(self.timings) if self.timings else 0,
+                'min_time': np.min(self.timings) if self.timings else 0,
+                'max_time': np.max(self.timings) if self.timings else 0,
+                'mean_memory': np.mean(self.memory_snapshots) if self.memory_snapshots else 0,
+                'iterations': len(self.timings),
+            }
+
+    import time
+    return PerformanceTracker()
+
+
+@pytest.fixture
+def audio_with_noise():
+    """Generate audio with various SNR levels.
+
+    Returns:
+        Function that generates noisy audio given SNR in dB
+    """
+    def generate_noisy_audio(snr_db: float = 20.0, duration: float = 1.0,
+                            frequency: float = 440.0, sample_rate: float = 22050.0):
+        """Generate sine wave with added noise at specified SNR.
+
+        Args:
+            snr_db: Signal-to-noise ratio in decibels
+            duration: Duration in seconds
+            frequency: Frequency of sine wave
+            sample_rate: Sample rate in Hz
+
+        Returns:
+            Noisy audio as numpy array
+        """
+        t = np.linspace(0, duration, int(sample_rate * duration), dtype=np.float32)
+        signal = np.sin(2 * np.pi * frequency * t)
+
+        # Calculate noise power
+        signal_power = np.mean(signal ** 2)
+        noise_power = signal_power / (10 ** (snr_db / 10))
+        noise = np.random.randn(len(signal)) * np.sqrt(noise_power)
+
+        audio = (signal + noise).astype(np.float32)
+        return audio
+
+    return generate_noisy_audio
+
+
+@pytest.fixture
+def multi_frequency_audio():
+    """Generate audio with multiple frequency components.
+
+    Returns:
+        Function that generates audio with specified frequency mix
+    """
+    def generate_multi_freq_audio(frequencies: list, amplitudes: list = None,
+                                  duration: float = 1.0, sample_rate: float = 22050.0):
+        """Generate audio with multiple frequency components.
+
+        Args:
+            frequencies: List of frequencies in Hz
+            amplitudes: List of amplitudes (default: equal for all)
+            duration: Duration in seconds
+            sample_rate: Sample rate in Hz
+
+        Returns:
+            Mixed audio as numpy array
+        """
+        if amplitudes is None:
+            amplitudes = [1.0] * len(frequencies)
+
+        t = np.linspace(0, duration, int(sample_rate * duration), dtype=np.float32)
+        audio = np.zeros(len(t), dtype=np.float32)
+
+        for freq, amp in zip(frequencies, amplitudes):
+            audio += amp * np.sin(2 * np.pi * freq * t)
+
+        # Normalize
+        audio = audio / np.max(np.abs(audio))
+        return audio.astype(np.float32)
+
+    return generate_multi_freq_audio
+
+
+@pytest.fixture(autouse=True)
+def cuda_error_check(cuda_available: bool):
+    """Check for CUDA errors after each test."""
+    yield
+    if cuda_available:
+        try:
+            # Synchronize to catch any async errors
+            torch.cuda.synchronize()
+        except RuntimeError as e:
+            pytest.fail(f"CUDA error detected after test: {e}")
+
+
+# ============================================================================
+# Integration Test Fixtures (Task 1)
+# ============================================================================
+
+@pytest.fixture
+def song_file(tmp_path: Path) -> Path:
+    """Synthesize and save test song audio file.
+
+    Creates a 5-second song with vocals and instrumental components.
+    """
+    try:
+        import soundfile as sf
+    except ImportError:
+        pytest.skip("soundfile not available")
+
+    sample_rate = 44100
+    duration = 5.0
+    t = np.linspace(0, duration, int(sample_rate * duration))
+
+    # Simulate vocals (melody at A4 and C5)
+    vocals = 0.4 * np.sin(2 * np.pi * 440 * t)  # A4
+    vocals += 0.2 * np.sin(2 * np.pi * 523.25 * t)  # C5
+
+    # Simulate instrumental (bass + rhythm)
+    bass = 0.6 * np.sin(2 * np.pi * 110 * t)  # A2
+    drums = 0.3 * np.random.randn(len(t)) * np.sin(2 * np.pi * 2 * t)
+
+    # Mix stereo
+    left = vocals + bass + drums
+    right = vocals * 0.8 + bass + drums * 0.7
+    stereo = np.stack([left, right])
+
+    # Save file
+    song_path = tmp_path / "test_song.wav"
+    sf.write(str(song_path), stereo.T, sample_rate)
+
+    return song_path
+
+
+@pytest.fixture
+def test_profile(tmp_path: Path):
+    """Create and cleanup voice profile for testing.
+
+    Yields profile dict, automatically cleans up after test.
+    """
+    try:
+        from src.auto_voice.storage.voice_profiles import VoiceProfileStorage
+    except ImportError:
+        pytest.skip("VoiceProfileStorage not available")
+
+    storage = VoiceProfileStorage(storage_dir=str(tmp_path / 'profiles'))
+
+    # Create test profile
+    profile = {
+        'profile_id': 'test-profile-123',
+        'user_id': 'test_user',
+        'created_at': '2025-01-15T10:00:00Z',
+        'embedding': np.random.randn(256).astype(np.float32),
+        'audio_duration': 10.0,
+        'sample_rate': 22050,
+        'metadata': {'test': True}
+    }
+
+    storage.save_profile(profile)
+
+    yield profile
+
+    # Cleanup
+    if storage.profile_exists(profile['profile_id']):
+        storage.delete_profile(profile['profile_id'])
+
+
+@pytest.fixture
+def pipeline_instance(device):
+    """Create SingingConversionPipeline instance for testing."""
+    try:
+        from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        config = {
+            'device': device,
+            'cache_enabled': True,
+            'sample_rate': 22050
+        }
+        return SingingConversionPipeline(config=config)
+    except ImportError:
+        pytest.skip("SingingConversionPipeline not available")
+
+
+@pytest.fixture
+def concurrent_executor():
+    """ThreadPoolExecutor for concurrent testing."""
+    from concurrent.futures import ThreadPoolExecutor
+    executor = ThreadPoolExecutor(max_workers=4)
+    yield executor
+    executor.shutdown(wait=True)
+
+
+@pytest.fixture
+def memory_leak_detector(cuda_available: bool):
+    """CPU and GPU memory tracking for leak detection.
+
+    Tracks memory before and after test, reports leaks if detected.
+    """
+    import psutil
+    import os
+
+    class MemoryLeakDetector:
+        def __init__(self, cuda_available):
+            self.cuda_available = cuda_available
+            self.process = psutil.Process(os.getpid())
+
+        def __enter__(self):
+            # Record initial memory
+            self.initial_cpu_memory = self.process.memory_info().rss
+            if self.cuda_available:
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+                self.initial_gpu_memory = torch.cuda.memory_allocated()
+            else:
+                self.initial_gpu_memory = 0
+            return self
+
+        def __exit__(self, *args):
+            # Check final memory
+            import gc
+            gc.collect()
+            if self.cuda_available:
+                torch.cuda.empty_cache()
+
+            final_cpu_memory = self.process.memory_info().rss
+            cpu_leak = final_cpu_memory - self.initial_cpu_memory
+
+            if self.cuda_available:
+                final_gpu_memory = torch.cuda.memory_allocated()
+                gpu_leak = final_gpu_memory - self.initial_gpu_memory
+
+                if gpu_leak > 10 * 1024 * 1024:  # 10 MB threshold
+                    pytest.warn(f"Potential GPU memory leak: {gpu_leak / 1024 / 1024:.2f} MB")
+
+            if cpu_leak > 50 * 1024 * 1024:  # 50 MB threshold
+                pytest.warn(f"Potential CPU memory leak: {cpu_leak / 1024 / 1024:.2f} MB")
+
+    return MemoryLeakDetector(cuda_available)
+
+
+@pytest.fixture
+def performance_tracker():
+    """Performance metrics tracking fixture.
+
+    Tracks timing, memory, and throughput metrics during tests.
+    """
+    class PerformanceTracker:
+        def __init__(self):
+            self.metrics = {}
+            self.timings = []
+
+        def start(self, label: str = "default"):
+            """Start timing measurement."""
+            self.label = label
+            self.start_time = time.perf_counter()
+
+        def stop(self):
+            """Stop timing measurement and record."""
+            elapsed = time.perf_counter() - self.start_time
+            self.timings.append(elapsed)
+            if self.label not in self.metrics:
+                self.metrics[self.label] = []
+            self.metrics[self.label].append(elapsed)
+            return elapsed
+
+        def record(self, metric_name: str, value: float):
+            """Record a custom metric."""
+            if metric_name not in self.metrics:
+                self.metrics[metric_name] = []
+            self.metrics[metric_name].append(value)
+
+        def get_summary(self):
+            """Get summary statistics."""
+            summary = {}
+            for metric, values in self.metrics.items():
+                if values:
+                    summary[metric] = {
+                        'mean': np.mean(values),
+                        'std': np.std(values),
+                        'min': np.min(values),
+                        'max': np.max(values),
+                        'count': len(values)
+                    }
+            return summary
+
+    return PerformanceTracker()
+
+
+@pytest.fixture
+def gpu_memory_monitor(cuda_available: bool):
+    """GPU memory monitoring fixture.
+
+    Monitors GPU memory usage during test execution.
+    """
+    if not cuda_available:
+        pytest.skip("CUDA not available for GPU memory monitoring")
+
+    class GPUMemoryMonitor:
+        def __enter__(self):
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            self.initial_memory = torch.cuda.memory_allocated()
+            return self
+
+        def __exit__(self, *args):
+            self.final_memory = torch.cuda.memory_allocated()
+            self.peak_memory = torch.cuda.max_memory_allocated()
+            self.memory_delta = self.final_memory - self.initial_memory
+
+        def get_stats(self):
+            """Get memory statistics in MB."""
+            return {
+                'initial_mb': self.initial_memory / 1024 / 1024,
+                'final_mb': self.final_memory / 1024 / 1024,
+                'peak_mb': self.peak_memory / 1024 / 1024,
+                'delta_mb': self.memory_delta / 1024 / 1024
+            }
+
+    return GPUMemoryMonitor()
+
+
+@pytest.fixture
+def multi_format_audio(tmp_path: Path):
+    """Generate test audio in multiple formats (WAV, FLAC).
+
+    Returns dict mapping format to file path.
+    """
+    try:
+        import soundfile as sf
+    except ImportError:
+        pytest.skip("soundfile not available")
+
+    sample_rate = 22050
+    duration = 2.0
+    t = np.linspace(0, duration, int(sample_rate * duration))
+    audio = 0.5 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
+
+    formats = {}
+
+    # WAV
+    wav_path = tmp_path / "test.wav"
+    sf.write(str(wav_path), audio, sample_rate, format='WAV')
+    formats['wav'] = wav_path
+
+    # FLAC
+    flac_path = tmp_path / "test.flac"
+    sf.write(str(flac_path), audio, sample_rate, format='FLAC')
+    formats['flac'] = flac_path
+
+    return formats
+
+
+@pytest.fixture
+def multi_sample_rate_audio(tmp_path: Path):
+    """Generate test audio at multiple sample rates.
+
+    Returns dict mapping sample rate to file path.
+    """
+    try:
+        import soundfile as sf
+    except ImportError:
+        pytest.skip("soundfile not available")
+
+    duration = 1.0
+    sample_rates = [8000, 16000, 22050, 44100]
+    audio_files = {}
+
+    for sr in sample_rates:
+        t = np.linspace(0, duration, int(sr * duration))
+        audio = 0.5 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
+
+        audio_path = tmp_path / f"test_{sr}hz.wav"
+        sf.write(str(audio_path), audio, sr)
+        audio_files[sr] = audio_path
+
+    return audio_files
+
+
+@pytest.fixture
+def stereo_mono_pairs(tmp_path: Path):
+    """Generate stereo and mono pairs for testing.
+
+    Returns dict with 'stereo' and 'mono' file paths.
+    """
+    try:
+        import soundfile as sf
+    except ImportError:
+        pytest.skip("soundfile not available")
+
+    sample_rate = 22050
+    duration = 1.0
+    t = np.linspace(0, duration, int(sample_rate * duration))
+    audio_mono = 0.5 * np.sin(2 * np.pi * 440 * t).astype(np.float32)
+
+    # Mono file
+    mono_path = tmp_path / "test_mono.wav"
+    sf.write(str(mono_path), audio_mono, sample_rate)
+
+    # Stereo file
+    audio_stereo = np.stack([audio_mono, audio_mono * 0.8])
+    stereo_path = tmp_path / "test_stereo.wav"
+    sf.write(str(stereo_path), audio_stereo.T, sample_rate)
+
+    return {
+        'mono': mono_path,
+        'stereo': stereo_path
+    }

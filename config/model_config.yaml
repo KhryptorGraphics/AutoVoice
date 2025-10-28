@@ -138,3 +138,221 @@ paths:
   pretrained_dir: "data/models/pretrained"
   tensorrt_engines: "data/models/engines"
   logs_dir: "logs/training"
+
+# Singing Voice Conversion Model (So-VITS-SVC)
+singing_voice_converter:
+  # Model architecture
+  latent_dim: 192  # Latent space dimension
+  mel_channels: 80  # Mel-spectrogram channels
+
+  # Content encoder settings
+  content_encoder:
+    type: 'hubert_soft'  # 'hubert_soft' or 'cnn_fallback'
+    output_dim: 256  # Content feature dimension
+    use_torch_hub: true  # Load HuBERT-Soft from PyTorch Hub
+    device: 'cuda'  # Device for content encoder
+    # CNN fallback mel parameters (must align with hop_length for consistent frame rate)
+    cnn_fallback:
+      n_fft: 1024  # FFT size for mel-spectrogram
+      hop_length: 320  # Hop length (16000 Hz / 320 = 50 Hz frame rate)
+      n_mels: 80  # Number of mel bands
+      sample_rate: 16000  # Expected sample rate for content encoder
+
+  # Pitch encoder settings
+  pitch_encoder:
+    pitch_dim: 192  # Pitch embedding dimension
+    hidden_dim: 128  # Intermediate dimension
+    num_bins: 256  # F0 quantization bins
+    f0_min: 80.0  # Minimum F0 (Hz)
+    f0_max: 1000.0  # Maximum F0 (Hz)
+    blend_weight: 0.5  # Blend between quantized and continuous
+
+  # Speaker encoder settings (uses existing SpeakerEncoder)
+  speaker_encoder:
+    embedding_dim: 256  # Resemblyzer embedding dimension
+    device: 'cuda'
+
+  # Posterior encoder settings (training only)
+  posterior_encoder:
+    input_channels: 80  # Mel channels
+    output_channels: 192  # Latent dimension
+    hidden_channels: 192  # Residual/skip channels
+    kernel_size: 5  # Convolution kernel size
+    num_layers: 16  # Number of WaveNet layers
+    dilation_cycle: 10  # Dilation pattern cycle [1,2,4,...,512]
+    cond_channels: 0  # Speaker conditioning (0 = no conditioning in posterior)
+
+  # Flow decoder settings
+  flow_decoder:
+    num_flows: 4  # Number of coupling layers
+    hidden_channels: 192  # Intermediate dimension
+    kernel_size: 5  # Convolution kernel size
+    num_layers: 4  # Layers per coupling
+    use_only_mean: false  # Default to false for proper flow training
+                          # Set to true only for inference or early training stages
+                          # Note: use_only_mean=true yields zero log-det and may undermine flow likelihood
+                          # Recommended: start with false, or use staged schedule (true -> false after N steps)
+    cond_channels: 704  # content(256) + pitch(192) + speaker(256)
+
+  # Vocoder settings (uses existing HiFiGAN)
+  vocoder:
+    use_vocoder: true  # Use HiFiGAN for mel-to-waveform
+    type: 'hifigan'
+    mel_channels: 80
+
+  # Audio settings
+  audio:
+    sample_rate: 44100  # Higher quality for singing
+    hop_length: 512  # Hop length for mel-spectrogram
+    n_fft: 2048  # FFT size
+    win_length: 2048  # Window length
+
+  # Training settings (for future training phase)
+  training:
+    kl_weight: 1.0  # Weight for KL divergence loss
+    mel_weight: 45.0  # Weight for mel reconstruction loss
+    flow_weight: 1.0  # Weight for flow log-likelihood
+    use_amp: true  # Mixed precision training
+
+  # Inference settings
+  inference:
+    temperature: 1.0  # Sampling temperature for flow
+    use_griffin_lim_fallback: true  # Use Griffin-Lim if vocoder unavailable
+    griffin_lim_iters: 32  # Iterations for Griffin-Lim
+
+  # TensorRT optimization settings
+  tensorrt:
+    enabled: false  # Enable TensorRT acceleration
+    use_tensorrt: false  # Main control flag for TensorRT usage
+    fallback_to_pytorch: true  # Fallback to PyTorch if TensorRT unavailable
+    export_onnx: true  # Export components to ONNX during model setup
+    force_cnn_fallback: true  # Force use of CNN fallback for ContentEncoder ONNX export
+
+    # Engine creation settings
+    build_engines: false  # Automatically build TensorRT engines
+    fp16: true  # Enable FP16 precision for acceleration
+    int8: false  # Enable INT8 precision (requires calibration)
+    workspace_size: 2147483648  # 2GB workspace size in bytes
+
+    # Model paths
+    onnx_export_dir: 'models/onnx'  # ONNX model export directory
+    engine_dir: 'models/tensorrt'  # TensorRT engine directory
+    cache_engines: true  # Cache built engines for faster loading
+
+    # Dynamic shapes for variable-length audio
+    dynamic_shapes:
+      max_audio_length: 176400  # 4 seconds at 44.1kHz
+      min_audio_length: 44100   # 1 second at 44.1kHz
+      opt_audio_length: 88200   # 2 seconds at 44.1kHz
+
+    # Performance optimization flags
+    optimize_for_latency: true  # Optimize for low latency over throughput
+    cuda_graphs: true  # Use CUDA graphs where available
+
+    # Development/debug settings
+    verbose_logging: false  # Enable detailed TensorRT logging
+    validation_mode: false  # Validate engine outputs against PyTorch
+    benchmark_mode: false  # Run benchmarks during inference
+
+# Voice Conversion Training Configuration
+voice_conversion_training:
+  # Dataset settings
+  data:
+    train_data_dir: 'data/voice_conversion/train'
+    val_data_dir: 'data/voice_conversion/val'
+    train_metadata: 'data/voice_conversion/train_pairs.json'
+    val_metadata: 'data/voice_conversion/val_pairs.json'
+    num_workers: 4
+    cache_size: 500
+    extract_f0: true  # Extract F0 during data loading
+    extract_speaker_emb: true  # Extract speaker embeddings
+
+  # Audio preprocessing (higher quality for singing)
+  audio:
+    sample_rate: 44100  # Higher than TTS (22050)
+    n_mels: 80
+    n_fft: 2048
+    hop_length: 512
+    win_length: 2048
+    fmin: 0.0
+    fmax: 8000.0
+    max_audio_length: 220500  # 5 seconds at 44.1kHz
+    min_audio_length: 44100   # 1 second minimum
+
+  # Training hyperparameters
+  training:
+    batch_size: 8  # Smaller batch for memory efficiency
+    learning_rate: 2e-4
+    num_epochs: 100
+    gradient_clip: 1.0
+    gradient_accumulation_steps: 2
+    weight_decay: 0.01
+
+    # Optimizer
+    optimizer_type: 'adamw'
+    optimizer_params:
+      betas: [0.8, 0.99]
+      eps: 1e-9
+
+    # Scheduler
+    scheduler_type: 'cosine'
+    warmup_steps: 1000
+
+    # Mixed precision
+    use_amp: true
+
+    # Distributed training
+    distributed: false
+
+    # Logging and checkpointing
+    log_interval: 100
+    save_interval: 1000
+    validate_interval: 500
+
+    # Early stopping
+    early_stopping_patience: 15
+    early_stopping_min_delta: 1e-5
+
+  # Loss weights
+  losses:
+    mel_reconstruction: 45.0  # Primary loss
+    kl_divergence: 1.0        # Variational loss
+    pitch_consistency: 10.0   # Preserve pitch
+    speaker_similarity: 5.0   # Match target speaker
+    flow_likelihood: 1.0      # Flow prior
+    stft: 2.5                 # Multi-resolution STFT
+
+  # Data augmentation
+  augmentation:
+    enabled: true
+    augmentation_prob: 0.5  # Apply to 50% of samples
+
+    # Pitch-preserving time stretch
+    pitch_preserving_time_stretch:
+      enabled: true
+      rate_range: [0.9, 1.1]  # 90%-110% speed
+
+    # Formant shift
+    formant_shift:
+      enabled: true
+      semitone_range: [-2, 2]  # ±2 semitones
+
+    # Noise injection
+    noise_injection:
+      enabled: true
+      snr_db_range: [20, 40]  # 20-40 dB SNR
+
+    # Vocal tract length perturbation
+    vtlp:
+      enabled: true
+      alpha_range: [0.9, 1.1]  # ±10% warping
+
+  # Checkpoint settings
+  checkpoint:
+    checkpoint_dir: 'checkpoints/voice_conversion'
+    backup_dir: 'checkpoints_backup/voice_conversion'
+    max_checkpoints: 5
+    save_optimizer: true
+    save_scheduler: true
+    verify_integrity: true
+    versioning_enabled: true

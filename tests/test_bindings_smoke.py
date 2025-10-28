@@ -239,6 +239,199 @@ def test_input_validation():
         return False
 
 
+def test_boundary_values():
+    """Test boundary values for parameters"""
+    try:
+        import torch
+        import cuda_kernels
+    except ImportError:
+        try:
+            import torch
+            from auto_voice import cuda_kernels
+        except ImportError:
+            print("✗ Cannot import required modules")
+            return False
+
+    if not torch.cuda.is_available():
+        print("⚠ CUDA not available, skipping boundary test")
+        return True
+
+    try:
+        # Test minimum valid parameters
+        n_samples = 2048
+        sample_rate = 8000.0
+        frame_length = 512
+        hop_length = 128
+        n_frames = max(0, (n_samples - frame_length) // hop_length + 1)
+
+        audio = torch.randn(n_samples, device='cuda')
+        output_pitch = torch.zeros(n_frames, device='cuda')
+        output_confidence = torch.zeros(n_frames, device='cuda')
+        output_vibrato = torch.zeros(n_frames, device='cuda')
+
+        cuda_kernels.launch_pitch_detection(
+            audio, output_pitch, output_confidence, output_vibrato,
+            sample_rate, frame_length, hop_length
+        )
+        print("✓ Minimum parameters test passed")
+
+        # Test maximum valid parameters
+        n_samples = 441000  # 10 seconds at 44.1kHz
+        sample_rate = 44100.0
+        frame_length = 4096
+        hop_length = 1024
+        n_frames = max(0, (n_samples - frame_length) // hop_length + 1)
+
+        audio = torch.randn(n_samples, device='cuda')
+        output_pitch = torch.zeros(n_frames, device='cuda')
+        output_confidence = torch.zeros(n_frames, device='cuda')
+        output_vibrato = torch.zeros(n_frames, device='cuda')
+
+        cuda_kernels.launch_pitch_detection(
+            audio, output_pitch, output_confidence, output_vibrato,
+            sample_rate, frame_length, hop_length
+        )
+        print("✓ Maximum parameters test passed")
+
+        # Test single frame
+        n_samples = frame_length
+        n_frames = 1
+
+        audio = torch.randn(n_samples, device='cuda')
+        output_pitch = torch.zeros(n_frames, device='cuda')
+        output_confidence = torch.zeros(n_frames, device='cuda')
+        output_vibrato = torch.zeros(n_frames, device='cuda')
+
+        cuda_kernels.launch_pitch_detection(
+            audio, output_pitch, output_confidence, output_vibrato,
+            sample_rate, frame_length, hop_length
+        )
+        print("✓ Single frame test passed")
+
+        return True
+
+    except Exception as e:
+        print(f"✗ Boundary value test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_stress_large_tensors():
+    """Test with large tensors to stress GPU memory"""
+    try:
+        import torch
+        import cuda_kernels
+    except ImportError:
+        try:
+            import torch
+            from auto_voice import cuda_kernels
+        except ImportError:
+            print("✗ Cannot import required modules")
+            return False
+
+    if not torch.cuda.is_available():
+        print("⚠ CUDA not available, skipping stress test")
+        return True
+
+    try:
+        # Test with very large audio (30 seconds at 44.1kHz)
+        n_samples = 44100 * 30
+        sample_rate = 44100.0
+        frame_length = 2048
+        hop_length = 512
+        n_frames = max(0, (n_samples - frame_length) // hop_length + 1)
+
+        print(f"  Testing with {n_samples} samples ({n_frames} frames)...")
+
+        audio = torch.randn(n_samples, device='cuda')
+        output_pitch = torch.zeros(n_frames, device='cuda')
+        output_confidence = torch.zeros(n_frames, device='cuda')
+        output_vibrato = torch.zeros(n_frames, device='cuda')
+
+        # Check initial memory
+        initial_memory = torch.cuda.memory_allocated()
+
+        cuda_kernels.launch_pitch_detection(
+            audio, output_pitch, output_confidence, output_vibrato,
+            sample_rate, frame_length, hop_length
+        )
+
+        # Check final memory
+        final_memory = torch.cuda.memory_allocated()
+        memory_increase = (final_memory - initial_memory) / (1024 * 1024)
+
+        print(f"✓ Large tensor test passed (memory increase: {memory_increase:.2f} MB)")
+        return True
+
+    except Exception as e:
+        print(f"✗ Stress test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_empty_and_edge_cases():
+    """Test empty audio and edge cases"""
+    try:
+        import torch
+        import cuda_kernels
+    except ImportError:
+        try:
+            import torch
+            from auto_voice import cuda_kernels
+        except ImportError:
+            print("✗ Cannot import required modules")
+            return False
+
+    if not torch.cuda.is_available():
+        print("⚠ CUDA not available, skipping edge case test")
+        return True
+
+    try:
+        sample_rate = 16000.0
+        frame_length = 2048
+        hop_length = 256
+
+        # Test with silent audio (all zeros)
+        n_samples = 16000
+        n_frames = max(0, (n_samples - frame_length) // hop_length + 1)
+
+        audio = torch.zeros(n_samples, device='cuda')
+        output_pitch = torch.zeros(n_frames, device='cuda')
+        output_confidence = torch.zeros(n_frames, device='cuda')
+        output_vibrato = torch.zeros(n_frames, device='cuda')
+
+        cuda_kernels.launch_pitch_detection(
+            audio, output_pitch, output_confidence, output_vibrato,
+            sample_rate, frame_length, hop_length
+        )
+
+        # Silent audio should have zero pitch
+        assert torch.all(output_pitch == 0.0), "Silent audio should have zero pitch"
+        print("✓ Silent audio test passed")
+
+        # Test with very low amplitude audio
+        audio = torch.randn(n_samples, device='cuda') * 1e-6
+        output_pitch = torch.zeros(n_frames, device='cuda')
+        output_confidence = torch.zeros(n_frames, device='cuda')
+        output_vibrato = torch.zeros(n_frames, device='cuda')
+
+        cuda_kernels.launch_pitch_detection(
+            audio, output_pitch, output_confidence, output_vibrato,
+            sample_rate, frame_length, hop_length
+        )
+        print("✓ Low amplitude audio test passed")
+
+        return True
+
+    except Exception as e:
+        print(f"✗ Edge case test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def main():
     """Run all smoke tests"""
     print("=" * 60)
@@ -258,6 +451,15 @@ def main():
 
     print("\n[4] Testing input validation...")
     test_results.append(test_input_validation())
+
+    print("\n[5] Testing boundary values...")
+    test_results.append(test_boundary_values())
+
+    print("\n[6] Testing stress with large tensors...")
+    test_results.append(test_stress_large_tensors())
+
+    print("\n[7] Testing empty and edge cases...")
+    test_results.append(test_empty_and_edge_cases())
 
     print("\n" + "=" * 60)
     if all(test_results):

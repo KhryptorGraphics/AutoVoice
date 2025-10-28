@@ -216,7 +216,9 @@ class SingingAnalyzer:
             try:
                 # Load audio if file path
                 if isinstance(audio, str):
-                    audio_data, sample_rate = self.audio_processor.load_audio(audio, return_sr=True)
+                    audio_data, original_sr = self.audio_processor.load_audio(audio, return_sr=True)
+                    # Use the processor's target sample rate (resampled SR), not original
+                    sample_rate = self.audio_processor.sample_rate
                     if isinstance(audio_data, torch.Tensor):
                         audio_data = audio_data.numpy()
                 else:
@@ -289,14 +291,19 @@ class SingingAnalyzer:
                 duration = snd.get_total_duration()
 
                 # Compute CPP (Cepstral Peak Prominence)
-                pcg = call(snd, "To PowerCepstrogram", 0.01, self.cpp_fmin, 5000)
+                # Correct parameters: time_step, maximum_frequency
+                # Note: pitch_floor is NOT a parameter for PowerCepstrogram creation
+                pcg = call(snd, "To PowerCepstrogram", 0.01, 5000.0)
+                # For peak prominence queries, use pitch_floor and pitch_ceiling
                 cpp_mean = call(pcg, "Get peak prominence (hillenbrand)", 0, 0, self.cpp_fmin, self.cpp_fmax)
 
                 # Frame-wise CPP
+                # Note: Get peak prominence uses (time_from, time_to, pitch_floor, pitch_ceiling)
                 times = np.arange(0.01, duration, 0.01)
                 cpp_track = []
                 for t in times:
                     try:
+                        # Query at single time point (t to t) with pitch range
                         cpp_val = call(pcg, "Get peak prominence (hillenbrand)", t, t, self.cpp_fmin, self.cpp_fmax)
                         cpp_track.append(cpp_val if cpp_val is not None else 0.0)
                     except Exception:
@@ -365,13 +372,37 @@ class SingingAnalyzer:
             # Very basic fallback
             S = np.abs(np.fft.rfft(audio))
 
-        # Estimate HNR from spectral content
-        # Lower frequencies = harmonics, higher = noise
-        harmonic_band = S[:len(S)//4].mean()
-        noise_band = S[len(S)//2:].mean()
+        # Estimate HNR from spectral content per frame, then aggregate
+        # S has shape (n_freqs, n_frames) if librosa, or (n_freqs,) if basic fallback
+        if S.ndim == 2:
+            # Per-frame computation with band normalization
+            n_freqs, n_frames = S.shape
 
-        hnr_estimate = 10.0 * np.log10((harmonic_band + 1e-10) / (noise_band + 1e-10))
-        hnr_estimate = np.clip(hnr_estimate, -10, 30)
+            # Define frequency bands (normalized by bandwidth)
+            harmonic_end = n_freqs // 4
+            noise_start = n_freqs // 2
+
+            # Compute per-frame band means
+            harmonic_band = S[:harmonic_end, :].mean(axis=0)  # (n_frames,)
+            noise_band = S[noise_start:, :].mean(axis=0)      # (n_frames,)
+
+            # Normalize by bandwidth to stabilize estimate
+            harmonic_bandwidth = harmonic_end
+            noise_bandwidth = n_freqs - noise_start
+            harmonic_band = harmonic_band * (noise_bandwidth / harmonic_bandwidth)
+
+            # Compute per-frame HNR
+            hnr_per_frame = 10.0 * np.log10((harmonic_band + 1e-10) / (noise_band + 1e-10))
+            hnr_per_frame = np.clip(hnr_per_frame, -10, 30)
+
+            # Aggregate using median for robustness
+            hnr_estimate = float(np.median(hnr_per_frame))
+        else:
+            # Single frame fallback
+            harmonic_band = S[:len(S)//4].mean()
+            noise_band = S[len(S)//2:].mean()
+            hnr_estimate = 10.0 * np.log10((harmonic_band + 1e-10) / (noise_band + 1e-10))
+            hnr_estimate = np.clip(hnr_estimate, -10, 30)
 
         # Simple breathiness score
         breathiness_score = np.clip((20.0 - hnr_estimate) / 20.0, 0.0, 1.0)

@@ -6,6 +6,9 @@
 #include <cooperative_groups.h>
 #include <device_launch_parameters.h>
 #include <torch/extension.h>
+#include <unordered_map>
+#include <mutex>
+#include <string>
 
 using namespace cooperative_groups;
 
@@ -75,19 +78,166 @@ __global__ void log_magnitude_kernel(float *magnitude, float *log_mag, int n_bin
     log_mag[idx] = logf(safe_divide(magnitude[idx], 1.0f));  // Add small epsilon if needed
 }
 
-// Inverse FFT for audio reconstruction
-__global__ void ifft_reconstruction_kernel(cufftComplex *spectrum, float *audio_out, int n_samples, int hop_length) {
+// Optimized STFT kernel with windowing and batching
+__global__ void optimized_stft_kernel(
+    float *audio,               // Input audio [batch_size, audio_length]
+    cufftComplex *stft_output,  // Output STFT [batch_size, n_frames, n_fft/2+1]
+    float *window,              // Window function [n_fft]
+    int audio_length,
+    int n_fft,
+    int hop_length,
+    int batch_size
+) {
     int frame_idx = blockIdx.x;
+    int batch_idx = blockIdx.y;
     int tid = threadIdx.x;
-    
+
+    if (batch_idx >= batch_size) return;
+
+    extern __shared__ float shared_windowed[];
+
     int frame_start = frame_idx * hop_length;
-    
-    if (frame_start + tid >= n_samples) return;
-    
-    // Simplified overlap-add for ISTFT
-    float real_part = spectrum[frame_idx * (n_samples / 2 + 1) + tid / 2].x; // Placeholder
-    float imag_part = spectrum[frame_idx * (n_samples / 2 + 1) + tid / 2].y;
-    audio_out[frame_start + tid] += real_part / (float)hop_length; // Simplified
+    int audio_offset = batch_idx * audio_length;
+
+    // Apply window in shared memory
+    for (int i = tid; i < n_fft; i += blockDim.x) {
+        int audio_idx = frame_start + i;
+        float sample = (audio_idx < audio_length) ? __ldg(&audio[audio_offset + audio_idx]) : 0.0f;
+        float win_val = __ldg(&window[i]);
+        shared_windowed[i] = sample * win_val;
+    }
+    __syncthreads();
+
+    // FFT will be performed externally using cuFFT on shared_windowed data
+    // This kernel prepares windowed frames for batched FFT execution
+}
+
+// Optimized ISTFT kernel with windowing
+__global__ void optimized_istft_kernel(
+    cufftComplex *stft_input,   // Input STFT [batch_size, n_frames, n_fft/2+1]
+    float *audio_output,        // Output audio [batch_size, audio_length]
+    float *window,              // Window function [n_fft]
+    int audio_length,
+    int n_fft,
+    int hop_length,
+    int batch_size
+) {
+    int frame_idx = blockIdx.x;
+    int batch_idx = blockIdx.y;
+    int tid = threadIdx.x;
+
+    if (batch_idx >= batch_size) return;
+
+    extern __shared__ float shared_ifft_frame[];
+
+    // IFFT will be performed externally using cuFFT
+    // This kernel applies windowing after IFFT
+
+    int frame_start = frame_idx * hop_length;
+    int audio_offset = batch_idx * audio_length;
+
+    // Apply window to IFFT output
+    for (int i = tid; i < n_fft; i += blockDim.x) {
+        float win_val = __ldg(&window[i]);
+        shared_ifft_frame[i] *= win_val;
+    }
+    __syncthreads();
+
+    // Overlap-add will be performed by overlap_add_synthesis_kernel
+}
+
+// Dedicated overlap-add synthesis kernel for ISTFT
+__global__ void overlap_add_synthesis_kernel(
+    float *ifft_frames,         // IFFT output frames [n_frames, n_fft]
+    float *audio_output,        // Output audio [audio_length]
+    float *window,              // Window function [n_fft]
+    int audio_length,
+    int n_frames,
+    int n_fft,
+    int hop_length
+) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+    if (tid >= audio_length) return;
+
+    extern __shared__ float shared_ola_buffer[];
+
+    // Compute which frames contribute to this audio sample
+    int first_frame = max(0, (tid - n_fft + 1) / hop_length);
+    int last_frame = min(n_frames - 1, tid / hop_length);
+
+    float sum = 0.0f;
+
+    // Accumulate contributions from overlapping frames
+    for (int frame = first_frame; frame <= last_frame; frame++) {
+        int frame_start = frame * hop_length;
+        int offset_in_frame = tid - frame_start;
+
+        if (offset_in_frame >= 0 && offset_in_frame < n_fft) {
+            // Load windowed IFFT sample and accumulate
+            float ifft_sample = ifft_frames[frame * n_fft + offset_in_frame];
+            float win_val = __ldg(&window[offset_in_frame]);
+            sum += ifft_sample * win_val;
+        }
+    }
+
+    // Use atomic add to handle overlapping writes
+    atomicAdd(&audio_output[tid], sum);
+}
+
+// Precompute window sum for perfect reconstruction (called once)
+__global__ void precompute_window_sum_kernel(
+    float *window,              // Window function [n_fft]
+    float *window_sum,          // Output window sum [audio_length]
+    int audio_length,
+    int n_fft,
+    int hop_length
+) {
+    int sample_idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (sample_idx >= audio_length) return;
+
+    // Compute which frames contribute to this sample
+    int n_frames = (audio_length - 1) / hop_length + 1;
+    int first_frame = max(0, (sample_idx - n_fft + 1) / hop_length);
+    int last_frame = min(n_frames - 1, sample_idx / hop_length);
+
+    float sum = 0.0f;
+
+    // Sum squared window values from overlapping frames
+    for (int frame = first_frame; frame <= last_frame; frame++) {
+        int frame_start = frame * hop_length;
+        int offset_in_frame = sample_idx - frame_start;
+
+        if (offset_in_frame >= 0 && offset_in_frame < n_fft) {
+            float win_val = __ldg(&window[offset_in_frame]);
+            sum += win_val * win_val;
+        }
+    }
+
+    window_sum[sample_idx] = sum;
+}
+
+// Normalize ISTFT output by precomputed window sum for perfect reconstruction
+__global__ void normalize_istft_kernel(
+    float *audio,               // Audio to normalize [batch_size, audio_length]
+    float *window_sum,          // Precomputed window sum [audio_length]
+    int audio_length,
+    int batch_size
+) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int batch_idx = blockIdx.y;
+
+    if (tid >= audio_length || batch_idx >= batch_size) return;
+
+    // Load precomputed window sum (O(1) lookup)
+    float sum = __ldg(&window_sum[tid]);
+
+    // Normalize by window sum for perfect reconstruction
+    int audio_offset = batch_idx * audio_length;
+    if (sum > EPSILON) {
+        audio[audio_offset + tid] /= sum;
+    }
 }
 
 #include <torch/extension.h>
@@ -149,28 +299,45 @@ void launch_apply_mel_filters(torch::Tensor& magnitude, torch::Tensor& mel_filte
     CUDA_CHECK(cudaGetLastError());
 }
 
-// Host function to execute forward FFT
-void execute_cufft_forward(float *d_input, cufftComplex *d_output, int batch_size, int n_fft) {
-    cufftHandle plan;
-    CUFFT_CHECK(cufftPlan1d(&plan, n_fft, CUFFT_R2C, batch_size));
+// Host function to execute forward FFT (refactored to use plan cache)
+void execute_cufft_forward(float *d_input, cufftComplex *d_output, int batch_size, int n_fft, cudaStream_t stream = 0) {
+    // Generate plan key
+    std::string plan_key = "fft_forward_" + std::to_string(n_fft) + "_" + std::to_string(batch_size);
+
+    // Get or create cached plan
+    cufftHandle plan = get_or_create_plan(plan_key, n_fft, CUFFT_R2C, batch_size);
+
+    // Set stream
+    if (stream != 0) {
+        CUFFT_CHECK(cufftSetStream(plan, stream));
+    }
+
+    // Execute FFT
     CUFFT_CHECK(cufftExecR2C(plan, d_input, d_output));
-    CUFFT_CHECK(cufftDestroy(plan));
 }
 
-// Host function to execute inverse FFT
-void execute_cufft_inverse(cufftComplex *d_input, float *d_output, int batch_size, int n_fft) {
-    cufftHandle plan;
-    CUFFT_CHECK(cufftPlan1d(&plan, n_fft, CUFFT_C2R, batch_size));
+// Host function to execute inverse FFT (refactored to use plan cache)
+void execute_cufft_inverse(cufftComplex *d_input, float *d_output, int batch_size, int n_fft, cudaStream_t stream = 0) {
+    // Generate plan key
+    std::string plan_key = "fft_inverse_" + std::to_string(n_fft) + "_" + std::to_string(batch_size);
+
+    // Get or create cached plan
+    cufftHandle plan = get_or_create_plan(plan_key, n_fft, CUFFT_C2R, batch_size);
+
+    // Set stream
+    if (stream != 0) {
+        CUFFT_CHECK(cufftSetStream(plan, stream));
+    }
+
+    // Execute IFFT
     CUFFT_CHECK(cufftExecC2R(plan, d_input, d_output));
-    CUFFT_CHECK(cufftDestroy(plan));
 
     // Normalize
     int total_samples = batch_size * n_fft;
     dim3 block(256);
     dim3 grid((total_samples + block.x - 1) / block.x);
 
-    // Use a proper normalization kernel instead of device lambda
-    // Launch a separate kernel for normalization if needed
+    normalize_kernel<<<grid, block, 0, stream>>>(d_output, n_fft, total_samples);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -179,4 +346,550 @@ __global__ void normalize_kernel(float *data, int n_fft, int total_samples) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= total_samples) return;
     data[idx] /= (float)n_fft;
+}
+
+// cuFFT plan cache for optimization (global static cache)
+static std::unordered_map<std::string, cufftHandle> g_cufft_plan_cache;
+static std::mutex g_plan_cache_mutex;
+
+// Helper function to get or create cached cuFFT plan
+cufftHandle get_or_create_plan(const std::string& key, int n_fft, cufftType type, int batch) {
+    std::lock_guard<std::mutex> lock(g_plan_cache_mutex);
+
+    auto it = g_cufft_plan_cache.find(key);
+    if (it != g_cufft_plan_cache.end()) {
+        return it->second;
+    }
+
+    // Create new plan
+    cufftHandle plan;
+    CUFFT_CHECK(cufftPlan1d(&plan, n_fft, type, batch));
+    g_cufft_plan_cache[key] = plan;
+
+    return plan;
+}
+
+// Host function to launch optimized STFT
+void launch_optimized_stft(
+    torch::Tensor& audio,           // Input audio [batch_size, audio_length]
+    torch::Tensor& window,          // Window function [n_fft]
+    torch::Tensor& stft_output,     // Output STFT [batch_size, n_frames, n_fft/2+1]
+    int n_fft,
+    int hop_length
+) {
+    // Validate inputs
+    if (!audio.is_cuda() || !window.is_cuda() || !stft_output.is_cuda()) {
+        throw std::runtime_error("All tensors must be on CUDA device");
+    }
+
+    float *d_audio = audio.data_ptr<float>();
+    float *d_window = window.data_ptr<float>();
+    cufftComplex *d_stft_output = reinterpret_cast<cufftComplex*>(stft_output.data_ptr<c10::complex<float>>());
+
+    int batch_size = audio.size(0);
+    int audio_length = audio.size(1);
+    int n_frames = (audio_length - n_fft) / hop_length + 1;
+
+    // Allocate global memory buffer for windowed frames [batch_size*n_frames, n_fft]
+    float *d_windowed_frames;
+    CUDA_CHECK(cudaMalloc(&d_windowed_frames, batch_size * n_frames * n_fft * sizeof(float)));
+
+    // Step 1: Launch windowing kernel to write windowed frames to global memory
+    dim3 block(STFT_BLOCK_SIZE);
+    dim3 grid(n_frames, batch_size);
+
+    for (int b = 0; b < batch_size; b++) {
+        for (int f = 0; f < n_frames; f++) {
+            int frame_start = f * hop_length;
+            int audio_offset = b * audio_length;
+            int frame_offset = (b * n_frames + f) * n_fft;
+
+            apply_window_kernel<<<1, 256>>>(
+                d_audio + audio_offset, d_window, d_windowed_frames + frame_offset,
+                audio_length, n_fft, hop_length
+            );
+        }
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Step 2: Execute batched FFT R2C using cached plan
+    std::string plan_key = "stft_" + std::to_string(n_fft) + "_" + std::to_string(batch_size * n_frames);
+    cufftHandle plan = get_or_create_plan(plan_key, n_fft, CUFFT_R2C, batch_size * n_frames);
+
+    // Set stream for plan
+    CUFFT_CHECK(cufftSetStream(plan, 0));
+
+    // Execute FFT: windowed_frames -> stft_output
+    CUFFT_CHECK(cufftExecR2C(plan, d_windowed_frames, d_stft_output));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Free temporary buffer
+    CUDA_CHECK(cudaFree(d_windowed_frames));
+}
+
+// Host function to launch optimized ISTFT
+void launch_optimized_istft(
+    torch::Tensor& stft_input,      // Input STFT [batch_size, n_frames, n_fft/2+1]
+    torch::Tensor& window,          // Window function [n_fft]
+    torch::Tensor& audio_output,    // Output audio [batch_size, audio_length]
+    int n_fft,
+    int hop_length
+) {
+    // Validate inputs
+    if (!stft_input.is_cuda() || !window.is_cuda() || !audio_output.is_cuda()) {
+        throw std::runtime_error("All tensors must be on CUDA device");
+    }
+
+    cufftComplex *d_stft_input = reinterpret_cast<cufftComplex*>(stft_input.data_ptr<c10::complex<float>>());
+    float *d_window = window.data_ptr<float>();
+    float *d_audio_output = audio_output.data_ptr<float>();
+
+    int batch_size = stft_input.size(0);
+    int n_frames = stft_input.size(1);
+    int audio_length = audio_output.size(1);
+
+    // Allocate temporary buffers
+    float *d_ifft_frames;
+    float *d_window_sum;
+    CUDA_CHECK(cudaMalloc(&d_ifft_frames, batch_size * n_frames * n_fft * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_window_sum, audio_length * sizeof(float)));
+
+    // Step 1: Precompute window sum once for all batches
+    int threads = 256;
+    int blocks = (audio_length + threads - 1) / threads;
+
+    precompute_window_sum_kernel<<<blocks, threads>>>(
+        d_window, d_window_sum, audio_length, n_fft, hop_length
+    );
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Step 2: Zero-initialize audio output before overlap-add
+    CUDA_CHECK(cudaMemset(d_audio_output, 0, batch_size * audio_length * sizeof(float)));
+
+    // Step 3: Execute batched IFFT C2R using cached plan
+    std::string plan_key = "istft_" + std::to_string(n_fft) + "_" + std::to_string(batch_size * n_frames);
+    cufftHandle plan = get_or_create_plan(plan_key, n_fft, CUFFT_C2R, batch_size * n_frames);
+
+    // Set stream for plan
+    CUFFT_CHECK(cufftSetStream(plan, 0));
+
+    // Execute IFFT: stft_input -> ifft_frames
+    CUFFT_CHECK(cufftExecC2R(plan, d_stft_input, d_ifft_frames));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Step 4: Launch overlap-add synthesis kernel
+    overlap_add_synthesis_kernel<<<blocks, ISTFT_BLOCK_SIZE>>>(
+        d_ifft_frames, d_audio_output, d_window, audio_length, n_frames, n_fft, hop_length
+    );
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Step 5: Launch optimized normalization kernel using precomputed window_sum
+    dim3 norm_block(ISTFT_BLOCK_SIZE);
+    dim3 norm_grid((audio_length + norm_block.x - 1) / norm_block.x, batch_size);
+
+    normalize_istft_kernel<<<norm_grid, norm_block>>>(
+        d_audio_output, d_window_sum, audio_length, batch_size
+    );
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Free temporary buffers
+    CUDA_CHECK(cudaFree(d_ifft_frames));
+    CUDA_CHECK(cudaFree(d_window_sum));
+}
+
+// Helper function to clear cuFFT plan cache (call on cleanup)
+void clear_cufft_plan_cache() {
+    std::lock_guard<std::mutex> lock(g_plan_cache_mutex);
+
+    for (auto& pair : g_cufft_plan_cache) {
+        cufftDestroy(pair.second);
+    }
+    g_cufft_plan_cache.clear();
+}
+
+// Mel-spectrogram kernel optimized for singing voice (44.1kHz)
+__global__ void mel_spectrogram_singing_kernel(
+    float* audio,                // Input audio [batch_size, audio_length]
+    cufftComplex* fft_output,   // FFT workspace [batch_size, n_frames, n_fft/2+1]
+    float* mel_output,          // Output mel-spectrogram [batch_size, n_frames, mel_bins]
+    float* filterbank,          // Mel filterbank [mel_bins, n_fft/2+1]
+    float* window,              // Hann window [n_fft]
+    int audio_length,
+    int n_fft,
+    int hop_length,
+    int mel_bins,
+    int batch_size,
+    bool apply_a_weighting      // Optional perceptual weighting
+) {
+    int frame_idx = blockIdx.x;
+    int batch_idx = blockIdx.y;
+    int tid = threadIdx.x;
+
+    if (batch_idx >= batch_size) return;
+
+    extern __shared__ float shared_mel_data[];
+    float *shared_audio = shared_mel_data;
+    float *shared_magnitude = &shared_mel_data[n_fft];
+
+    int frame_start = frame_idx * hop_length;
+    int audio_offset = batch_idx * audio_length;
+
+    // Step 1: Windowing - load and apply Hann window
+    for (int i = tid; i < n_fft; i += blockDim.x) {
+        int audio_idx = frame_start + i;
+        float sample = (audio_idx < audio_length) ? __ldg(&audio[audio_offset + audio_idx]) : 0.0f;
+        float win_val = __ldg(&window[i]);
+        shared_audio[i] = sample * win_val;
+    }
+    __syncthreads();
+
+    // Step 2: FFT (performed externally via cuFFT on shared_audio)
+    // Assume FFT output is in fft_output global memory
+
+    // Step 3: Compute magnitude spectrum
+    int n_bins = n_fft / 2 + 1;
+    for (int i = tid; i < n_bins; i += blockDim.x) {
+        int fft_idx = (batch_idx * ((audio_length - n_fft) / hop_length + 1) + frame_idx) * n_bins + i;
+        cufftComplex c = fft_output[fft_idx];
+        float mag = sqrtf(c.x * c.x + c.y * c.y);
+        shared_magnitude[i] = mag;
+    }
+    __syncthreads();
+
+    // Step 4: Apply mel filterbank (each thread computes one mel bin)
+    if (tid < mel_bins) {
+        float mel_sum = 0.0f;
+
+        for (int k = 0; k < n_bins; k++) {
+            float filter_val = __ldg(&filterbank[tid * n_bins + k]);
+            mel_sum += shared_magnitude[k] * filter_val;
+        }
+
+        // Step 5: Apply perceptual weighting (A-weighting) if requested
+        if (apply_a_weighting) {
+            // Compute mel bin center frequency
+            float mel_min = hz_to_mel_singing(SINGING_FMIN);
+            float mel_max = hz_to_mel_singing(SINGING_FMAX);
+            float mel_freq = mel_to_hz_singing(mel_min + (mel_max - mel_min) * tid / (float)mel_bins);
+
+            // Apply A-weighting
+            float a_weight_db = a_weighting_db(mel_freq);
+            float a_weight_linear = powf(10.0f, a_weight_db / 20.0f);
+            mel_sum *= a_weight_linear;
+        }
+
+        // Step 6: Log compression
+        float log_mel = logf(safe_divide(mel_sum, EPSILON));
+
+        // Write to global memory
+        int mel_idx = (batch_idx * ((audio_length - n_fft) / hop_length + 1) + frame_idx) * mel_bins + tid;
+        mel_output[mel_idx] = log_mel;
+    }
+}
+
+// Apply perceptual weighting (A-weighting) to mel-spectrogram
+__global__ void apply_perceptual_weighting_kernel(
+    float* mel_spectrogram,     // Input/output mel-spectrogram [batch_size, n_frames, mel_bins]
+    float* mel_frequencies,     // Mel bin center frequencies [mel_bins]
+    int n_frames,
+    int mel_bins,
+    int batch_size
+) {
+    int frame_idx = blockIdx.x;
+    int batch_idx = blockIdx.y;
+    int tid = threadIdx.x;
+
+    if (batch_idx >= batch_size || frame_idx >= n_frames) return;
+
+    extern __shared__ float shared_a_weights[];
+
+    // Precompute A-weighting for all mel bins (thread 0)
+    if (tid == 0) {
+        for (int i = 0; i < mel_bins; i++) {
+            float freq = __ldg(&mel_frequencies[i]);
+            shared_a_weights[i] = a_weighting_db(freq);
+        }
+    }
+    __syncthreads();
+
+    // Apply A-weighting to mel bins
+    if (tid < mel_bins) {
+        int mel_idx = (batch_idx * n_frames + frame_idx) * mel_bins + tid;
+
+        // Convert dB to linear scale
+        float a_weight_linear = powf(10.0f, shared_a_weights[tid] / 20.0f);
+
+        // Apply weighting (in linear scale, then convert back to log)
+        float mel_val = mel_spectrogram[mel_idx];
+        float linear_mel = expf(mel_val);  // Convert from log to linear
+        linear_mel *= a_weight_linear;
+        mel_spectrogram[mel_idx] = logf(safe_divide(linear_mel, EPSILON));
+    }
+}
+
+// Compute log mel-spectrogram (fused log operation) - Fixed race conditions
+__global__ void compute_log_mel_kernel(
+    float* mel_spectrogram,     // Input mel-spectrogram [batch_size, n_frames, mel_bins]
+    float* log_mel_output,      // Output log-mel [batch_size, n_frames, mel_bins]
+    int n_frames,
+    int mel_bins,
+    int batch_size,
+    float epsilon               // Small constant to avoid log(0)
+) {
+    int total_bins = batch_size * n_frames * mel_bins;
+
+    // Option A: Vectorized implementation with clean partitioning
+    // Each thread processes one float4 (4 elements)
+    int vec_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int num_vec4 = total_bins / 4;
+
+    // Process vectorized portion
+    if (vec_idx < num_vec4) {
+        int base_idx = vec_idx * 4;
+
+        // Check alignment before using vectorized load/store
+        if (reinterpret_cast<uintptr_t>(&mel_spectrogram[base_idx]) % 16 == 0 &&
+            reinterpret_cast<uintptr_t>(&log_mel_output[base_idx]) % 16 == 0) {
+            float4 mel_vals = *reinterpret_cast<float4*>(&mel_spectrogram[base_idx]);
+
+            float4 log_vals;
+            log_vals.x = logf(mel_vals.x + epsilon);
+            log_vals.y = logf(mel_vals.y + epsilon);
+            log_vals.z = logf(mel_vals.z + epsilon);
+            log_vals.w = logf(mel_vals.w + epsilon);
+
+            *reinterpret_cast<float4*>(&log_mel_output[base_idx]) = log_vals;
+        } else {
+            // Unaligned fallback - process 4 elements scalar
+            for (int i = 0; i < 4; i++) {
+                int idx = base_idx + i;
+                if (idx < total_bins) {
+                    log_mel_output[idx] = logf(mel_spectrogram[idx] + epsilon);
+                }
+            }
+        }
+    }
+
+    // Tail loop for remainder elements (total_bins % 4)
+    int tail_start = num_vec4 * 4;
+    int tail_idx = tail_start + threadIdx.x;
+
+    if (blockIdx.x == gridDim.x - 1 && tail_idx < total_bins) {
+        log_mel_output[tail_idx] = logf(mel_spectrogram[tail_idx] + epsilon);
+    }
+}
+
+// Real-time voice conversion kernel with chunk-based processing
+__global__ void realtime_voice_conversion_kernel(
+    float* audio_chunk,         // Input audio chunk [chunk_size]
+    float* overlap_buffer,      // Overlap buffer state [overlap_size]
+    cufftComplex* fft_workspace, // FFT workspace [n_fft/2+1]
+    float* features_output,     // Output features [feature_dim]
+    float* window,              // Window function [n_fft]
+    int chunk_size,
+    int overlap_size,
+    int n_fft,
+    int hop_length,
+    int feature_dim
+) {
+    int tid = threadIdx.x;
+
+    // Use shared memory sized at runtime: [overlap_size + chunk_size]
+    extern __shared__ float shared_rt_buffer[];
+
+    // Partition shared memory
+    float *shared_overlap = shared_rt_buffer;  // [overlap_size]
+    float *shared_chunk = &shared_rt_buffer[overlap_size];  // [chunk_size]
+    float *shared_combined = shared_rt_buffer;  // Reuse for combined buffer [overlap_size + chunk_size]
+
+    // Step 1: Load overlap buffer and current chunk into shared memory
+    if (tid < overlap_size) {
+        shared_overlap[tid] = __ldg(&overlap_buffer[tid]);
+    }
+    if (tid < chunk_size) {
+        shared_chunk[tid] = __ldg(&audio_chunk[tid]);
+    }
+    __syncthreads();
+
+    // Step 2: Create combined buffer in-place (overlap + chunk)
+    // Already laid out correctly in shared memory: [overlap][chunk]
+    int combined_size = overlap_size + chunk_size;
+
+    // Guard against OOB access with runtime sizes
+    if (combined_size > n_fft) {
+        // Handle case where combined buffer exceeds n_fft
+        combined_size = n_fft;
+    }
+
+    // Step 3: Apply window cooperatively using all threads
+    for (int i = tid; i < combined_size && i < n_fft; i += blockDim.x) {
+        float win_val = __ldg(&window[i]);
+        shared_combined[i] *= win_val;
+    }
+    __syncthreads();
+
+    // Step 4: FFT would be performed externally on shared_combined
+    // Extract features from FFT output (mel-spectrogram, F0, etc.)
+
+    // Step 5: Update overlap buffer for next iteration
+    // Copy last overlap_size samples from current chunk back to global overlap buffer
+    if (tid < overlap_size) {
+        int src_idx = chunk_size - overlap_size + tid;
+        if (src_idx >= 0 && src_idx < chunk_size) {
+            overlap_buffer[tid] = shared_chunk[src_idx];
+        }
+    }
+}
+
+// Host function to launch mel-spectrogram for singing
+void launch_mel_spectrogram_singing(
+    torch::Tensor& audio,
+    torch::Tensor& window,
+    torch::Tensor& mel_filterbank,
+    torch::Tensor& mel_output,
+    int n_fft,
+    int hop_length,
+    bool apply_a_weighting
+) {
+    // Validate inputs
+    if (!audio.is_cuda() || !window.is_cuda() || !mel_filterbank.is_cuda() || !mel_output.is_cuda()) {
+        throw std::runtime_error("All tensors must be on CUDA device");
+    }
+
+    float *d_audio = audio.data_ptr<float>();
+    float *d_window = window.data_ptr<float>();
+    float *d_filterbank = mel_filterbank.data_ptr<float>();
+    float *d_mel_output = mel_output.data_ptr<float>();
+
+    int batch_size = audio.size(0);
+    int audio_length = audio.size(1);
+    int n_frames = (audio_length - n_fft) / hop_length + 1;
+    int mel_bins = mel_filterbank.size(0);
+
+    // Allocate windowed frames buffer [batch_size * n_frames, n_fft]
+    float *d_windowed_frames;
+    CUDA_CHECK(cudaMalloc(&d_windowed_frames, batch_size * n_frames * n_fft * sizeof(float)));
+
+    // Allocate FFT workspace [batch_size * n_frames, n_fft/2+1]
+    cufftComplex *d_fft_output;
+    CUDA_CHECK(cudaMalloc(&d_fft_output, batch_size * n_frames * (n_fft / 2 + 1) * sizeof(cufftComplex)));
+
+    // Step 1: Launch windowing kernel to prepare windowed frames in global memory
+    dim3 window_block(256);
+    dim3 window_grid(n_frames, batch_size);
+
+    // Use a dedicated windowing kernel that writes to global memory
+    for (int b = 0; b < batch_size; b++) {
+        for (int f = 0; f < n_frames; f++) {
+            int frame_start = f * hop_length;
+            int audio_offset = b * audio_length;
+            int frame_offset = (b * n_frames + f) * n_fft;
+
+            // Launch window application for this frame
+            apply_window_kernel<<<1, 256>>>(
+                d_audio + audio_offset, d_window, d_windowed_frames + frame_offset,
+                audio_length, n_fft, hop_length
+            );
+        }
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Step 2: Execute cuFFT R2C on windowed frames using cached plan
+    std::string plan_key = "mel_stft_" + std::to_string(n_fft) + "_" + std::to_string(batch_size * n_frames);
+    cufftHandle plan = get_or_create_plan(plan_key, n_fft, CUFFT_R2C, batch_size * n_frames);
+
+    // Set plan to use default stream
+    CUFFT_CHECK(cufftSetStream(plan, 0));
+
+    // Execute FFT: windowed_frames -> fft_output
+    CUFFT_CHECK(cufftExecR2C(plan, d_windowed_frames, d_fft_output));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Step 3: Launch mel kernel to compute mel-spectrogram from FFT output
+    dim3 block(MEL_SPECTROGRAM_BLOCK_SIZE);
+    dim3 grid(n_frames, batch_size);
+    size_t shared_mem = SINGING_MEL_SHARED_MEM_SIZE * sizeof(float);
+
+    mel_spectrogram_singing_kernel<<<grid, block, shared_mem>>>(
+        d_audio, d_fft_output, d_mel_output, d_filterbank, d_window,
+        audio_length, n_fft, hop_length, mel_bins, batch_size, apply_a_weighting
+    );
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Free temporary buffers
+    CUDA_CHECK(cudaFree(d_windowed_frames));
+    CUDA_CHECK(cudaFree(d_fft_output));
+}
+
+// Host function to launch real-time voice conversion
+void launch_realtime_voice_conversion(
+    torch::Tensor& audio_chunk,
+    torch::Tensor& overlap_buffer,
+    torch::Tensor& features_output,
+    torch::Tensor& window,
+    int n_fft,
+    int hop_length
+) {
+    // Validate inputs
+    if (!audio_chunk.is_cuda() || !overlap_buffer.is_cuda() || !features_output.is_cuda() || !window.is_cuda()) {
+        throw std::runtime_error("All tensors must be on CUDA device");
+    }
+
+    float *d_chunk = audio_chunk.data_ptr<float>();
+    float *d_overlap = overlap_buffer.data_ptr<float>();
+    float *d_features = features_output.data_ptr<float>();
+    float *d_window = window.data_ptr<float>();
+
+    int chunk_size = audio_chunk.size(0);
+    int overlap_size = overlap_buffer.size(0);
+    int feature_dim = features_output.size(0);
+
+    // Allocate FFT workspace
+    cufftComplex *d_fft_workspace;
+    CUDA_CHECK(cudaMalloc(&d_fft_workspace, (n_fft / 2 + 1) * sizeof(cufftComplex)));
+
+    // Launch kernel with single block (low-latency processing)
+    dim3 block(REALTIME_CONVERSION_BLOCK_SIZE);
+    dim3 grid(1);
+    size_t shared_mem = REALTIME_CONVERSION_SHARED_MEM_SIZE * sizeof(float);
+
+    realtime_voice_conversion_kernel<<<grid, block, shared_mem>>>(
+        d_chunk, d_overlap, d_fft_workspace, d_features, d_window,
+        chunk_size, overlap_size, n_fft, hop_length, feature_dim
+    );
+    CUDA_CHECK(cudaGetLastError());
+
+    // Free workspace
+    CUDA_CHECK(cudaFree(d_fft_workspace));
+}
+
+// Host function to apply perceptual weighting (A-weighting)
+void apply_perceptual_weighting(
+    torch::Tensor& mel_spectrogram,
+    torch::Tensor& mel_frequencies,
+    int n_frames,
+    int mel_bins,
+    int batch_size
+) {
+    // Validate inputs
+    if (!mel_spectrogram.is_cuda() || !mel_frequencies.is_cuda()) {
+        throw std::runtime_error("All tensors must be on CUDA device");
+    }
+
+    float *d_mel = mel_spectrogram.data_ptr<float>();
+    float *d_freqs = mel_frequencies.data_ptr<float>();
+
+    // Launch perceptual weighting kernel
+    dim3 block(256);
+    dim3 grid(n_frames, batch_size);
+    size_t shared_mem = mel_bins * sizeof(float);  // For A-weighting cache
+
+    apply_perceptual_weighting_kernel<<<grid, block, shared_mem>>>(
+        d_mel, d_freqs, n_frames, mel_bins, batch_size
+    );
+    CUDA_CHECK(cudaGetLastError());
 }

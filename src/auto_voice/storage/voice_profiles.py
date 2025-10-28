@@ -154,11 +154,12 @@ class VoiceProfileStorage:
                 # Get file paths
                 json_path, embedding_path = self._get_profile_path(profile_id)
 
-                # Atomic write: JSON metadata
-                self._atomic_write_json(json_path, profile_meta)
-
-                # Atomic write: Embedding
+                # Atomic write: Embedding FIRST to prevent partial state
+                # (if JSON exists but embedding doesn't, the profile is invalid)
                 self._atomic_write_numpy(embedding_path, embedding)
+
+                # Atomic write: JSON metadata AFTER embedding is safely written
+                self._atomic_write_json(json_path, profile_meta)
 
                 # Update cache
                 if self.cache_enabled:
@@ -491,11 +492,12 @@ class VoiceProfileStorage:
             path: Target file path
             array: Array to write
         """
-        # Write to temp file
-        temp_path = path.with_suffix('.npy.tmp')
+        # Write to temp file using file handle to prevent numpy from appending extra extension
+        temp_path = Path(str(path) + '.tmp')
 
         try:
-            np.save(temp_path, array)
+            with open(temp_path, 'wb') as f:
+                np.save(f, array)
 
             # Atomic rename
             temp_path.replace(path)

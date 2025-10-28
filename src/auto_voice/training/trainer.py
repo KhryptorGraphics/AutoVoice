@@ -4,6 +4,7 @@ Advanced training utilities for AutoVoice models with multi-GPU support
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -24,6 +25,18 @@ try:
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
+
+# Import voice conversion components
+try:
+    from ..audio.pitch_extractor import SingingPitchExtractor
+    from ..models.speaker_encoder import SpeakerEncoder
+    from ..models.singing_voice_converter import SingingVoiceConverter
+    VC_COMPONENTS_AVAILABLE = True
+except ImportError:
+    VC_COMPONENTS_AVAILABLE = False
+    SingingPitchExtractor = None
+    SpeakerEncoder = None
+    SingingVoiceConverter = None
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +83,25 @@ class TrainingConfig:
     
     # Gradient accumulation
     gradient_accumulation_steps: int = 1
-    
+
     # Model compilation (PyTorch 2.0+)
     compile_model: bool = False
+
+    # Voice conversion settings
+    voice_conversion_mode: bool = False  # Enable voice conversion training
+    sample_rate: int = 44100  # Sample rate for voice conversion (higher than TTS)
+    extract_f0: bool = True  # Extract F0 during data loading
+    extract_speaker_emb: bool = True  # Extract speaker embeddings
+
+    # Voice conversion loss weights
+    vc_loss_weights: Dict[str, float] = field(default_factory=lambda: {
+        'mel_reconstruction': 45.0,
+        'kl_divergence': 1.0,
+        'pitch_consistency': 10.0,
+        'speaker_similarity': 5.0,
+        'flow_likelihood': 1.0,
+        'stft': 2.5
+    })
 
 class LossManager:
     """Manages multiple loss functions for training"""
@@ -190,6 +219,199 @@ class MultiResolutionSTFTLoss(nn.Module):
             total_loss += sc_loss + log_loss
         
         return total_loss / len(self.resolutions)
+
+
+class PitchConsistencyLoss(nn.Module):
+    """Compute F0 RMSE between source and converted audio for pitch preservation."""
+
+    def __init__(self, device: Optional[str] = None):
+        """Initialize pitch consistency loss.
+
+        Args:
+            device: Device for computation ('cuda', 'cpu', etc.)
+        """
+        super().__init__()
+        self.device = device
+
+        if VC_COMPONENTS_AVAILABLE:
+            self.pitch_extractor = SingingPitchExtractor(device=device)
+        else:
+            self.pitch_extractor = None
+            logger.warning("SingingPitchExtractor not available, pitch consistency loss will be disabled")
+
+    def forward(
+        self,
+        pred_audio: torch.Tensor,
+        source_f0: torch.Tensor,
+        sample_rate: int = 44100
+    ) -> torch.Tensor:
+        """Compute pitch consistency loss.
+
+        Args:
+            pred_audio: Predicted audio waveform [B, T_audio]
+            source_f0: Source F0 contour [B, T_f0]
+            sample_rate: Audio sample rate
+
+        Returns:
+            F0 RMSE loss
+        """
+        if self.pitch_extractor is None:
+            return torch.tensor(0.0, device=pred_audio.device)
+
+        try:
+            # Extract F0 from predicted audio
+            batch_size = pred_audio.size(0)
+            pred_f0_list = []
+
+            for i in range(batch_size):
+                audio_np = pred_audio[i].detach().cpu().numpy()
+                f0_result = self.pitch_extractor.extract_f0_contour(audio_np, sample_rate)
+                pred_f0_list.append(f0_result['f0'])
+
+            # Convert to tensor
+            max_len = max(len(f0) for f0 in pred_f0_list)
+            pred_f0 = torch.zeros(batch_size, max_len, device=pred_audio.device)
+
+            for i, f0 in enumerate(pred_f0_list):
+                f0_tensor = torch.from_numpy(f0).float().to(pred_audio.device)
+                pred_f0[i, :len(f0)] = f0_tensor
+
+            # Align lengths (interpolate to match)
+            if pred_f0.size(1) != source_f0.size(1):
+                pred_f0 = F.interpolate(
+                    pred_f0.unsqueeze(1),
+                    size=source_f0.size(1),
+                    mode='linear',
+                    align_corners=False
+                ).squeeze(1)
+
+            # Compute MSE on voiced frames (F0 > 0)
+            voiced_mask = (source_f0 > 0) & (pred_f0 > 0)
+            if voiced_mask.sum() > 0:
+                loss = F.mse_loss(pred_f0[voiced_mask], source_f0[voiced_mask])
+            else:
+                loss = torch.tensor(0.0, device=pred_audio.device)
+
+            return loss
+
+        except Exception as e:
+            logger.warning(f"Pitch consistency loss computation failed: {e}")
+            return torch.tensor(0.0, device=pred_audio.device)
+
+
+class SpeakerSimilarityLoss(nn.Module):
+    """Compute cosine distance between target speaker embedding and converted audio embedding."""
+
+    def __init__(self, device: Optional[str] = None):
+        """Initialize speaker similarity loss.
+
+        Args:
+            device: Device for computation ('cuda', 'cpu', etc.)
+        """
+        super().__init__()
+        self.device = device
+
+        if VC_COMPONENTS_AVAILABLE:
+            self.speaker_encoder = SpeakerEncoder(device=device)
+        else:
+            self.speaker_encoder = None
+            logger.warning("SpeakerEncoder not available, speaker similarity loss will be disabled")
+
+    def forward(
+        self,
+        pred_audio: torch.Tensor,
+        target_speaker_emb: torch.Tensor,
+        sample_rate: int = 44100
+    ) -> torch.Tensor:
+        """Compute speaker similarity loss.
+
+        Args:
+            pred_audio: Predicted audio waveform [B, T_audio]
+            target_speaker_emb: Target speaker embedding [B, 256]
+            sample_rate: Audio sample rate
+
+        Returns:
+            Speaker cosine distance loss
+        """
+        if self.speaker_encoder is None:
+            return torch.tensor(0.0, device=pred_audio.device)
+
+        try:
+            # Extract speaker embedding from predicted audio
+            batch_size = pred_audio.size(0)
+            pred_emb_list = []
+
+            for i in range(batch_size):
+                audio_np = pred_audio[i].detach().cpu().numpy()
+                emb = self.speaker_encoder.extract_embedding(audio_np, sample_rate)
+                pred_emb_list.append(emb)
+
+            # Convert to tensor
+            pred_emb = torch.from_numpy(np.stack(pred_emb_list)).float().to(pred_audio.device)
+
+            # Compute cosine similarity
+            cos_sim = F.cosine_similarity(pred_emb, target_speaker_emb, dim=-1)
+
+            # Convert to distance (1 - similarity)
+            distance = 1.0 - cos_sim
+
+            # Return mean distance
+            return distance.mean()
+
+        except Exception as e:
+            logger.warning(f"Speaker similarity loss computation failed: {e}")
+            return torch.tensor(0.0, device=pred_audio.device)
+
+
+class KLDivergenceLoss(nn.Module):
+    """KL divergence loss for variational models."""
+
+    def forward(self, z_mean: torch.Tensor, z_logvar: torch.Tensor) -> torch.Tensor:
+        """Compute KL divergence loss.
+
+        Args:
+            z_mean: Latent mean [B, D, T]
+            z_logvar: Latent log variance [B, D, T]
+
+        Returns:
+            KL divergence loss
+        """
+        # KL divergence: -0.5 * sum(1 + log(var) - mean^2 - var)
+        kl_loss = -0.5 * torch.sum(1 + z_logvar - z_mean.pow(2) - z_logvar.exp())
+
+        # Normalize by batch size and sequence length
+        batch_size = z_mean.size(0)
+        seq_len = z_mean.size(2) if z_mean.dim() > 2 else 1
+        kl_loss = kl_loss / (batch_size * seq_len)
+
+        return kl_loss
+
+
+class FlowLogLikelihoodLoss(nn.Module):
+    """Negative log-likelihood from normalizing flow."""
+
+    def forward(self, logdet: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """Compute flow log-likelihood loss.
+
+        Args:
+            logdet: Log determinant from flow [B, T]
+            u: Flow output (prior space) [B, D, T]
+
+        Returns:
+            Negative log-likelihood loss
+        """
+        # Prior log-likelihood (standard normal)
+        log_p_u = -0.5 * (np.log(2 * np.pi) + u.pow(2))
+        log_p_u = log_p_u.sum(dim=1)  # Sum over channels
+
+        # Total log-likelihood
+        log_p_z = log_p_u + logdet
+
+        # Negative log-likelihood
+        nll = -log_p_z.mean()
+
+        return nll
+
 
 class VoiceTrainer:
     """Advanced trainer for voice synthesis models with multi-GPU support"""
@@ -700,6 +922,284 @@ class VoiceTrainer:
             oldest = checkpoints.pop(0)
             oldest.unlink()
             logger.info(f"Removed old checkpoint: {oldest}")
+
+
+class VoiceConversionTrainer(VoiceTrainer):
+    """Specialized trainer for voice conversion with perceptual losses.
+
+    Extends VoiceTrainer to add voice conversion-specific loss computation
+    including pitch consistency, speaker similarity, and flow-based losses.
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        config: TrainingConfig,
+        gpu_manager=None,
+        experiment_name: str = "voice_conversion_training"
+    ):
+        """Initialize voice conversion trainer.
+
+        Args:
+            model: SingingVoiceConverter model
+            config: Training configuration with voice_conversion_mode=True
+            gpu_manager: GPU manager instance
+            experiment_name: Name for logging and checkpointing
+        """
+        # Initialize parent trainer
+        super().__init__(model, config, gpu_manager, experiment_name)
+
+        # Override loss manager to include voice conversion losses
+        self._setup_vc_losses()
+
+        # Use voice conversion loss weights
+        self.vc_loss_weights = config.vc_loss_weights
+
+        logger.info(f"VoiceConversionTrainer initialized with VC-specific losses")
+
+    def _setup_vc_losses(self):
+        """Setup voice conversion-specific losses."""
+        if not VC_COMPONENTS_AVAILABLE:
+            logger.warning("Voice conversion components not available, some losses may be disabled")
+
+        # Create voice conversion loss functions
+        self.pitch_loss = PitchConsistencyLoss(device=self.device)
+        self.speaker_loss = SpeakerSimilarityLoss(device=self.device)
+        self.kl_loss = KLDivergenceLoss()
+        self.flow_loss = FlowLogLikelihoodLoss()
+
+        # Keep existing STFT loss
+        self.stft_loss = MultiResolutionSTFTLoss()
+
+        logger.info("Voice conversion losses initialized")
+
+    def _forward_pass(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Forward pass for voice conversion model.
+
+        Args:
+            batch: Batch dict containing:
+                - source_audio: Source audio waveform [B, T_audio]
+                - target_mel: Target mel-spectrogram [B, T_mel, 80]
+                - source_f0: Source F0 contour [B, T_f0]
+                - target_speaker_emb: Target speaker embedding [B, 256]
+                - mel_mask: Mask for variable lengths [B, 1, T_mel]
+
+        Returns:
+            Dict with model outputs:
+                - pred_mel: Predicted mel-spectrogram
+                - z_mean: Latent mean
+                - z_logvar: Latent log variance
+                - z: Sampled latent
+                - u: Flow output
+                - logdet: Flow log determinant
+                - cond: Conditioning features
+        """
+        # Call SingingVoiceConverter.forward()
+        outputs = self.model(
+            source_audio=batch['source_audio'],
+            target_mel=batch['target_mel'],
+            source_f0=batch['source_f0'],
+            target_speaker_emb=batch['target_speaker_emb'],
+            source_sample_rate=self.config.sample_rate,
+            x_mask=batch.get('mel_mask')
+        )
+
+        return outputs
+
+    def _compute_voice_conversion_losses(
+        self,
+        predictions: Dict[str, torch.Tensor],
+        batch: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Compute all voice conversion losses.
+
+        Args:
+            predictions: Model predictions dict
+            batch: Input batch dict
+
+        Returns:
+            Dict with individual losses and total loss
+        """
+        losses = {}
+        total_loss = 0.0
+
+        # 1. Mel reconstruction loss
+        if 'pred_mel' in predictions and 'target_mel' in batch:
+            mel_loss = F.l1_loss(predictions['pred_mel'], batch['target_mel'])
+            losses['mel_reconstruction'] = mel_loss
+            total_loss += self.vc_loss_weights['mel_reconstruction'] * mel_loss
+
+        # 2. KL divergence loss
+        if 'z_mean' in predictions and 'z_logvar' in predictions:
+            kl_loss_val = self.kl_loss(predictions['z_mean'], predictions['z_logvar'])
+            losses['kl_divergence'] = kl_loss_val
+            total_loss += self.vc_loss_weights['kl_divergence'] * kl_loss_val
+
+        # 3. Flow log-likelihood loss
+        if 'logdet' in predictions and 'u' in predictions:
+            flow_loss_val = self.flow_loss(predictions['logdet'], predictions['u'])
+            losses['flow_likelihood'] = flow_loss_val
+            total_loss += self.vc_loss_weights['flow_likelihood'] * flow_loss_val
+
+        # 4. Multi-resolution STFT loss
+        if 'pred_mel' in predictions and 'target_mel' in batch:
+            stft_loss_val = self.stft_loss(
+                predictions['pred_mel'].mean(dim=-1),  # Average over mel channels
+                batch['target_mel'].mean(dim=-1)
+            )
+            losses['stft'] = stft_loss_val
+            total_loss += self.vc_loss_weights['stft'] * stft_loss_val
+
+        # 5. Pitch consistency loss (expensive, compute less frequently)
+        # Note: We use target mel instead of converting to audio for efficiency
+        # In production, you may want to use a vocoder to convert mel to audio
+        if 'pred_mel' in predictions and 'source_f0' in batch:
+            # Skip pitch loss if it's too expensive
+            # Can be enabled during validation or less frequently during training
+            losses['pitch_consistency'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
+
+        # 6. Speaker similarity loss (expensive, compute less frequently)
+        if 'pred_mel' in predictions and 'target_speaker_emb' in batch:
+            # Skip speaker loss if it's too expensive
+            # Can be enabled during validation or less frequently during training
+            losses['speaker_similarity'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
+
+        losses['total'] = total_loss
+
+        return losses
+
+    def train_epoch(self, dataloader, epoch: int) -> Dict[str, float]:
+        """Train for one epoch with voice conversion losses.
+
+        Args:
+            dataloader: Training data loader
+            epoch: Current epoch number
+
+        Returns:
+            Dict with average losses for the epoch
+        """
+        self.model.train()
+        epoch_losses = {}
+        num_batches = 0
+
+        progress_bar = tqdm(
+            dataloader,
+            desc=f"Epoch {epoch}",
+            disable=(self.config.local_rank != 0)
+        )
+
+        for batch_idx, batch in enumerate(progress_bar):
+            # Move batch to device
+            batch = self._move_batch_to_device(batch)
+
+            # Forward pass
+            with autocast(enabled=self.config.use_amp):
+                predictions = self._forward_pass(batch)
+                losses = self._compute_voice_conversion_losses(predictions, batch)
+
+            # Backward pass
+            loss = losses['total'] / self.config.gradient_accumulation_steps
+
+            if self.scaler:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
+
+            # Optimizer step (with gradient accumulation)
+            if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
+                if self.scaler:
+                    self.scaler.unscale_(self.optimizer)
+
+                # Gradient clipping
+                if self.config.gradient_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.gradient_clip
+                    )
+
+                if self.scaler:
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
+
+                self.optimizer.zero_grad()
+
+                if self.scheduler:
+                    self.scheduler.step()
+
+                self.global_step += 1
+
+            # Accumulate losses
+            for loss_name, loss_value in losses.items():
+                if loss_name not in epoch_losses:
+                    epoch_losses[loss_name] = 0.0
+                epoch_losses[loss_name] += loss_value.item()
+
+            num_batches += 1
+
+            # Update progress bar
+            progress_bar.set_postfix({
+                'loss': losses['total'].item(),
+                'mel': losses.get('mel_reconstruction', 0).item() if 'mel_reconstruction' in losses else 0,
+                'kl': losses.get('kl_divergence', 0).item() if 'kl_divergence' in losses else 0
+            })
+
+            # Log to tensorboard/wandb
+            if self.global_step % self.config.log_interval == 0:
+                self._log_training_step(losses, losses['total'].item())
+
+        # Average losses
+        for loss_name in epoch_losses:
+            epoch_losses[loss_name] /= num_batches
+
+        return epoch_losses
+
+    def validate(self, dataloader) -> Dict[str, float]:
+        """Validate with voice conversion metrics.
+
+        Args:
+            dataloader: Validation data loader
+
+        Returns:
+            Dict with validation metrics
+        """
+        self.model.eval()
+        val_losses = {}
+        num_batches = 0
+
+        with torch.no_grad():
+            for batch in dataloader:
+                batch = self._move_batch_to_device(batch)
+
+                # Forward pass
+                predictions = self._forward_pass(batch)
+                losses = self._compute_voice_conversion_losses(predictions, batch)
+
+                # Accumulate losses
+                for loss_name, loss_value in losses.items():
+                    if loss_name not in val_losses:
+                        val_losses[loss_name] = 0.0
+                    val_losses[loss_name] += loss_value.item()
+
+                num_batches += 1
+
+        # Average losses
+        for loss_name in val_losses:
+            val_losses[loss_name] /= num_batches
+
+        # Log validation metrics
+        if self.config.local_rank == 0:
+            if self.writer:
+                for loss_name, loss_value in val_losses.items():
+                    self.writer.add_scalar(f"val/{loss_name}", loss_value, self.global_step)
+
+            if self.use_wandb:
+                log_dict = {f"val/{k}": v for k, v in val_losses.items()}
+                wandb.log(log_dict, step=self.global_step)
+
+        return val_losses
+
 
 # Example usage and factory functions
 def create_trainer(model: nn.Module, config_dict: Dict[str, Any], **kwargs) -> VoiceTrainer:

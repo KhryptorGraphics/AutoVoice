@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from .cuda_graphs import CUDAGraphManager, GraphOptimizedModel
     from .inference_manager import InferenceManager
     from .voice_cloner import VoiceCloner
+    from .singing_conversion_pipeline import SingingConversionPipeline
 
 __all__ = [
     'VoiceInferenceEngine',
@@ -24,7 +25,8 @@ __all__ = [
     'CUDAGraphManager',
     'GraphOptimizedModel',
     'InferenceManager',
-    'VoiceCloner'
+    'VoiceCloner',
+    'SingingConversionPipeline'
 ]
 
 # Module-level cache for lazy-loaded classes
@@ -100,6 +102,11 @@ def __getattr__(name):
             from .voice_cloner import VoiceCloner
             _module_cache[name] = VoiceCloner
             return VoiceCloner
+
+        elif name == 'SingingConversionPipeline':
+            from .singing_conversion_pipeline import SingingConversionPipeline
+            _module_cache[name] = SingingConversionPipeline
+            return SingingConversionPipeline
 
     except Exception as e:
         import logging

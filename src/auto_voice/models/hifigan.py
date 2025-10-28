@@ -77,9 +77,10 @@ class HiFiGANGenerator(nn.Module):
                  upsample_kernel_sizes=(16, 16, 4, 4),
                  upsample_initial_channel=512,
                  resblock_kernel_sizes=(3, 7, 11),
-                 resblock_dilation_sizes=((1, 3, 5), (1, 3, 5), (1, 3, 5))):
+                 resblock_dilation_sizes=((1, 3, 5), (1, 3, 5), (1, 3, 5)),
+                 sample_rate=22050):
         super().__init__()
-        
+
         # Support both parameter names for compatibility
         if in_channels is not None:
             mel_channels = in_channels
@@ -87,6 +88,7 @@ class HiFiGANGenerator(nn.Module):
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
         self.mel_channels = mel_channels
+        self.sample_rate = sample_rate
 
         # Pre conv
         self.conv_pre = weight_norm(nn.Conv1d(mel_channels, upsample_initial_channel, 7, 1, padding=3))

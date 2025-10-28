@@ -134,6 +134,16 @@ class SingingPitchExtractor:
         self.vibrato_rate_range = self.config.get('vibrato_rate_range', [4.0, 8.0])
         self.vibrato_min_depth_cents = self.config.get('vibrato_min_depth_cents', 20.0)
         self.vibrato_min_duration_ms = self.config.get('vibrato_min_duration_ms', 250.0)
+        self.vibrato_regularity_threshold = self.config.get('vibrato_regularity_threshold', 0.5)
+
+        # Pitch correction parameters
+        self.pitch_correction_tolerance_cents = self.config.get('pitch_correction_tolerance_cents', 50.0)
+        self.pitch_correction_reference_scale = self.config.get('pitch_correction_reference_scale', 'C')
+
+        # Real-time streaming parameters
+        self.realtime_overlap_frames = self.config.get('realtime_overlap_frames', 5)
+        self.realtime_buffer_size = self.config.get('realtime_buffer_size', 4096)
+        self.realtime_smoothing_window = self.config.get('realtime_smoothing_window', 5)
 
         # GPU optimization
         self.gpu_acceleration = self.config.get('gpu_acceleration', True)
@@ -144,6 +154,73 @@ class SingingPitchExtractor:
             f"SingingPitchExtractor initialized: model={self.model}, device={self.device}, "
             f"fmin={self.fmin}Hz, fmax={self.fmax}Hz"
         )
+
+    def _call_torchcrepe_predict(
+        self,
+        audio: torch.Tensor,
+        sample_rate: int,
+        hop_length: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Call torchcrepe.predict with decoder compatibility handling
+
+        Args:
+            audio: Audio tensor
+            sample_rate: Sample rate
+            hop_length: Hop length in samples
+
+        Returns:
+            Tuple of (pitch, periodicity) tensors
+        """
+        # Map decoder option to torchcrepe decoders
+        decoder_fn = None
+        if self.decoder == 'viterbi':
+            decoder_fn = torchcrepe.decode.viterbi
+        elif self.decoder == 'argmax':
+            if hasattr(torchcrepe.decode, 'argmax'):
+                decoder_fn = torchcrepe.decode.argmax
+            else:
+                self.logger.warning("torchcrepe.decode.argmax not available, using viterbi")
+                decoder_fn = torchcrepe.decode.viterbi
+        elif self.decoder == 'weighted_argmax':
+            if hasattr(torchcrepe.decode, 'weighted_argmax'):
+                decoder_fn = torchcrepe.decode.weighted_argmax
+            else:
+                self.logger.warning("torchcrepe.decode.weighted_argmax not available, using viterbi")
+                decoder_fn = torchcrepe.decode.viterbi
+
+        # Try calling with decoder parameter, fall back if not supported
+        try:
+            pitch, periodicity = torchcrepe.predict(
+                audio,
+                sample_rate,
+                hop_length=hop_length,
+                fmin=self.fmin,
+                fmax=self.fmax,
+                model=self.model,
+                batch_size=self.batch_size,
+                device=self.device,
+                return_periodicity=True,
+                decoder=decoder_fn
+            )
+        except TypeError as e:
+            # Decoder parameter not supported in this torchcrepe version
+            if 'decoder' in str(e):
+                self.logger.warning("torchcrepe.predict does not support 'decoder' parameter, calling without it")
+                pitch, periodicity = torchcrepe.predict(
+                    audio,
+                    sample_rate,
+                    hop_length=hop_length,
+                    fmin=self.fmin,
+                    fmax=self.fmax,
+                    model=self.model,
+                    batch_size=self.batch_size,
+                    device=self.device,
+                    return_periodicity=True
+                )
+            else:
+                raise
+
+        return pitch, periodicity
 
     def _load_config(self, config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Load configuration from multiple sources
@@ -170,6 +247,12 @@ class SingingPitchExtractor:
             'vibrato_rate_range': [4.0, 8.0],
             'vibrato_min_depth_cents': 20.0,
             'vibrato_min_duration_ms': 250.0,
+            'vibrato_regularity_threshold': 0.5,
+            'pitch_correction_tolerance_cents': 50.0,
+            'pitch_correction_reference_scale': 'C',
+            'realtime_overlap_frames': 5,
+            'realtime_buffer_size': 4096,
+            'realtime_smoothing_window': 5,
             'gpu_acceleration': True,
             'mixed_precision': True,
             'use_cuda_kernel_fallback': True
@@ -188,17 +271,22 @@ class SingingPitchExtractor:
 
         # Override with environment variables
         env_mapping = {
-            'AUTOVOICE_PITCH_MODEL': 'model',
-            'AUTOVOICE_PITCH_FMIN': 'fmin',
-            'AUTOVOICE_PITCH_FMAX': 'fmax',
-            'AUTOVOICE_PITCH_HOP_LENGTH': 'hop_length_ms'
+            'AUTOVOICE_PITCH_MODEL': ('model', str),
+            'AUTOVOICE_PITCH_FMIN': ('fmin', float),
+            'AUTOVOICE_PITCH_FMAX': ('fmax', float),
+            'AUTOVOICE_PITCH_HOP_LENGTH': ('hop_length_ms', float),
+            'AUTOVOICE_PITCH_BATCH_SIZE': ('batch_size', int),
+            'AUTOVOICE_PITCH_DECODER': ('decoder', str)
         }
-        for env_var, config_key in env_mapping.items():
+        for env_var, (config_key, value_type) in env_mapping.items():
             if env_var in os.environ:
                 try:
                     value = os.environ[env_var]
-                    if config_key in ['fmin', 'fmax', 'hop_length_ms']:
+                    if value_type == int:
+                        value = int(value)
+                    elif value_type == float:
                         value = float(value)
+                    # str type needs no conversion
                     final_config[config_key] = value
                 except ValueError:
                     self.logger.warning(f"Invalid value for {env_var}: {os.environ[env_var]}")
@@ -235,19 +323,34 @@ class SingingPitchExtractor:
                 - 'hop_length': Hop length used
 
         Raises:
+            ValueError: If audio is empty or too short
             PitchExtractionError: If extraction fails
         """
         with self.lock:
+            # Load audio if file path (before validation)
+            if isinstance(audio, str):
+                audio, original_sr = self.audio_processor.load_audio(audio, return_sr=True)
+                # Use the processor's target sample rate (resampled SR), not original
+                sample_rate = self.audio_processor.sample_rate
+                # Keep as tensor, don't convert to numpy here
+
+            # Validate sample_rate before try block so ValueError surfaces unchanged
+            if sample_rate is None:
+                raise ValueError("sample_rate must be provided for tensor/array input")
+
+            # Validate audio is not empty or too short before try block
+            if isinstance(audio, np.ndarray):
+                if audio.size == 0:
+                    raise ValueError("Audio array is empty")
+                if len(audio) < 100:
+                    raise ValueError(f"Audio is too short ({len(audio)} samples), need at least 100 samples")
+            elif isinstance(audio, torch.Tensor):
+                if audio.numel() == 0:
+                    raise ValueError("Audio tensor is empty")
+                if audio.numel() < 100:
+                    raise ValueError(f"Audio is too short ({audio.numel()} samples), need at least 100 samples")
+
             try:
-                # Load audio if file path
-                if isinstance(audio, str):
-                    audio, sample_rate = self.audio_processor.load_audio(audio, return_sr=True)
-                    if isinstance(audio, torch.Tensor):
-                        audio = audio.detach().cpu().numpy()
-
-                if sample_rate is None:
-                    raise ValueError("sample_rate must be provided for tensor/array input")
-
                 # Convert to torch tensor if numpy
                 if isinstance(audio, np.ndarray):
                     audio = torch.from_numpy(audio).float()
@@ -272,65 +375,57 @@ class SingingPitchExtractor:
                 context = self.gpu_manager.device_context() if self.gpu_manager else self._null_context()
 
                 with context:
-                    with torch.no_grad():
-                        # Map decoder option to torchcrepe decoders
-                        decoder_fn = None
-                        if self.decoder == 'viterbi':
-                            decoder_fn = torchcrepe.decode.viterbi
-                        elif self.decoder == 'argmax':
-                            if hasattr(torchcrepe.decode, 'argmax'):
-                                decoder_fn = torchcrepe.decode.argmax
-                            else:
-                                self.logger.warning("torchcrepe.decode.argmax not available, using viterbi")
-                                decoder_fn = torchcrepe.decode.viterbi
-                        elif self.decoder == 'weighted_argmax':
-                            if hasattr(torchcrepe.decode, 'weighted_argmax'):
-                                decoder_fn = torchcrepe.decode.weighted_argmax
-                            else:
-                                self.logger.warning("torchcrepe.decode.weighted_argmax not available, using viterbi")
-                                decoder_fn = torchcrepe.decode.viterbi
+                    # Ensure audio is float32 for torchcrepe
+                    if audio.dtype != torch.float32:
+                        audio = audio.float()
 
-                        # Call torchcrepe
-                        pitch, periodicity = torchcrepe.predict(
-                            audio,
-                            sample_rate,
-                            hop_length=hop_length,
-                            fmin=self.fmin,
-                            fmax=self.fmax,
-                            model=self.model,
-                            batch_size=self.batch_size,
-                            device=self.device,
-                            return_periodicity=True,
-                            decoder=decoder_fn
-                        )
+                    # Call torchcrepe without autocast to maintain pitch accuracy
+                    with torch.no_grad():
+                        pitch, periodicity = self._call_torchcrepe_predict(audio, sample_rate, hop_length)
+
+                # Squeeze batch dimension from torchcrepe output (batch, time) -> (time,)
+                if pitch.dim() > 1:
+                    pitch = pitch.squeeze(0)
+                if periodicity.dim() > 1:
+                    periodicity = periodicity.squeeze(0)
 
                 # Post-processing
                 pitch, periodicity = self._post_process(pitch, periodicity, hop_length, sample_rate)
 
-                # Compute voiced/unvoiced mask
+                # Compute voiced/unvoiced mask (ensure 1D)
                 voiced = periodicity > self.confidence_threshold
+                if voiced.dim() > 1:
+                    voiced = voiced.squeeze(0)
 
                 # Detect vibrato
                 vibrato_data = self._detect_vibrato(pitch, voiced, sample_rate, hop_length)
 
+                # Ensure all tensors are 1D and convert to numpy
+                pitch_np = pitch.squeeze().cpu().numpy() if isinstance(pitch, torch.Tensor) else pitch
+                voiced_np = voiced.squeeze().cpu().numpy() if isinstance(voiced, torch.Tensor) else voiced
+                confidence_np = periodicity.squeeze().cpu().numpy() if isinstance(periodicity, torch.Tensor) else periodicity
+
                 # Build result dictionary
                 result = {
-                    'f0': pitch.cpu().numpy() if isinstance(pitch, torch.Tensor) else pitch,
-                    'voiced': voiced.cpu().numpy() if isinstance(voiced, torch.Tensor) else voiced,
+                    'f0': pitch_np,
+                    'voiced': voiced_np,
                     'vibrato': vibrato_data,
                     'sample_rate': sample_rate,
                     'hop_length': hop_length
                 }
 
                 if return_confidence:
-                    result['confidence'] = periodicity.cpu().numpy() if isinstance(periodicity, torch.Tensor) else periodicity
+                    result['confidence'] = confidence_np
 
                 if return_times:
-                    n_frames = len(pitch)
+                    n_frames = len(pitch_np)
                     result['times'] = np.arange(n_frames) * hop_length / sample_rate
 
                 return result
 
+            except ValueError:
+                # Let ValueError pass through unchanged for input validation errors
+                raise
             except Exception as e:
                 self.logger.error(f"F0 extraction failed: {e}")
                 raise PitchExtractionError(f"Failed to extract F0 contour: {e}") from e
@@ -449,7 +544,9 @@ class SingingPitchExtractor:
 
             # Find voiced segments longer than minimum duration
             min_frames = int(self.vibrato_min_duration_ms * sample_rate / (1000.0 * hop_length))
-            segments = self._find_voiced_segments(voiced, min_frames)
+            # Merge adjacent segments separated by short gaps (up to 3 frames)
+            raw_segments = self._find_voiced_segments(voiced, min_frames // 2)  # Use lower threshold initially
+            segments = self._merge_close_segments(raw_segments, max_gap=3)
 
             vibrato_segments = []
             total_rate = 0.0
@@ -457,14 +554,17 @@ class SingingPitchExtractor:
             vibrato_count = 0
 
             for start, end in segments:
-                if end - start < min_frames:
+                # Reduce minimum frames requirement to 70% of original for flexibility
+                if end - start < int(min_frames * 0.7):
                     continue
 
                 # Use filtered signal for better depth estimation
                 seg_detrended = detrended_filtered[start:end]
                 seg_valid = ~np.isnan(seg_detrended)
 
-                if seg_valid.sum() < min_frames:
+                # Reduce valid points requirement to fraction of segment length
+                min_valid_points = max(3, int((end - start) * 0.7))
+                if seg_valid.sum() < min_valid_points:
                     continue
 
                 # Compute autocorrelation
@@ -540,15 +640,27 @@ class SingingPitchExtractor:
             }
 
     def _moving_average(self, x: np.ndarray, window: int) -> np.ndarray:
-        """Compute moving average with NaN handling"""
-        result = np.full_like(x, np.nan)
-        for i in range(len(x)):
-            start = max(0, i - window//2)
-            end = min(len(x), i + window//2 + 1)
-            window_data = x[start:end]
-            valid = ~np.isnan(window_data)
-            if valid.sum() > 0:
-                result[i] = np.mean(window_data[valid])
+        """Compute moving average with NaN handling using efficient convolution"""
+        if window < 2:
+            return x.copy()
+
+        # Create mask for valid (non-NaN) values
+        valid_mask = ~np.isnan(x)
+
+        # Replace NaNs with zeros for convolution
+        x_filled = np.where(valid_mask, x, 0.0)
+
+        # Create uniform kernel
+        kernel = np.ones(window) / window
+
+        # Convolve both the data and the mask
+        from scipy.signal import convolve
+        sum_values = convolve(x_filled, kernel, mode='same')
+        sum_weights = convolve(valid_mask.astype(float), kernel, mode='same')
+
+        # Avoid division by zero
+        result = np.where(sum_weights > 0, sum_values / sum_weights, np.nan)
+
         return result
 
     def _bandpass_filter_fft(self, x: np.ndarray, fs: float, lowcut: float, highcut: float) -> np.ndarray:
@@ -602,26 +714,603 @@ class SingingPitchExtractor:
 
         return segments
 
-    def extract_f0_realtime(
-        self,
-        audio: torch.Tensor,
-        sample_rate: int,
-        use_cuda_kernel: bool = True
-    ) -> torch.Tensor:
-        """Extract F0 for real-time applications using CUDA kernel or fast torchcrepe
+    def _merge_close_segments(self, segments: List[Tuple[int, int]], max_gap: int) -> List[Tuple[int, int]]:
+        """Merge segments separated by small gaps"""
+        if not segments:
+            return []
+
+        merged = []
+        current_start, current_end = segments[0]
+
+        for start, end in segments[1:]:
+            if start - current_end <= max_gap:
+                # Merge with current segment
+                current_end = end
+            else:
+                # Save current segment and start new one
+                merged.append((current_start, current_end))
+                current_start, current_end = start, end
+
+        # Add final segment
+        merged.append((current_start, current_end))
+        return merged
+
+    def classify_vibrato(self, f0_data: Dict[str, Any]) -> Dict[str, Union[bool, float]]:
+        """Classify vibrato characteristics from F0 data using frequency modulation analysis
+
+        This method performs detailed vibrato classification by analyzing the frequency
+        modulation patterns in the F0 contour. It detects vibrato presence, measures
+        its rate (Hz), extent (cents), and regularity.
 
         Args:
-            audio: Audio tensor
-            sample_rate: Sample rate
-            use_cuda_kernel: Use CUDA kernel if available
+            f0_data: F0 data dictionary from extract_f0_contour() containing:
+                - 'f0': Pitch contour (Hz)
+                - 'voiced': Voiced/unvoiced mask
+                - 'sample_rate': Sample rate
+                - 'hop_length': Hop length in samples
 
         Returns:
-            F0 tensor
+            Dictionary containing:
+                - 'vibrato_detected': bool, whether vibrato is present
+                - 'rate_hz': float, average vibrato rate in Hz (0.0 if not detected)
+                - 'extent_cents': float, vibrato depth/extent in cents (0.0 if not detected)
+                - 'regularity_score': float, vibrato regularity 0.0-1.0 (0.0 if not detected)
+                - 'segments': list of (start_time, end_time, rate, depth) tuples
+
+        Example:
+            >>> f0_data = extractor.extract_f0_contour('singing.wav')
+            >>> vibrato = extractor.classify_vibrato(f0_data)
+            >>> if vibrato['vibrato_detected']:
+            ...     print(f"Vibrato: {vibrato['rate_hz']:.2f} Hz, {vibrato['extent_cents']:.1f} cents")
+            ...     print(f"Regularity: {vibrato['regularity_score']:.2f}")
+
+        Note:
+            - Handles silence and noise by analyzing only voiced segments
+            - Rapid pitch changes are filtered using the configured vibrato rate range
+            - Returns zeros for all metrics if no vibrato is detected
+            - Thread-safe for concurrent calls
         """
+        with self.lock:
+            try:
+                # Extract required data
+                f0 = f0_data['f0']
+                voiced = f0_data['voiced']
+                sample_rate = f0_data['sample_rate']
+                hop_length = f0_data['hop_length']
+
+                # Handle empty or all-unvoiced cases
+                if len(f0) == 0 or not np.any(voiced):
+                    return {
+                        'vibrato_detected': False,
+                        'rate_hz': 0.0,
+                        'extent_cents': 0.0,
+                        'regularity_score': 0.0,
+                        'segments': []
+                    }
+
+                # Convert to cents (reference = 440 Hz)
+                f0_cents = np.zeros_like(f0)
+                mask = (f0 > 0) & voiced
+                if not np.any(mask):
+                    return {
+                        'vibrato_detected': False,
+                        'rate_hz': 0.0,
+                        'extent_cents': 0.0,
+                        'regularity_score': 0.0,
+                        'segments': []
+                    }
+
+                f0_cents[mask] = 1200.0 * np.log2(f0[mask] / 440.0)
+                f0_cents[~mask] = np.nan
+
+                # Detrend using moving average
+                window_size = max(3, int(0.3 * sample_rate / hop_length))  # 300ms window
+                trend = self._moving_average(f0_cents, window_size)
+                detrended = f0_cents - trend
+
+                # Apply bandpass filter in vibrato range
+                frame_rate = sample_rate / hop_length
+                detrended_filtered = self._bandpass_filter_fft(
+                    detrended, frame_rate,
+                    self.vibrato_rate_range[0],
+                    self.vibrato_rate_range[1]
+                )
+
+                # Find voiced segments
+                min_frames = int(self.vibrato_min_duration_ms * sample_rate / (1000.0 * hop_length))
+                raw_segments = self._find_voiced_segments(voiced, min_frames // 2)
+                segments = self._merge_close_segments(raw_segments, max_gap=3)
+
+                vibrato_segments = []
+                total_rate = 0.0
+                total_depth = 0.0
+                total_regularity = 0.0
+                vibrato_count = 0
+
+                for start, end in segments:
+                    if end - start < int(min_frames * 0.7):
+                        continue
+
+                    seg_detrended = detrended_filtered[start:end]
+                    seg_valid = ~np.isnan(seg_detrended)
+
+                    min_valid_points = max(3, int((end - start) * 0.7))
+                    if seg_valid.sum() < min_valid_points:
+                        continue
+
+                    # Compute autocorrelation for rate detection
+                    valid_data = seg_detrended[seg_valid]
+                    if len(valid_data) < 10:
+                        continue
+
+                    acf = np.correlate(valid_data, valid_data, mode='full')
+                    acf = acf[len(acf)//2:]
+                    if acf[0] <= 0:
+                        continue
+                    acf = acf / acf[0]  # Normalize
+
+                    # Find peak in vibrato range
+                    lag_min = max(1, int(frame_rate / self.vibrato_rate_range[1]))
+                    lag_max = int(frame_rate / self.vibrato_rate_range[0])
+
+                    if lag_max >= len(acf) or lag_min >= lag_max:
+                        continue
+
+                    peak_lag = np.argmax(acf[lag_min:lag_max]) + lag_min
+                    peak_val = acf[peak_lag]
+
+                    if peak_val < 0.3:  # Weak correlation
+                        continue
+
+                    # Compute vibrato rate
+                    vibrato_rate = frame_rate / peak_lag
+
+                    # Compute vibrato extent using Hilbert transform
+                    try:
+                        from scipy.signal import hilbert
+                        analytic_signal = hilbert(valid_data)
+                        envelope = np.abs(analytic_signal)
+                        depth_cents = 2.0 * np.median(envelope)
+                    except Exception:
+                        # Fallback to simple envelope
+                        envelope = np.abs(valid_data)
+                        depth_cents = 2.0 * np.median(envelope)
+
+                    # Compute regularity score using autocorrelation decay
+                    # More regular vibrato maintains higher correlation at multiples of the period
+                    regularity_score = peak_val  # Use peak correlation as regularity measure
+                    if lag_max + peak_lag < len(acf):
+                        # Check second peak (regularity indicator)
+                        second_peak_val = acf[peak_lag * 2] if peak_lag * 2 < len(acf) else 0.0
+                        regularity_score = (peak_val + second_peak_val) / 2.0
+
+                    regularity_score = np.clip(regularity_score, 0.0, 1.0)
+
+                    if depth_cents >= self.vibrato_min_depth_cents:
+                        # Vibrato detected
+                        time_start = start * hop_length / sample_rate
+                        time_end = end * hop_length / sample_rate
+                        vibrato_segments.append((time_start, time_end, vibrato_rate, depth_cents))
+
+                        total_rate += vibrato_rate
+                        total_depth += depth_cents
+                        total_regularity += regularity_score
+                        vibrato_count += 1
+
+                # Build result
+                vibrato_detected = vibrato_count > 0
+                mean_rate = total_rate / vibrato_count if vibrato_count > 0 else 0.0
+                mean_depth = total_depth / vibrato_count if vibrato_count > 0 else 0.0
+                mean_regularity = total_regularity / vibrato_count if vibrato_count > 0 else 0.0
+
+                return {
+                    'vibrato_detected': vibrato_detected,
+                    'rate_hz': float(mean_rate),
+                    'extent_cents': float(mean_depth),
+                    'regularity_score': float(mean_regularity),
+                    'segments': vibrato_segments
+                }
+
+            except Exception as e:
+                self.logger.warning(f"Vibrato classification failed: {e}")
+                return {
+                    'vibrato_detected': False,
+                    'rate_hz': 0.0,
+                    'extent_cents': 0.0,
+                    'regularity_score': 0.0,
+                    'segments': []
+                }
+
+    def suggest_pitch_corrections(
+        self,
+        f0_data: Dict[str, Any],
+        reference_scale: str = 'C',
+        tolerance_cents: float = 50.0
+    ) -> List[Dict[str, Union[float, str]]]:
+        """Suggest pitch corrections to align singing with reference musical scale
+
+        This method analyzes the F0 contour and identifies notes that deviate from
+        the reference scale by more than the tolerance. It returns correction
+        suggestions with timestamps, detected notes, and target notes.
+
+        Args:
+            f0_data: F0 data dictionary from extract_f0_contour() containing:
+                - 'f0': Pitch contour (Hz)
+                - 'voiced': Voiced/unvoiced mask
+                - 'times': Time stamps in seconds
+            reference_scale: Reference scale name ('C', 'D', 'E', etc.) for correction
+            tolerance_cents: Tolerance in cents (default: 50.0). Notes within
+                tolerance are not corrected.
+
+        Returns:
+            List of correction dictionaries, each containing:
+                - 'timestamp': float, time in seconds
+                - 'detected_f0_hz': float, detected frequency
+                - 'detected_note': str, detected note name (e.g., 'C4', 'F#5')
+                - 'target_note': str, target note name in reference scale
+                - 'target_f0_hz': float, target frequency
+                - 'correction_cents': float, correction amount in cents (negative = flatten)
+
+        Example:
+            >>> f0_data = extractor.extract_f0_contour('singing.wav')
+            >>> corrections = extractor.suggest_pitch_corrections(f0_data, 'C', 50.0)
+            >>> for corr in corrections[:5]:
+            ...     print(f"{corr['timestamp']:.2f}s: {corr['detected_note']} -> {corr['target_note']} "
+            ...           f"({corr['correction_cents']:+.1f} cents)")
+
+        Note:
+            - Only analyzes voiced frames to avoid spurious corrections
+            - Handles silence by skipping unvoiced regions
+            - Handles noise by filtering based on confidence threshold
+            - Rapid pitch changes are processed individually for each frame
+            - Thread-safe for concurrent calls
+        """
+        with self.lock:
+            try:
+                # Extract required data
+                f0 = f0_data['f0']
+                voiced = f0_data['voiced']
+                times = f0_data.get('times', np.arange(len(f0)) * f0_data['hop_length'] / f0_data['sample_rate'])
+
+                # Validate inputs
+                if len(f0) == 0 or not np.any(voiced):
+                    return []
+
+                # Use provided tolerance or default from config
+                if tolerance_cents is None:
+                    tolerance_cents = self.pitch_correction_tolerance_cents
+                if reference_scale is None:
+                    reference_scale = self.pitch_correction_reference_scale
+
+                # Get scale notes
+                scale_notes = self._get_scale_notes(reference_scale)
+
+                corrections = []
+                for i in range(len(f0)):
+                    # Skip unvoiced frames
+                    if not voiced[i] or f0[i] <= 0:
+                        continue
+
+                    # Get detected note name and cents offset
+                    detected_note, cents_offset = self._f0_to_note_name(f0[i])
+
+                    # Check if note is in scale
+                    if detected_note not in scale_notes:
+                        # Find nearest scale note
+                        target_note = self._find_nearest_scale_note(f0[i], scale_notes)
+                        target_f0 = self._note_name_to_f0(target_note)
+                        correction_cents = 1200.0 * np.log2(target_f0 / f0[i])
+
+                        # Only suggest correction if deviation exceeds tolerance
+                        if abs(correction_cents) > tolerance_cents:
+                            corrections.append({
+                                'timestamp': float(times[i]),
+                                'detected_f0_hz': float(f0[i]),
+                                'detected_note': detected_note,
+                                'target_note': target_note,
+                                'target_f0_hz': float(target_f0),
+                                'correction_cents': float(correction_cents)
+                            })
+                    else:
+                        # Note is in scale, but check if it needs fine-tuning
+                        target_f0 = self._note_name_to_f0(detected_note)
+                        correction_cents = 1200.0 * np.log2(target_f0 / f0[i])
+
+                        if abs(correction_cents) > tolerance_cents:
+                            corrections.append({
+                                'timestamp': float(times[i]),
+                                'detected_f0_hz': float(f0[i]),
+                                'detected_note': detected_note,
+                                'target_note': detected_note,
+                                'target_f0_hz': float(target_f0),
+                                'correction_cents': float(correction_cents)
+                            })
+
+                return corrections
+
+            except Exception as e:
+                self.logger.error(f"Pitch correction suggestion failed: {e}")
+                return []
+
+    def _f0_to_note_name(self, f0_hz: float) -> Tuple[str, float]:
+        """Convert F0 frequency to note name with cents offset
+
+        Args:
+            f0_hz: Frequency in Hz
+
+        Returns:
+            Tuple of (note_name, cents_offset) where note_name is like 'C4' or 'F#5'
+            and cents_offset is the deviation in cents from the exact note
+        """
+        if f0_hz <= 0:
+            return 'N/A', 0.0
+
+        # A4 = 440 Hz reference
+        a4_freq = 440.0
+        semitones_from_a4 = 12.0 * np.log2(f0_hz / a4_freq)
+
+        # Round to nearest semitone
+        nearest_semitone = round(semitones_from_a4)
+        cents_offset = (semitones_from_a4 - nearest_semitone) * 100.0
+
+        # Note names (A4 = 0)
+        note_names = ['A', 'A#', 'B', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#']
+
+        # Calculate octave and note
+        octave = 4 + (nearest_semitone + 12) // 12
+        note_index = (nearest_semitone + 12) % 12
+        note_name = f"{note_names[note_index]}{octave}"
+
+        return note_name, cents_offset
+
+    def _get_scale_notes(self, reference_scale: str) -> List[str]:
+        """Get note names in the major scale for the reference key
+
+        Args:
+            reference_scale: Root note of scale ('C', 'D', 'E', 'F', 'G', 'A', 'B')
+
+        Returns:
+            List of note names in the major scale (all octaves)
+        """
+        # Major scale intervals (semitones from root)
+        major_scale_intervals = [0, 2, 4, 5, 7, 9, 11]
+
+        # All note names
+        all_notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+        # Find root index
+        reference_scale = reference_scale.upper().strip()
+        if reference_scale not in all_notes:
+            self.logger.warning(f"Unknown scale {reference_scale}, defaulting to C major")
+            reference_scale = 'C'
+
+        root_index = all_notes.index(reference_scale)
+
+        # Generate scale notes (including all octaves)
+        scale_notes = []
+        for interval in major_scale_intervals:
+            note_index = (root_index + interval) % 12
+            note_name = all_notes[note_index]
+            # Add all octaves (0-8)
+            for octave in range(0, 9):
+                scale_notes.append(f"{note_name}{octave}")
+
+        return scale_notes
+
+    def _find_nearest_scale_note(self, f0_hz: float, scale_notes: List[str]) -> str:
+        """Find the nearest note in the scale to the given F0
+
+        Args:
+            f0_hz: Frequency in Hz
+            scale_notes: List of note names in the scale
+
+        Returns:
+            Note name of the nearest scale note
+        """
+        if f0_hz <= 0:
+            return 'C4'
+
+        # Convert all scale notes to frequencies and find nearest
+        min_diff = float('inf')
+        nearest_note = 'C4'
+
+        for note in scale_notes:
+            note_f0 = self._note_name_to_f0(note)
+            diff = abs(note_f0 - f0_hz)
+            if diff < min_diff:
+                min_diff = diff
+                nearest_note = note
+
+        return nearest_note
+
+    def _note_name_to_f0(self, note_name: str) -> float:
+        """Convert note name to F0 frequency
+
+        Args:
+            note_name: Note name like 'C4', 'F#5', etc.
+
+        Returns:
+            Frequency in Hz
+        """
+        try:
+            # Parse note name
+            if len(note_name) < 2:
+                return 440.0  # Default to A4
+
+            # Extract note and octave
+            if note_name[1] == '#':
+                note = note_name[:2]
+                octave = int(note_name[2:])
+            else:
+                note = note_name[0]
+                octave = int(note_name[1:])
+
+            # Note index relative to A
+            note_map = {
+                'A': 0, 'A#': 1, 'B': 2, 'C': 3, 'C#': 4, 'D': 5,
+                'D#': 6, 'E': 7, 'F': 8, 'F#': 9, 'G': 10, 'G#': 11
+            }
+
+            if note not in note_map:
+                return 440.0
+
+            # Calculate semitones from A4
+            semitones = note_map[note] + (octave - 4) * 12
+
+            # Calculate frequency
+            f0 = 440.0 * (2.0 ** (semitones / 12.0))
+            return f0
+
+        except Exception as e:
+            self.logger.warning(f"Failed to parse note name {note_name}: {e}")
+            return 440.0
+
+    def create_realtime_state(self) -> Dict[str, Any]:
+        """Create initial state dictionary for real-time streaming
+
+        This method initializes the state required for stateful real-time pitch
+        extraction with overlap buffering and smoothing.
+
+        Returns:
+            Dictionary containing:
+                - 'overlap_buffer': Empty audio buffer for frame overlap
+                - 'smoothing_history': Empty pitch history for temporal smoothing
+                - 'frame_count': Frame counter for tracking
+                - 'last_pitch': Last valid pitch value for continuity
+
+        Example:
+            >>> extractor = SingingPitchExtractor()
+            >>> state = extractor.create_realtime_state()
+            >>> for chunk in audio_stream:
+            ...     f0 = extractor.extract_f0_realtime(chunk, state=state)
+            ...     # Process f0...
+
+        Note:
+            - Creates CPU tensors by default; will be moved to device during processing
+            - Thread-safe for concurrent state creation
+        """
+        with self.lock:
+            return {
+                'overlap_buffer': torch.zeros(self.realtime_buffer_size, dtype=torch.float32),
+                'smoothing_history': [],
+                'frame_count': 0,
+                'last_pitch': 0.0
+            }
+
+    def reset_realtime_state(self, state: Dict[str, Any]) -> None:
+        """Reset real-time state to initial values
+
+        This method clears the overlap buffer and smoothing history while preserving
+        the state dictionary structure.
+
+        Args:
+            state: State dictionary from create_realtime_state() or previous processing
+
+        Example:
+            >>> state = extractor.create_realtime_state()
+            >>> # ... process some audio ...
+            >>> extractor.reset_realtime_state(state)  # Clear for new stream
+
+        Note:
+            - Preserves tensor device placement
+            - Thread-safe for concurrent reset operations
+        """
+        with self.lock:
+            if 'overlap_buffer' in state:
+                state['overlap_buffer'].zero_()
+            state['smoothing_history'] = []
+            state['frame_count'] = 0
+            state['last_pitch'] = 0.0
+
+    def extract_f0_realtime(
+        self,
+        audio_chunk: torch.Tensor,
+        sample_rate: Optional[int] = None,
+        state: Optional[Dict[str, Any]] = None,
+        use_cuda_kernel: bool = True
+    ) -> torch.Tensor:
+        """Extract F0 for real-time applications with stateful overlap buffering and smoothing
+
+        This method provides optimized real-time pitch extraction using CUDA kernels or
+        fast torchcrepe. It supports stateful processing with overlap buffering for
+        seamless frame-to-frame transitions and temporal smoothing for stable pitch output.
+
+        Args:
+            audio_chunk: Audio tensor chunk for processing (1D tensor)
+            sample_rate: Sample rate in Hz (required if not using state with sample_rate)
+            state: Optional state dictionary from create_realtime_state() for stateful
+                processing with overlap buffering and smoothing. If None, processes
+                without state (less smooth).
+            use_cuda_kernel: Use CUDA kernel if available (default: True)
+
+        Returns:
+            F0 tensor with pitch values in Hz. Shape depends on chunk size and hop length.
+            Returns single-frame or multi-frame tensor depending on input size.
+
+        Example:
+            >>> # Stateless processing (simple)
+            >>> extractor = SingingPitchExtractor()
+            >>> f0 = extractor.extract_f0_realtime(audio_chunk, sample_rate=22050)
+
+            >>> # Stateful processing (recommended for streaming)
+            >>> state = extractor.create_realtime_state()
+            >>> for chunk in audio_stream:
+            ...     f0 = extractor.extract_f0_realtime(chunk, sample_rate=22050, state=state)
+            ...     # Process f0 with smooth transitions...
+
+        Note:
+            - Handles rapid pitch changes with temporal smoothing
+            - Edge case: silence returns zeros
+            - Edge case: noise is filtered using confidence threshold
+            - State management is thread-safe
+            - Falls back to torchcrepe if CUDA kernel unavailable
+            - Uses 'tiny' model for real-time speed
+        """
+        with self.lock:
+            # Use default sample rate if not provided
+            if sample_rate is None:
+                sample_rate = 22050  # Default
+
+            # Process with overlap buffer if state provided
+            if state is not None:
+                # Get overlap buffer
+                overlap_buffer = state.get('overlap_buffer')
+
+                # Ensure audio chunk is on same device as overlap buffer
+                if overlap_buffer is not None:
+                    audio_chunk = audio_chunk.to(overlap_buffer.device)
+
+                # Concatenate overlap buffer with new chunk
+                if overlap_buffer is not None and overlap_buffer.numel() > 0 and torch.any(overlap_buffer != 0):
+                    combined_audio = torch.cat([overlap_buffer, audio_chunk])
+                else:
+                    combined_audio = audio_chunk
+
+                # Update overlap buffer with last portion of current chunk
+                overlap_size = min(len(audio_chunk) // 4, self.realtime_buffer_size)  # 25% overlap
+                if len(audio_chunk) >= overlap_size:
+                    state['overlap_buffer'] = audio_chunk[-overlap_size:].clone()
+
+                audio_to_process = combined_audio
+            else:
+                audio_to_process = audio_chunk
+
         # Try CUDA kernel if requested and available
         if use_cuda_kernel and self.use_cuda_kernel_fallback:
             try:
-                import cuda_kernels
+                # Try module name first, then namespaced import
+                _ck = None
+                try:
+                    import cuda_kernels as _ck
+                except ImportError:
+                    try:
+                        from auto_voice import cuda_kernels as _ck
+                    except ImportError:
+                        _ck = None
+
+                if _ck is None:
+                    raise ImportError("cuda_kernels not available in either namespace")
+
                 # Prepare tensors
                 if audio.device.type != 'cuda':
                     audio = audio.cuda()
@@ -638,9 +1327,16 @@ class SingingPitchExtractor:
                 output_confidence = torch.zeros(n_frames, device=audio.device)
                 output_vibrato = torch.zeros(n_frames, device=audio.device)
 
-                cuda_kernels.launch_pitch_detection(audio, output_pitch, output_confidence,
-                                                   output_vibrato, float(sample_rate),
-                                                   frame_length, hop_length)
+                _ck.launch_pitch_detection(audio, output_pitch, output_confidence,
+                                          output_vibrato, float(sample_rate),
+                                          frame_length, hop_length,
+                                          float(self.fmin), float(self.fmax),
+                                          float(self.confidence_threshold))
+
+                # Apply temporal smoothing if state provided
+                if state is not None:
+                    output_pitch = self._apply_temporal_smoothing(output_pitch, state)
+
                 return output_pitch
             except Exception as e:
                 self.logger.warning(f"CUDA kernel fallback failed, using torchcrepe: {e}")
@@ -648,7 +1344,7 @@ class SingingPitchExtractor:
         # Fallback to torchcrepe with tiny model for speed
         with torch.no_grad():
             hop_length = int(self.hop_length_ms * sample_rate / 1000.0)
-            pitch, _ = torchcrepe.predict(
+            pred = torchcrepe.predict(
                 audio,
                 sample_rate,
                 hop_length=hop_length,
@@ -659,14 +1355,78 @@ class SingingPitchExtractor:
                 device=self.device,
                 return_periodicity=False
             )
+            # Handle both tuple (pitch, periodicity) and single pitch return
+            if isinstance(pred, tuple):
+                pitch = pred[0]
+            else:
+                pitch = pred
+            # Squeeze batch dimension if present
+            if pitch.dim() > 1:
+                pitch = pitch.squeeze(0)
+
+            # Apply temporal smoothing if state provided
+            if state is not None:
+                pitch = self._apply_temporal_smoothing(pitch, state)
+
             return pitch
+
+    def _apply_temporal_smoothing(
+        self,
+        pitch: torch.Tensor,
+        state: Dict[str, Any]
+    ) -> torch.Tensor:
+        """Apply temporal smoothing to pitch output using state history
+
+        Args:
+            pitch: Raw pitch tensor
+            state: State dictionary with smoothing_history
+
+        Returns:
+            Smoothed pitch tensor
+        """
+        smoothing_history = state.get('smoothing_history', [])
+
+        # Convert to list if tensor
+        if pitch.dim() == 0:
+            pitch_values = [float(pitch.item())]
+        else:
+            pitch_values = pitch.cpu().tolist() if isinstance(pitch, torch.Tensor) else [pitch]
+
+        # Smooth each value
+        smoothed = []
+        for val in pitch_values:
+            # Add to history
+            smoothing_history.append(val)
+
+            # Keep only recent history
+            if len(smoothing_history) > self.realtime_smoothing_window:
+                smoothing_history.pop(0)
+
+            # Compute smoothed value (median filter for robustness)
+            if len(smoothing_history) > 0:
+                sorted_history = sorted(smoothing_history)
+                median_idx = len(sorted_history) // 2
+                smoothed_val = sorted_history[median_idx]
+            else:
+                smoothed_val = val
+
+            smoothed.append(smoothed_val)
+
+        # Update state
+        state['smoothing_history'] = smoothing_history
+
+        # Convert back to tensor
+        if len(smoothed) == 1:
+            return torch.tensor(smoothed[0], dtype=pitch.dtype, device=pitch.device)
+        else:
+            return torch.tensor(smoothed, dtype=pitch.dtype, device=pitch.device)
 
     def batch_extract(
         self,
         audio_list: List[Union[torch.Tensor, str]],
         sample_rate: Optional[int] = None
     ) -> List[Dict]:
-        """Extract F0 from multiple audio files/tensors
+        """Extract F0 from multiple audio files/tensors with true batching
 
         Args:
             audio_list: List of audio tensors or file paths
@@ -674,15 +1434,147 @@ class SingingPitchExtractor:
 
         Returns:
             List of F0 data dictionaries
+
+        Note:
+            This implementation uses true batching for items with the same sample rate
+            and similar lengths. Items are grouped by sample rate and processed together.
         """
-        results = []
-        for audio in audio_list:
+        if not audio_list:
+            return []
+
+        # Group items by sample rate for true batching
+        sr_groups = {}  # sample_rate -> [(index, audio, sr)]
+
+        for idx, audio in enumerate(audio_list):
             try:
-                result = self.extract_f0_contour(audio, sample_rate)
-                results.append(result)
+                # Load and determine sample rate
+                if isinstance(audio, str):
+                    audio_data, original_sr = self.audio_processor.load_audio(audio, return_sr=True)
+                    # Use the processor's target sample rate (resampled SR), not original
+                    sr = self.audio_processor.sample_rate
+                    if isinstance(audio_data, torch.Tensor):
+                        audio_data = audio_data.cpu().numpy()
+                else:
+                    audio_data = audio
+                    sr = sample_rate
+                    if sr is None:
+                        self.logger.error(f"Sample rate required for tensor at index {idx}")
+                        sr_groups.setdefault('error', []).append((idx, None, None))
+                        continue
+
+                # Convert to numpy if needed
+                if isinstance(audio_data, torch.Tensor):
+                    audio_data = audio_data.cpu().numpy()
+
+                # Ensure 1D
+                if audio_data.ndim > 1:
+                    audio_data = np.mean(audio_data, axis=0)
+
+                # Group by sample rate and track original length
+                if sr not in sr_groups:
+                    sr_groups[sr] = []
+                sr_groups[sr].append((idx, audio_data, sr, len(audio_data)))
+
             except Exception as e:
-                self.logger.error(f"Batch extraction failed for item: {e}")
-                results.append(None)
+                self.logger.error(f"Failed to load item {idx}: {e}")
+                sr_groups.setdefault('error', []).append((idx, None, None))
+
+        # Process each sample rate group with true batching
+        results = [None] * len(audio_list)
+
+        for sr, items in sr_groups.items():
+            if sr == 'error':
+                # Handle errors
+                for idx, _, _, _ in items:
+                    results[idx] = None
+                continue
+
+            # Find max length in group for padding
+            max_len = max(orig_len for _, _, _, orig_len in items)
+
+            # Pad and stack into batch tensor
+            batch_audio = []
+            for _, audio_data, _, orig_len in items:
+                # Pad to max length
+                if len(audio_data) < max_len:
+                    padded = np.pad(audio_data, (0, max_len - len(audio_data)), mode='constant')
+                else:
+                    padded = audio_data
+                batch_audio.append(padded)
+
+            batch_audio = np.stack(batch_audio, axis=0)  # (B, T)
+            batch_tensor = torch.from_numpy(batch_audio).float()
+
+            # Move to device
+            if self.gpu_acceleration and self.device != 'cpu':
+                batch_tensor = batch_tensor.to(self.device)
+
+            # Extract F0 for entire batch
+            try:
+                hop_length = int(self.hop_length_ms * sr / 1000.0)
+
+                context = self.gpu_manager.device_context() if self.gpu_manager else self._null_context()
+                with context:
+                    with torch.no_grad():
+                        # Process entire batch at once
+                        pitch_batch, periodicity_batch = self._call_torchcrepe_predict(batch_tensor, sr, hop_length)
+
+                # Split results per item
+                for batch_idx, (orig_idx, audio_data, _, orig_len) in enumerate(items):
+                    try:
+                        # Extract this item's results
+                        pitch = pitch_batch[batch_idx] if pitch_batch.dim() > 1 else pitch_batch
+                        periodicity = periodicity_batch[batch_idx] if periodicity_batch.dim() > 1 else periodicity_batch
+
+                        # Trim to original length based on actual audio length
+                        # Only trim if this item was padded
+                        if orig_len < max_len:
+                            # Compute expected number of frames from original unpadded length
+                            # torchcrepe computes frames as: max(0, (n_samples - win_length) / hop_length + 1)
+                            # We approximate by computing frames directly from original length
+                            expected_frames = max(1, (orig_len - hop_length) // hop_length + 1)
+
+                            if expected_frames > 0 and len(pitch) > expected_frames:
+                                pitch = pitch[:expected_frames]
+                                periodicity = periodicity[:expected_frames]
+
+                        # Post-process
+                        pitch, periodicity = self._post_process(pitch, periodicity, hop_length, sr)
+
+                        # Compute voiced mask
+                        voiced = periodicity > self.confidence_threshold
+
+                        # Detect vibrato
+                        vibrato_data = self._detect_vibrato(pitch, voiced, sr, hop_length)
+
+                        # Convert to numpy
+                        pitch_np = pitch.squeeze().cpu().numpy() if isinstance(pitch, torch.Tensor) else pitch
+                        voiced_np = voiced.squeeze().cpu().numpy() if isinstance(voiced, torch.Tensor) else voiced
+                        confidence_np = periodicity.squeeze().cpu().numpy() if isinstance(periodicity, torch.Tensor) else periodicity
+
+                        # Build result
+                        result = {
+                            'f0': pitch_np,
+                            'voiced': voiced_np,
+                            'confidence': confidence_np,
+                            'vibrato': vibrato_data,
+                            'sample_rate': sr,
+                            'hop_length': hop_length,
+                            'times': np.arange(len(pitch_np)) * hop_length / sr
+                        }
+
+                        results[orig_idx] = result
+
+                    except Exception as e:
+                        self.logger.error(f"Failed to process batch item {orig_idx}: {e}")
+                        results[orig_idx] = None
+
+            except Exception as e:
+                self.logger.error(f"Batch extraction failed for sample rate {sr}: {e}")
+                for idx, _, _ in items:
+                    if results[idx] is None:
+                        results[idx] = None
+
         return results
 
     def get_pitch_statistics(self, f0_data: Dict) -> Dict[str, float]:

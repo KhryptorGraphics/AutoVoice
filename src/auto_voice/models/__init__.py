@@ -10,6 +10,11 @@ if TYPE_CHECKING:
     from .hifigan import HiFiGANGenerator
     from .voice_model import VoiceModel
     from .speaker_encoder import SpeakerEncoder
+    from .content_encoder import ContentEncoder
+    from .pitch_encoder import PitchEncoder
+    from .posterior_encoder import PosteriorEncoder
+    from .flow_decoder import FlowDecoder
+    from .singing_voice_converter import SingingVoiceConverter
 
 class LazyImportError(ImportError):
     """Raised when a lazy import fails due to missing optional dependencies."""
@@ -18,7 +23,17 @@ class LazyImportError(ImportError):
 import logging
 logger = logging.getLogger(__name__)
 
-__all__ = ['VoiceModel', 'VoiceTransformer', 'HiFiGANGenerator', 'SpeakerEncoder']
+__all__ = [
+    'VoiceModel',
+    'VoiceTransformer',
+    'HiFiGANGenerator',
+    'SpeakerEncoder',
+    'ContentEncoder',
+    'PitchEncoder',
+    'PosteriorEncoder',
+    'FlowDecoder',
+    'SingingVoiceConverter'
+]
 
 # Module-level cache for lazy-loaded classes
 _module_cache = {}
@@ -55,6 +70,26 @@ def __getattr__(name):
             from .speaker_encoder import SpeakerEncoder
             _module_cache[name] = SpeakerEncoder
             return SpeakerEncoder
+        elif name == 'ContentEncoder':
+            from .content_encoder import ContentEncoder
+            _module_cache[name] = ContentEncoder
+            return ContentEncoder
+        elif name == 'PitchEncoder':
+            from .pitch_encoder import PitchEncoder
+            _module_cache[name] = PitchEncoder
+            return PitchEncoder
+        elif name == 'PosteriorEncoder':
+            from .posterior_encoder import PosteriorEncoder
+            _module_cache[name] = PosteriorEncoder
+            return PosteriorEncoder
+        elif name == 'FlowDecoder':
+            from .flow_decoder import FlowDecoder
+            _module_cache[name] = FlowDecoder
+            return FlowDecoder
+        elif name == 'SingingVoiceConverter':
+            from .singing_voice_converter import SingingVoiceConverter
+            _module_cache[name] = SingingVoiceConverter
+            return SingingVoiceConverter
     except Exception as e:
         logger.warning(f"Failed to import {name}: {e}")
         raise LazyImportError(f"{name} is unavailable due to missing dependencies: {e}") from e

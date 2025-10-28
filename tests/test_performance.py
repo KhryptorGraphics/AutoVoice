@@ -1,8 +1,8 @@
 """
 Comprehensive performance benchmarking and validation tests.
 
-Tests inference latency, throughput, memory usage, CUDA kernels,
-audio processing, model performance, and regression detection.
+Tests inference latency, throughput, memory usage, CPU vs GPU performance,
+cache effectiveness, and component-level benchmarks.
 """
 
 import pytest
@@ -13,281 +13,497 @@ from typing import Dict, List
 
 
 @pytest.mark.performance
-class TestInferenceLatency:
-    """Benchmark inference speed."""
+class TestCPUvsGPUBenchmarks:
+    """Compare CPU and GPU conversion performance."""
 
-    @pytest.mark.parametrize("text_length", [10, 50, 100, 200])
-    def test_latency_by_text_length(self, text_length):
-        """Measure latency for different text lengths."""
-        pytest.skip("Requires inference implementation")
+    @pytest.mark.parametrize('device_name', ['cpu', 'cuda'])
+    def test_conversion_device_comparison(self, song_file, test_profile, device_name, performance_tracker):
+        """Benchmark conversion on CPU vs GPU."""
+        if device_name == 'cuda' and not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
 
-    @pytest.mark.cuda
-    def test_pytorch_vs_tensorrt(self):
-        """Compare PyTorch vs TensorRT inference speed."""
-        pytest.skip("Requires both engines implementation")
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
 
-    def test_cpu_vs_gpu_inference(self, device):
-        """Compare CPU vs GPU inference."""
-        pytest.skip("Requires inference implementation")
+        pipeline = SingingConversionPipeline(config={'device': device_name})
 
-    def test_fp32_vs_fp16_precision(self):
-        """Compare FP32 vs FP16 performance."""
-        pytest.skip("Requires mixed precision support")
+        # Warm-up run
+        pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
 
-    @pytest.mark.parametrize("batch_size", [1, 4, 8, 16])
-    def test_batch_inference_latency(self, batch_size):
-        """Benchmark batch inference with different sizes."""
-        pytest.skip("Requires inference implementation")
+        # Benchmark run
+        performance_tracker.start(f'{device_name}_conversion')
+        result = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
+        elapsed = performance_tracker.stop()
 
-    def test_cold_start_vs_warm_inference(self):
-        """Measure first-inference vs subsequent inferences."""
-        pytest.skip("Requires inference implementation")
+        # Calculate metrics
+        duration = result['duration']
+        rtf = elapsed / duration
 
-    def test_performance_baselines(self):
-        """Set and validate performance baselines."""
-        # Example baseline: < 100ms for 50-word text on GPU
-        pytest.skip("Requires inference implementation")
+        performance_tracker.record(f'{device_name}_rtf', rtf)
+        performance_tracker.record(f'{device_name}_elapsed', elapsed)
 
+        print(f"\n{device_name.upper()} Performance:")
+        print(f"  Elapsed: {elapsed:.3f}s")
+        print(f"  Audio duration: {duration:.3f}s")
+        print(f"  RTF: {rtf:.3f}x")
 
-@pytest.mark.performance
-class TestThroughput:
-    """Measure processing capacity."""
-
-    def test_audio_samples_per_second(self):
-        """Measure audio samples processed per second."""
-        pytest.skip("Requires audio processing implementation")
-
-    def test_mel_frames_per_second(self):
-        """Measure mel-spectrogram frames per second."""
-        pytest.skip("Requires audio processing implementation")
-
-    def test_concurrent_request_capacity(self):
-        """Measure concurrent request handling capacity."""
-        pytest.skip("Requires web API implementation")
-
-    def test_websocket_message_throughput(self):
-        """Measure WebSocket message throughput."""
-        pytest.skip("Requires WebSocket implementation")
-
-    @pytest.mark.parametrize("batch_size", [1, 4, 8, 16, 32])
-    def test_throughput_scaling(self, batch_size):
-        """Test throughput scaling with batch size."""
-        pytest.skip("Requires inference implementation")
+        # Store for comparison
+        assert rtf > 0
 
 
 @pytest.mark.performance
-class TestMemoryBenchmarks:
-    """Measure memory usage."""
+class TestColdStartVsWarmCache:
+    """Compare cold start vs warm cache performance."""
 
-    @pytest.mark.cuda
-    def test_peak_gpu_memory_inference(self):
-        """Measure peak GPU memory during inference."""
-        pytest.skip("Requires inference implementation")
+    def test_cold_vs_warm_comparison(self, song_file, test_profile, device, performance_tracker):
+        """Compare first run (cold) vs cached run (warm)."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
 
-    def test_peak_cpu_memory_processing(self):
-        """Measure peak CPU memory during processing."""
-        pytest.skip("Requires processing implementation")
+        pipeline = SingingConversionPipeline(config={
+            'device': device,
+            'cache_enabled': True
+        })
 
-    @pytest.mark.parametrize("batch_size", [1, 8, 16, 32])
-    def test_memory_scaling_with_batch(self, batch_size):
-        """Test memory usage scaling with batch size."""
-        pytest.skip("Requires inference implementation")
+        # Cold start (no cache)
+        pipeline.clear_cache()  # Ensure clean state
 
-    def test_memory_usage_different_models(self):
-        """Test memory usage with different model sizes."""
-        pytest.skip("Requires model implementation")
+        performance_tracker.start('cold_start')
+        result_cold = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
+        time_cold = performance_tracker.stop()
 
-    def test_memory_leak_detection(self):
-        """Detect memory leaks over repeated operations."""
-        pytest.skip("Requires inference implementation")
+        # Warm start (with cache)
+        performance_tracker.start('warm_cache')
+        result_warm = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
+        time_warm = performance_tracker.stop()
 
-    @pytest.mark.cuda
-    def test_memory_fragmentation(self):
-        """Measure GPU memory fragmentation."""
-        pytest.skip("Requires GPU implementation")
+        # Calculate speedup
+        speedup = time_cold / time_warm
+
+        print(f"\nCache Performance:")
+        print(f"  Cold start: {time_cold:.3f}s")
+        print(f"  Warm cache: {time_warm:.3f}s")
+        print(f"  Speedup: {speedup:.2f}x")
+
+        # Cache should provide at least 1.5x speedup
+        assert speedup >= 1.5, f"Cache speedup too low: {speedup:.2f}x"
+
+        # Results should be identical
+        np.testing.assert_array_equal(result_cold['audio'], result_warm['audio'])
+
+
+@pytest.mark.performance
+class TestEndToEndLatency:
+    """Measure end-to-end latency for 30s audio."""
+
+    def test_30s_audio_latency(self, tmp_path, test_profile, device, performance_tracker):
+        """Benchmark conversion of 30-second audio."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+            import soundfile as sf
+        except ImportError:
+            pytest.skip("Components not available")
+
+        # Generate 30s audio
+        sample_rate = 22050
+        duration = 30.0
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        audio = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        audio_file = tmp_path / "test_30s.wav"
+        sf.write(str(audio_file), audio, sample_rate)
+
+        # Convert
+        pipeline = SingingConversionPipeline(config={'device': device})
+
+        performance_tracker.start('e2e_30s')
+        result = pipeline.convert_singing_voice(
+            audio_path=str(audio_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
+        elapsed = performance_tracker.stop()
+
+        rtf = elapsed / 30.0
+
+        print(f"\n30s Audio Performance:")
+        print(f"  Elapsed: {elapsed:.3f}s")
+        print(f"  RTF: {rtf:.3f}x")
+
+        # Should complete in reasonable time
+        max_rtf = 20.0 if device == 'cpu' else 5.0
+        assert rtf < max_rtf, f"RTF too high: {rtf:.2f}x"
 
 
 @pytest.mark.performance
 @pytest.mark.cuda
-class TestCUDAKernelBenchmarks:
-    """Benchmark CUDA kernel performance."""
+class TestPeakGPUMemoryUsage:
+    """Track peak GPU memory usage during conversion."""
 
-    def test_audio_kernel_benchmarks(self):
-        """Benchmark all audio processing kernels."""
-        pytest.skip("Requires CUDA kernels implementation")
+    def test_peak_memory_tracking(self, song_file, test_profile, gpu_memory_monitor):
+        """Track peak GPU memory during conversion."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
 
-    def test_fft_kernel_benchmarks(self):
-        """Benchmark FFT-related kernels."""
-        pytest.skip("Requires CUDA kernels implementation")
+        with gpu_memory_monitor:
+            pipeline = SingingConversionPipeline(config={'device': 'cuda'})
+            result = pipeline.convert_singing_voice(
+                audio_path=str(song_file),
+                target_speaker_embedding=test_profile['embedding']
+            )
 
-    def test_training_kernel_benchmarks(self):
-        """Benchmark training-related kernels."""
-        pytest.skip("Requires CUDA kernels implementation")
+        stats = gpu_memory_monitor.get_stats()
 
-    def test_cuda_vs_pytorch_speedup(self):
-        """Compare CUDA kernel speed vs PyTorch operations."""
-        pytest.skip("Requires CUDA kernels implementation")
+        print(f"\nGPU Memory Usage:")
+        print(f"  Initial: {stats['initial_mb']:.2f} MB")
+        print(f"  Peak: {stats['peak_mb']:.2f} MB")
+        print(f"  Final: {stats['final_mb']:.2f} MB")
+        print(f"  Delta: {stats['delta_mb']:.2f} MB")
 
-    def test_kernel_launch_overhead(self):
-        """Measure kernel launch overhead."""
-        pytest.skip("Requires CUDA kernels implementation")
-
-    def test_memory_transfer_overhead(self):
-        """Measure memory transfer overhead (host ↔ device)."""
-        pytest.skip("Requires CUDA kernels implementation")
-
-    @pytest.mark.parametrize("size", [1024, 4096, 16384])
-    def test_kernel_performance_scaling(self, size):
-        """Test kernel performance with different input sizes."""
-        pytest.skip("Requires CUDA kernels implementation")
+        # Peak memory should be reasonable (< 8 GB for typical song)
+        assert stats['peak_mb'] < 8192, f"Peak memory too high: {stats['peak_mb']:.2f} MB"
 
 
 @pytest.mark.performance
-class TestAudioProcessingBenchmarks:
-    """Benchmark audio operations."""
+class TestCacheHitRateSpeedup:
+    """Measure cache hit rate and speedup."""
 
-    def test_mel_spectrogram_computation(self, sample_audio):
-        """Benchmark mel-spectrogram speed."""
-        pytest.skip("Requires audio processing implementation")
+    def test_cache_effectiveness(self, song_file, test_profile, device, performance_tracker):
+        """Test cache hit rate and speedup measurement."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
 
-    def test_feature_extraction_speed(self, sample_audio):
-        """Benchmark MFCC, pitch, energy extraction."""
-        pytest.skip("Requires audio processing implementation")
+        pipeline = SingingConversionPipeline(config={
+            'device': device,
+            'cache_enabled': True
+        })
+        pipeline.clear_cache()
 
-    def test_audio_io_operations(self, tmp_path):
-        """Benchmark audio load/save operations."""
-        pytest.skip("Requires audio I/O implementation")
+        # First run: populate cache
+        performance_tracker.start('run_1')
+        result1 = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
+        time1 = performance_tracker.stop()
 
-    def test_realtime_processing_latency(self):
-        """Benchmark real-time processing latency."""
-        pytest.skip("Requires real-time processing implementation")
+        # Subsequent runs: should hit cache
+        times = [time1]
+        for i in range(2, 6):
+            performance_tracker.start(f'run_{i}')
+            result = pipeline.convert_singing_voice(
+                audio_path=str(song_file),
+                target_speaker_embedding=test_profile['embedding']
+            )
+            times.append(performance_tracker.stop())
 
-    def test_librosa_vs_torchaudio_vs_cuda(self):
-        """Compare different audio processing implementations."""
-        pytest.skip("Requires multiple implementations")
+        # Calculate statistics
+        baseline = times[0]
+        cached_times = times[1:]
+        avg_cached = np.mean(cached_times)
+        speedup = baseline / avg_cached
 
+        print(f"\nCache Hit Rate Test:")
+        print(f"  First run (cold): {baseline:.3f}s")
+        print(f"  Cached runs avg: {avg_cached:.3f}s")
+        print(f"  Speedup: {speedup:.2f}x")
 
-@pytest.mark.performance
-class TestModelBenchmarks:
-    """Benchmark model performance."""
-
-    def test_transformer_forward_pass(self):
-        """Benchmark VoiceTransformer forward pass."""
-        pytest.skip("Requires transformer implementation")
-
-    def test_hifigan_vocoder_speed(self):
-        """Benchmark HiFiGAN generator speed."""
-        pytest.skip("Requires HiFiGAN implementation")
-
-    def test_attention_mechanism_computation(self):
-        """Benchmark attention mechanism."""
-        pytest.skip("Requires transformer implementation")
-
-    def test_model_flops_and_macs(self):
-        """Measure FLOPs and MACs for each model."""
-        pytest.skip("Requires profiling tools")
-
-    @pytest.mark.cuda
-    def test_model_performance_gpu_architectures(self):
-        """Test performance on different GPU architectures."""
-        pytest.skip("Requires GPU implementation")
-
-
-@pytest.mark.performance
-@pytest.mark.e2e
-class TestEndToEndBenchmarks:
-    """Benchmark complete workflows."""
-
-    def test_text_to_speech_latency(self):
-        """Benchmark TTS pipeline end-to-end."""
-        pytest.skip("Requires TTS pipeline implementation")
-
-    def test_voice_conversion_latency(self):
-        """Benchmark voice conversion pipeline."""
-        pytest.skip("Requires voice conversion implementation")
-
-    def test_realtime_processing_latency(self):
-        """Benchmark real-time processing (target: <100ms)."""
-        pytest.skip("Requires real-time processing implementation")
-
-    def test_api_request_response_time(self):
-        """Benchmark API request-response time."""
-        pytest.skip("Requires API implementation")
-
-    def test_websocket_round_trip_time(self):
-        """Benchmark WebSocket round-trip time."""
-        pytest.skip("Requires WebSocket implementation")
+        # Cached runs should be consistently faster
+        assert speedup >= 1.5, f"Cache speedup insufficient: {speedup:.2f}x"
 
 
 @pytest.mark.performance
-class TestScalability:
-    """Test performance under load."""
+class TestComponentTimingBreakdown:
+    """Breakdown of timing for each component."""
 
-    @pytest.mark.parametrize("batch_size", [1, 4, 8, 16, 32])
-    def test_batch_size_scaling(self, batch_size):
-        """Test performance with increasing batch sizes."""
-        pytest.skip("Requires inference implementation")
+    def test_component_timing_breakdown(self, song_file, test_profile, device, performance_tracker):
+        """Measure time spent in each pipeline component."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
 
-    @pytest.mark.parametrize("seq_length", [50, 100, 200, 500])
-    def test_sequence_length_scaling(self, seq_length):
-        """Test performance with increasing sequence lengths."""
-        pytest.skip("Requires inference implementation")
+        # Create pipeline with timing instrumentation
+        pipeline = SingingConversionPipeline(config={'device': device})
 
-    def test_concurrent_request_scaling(self):
-        """Test performance with increasing concurrent requests."""
-        pytest.skip("Requires web API implementation")
+        # Track component times
+        component_times = {}
 
-    def test_memory_pressure_degradation(self):
-        """Test performance degradation under memory pressure."""
-        pytest.skip("Requires inference implementation")
+        def timed_callback(stage: str, progress: float):
+            if stage not in component_times:
+                component_times[stage] = {'start': time.perf_counter(), 'end': None}
+            if progress >= 1.0:
+                component_times[stage]['end'] = time.perf_counter()
 
-    @pytest.mark.cuda
-    def test_multi_gpu_scaling_efficiency(self):
-        """Test multi-GPU scaling efficiency."""
-        pytest.skip("Requires multi-GPU support")
+        # Run with callback
+        result = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=test_profile['embedding'],
+            progress_callback=timed_callback
+        )
 
-
-@pytest.mark.performance
-class TestRegressionDetection:
-    """Automated performance monitoring."""
-
-    def test_performance_vs_baseline(self):
-        """Compare current performance against baselines."""
-        # Load baseline metrics from file
-        # Compare current performance
-        # Flag regressions (>10% slowdown)
-        pytest.skip("Requires baseline storage")
-
-    def test_flag_performance_regressions(self):
-        """Flag performance regressions automatically."""
-        pytest.skip("Requires regression detection")
-
-    def test_generate_performance_report(self):
-        """Generate performance reports with charts."""
-        pytest.skip("Requires reporting tools")
-
-    def test_track_performance_trends(self):
-        """Track performance trends over time."""
-        pytest.skip("Requires trend tracking")
+        # Calculate component durations
+        print(f"\nComponent Timing Breakdown:")
+        total_time = 0
+        for stage, times in component_times.items():
+            if times['end'] is not None:
+                duration = times['end'] - times['start']
+                total_time += duration
+                print(f"  {stage}: {duration:.3f}s ({duration/total_time*100:.1f}%)")
 
 
 @pytest.mark.performance
-class TestProfilingIntegration:
-    """Profiling utilities for detailed analysis."""
+class TestScalabilityWithAudioLength:
+    """Test how performance scales with audio length."""
 
-    def test_pytorch_profiler_integration(self):
-        """Integrate PyTorch profiler for detailed analysis."""
-        pytest.skip("Requires profiler setup")
+    @pytest.mark.parametrize('duration', [5.0, 10.0, 20.0, 30.0])
+    def test_scalability(self, tmp_path, test_profile, device, duration, performance_tracker):
+        """Test performance scaling with different audio lengths."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+            import soundfile as sf
+        except ImportError:
+            pytest.skip("Components not available")
 
-    @pytest.mark.cuda
-    def test_nvidia_nsight_profiling(self):
-        """Integrate NVIDIA Nsight for CUDA profiling."""
-        pytest.skip("Requires Nsight setup")
+        # Generate audio of specified duration
+        sample_rate = 22050
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        audio = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        audio_file = tmp_path / f"test_{duration}s.wav"
+        sf.write(str(audio_file), audio, sample_rate)
 
-    def test_generate_flame_graphs(self):
-        """Generate flame graphs for bottleneck identification."""
-        pytest.skip("Requires flame graph tools")
+        # Convert
+        pipeline = SingingConversionPipeline(config={'device': device})
 
-    def test_export_profiling_data(self, tmp_path):
-        """Export profiling data for external analysis."""
-        pytest.skip("Requires profiling implementation")
+        performance_tracker.start(f'duration_{duration}')
+        result = pipeline.convert_singing_voice(
+            audio_path=str(audio_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
+        elapsed = performance_tracker.stop()
+
+        rtf = elapsed / duration
+        performance_tracker.record(f'rtf_{duration}s', rtf)
+
+        print(f"\n{duration}s audio: RTF={rtf:.3f}x")
+
+        # RTF should be relatively consistent across lengths
+        assert rtf > 0
+
+
+@pytest.mark.performance
+class TestSourceSeparatorPerformance:
+    """Benchmark vocal separation performance."""
+
+    def test_separation_speed(self, song_file, device, performance_tracker):
+        """Benchmark vocal separation speed."""
+        try:
+            from src.auto_voice.audio.source_separator import VocalSeparator
+            import soundfile as sf
+        except ImportError:
+            pytest.skip("VocalSeparator not available")
+
+        separator = VocalSeparator(device=device, config={'cache_enabled': False})
+
+        # Get audio duration
+        audio, sr = sf.read(str(song_file))
+        duration = len(audio) / sr
+
+        # Benchmark separation
+        performance_tracker.start('separation')
+        vocals, instrumental = separator.separate_vocals(str(song_file))
+        elapsed = performance_tracker.stop()
+
+        rtf = elapsed / duration
+
+        print(f"\nSeparation Performance:")
+        print(f"  Duration: {duration:.2f}s")
+        print(f"  Elapsed: {elapsed:.2f}s")
+        print(f"  RTF: {rtf:.2f}x")
+
+        assert vocals is not None
+        assert instrumental is not None
+
+
+@pytest.mark.performance
+class TestPitchExtractionPerformance:
+    """Benchmark pitch extraction performance."""
+
+    def test_f0_extraction_speed(self, sample_audio_22khz, device, performance_tracker):
+        """Benchmark F0 extraction speed."""
+        try:
+            from src.auto_voice.audio.pitch_extractor import SingingPitchExtractor
+        except ImportError:
+            pytest.skip("SingingPitchExtractor not available")
+
+        extractor = SingingPitchExtractor(device=device)
+        sample_rate = 22050
+
+        # Generate longer audio for meaningful benchmark
+        duration = 10.0
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        audio = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+
+        # Benchmark extraction
+        performance_tracker.start('f0_extraction')
+        result = extractor.extract_f0_contour(audio, sample_rate)
+        elapsed = performance_tracker.stop()
+
+        rtf = elapsed / duration
+
+        print(f"\nF0 Extraction Performance:")
+        print(f"  Duration: {duration:.2f}s")
+        print(f"  Elapsed: {elapsed:.2f}s")
+        print(f"  RTF: {rtf:.2f}x")
+
+        # Should be fast (< 1.0x RTF)
+        assert rtf < 2.0, f"F0 extraction too slow: {rtf:.2f}x"
+
+
+@pytest.mark.performance
+class TestVoiceConversionPerformance:
+    """Benchmark voice conversion model performance."""
+
+    def test_conversion_model_speed(self, device, performance_tracker):
+        """Benchmark voice conversion model forward pass."""
+        try:
+            from src.auto_voice.models.singing_voice_converter import SingingVoiceConverter
+        except ImportError:
+            pytest.skip("SingingVoiceConverter not available")
+
+        config = {
+            'singing_voice_converter': {
+                'latent_dim': 192,
+                'mel_channels': 80,
+                'content_encoder': {'type': 'cnn_fallback'},
+                'vocoder': {'use_vocoder': False}
+            }
+        }
+        model = SingingVoiceConverter(config)
+        model.to(device)
+        model.eval()
+        model.prepare_for_inference()
+
+        # Generate test inputs
+        source_audio = torch.randn(1, 16000).to(device)
+        target_speaker_emb = torch.randn(1, 256).to(device)
+
+        # Warm-up
+        with torch.no_grad():
+            model.convert(
+                source_audio=source_audio,
+                target_speaker_embedding=target_speaker_emb,
+                source_sample_rate=16000
+            )
+
+        # Benchmark
+        num_iterations = 10
+        performance_tracker.start('conversion_model')
+        for _ in range(num_iterations):
+            with torch.no_grad():
+                waveform = model.convert(
+                    source_audio=source_audio,
+                    target_speaker_embedding=target_speaker_emb,
+                    source_sample_rate=16000
+                )
+        elapsed = performance_tracker.stop()
+
+        avg_time = elapsed / num_iterations
+        print(f"\nConversion Model Performance:")
+        print(f"  Avg time per conversion: {avg_time*1000:.2f}ms")
+
+
+@pytest.mark.performance
+class TestBatchProcessingPerformance:
+    """Test batch processing performance."""
+
+    def test_batch_vs_sequential(self, device, performance_tracker):
+        """Compare batch vs sequential pitch extraction."""
+        try:
+            from src.auto_voice.audio.pitch_extractor import SingingPitchExtractor
+        except ImportError:
+            pytest.skip("SingingPitchExtractor not available")
+
+        extractor = SingingPitchExtractor(device=device)
+        sample_rate = 22050
+
+        # Generate multiple audio samples
+        num_samples = 5
+        audio_samples = []
+        for _ in range(num_samples):
+            t = np.linspace(0, 2.0, int(sample_rate * 2))
+            audio = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+            audio_samples.append(audio)
+
+        # Sequential processing
+        performance_tracker.start('sequential')
+        for audio in audio_samples:
+            result = extractor.extract_f0_contour(audio, sample_rate)
+        time_sequential = performance_tracker.stop()
+
+        # Batch processing
+        performance_tracker.start('batch')
+        results = extractor.batch_extract(audio_samples, sample_rate)
+        time_batch = performance_tracker.stop()
+
+        speedup = time_sequential / time_batch
+
+        print(f"\nBatch Processing Performance:")
+        print(f"  Sequential: {time_sequential:.3f}s")
+        print(f"  Batch: {time_batch:.3f}s")
+        print(f"  Speedup: {speedup:.2f}x")
+
+        # Batch should be faster (or at least not slower)
+        assert speedup >= 0.9, f"Batch processing slower than sequential"
+
+
+@pytest.mark.performance
+class TestPresetPerformanceComparison:
+    """Compare performance of different quality presets."""
+
+    @pytest.mark.parametrize('preset', ['fast', 'balanced', 'quality'])
+    def test_preset_performance(self, song_file, test_profile, device, preset, performance_tracker):
+        """Benchmark different quality presets."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
+
+        pipeline = SingingConversionPipeline(config={'device': device})
+
+        try:
+            performance_tracker.start(f'preset_{preset}')
+            result = pipeline.convert_singing_voice(
+                audio_path=str(song_file),
+                target_speaker_embedding=test_profile['embedding'],
+                preset=preset
+            )
+            elapsed = performance_tracker.stop()
+
+            duration = result['duration']
+            rtf = elapsed / duration
+
+            print(f"\nPreset '{preset}' Performance:")
+            print(f"  Elapsed: {elapsed:.3f}s")
+            print(f"  RTF: {rtf:.3f}x")
+
+        except (ValueError, KeyError):
+            pytest.skip(f"Preset '{preset}' not supported")

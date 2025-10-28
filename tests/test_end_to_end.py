@@ -1,228 +1,441 @@
 """
 Comprehensive end-to-end tests for complete voice synthesis workflows.
 
-Tests complete TTS pipeline, voice conversion, real-time processing,
-web API workflows, and multi-component integration.
+Tests complete singing conversion pipeline, voice cloning, and integration workflows.
 """
 
 import pytest
 import torch
 import numpy as np
 from pathlib import Path
+import time
 
 
 @pytest.mark.e2e
+@pytest.mark.integration
 @pytest.mark.slow
-class TestTextToSpeechPipeline:
-    """Test complete text-to-speech workflow."""
+class TestSingingConversionWorkflow:
+    """Test complete singing voice conversion workflow."""
 
-    @pytest.mark.parametrize("text,duration", [
-        ("Hello world", 1.0),
-        ("The quick brown fox jumps over the lazy dog", 3.0),
-        ("", 0.0),  # Edge case
-        ("Very long text " * 50, 15.0)
-    ])
-    def test_text_to_audio_pipeline(self, text, duration):
-        """Test complete text → phonemes → mel → audio workflow."""
-        pytest.skip("Requires complete TTS pipeline implementation")
+    @pytest.fixture
+    def setup_pipeline(self, song_file, test_profile, device):
+        """Setup pipeline with test dependencies."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+            config = {
+                'device': device,
+                'cache_enabled': True,
+                'sample_rate': 44100
+            }
+            pipeline = SingingConversionPipeline(config=config)
+            return {
+                'pipeline': pipeline,
+                'song_file': song_file,
+                'profile': test_profile
+            }
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
 
-    @pytest.mark.parametrize("speaker_id", [0, 1, 2])
-    def test_multi_speaker_synthesis(self, speaker_id):
-        """Test synthesis with different speaker IDs."""
-        pytest.skip("Requires multi-speaker model implementation")
+    def test_full_singing_conversion_workflow(self, setup_pipeline, performance_tracker):
+        """Test full workflow: audio → separation → F0 → conversion → output.
 
-    def test_custom_voice_parameters(self):
-        """Test synthesis with custom pitch/speed/energy."""
-        pytest.skip("Requires parameter control implementation")
+        Tests complete integration from input song to converted output with target voice.
+        """
+        pipeline = setup_pipeline['pipeline']
+        song_file = setup_pipeline['song_file']
+        target_embedding = setup_pipeline['profile']['embedding']
 
-    def test_output_audio_quality(self):
-        """Validate output audio quality (duration, sample rate, format)."""
-        pytest.skip("Requires TTS pipeline implementation")
+        # Track performance
+        performance_tracker.start('full_conversion')
 
-    def test_audio_file_saving_loading(self, tmp_path):
-        """Test audio file save and load round-trip."""
-        pytest.skip("Requires TTS pipeline implementation")
+        # Execute conversion
+        result = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=target_embedding,
+            pitch_shift=0.0
+        )
+
+        elapsed = performance_tracker.stop()
+
+        # Validate result structure
+        assert 'audio' in result
+        assert 'sample_rate' in result
+        assert 'duration' in result
+        assert 'f0_contour' in result
+
+        # Validate output audio
+        audio = result['audio']
+        assert isinstance(audio, np.ndarray)
+        assert audio.ndim == 1  # Mono output
+        assert len(audio) > 0
+        assert np.isfinite(audio).all()
+
+        # Check sample rate
+        assert result['sample_rate'] == 44100
+
+        # Performance check: Should complete in reasonable time
+        duration_seconds = result['duration']
+        rtf = elapsed / duration_seconds  # Real-time factor
+        assert rtf < 10.0, f"Conversion too slow: RTF={rtf:.2f}"
+
+        print(f"\nConversion RTF: {rtf:.2f}x (lower is faster)")
+
+    def test_progress_callback_verification(self, setup_pipeline):
+        """Test progress callback is called during conversion."""
+        pipeline = setup_pipeline['pipeline']
+        song_file = setup_pipeline['song_file']
+        target_embedding = setup_pipeline['profile']['embedding']
+
+        progress_calls = []
+
+        def progress_callback(stage: str, progress: float):
+            progress_calls.append({'stage': stage, 'progress': progress})
+
+        result = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=target_embedding,
+            progress_callback=progress_callback
+        )
+
+        # Verify callbacks were made
+        assert len(progress_calls) > 0, "Progress callback was never called"
+
+        # Verify progress goes from 0 to 1
+        progress_values = [p['progress'] for p in progress_calls]
+        assert min(progress_values) >= 0.0
+        assert max(progress_values) <= 1.0
+
+        # Verify multiple stages
+        stages = set(p['stage'] for p in progress_calls)
+        expected_stages = {'separation', 'f0_extraction', 'conversion'}
+        assert len(stages.intersection(expected_stages)) >= 2
+
+    def test_caching_speedup(self, setup_pipeline, performance_tracker):
+        """Test that caching provides speedup on repeated conversions."""
+        pipeline = setup_pipeline['pipeline']
+        song_file = setup_pipeline['song_file']
+        target_embedding = setup_pipeline['profile']['embedding']
+
+        # First conversion (cold)
+        performance_tracker.start('cold_conversion')
+        result1 = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=target_embedding
+        )
+        time_cold = performance_tracker.stop()
+
+        # Second conversion (warm, with cache)
+        performance_tracker.start('warm_conversion')
+        result2 = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=target_embedding
+        )
+        time_warm = performance_tracker.stop()
+
+        # Warm should be at least 2x faster
+        speedup = time_cold / time_warm
+        assert speedup >= 1.5, f"Cache speedup too low: {speedup:.2f}x"
+
+        # Results should be identical (bitwise, since cached)
+        np.testing.assert_array_equal(result1['audio'], result2['audio'])
+
+        print(f"\nCache speedup: {speedup:.2f}x")
+
+    def test_error_recovery(self, setup_pipeline):
+        """Test error recovery for invalid inputs."""
+        pipeline = setup_pipeline['pipeline']
+
+        # Test with non-existent file
+        with pytest.raises(FileNotFoundError):
+            pipeline.convert_singing_voice(
+                audio_path="/nonexistent/file.wav",
+                target_speaker_embedding=np.random.randn(256)
+            )
+
+        # Test with invalid embedding size
+        with pytest.raises(ValueError):
+            pipeline.convert_singing_voice(
+                audio_path=str(setup_pipeline['song_file']),
+                target_speaker_embedding=np.random.randn(128)  # Wrong size
+            )
+
+    def test_preset_comparison(self, setup_pipeline):
+        """Test different quality presets produce different results."""
+        pipeline = setup_pipeline['pipeline']
+        song_file = setup_pipeline['song_file']
+        target_embedding = setup_pipeline['profile']['embedding']
+
+        # Try different presets if available
+        presets = ['fast', 'balanced', 'quality']
+        results = {}
+
+        for preset in presets:
+            try:
+                result = pipeline.convert_singing_voice(
+                    audio_path=str(song_file),
+                    target_speaker_embedding=target_embedding,
+                    preset=preset
+                )
+                results[preset] = result['audio']
+            except (ValueError, KeyError):
+                # Preset not supported, skip
+                continue
+
+        # If multiple presets worked, verify differences
+        if len(results) >= 2:
+            preset_list = list(results.keys())
+            audio1 = results[preset_list[0]]
+            audio2 = results[preset_list[1]]
+
+            # Should produce different outputs
+            assert not np.array_equal(audio1, audio2), \
+                f"Presets {preset_list[0]} and {preset_list[1]} produce identical output"
 
 
 @pytest.mark.e2e
-@pytest.mark.slow
-class TestVoiceConversionPipeline:
-    """Test complete voice-to-voice conversion workflow."""
+@pytest.mark.integration
+class TestVoiceCloningWorkflow:
+    """Test complete voice cloning workflow."""
 
-    def test_voice_conversion(self, sample_audio):
-        """Test source audio → features → conversion → target audio."""
-        pytest.skip("Requires voice conversion implementation")
+    def test_voice_clone_create_and_use(self, tmp_path, device):
+        """Test creating voice profile and using it for conversion."""
+        try:
+            from src.auto_voice.inference.voice_cloner import VoiceCloner
+        except ImportError:
+            pytest.skip("VoiceCloner not available")
 
-    @pytest.mark.parametrize("pitch_shift", [-3, 0, 3])
-    def test_pitch_and_formant_shifting(self, sample_audio, pitch_shift):
-        """Test pitch and formant modifications."""
-        pytest.skip("Requires voice conversion implementation")
+        # Create cloner
+        cloner = VoiceCloner(device=device)
 
-    def test_linguistic_content_preservation(self, sample_audio):
-        """Test that linguistic content is preserved."""
-        pytest.skip("Requires voice conversion implementation")
+        # Generate reference audio (10 seconds)
+        sample_rate = 22050
+        duration = 10.0
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        reference_audio = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
 
-    def test_target_speaker_characteristics(self, sample_audio):
-        """Validate output matches target speaker characteristics."""
-        pytest.skip("Requires voice conversion implementation")
+        # Create voice profile
+        profile = cloner.create_voice_profile(
+            audio=reference_audio,
+            sample_rate=sample_rate,
+            user_id='test_user'
+        )
 
+        # Verify profile structure
+        assert 'profile_id' in profile
+        assert 'user_id' in profile
+        assert profile['user_id'] == 'test_user'
 
-@pytest.mark.e2e
-@pytest.mark.slow
-class TestRealtimeProcessing:
-    """Test real-time streaming workflows."""
+        # Load profile back
+        loaded_profile = cloner.load_voice_profile(profile['profile_id'])
+        assert 'embedding' in loaded_profile
 
-    def test_realtime_audio_processing(self, sample_audio):
-        """Test real-time audio input → processing → output."""
-        pytest.skip("Requires real-time processing implementation")
+        # Use embedding for test conversion (if pipeline available)
+        embedding = loaded_profile['embedding']
+        assert isinstance(embedding, np.ndarray)
+        assert embedding.shape == (256,)
 
-    @pytest.mark.parametrize("buffer_size", [256, 512, 1024])
-    def test_chunk_based_processing(self, sample_audio, buffer_size):
-        """Test chunk-based processing with various buffer sizes."""
-        pytest.skip("Requires real-time processing implementation")
+    def test_multi_sample_profile_creation(self, device):
+        """Test creating profile from multiple audio samples."""
+        try:
+            from src.auto_voice.inference.voice_cloner import VoiceCloner
+        except ImportError:
+            pytest.skip("VoiceCloner not available")
 
-    @pytest.mark.performance
-    def test_streaming_latency(self, sample_audio):
-        """Test end-to-end latency (target: <100ms)."""
-        pytest.skip("Requires real-time processing implementation")
+        cloner = VoiceCloner(device=device)
 
-    def test_audio_dropout_handling(self):
-        """Test handling of audio dropouts and buffer underruns."""
-        pytest.skip("Requires real-time processing implementation")
+        # Generate multiple samples
+        sample_rate = 22050
+        audio_samples = []
+        for i in range(3):
+            t = np.linspace(0, 10.0, int(sample_rate * 10))
+            audio = (0.3 * np.sin(2 * np.pi * (220 + i * 10) * t)).astype(np.float32)
+            audio_samples.append(audio)
 
-    @pytest.mark.slow
-    def test_continuous_streaming(self):
-        """Test continuous streaming for extended duration."""
-        pytest.skip("Requires real-time processing implementation")
+        # Create profile from multiple samples
+        profile = cloner.create_voice_profile_from_multiple(
+            audio_samples=audio_samples,
+            sample_rate=sample_rate,
+            user_id='multi_sample_user'
+        )
 
-
-@pytest.mark.e2e
-@pytest.mark.web
-class TestWebAPIWorkflow:
-    """Test complete web API workflows."""
-
-    def test_client_api_inference_response(self):
-        """Test client → API request → inference → response."""
-        pytest.skip("Requires web API implementation")
-
-    def test_websocket_streaming(self):
-        """Test WebSocket streaming workflow."""
-        pytest.skip("Requires WebSocket implementation")
-
-    def test_concurrent_client_requests(self):
-        """Test multiple concurrent client requests."""
-        pytest.skip("Requires web API implementation")
-
-    def test_session_management(self):
-        """Test session management across multiple requests."""
-        pytest.skip("Requires web API implementation")
-
-    def test_error_recovery_and_retry(self):
-        """Test error recovery and retry logic."""
-        pytest.skip("Requires web API implementation")
-
-
-@pytest.mark.e2e
-@pytest.mark.slow
-class TestTrainingToInference:
-    """Test complete model lifecycle."""
-
-    def test_training_save_load_inference(self, tmp_path):
-        """Test training → checkpoint → loading → inference."""
-        pytest.skip("Requires training and inference implementation")
-
-    @pytest.mark.cuda
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-    def test_onnx_tensorrt_export(self, tmp_path):
-        """Test model export: PyTorch → ONNX → TensorRT."""
-        pytest.skip("Requires model export implementation")
-
-    def test_checkpoint_compatibility(self):
-        """Test checkpoint compatibility across versions."""
-        pytest.skip("Requires checkpoint implementation")
-
-    def test_inference_matches_training(self):
-        """Validate inference results match training expectations."""
-        pytest.skip("Requires training and inference implementation")
+        assert 'profile_id' in profile
+        assert 'num_samples' in profile
+        assert profile['num_samples'] == 3
 
 
 @pytest.mark.e2e
 @pytest.mark.integration
 class TestMultiComponentIntegration:
-    """Test component interaction integration."""
+    """Test integration between multiple components."""
 
-    def test_audio_processor_model_vocoder(self, sample_audio):
-        """Test AudioProcessor → Model → Vocoder pipeline."""
-        pytest.skip("Requires component implementations")
+    def test_source_separator_pitch_extractor_integration(self, song_file, device):
+        """Test VocalSeparator → SingingPitchExtractor integration."""
+        try:
+            from src.auto_voice.audio.source_separator import VocalSeparator
+            from src.auto_voice.audio.pitch_extractor import SingingPitchExtractor
+        except ImportError:
+            pytest.skip("Components not available")
 
-    @pytest.mark.cuda
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-    def test_gpu_memory_management(self):
-        """Test GPU memory management during inference."""
-        pytest.skip("Requires GPU implementation")
+        # Separate vocals
+        separator = VocalSeparator(device=device)
+        vocals, instrumental = separator.separate_vocals(str(song_file))
 
-    @pytest.mark.cuda
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-    def test_cuda_kernel_pytorch_integration(self):
-        """Test CUDA kernel integration with PyTorch models."""
-        pytest.skip("Requires CUDA kernel implementation")
+        # Extract pitch from vocals
+        extractor = SingingPitchExtractor(device=device)
+        f0_result = extractor.extract_f0_contour(vocals[0], sample_rate=44100)
 
-    def test_configuration_propagation(self):
-        """Test config propagation across components."""
-        pytest.skip("Requires component implementations")
+        # Verify results
+        assert 'f0' in f0_result
+        assert 'voiced' in f0_result
+        assert len(f0_result['f0']) > 0
+
+    def test_end_to_end_memory_management(self, song_file, test_profile, device, memory_leak_detector):
+        """Test memory is properly managed across full workflow."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
+
+        with memory_leak_detector:
+            pipeline = SingingConversionPipeline(config={'device': device})
+
+            # Run multiple conversions
+            for _ in range(3):
+                result = pipeline.convert_singing_voice(
+                    audio_path=str(song_file),
+                    target_speaker_embedding=test_profile['embedding']
+                )
+
+                # Force cleanup
+                del result
+                import gc
+                gc.collect()
+                if device == 'cuda':
+                    torch.cuda.empty_cache()
+
+        # Memory leak detector will warn if significant leak detected
 
 
 @pytest.mark.e2e
+@pytest.mark.integration
 @pytest.mark.slow
 class TestQualityValidation:
     """Test output quality metrics."""
 
-    def test_audio_quality_metrics(self):
-        """Test SNR, PESQ, MOS if available."""
-        pytest.skip("Requires quality metrics implementation")
+    def test_snr_validation(self, song_file, test_profile, device):
+        """Test output SNR is reasonable."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
 
-    def test_speaker_similarity(self):
-        """Test speaker similarity for voice conversion."""
-        pytest.skip("Requires speaker similarity metrics")
+        pipeline = SingingConversionPipeline(config={'device': device})
+        result = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
 
-    def test_intelligibility(self):
-        """Test intelligibility of synthesized speech."""
-        pytest.skip("Requires intelligibility metrics")
+        audio = result['audio']
 
-    def test_naturalness_and_prosody(self):
-        """Test naturalness and prosody quality."""
-        pytest.skip("Requires prosody analysis")
+        # Calculate SNR (simple estimate)
+        signal_power = np.mean(audio ** 2)
+        # Assume last 10% is noise floor
+        noise_power = np.mean(audio[int(len(audio) * 0.9):] ** 2)
+        snr_db = 10 * np.log10(signal_power / (noise_power + 1e-10))
 
-    def test_comparison_with_reference(self):
-        """Compare outputs with reference implementations."""
-        pytest.skip("Requires reference implementation")
+        # SNR should be reasonable (> 10 dB)
+        assert snr_db > 10.0, f"SNR too low: {snr_db:.2f} dB"
+
+    def test_output_duration_preservation(self, song_file, test_profile, device):
+        """Test that output duration matches input."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+            import soundfile as sf
+        except ImportError:
+            pytest.skip("Components not available")
+
+        # Get input duration
+        input_audio, input_sr = sf.read(str(song_file))
+        input_duration = len(input_audio) / input_sr
+
+        # Convert
+        pipeline = SingingConversionPipeline(config={'device': device})
+        result = pipeline.convert_singing_voice(
+            audio_path=str(song_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
+
+        # Check output duration
+        output_duration = len(result['audio']) / result['sample_rate']
+
+        # Should be within 5% of input duration
+        duration_ratio = output_duration / input_duration
+        assert 0.95 <= duration_ratio <= 1.05, \
+            f"Duration mismatch: input={input_duration:.2f}s, output={output_duration:.2f}s"
 
 
 @pytest.mark.e2e
-@pytest.mark.slow
-class TestStressTests:
-    """Test system under load."""
+@pytest.mark.performance
+class TestPerformanceE2E:
+    """End-to-end performance tests."""
 
-    @pytest.mark.parametrize("batch_size", [1, 8, 16, 32])
-    def test_max_batch_size(self, batch_size):
-        """Test with maximum batch size."""
-        pytest.skip("Requires inference implementation")
+    @pytest.mark.parametrize('audio_length', [5.0, 10.0, 30.0])
+    def test_conversion_latency_by_length(self, tmp_path, test_profile, device, audio_length, performance_tracker):
+        """Test conversion latency scales with audio length."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+            import soundfile as sf
+        except ImportError:
+            pytest.skip("Components not available")
 
-    def test_long_audio_sequences(self):
-        """Test with very long audio sequences."""
-        pytest.skip("Requires inference implementation")
+        # Generate audio of specified length
+        sample_rate = 22050
+        t = np.linspace(0, audio_length, int(sample_rate * audio_length))
+        audio = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        audio_file = tmp_path / f"test_{audio_length}s.wav"
+        sf.write(str(audio_file), audio, sample_rate)
 
-    @pytest.mark.slow
-    def test_continuous_operation(self):
-        """Test continuous operation for extended duration."""
-        pytest.skip("Requires inference implementation")
+        # Convert and measure time
+        pipeline = SingingConversionPipeline(config={'device': device})
 
-    def test_memory_leak_detection(self):
-        """Test memory leak over many iterations."""
-        pytest.skip("Requires inference implementation")
+        performance_tracker.start(f'convert_{audio_length}s')
+        result = pipeline.convert_singing_voice(
+            audio_path=str(audio_file),
+            target_speaker_embedding=test_profile['embedding']
+        )
+        elapsed = performance_tracker.stop()
 
-    @pytest.mark.cuda
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-    def test_gpu_memory_exhaustion(self):
-        """Test GPU memory exhaustion handling."""
-        pytest.skip("Requires GPU implementation")
+        # Calculate real-time factor
+        rtf = elapsed / audio_length
+        performance_tracker.record(f'rtf_{audio_length}s', rtf)
+
+        # RTF should be reasonable (< 20x for CPU, < 5x for GPU)
+        max_rtf = 20.0 if device == 'cpu' else 5.0
+        assert rtf < max_rtf, f"RTF too high for {audio_length}s audio: {rtf:.2f}x"
+
+        print(f"\n{audio_length}s audio: RTF={rtf:.2f}x, elapsed={elapsed:.2f}s")
+
+    def test_concurrent_conversions(self, song_file, test_profile, device, concurrent_executor):
+        """Test multiple concurrent conversions."""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("SingingConversionPipeline not available")
+
+        pipeline = SingingConversionPipeline(config={'device': device})
+
+        def convert_task():
+            return pipeline.convert_singing_voice(
+                audio_path=str(song_file),
+                target_speaker_embedding=test_profile['embedding']
+            )
+
+        # Submit 3 concurrent tasks
+        futures = [concurrent_executor.submit(convert_task) for _ in range(3)]
+
+        # Wait for all to complete
+        results = [f.result(timeout=120) for f in futures]
+
+        # All should succeed
+        assert len(results) == 3
+        assert all('audio' in r for r in results)

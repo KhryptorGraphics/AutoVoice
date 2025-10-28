@@ -52,19 +52,21 @@ class TestFlaskApp:
         """Test all required routes are registered."""
         rules = [rule.rule for rule in self.app.url_map.iter_rules()]
 
-        required_routes = [
+        # Check for versioned API routes (/api/v1/*)
+        required_routes_v1 = [
             '/',
-            '/api/health',
-            '/api/synthesize',
-            '/api/convert',
-            '/api/clone',
-            '/api/speakers',
-            '/api/gpu_status',
-            '/api/process_audio',
+            '/api/v1/health',
+            '/api/v1/synthesize',
+            '/api/v1/convert',
+            '/api/v1/voice/clone',  # Updated path
+            '/api/v1/speakers',
+            '/api/v1/gpu_status',
+            '/api/v1/process_audio',
+            '/api/v1/voice/profiles',  # New endpoint
             '/ws/audio_stream'
         ]
 
-        for route in required_routes:
+        for route in required_routes_v1:
             assert route in rules, f"Route {route} not registered"
 
     def test_app_config_defaults(self):
@@ -103,7 +105,7 @@ class TestRESTEndpoints:
 
     def test_health_endpoint_success(self):
         """Test health check returns 200."""
-        response = self.client.get('/api/health')
+        response = self.client.get('/api/v1/health')
 
         assert response.status_code == 200
         data = response.get_json()
@@ -115,7 +117,7 @@ class TestRESTEndpoints:
 
     def test_health_endpoint_structure(self):
         """Test health check response structure."""
-        response = self.client.get('/api/health')
+        response = self.client.get('/api/v1/health')
         data = response.get_json()
 
         required_fields = ['status', 'gpu_available', 'model_loaded', 'timestamp']
@@ -135,7 +137,7 @@ class TestRESTEndpoints:
         }
 
         response = self.client.post(
-            '/api/synthesize',
+            '/api/v1/synthesize',
             json=payload,
             content_type='application/json'
         )
@@ -155,7 +157,7 @@ class TestRESTEndpoints:
         del payload[missing_field]
 
         response = self.client.post(
-            '/api/synthesize',
+            '/api/v1/synthesize',
             json=payload,
             content_type='application/json'
         )
@@ -171,7 +173,7 @@ class TestRESTEndpoints:
         }
 
         response = self.client.post(
-            '/api/synthesize',
+            '/api/v1/synthesize',
             json=payload,
             content_type='application/json'
         )
@@ -186,7 +188,7 @@ class TestRESTEndpoints:
         }
 
         response = self.client.post(
-            '/api/synthesize',
+            '/api/v1/synthesize',
             json=payload,
             content_type='application/json'
         )
@@ -203,7 +205,7 @@ class TestRESTEndpoints:
         }
 
         response = self.client.post(
-            '/api/synthesize',
+            '/api/v1/synthesize',
             json=payload,
             content_type='application/json'
         )
@@ -225,7 +227,7 @@ class TestRESTEndpoints:
         }
 
         response = self.client.post(
-            '/api/convert',
+            '/api/v1/convert',
             data=data,
             content_type='multipart/form-data'
         )
@@ -237,7 +239,7 @@ class TestRESTEndpoints:
         data = {'target_speaker': '1'}
 
         response = self.client.post(
-            '/api/convert',
+            '/api/v1/convert',
             data=data,
             content_type='multipart/form-data'
         )
@@ -255,7 +257,7 @@ class TestRESTEndpoints:
         }
 
         response = self.client.post(
-            '/api/convert',
+            '/api/v1/convert',
             data=data,
             content_type='multipart/form-data'
         )
@@ -268,7 +270,7 @@ class TestRESTEndpoints:
 
     def test_speakers_endpoint(self):
         """Test speakers list endpoint."""
-        response = self.client.get('/api/speakers')
+        response = self.client.get('/api/v1/speakers')
 
         assert response.status_code == 200
         data = response.get_json()
@@ -281,7 +283,7 @@ class TestRESTEndpoints:
 
     def test_speakers_filtering(self):
         """Test speakers endpoint with query parameters."""
-        response = self.client.get('/api/speakers?language=en')
+        response = self.client.get('/api/v1/speakers?language=en')
 
         assert response.status_code == 200
         data = response.get_json()
@@ -293,7 +295,7 @@ class TestRESTEndpoints:
 
     def test_gpu_status_endpoint(self):
         """Test GPU status endpoint."""
-        response = self.client.get('/api/gpu_status')
+        response = self.client.get('/api/v1/gpu_status')
 
         assert response.status_code == 200
         data = response.get_json()
@@ -303,7 +305,7 @@ class TestRESTEndpoints:
 
     def test_gpu_status_structure(self):
         """Test GPU status response structure."""
-        response = self.client.get('/api/gpu_status')
+        response = self.client.get('/api/v1/gpu_status')
         data = response.get_json()
 
         if data.get('cuda_available'):
@@ -364,7 +366,7 @@ class TestRequestValidation:
     def test_invalid_json_body(self):
         """Test handling of invalid JSON."""
         response = self.client.post(
-            '/api/synthesize',
+            '/api/v1/synthesize',
             data='invalid json',
             content_type='application/json'
         )
@@ -374,7 +376,7 @@ class TestRequestValidation:
     def test_missing_content_type(self):
         """Test handling of missing Content-Type."""
         response = self.client.post(
-            '/api/synthesize',
+            '/api/v1/synthesize',
             data=json.dumps({'text': 'test'})
         )
 
@@ -389,7 +391,7 @@ class TestRequestValidation:
         }
 
         response = self.client.post(
-            '/api/synthesize',
+            '/api/v1/synthesize',
             json=payload,
             content_type='application/json'
         )
@@ -397,9 +399,9 @@ class TestRequestValidation:
         assert response.status_code in [400, 413]
 
     @pytest.mark.parametrize("endpoint", [
-        '/api/synthesize',
-        '/api/convert',
-        '/api/process_audio'
+        '/api/v1/synthesize',
+        '/api/v1/convert',
+        '/api/v1/process_audio'
     ])
     def test_rate_limiting(self, endpoint):
         """Test rate limiting if implemented."""
@@ -423,7 +425,7 @@ class TestResponseFormats:
 
     def test_json_response_format(self):
         """Test JSON response structure."""
-        response = self.client.get('/api/health')
+        response = self.client.get('/api/v1/health')
 
         assert response.content_type == 'application/json'
         data = response.get_json()
@@ -431,7 +433,7 @@ class TestResponseFormats:
 
     def test_error_response_format(self):
         """Test error response structure."""
-        response = self.client.get('/api/nonexistent')
+        response = self.client.get('/api/v1/nonexistent')
 
         assert response.status_code == 404
         data = response.get_json()
@@ -440,7 +442,7 @@ class TestResponseFormats:
 
     def test_success_response_format(self):
         """Test success response structure."""
-        response = self.client.get('/api/health')
+        response = self.client.get('/api/v1/health')
 
         assert response.status_code == 200
         data = response.get_json()
@@ -465,11 +467,11 @@ class TestIntegrationWorkflows:
     def test_full_synthesize_workflow(self):
         """Test complete text-to-speech workflow."""
         # 1. Check health
-        health_response = self.client.get('/api/health')
+        health_response = self.client.get('/api/v1/health')
         assert health_response.status_code == 200
 
         # 2. Get available speakers
-        speakers_response = self.client.get('/api/speakers')
+        speakers_response = self.client.get('/api/v1/speakers')
         assert speakers_response.status_code == 200
         speakers = speakers_response.get_json()
 
@@ -484,7 +486,7 @@ class TestIntegrationWorkflows:
         }
 
         synth_response = self.client.post(
-            '/api/synthesize',
+            '/api/v1/synthesize',
             json=synth_payload,
             content_type='application/json'
         )
@@ -493,7 +495,7 @@ class TestIntegrationWorkflows:
 
     def test_health_check_before_operations(self):
         """Test health check before performing operations."""
-        health_response = self.client.get('/api/health')
+        health_response = self.client.get('/api/v1/health')
         assert health_response.status_code == 200
 
         health_data = health_response.get_json()
@@ -524,7 +526,7 @@ class TestAPIPerformance:
     def test_health_endpoint_latency(self, benchmark_timer):
         """Benchmark health endpoint response time."""
         result, elapsed = benchmark_timer(
-            lambda: self.client.get('/api/health')
+            lambda: self.client.get('/api/v1/health')
         )
 
         assert elapsed < 0.1  # Should respond in < 100ms
@@ -532,7 +534,7 @@ class TestAPIPerformance:
     def test_speakers_endpoint_latency(self, benchmark_timer):
         """Benchmark speakers list response time."""
         result, elapsed = benchmark_timer(
-            lambda: self.client.get('/api/speakers')
+            lambda: self.client.get('/api/v1/speakers')
         )
 
         assert elapsed < 0.5  # Should respond in < 500ms

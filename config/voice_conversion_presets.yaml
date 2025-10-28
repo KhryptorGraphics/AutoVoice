@@ -1,0 +1,165 @@
+# Voice Conversion Pipeline Presets
+#
+# This file defines preset configurations for the singing voice conversion pipeline.
+# Each preset configures all pipeline components with different quality/speed tradeoffs.
+#
+# Preset Structure:
+#   - vocal_separator: Settings for VocalSeparator (vocal separation)
+#   - pitch_extractor: Settings for SingingPitchExtractor (F0 extraction)
+#   - voice_converter: Settings for SingingVoiceConverter (voice conversion)
+#   - audio_mixer: Settings for AudioMixer (final mixing)
+#
+# Users can select a preset in SingingConversionPipeline:
+#   pipeline = SingingConversionPipeline(preset='balanced')
+#
+# Or switch presets at runtime:
+#   pipeline.set_preset('quality')
+
+presets:
+  # Fast Preset: Low quality, high speed
+  # Best for: Quick previews, testing, low-end hardware
+  # Expected speed: ~2-3x real-time on GPU
+  fast:
+    description: "Fast preset optimized for speed with acceptable quality"
+
+    vocal_separator:
+      model: 'htdemucs'  # Use standard HT-Demucs (not fine-tuned)
+      shifts: 0  # No random shifts for speed
+      overlap: 0.15  # Reduced overlap (default: 0.25)
+      split: true  # Split to save memory
+      mixed_precision: true  # FP16 for speed
+
+    pitch_extractor:
+      model: 'tiny'  # Tiny CREPE model for speed
+      hop_length_ms: 20.0  # Lower time resolution (default: 10.0)
+      batch_size: 1024  # Smaller batch size
+      decoder: 'argmax'  # Fast decoder (default: viterbi)
+      median_filter_width: 5  # More aggressive smoothing
+      mean_filter_width: 5
+      confidence_threshold: 0.25  # Higher threshold to skip uncertain frames
+
+    voice_converter:
+      flow_decoder:
+        num_flows: 2  # Fewer flow layers (default: 4)
+        num_layers: 2  # Fewer coupling layers (default: 4)
+        use_only_mean: true  # Use mean only, skip sampling
+      inference:
+        temperature: 0.667  # Lower temperature for faster sampling
+
+    audio_mixer:
+      normalization_method: 'peak'  # Faster than RMS/LUFS
+      crossfade_duration_ms: 5.0  # Minimal crossfade
+      fade_curve: 'linear'  # Simple fade curve
+      prevent_clipping: true  # Still prevent clipping
+
+  # Balanced Preset: Medium quality/speed
+  # Best for: General use, good balance
+  # Expected speed: ~1-1.5x real-time on GPU
+  balanced:
+    description: "Balanced preset with good quality and reasonable speed"
+
+    vocal_separator:
+      model: 'htdemucs'  # Standard HT-Demucs
+      shifts: 1  # One random shift (default)
+      overlap: 0.25  # Standard overlap
+      split: true
+      mixed_precision: true
+
+    pitch_extractor:
+      model: 'full'  # Full CREPE model
+      hop_length_ms: 10.0  # Standard time resolution
+      batch_size: 2048  # Standard batch size
+      decoder: 'viterbi'  # Viterbi decoder for smoothness
+      median_filter_width: 3  # Standard smoothing
+      mean_filter_width: 3
+      confidence_threshold: 0.21  # Standard threshold
+
+    voice_converter:
+      flow_decoder:
+        num_flows: 4  # Standard flow layers
+        num_layers: 4  # Standard coupling layers
+        use_only_mean: false  # Full sampling
+      inference:
+        temperature: 1.0  # Standard temperature
+
+    audio_mixer:
+      normalization_method: 'rms'  # RMS normalization
+      crossfade_duration_ms: 10.0  # Standard crossfade
+      fade_curve: 'linear'
+      prevent_clipping: true
+
+  # Quality Preset: High quality, slower
+  # Best for: Final outputs, critical quality
+  # Expected speed: ~0.5-0.8x real-time on GPU
+  quality:
+    description: "High-quality preset optimized for best results"
+
+    vocal_separator:
+      model: 'htdemucs_ft'  # Fine-tuned HT-Demucs (highest quality)
+      shifts: 5  # Multiple random shifts for quality
+      overlap: 0.35  # Increased overlap for smooth edges
+      split: true
+      mixed_precision: false  # FP32 for quality
+
+    pitch_extractor:
+      model: 'full'  # Full CREPE model
+      hop_length_ms: 5.0  # High time resolution (2x default)
+      batch_size: 4096  # Larger batch size
+      decoder: 'viterbi'  # Viterbi decoder
+      median_filter_width: 1  # Minimal smoothing to preserve detail
+      mean_filter_width: 1
+      confidence_threshold: 0.15  # Lower threshold to capture more pitch
+
+    voice_converter:
+      flow_decoder:
+        num_flows: 6  # More flow layers for quality
+        num_layers: 6  # More coupling layers
+        use_only_mean: false  # Full sampling
+      inference:
+        temperature: 1.0  # Standard temperature
+
+    audio_mixer:
+      normalization_method: 'lufs'  # Broadcast-standard loudness
+      crossfade_duration_ms: 20.0  # Longer crossfade for smoothness
+      fade_curve: 'cosine'  # Smoother fade curve
+      prevent_clipping: true
+      target_lufs_db: -16.0  # Streaming standard loudness
+
+  # Custom Preset: User-configurable baseline
+  # Best for: Advanced users who want to tweak settings
+  # This serves as a template that users can override
+  custom:
+    description: "Customizable preset - users can override any settings"
+
+    vocal_separator:
+      model: 'htdemucs'
+      shifts: 1
+      overlap: 0.25
+      split: true
+      mixed_precision: true
+
+    pitch_extractor:
+      model: 'full'
+      hop_length_ms: 10.0
+      batch_size: 2048
+      decoder: 'viterbi'
+      median_filter_width: 3
+      mean_filter_width: 3
+      confidence_threshold: 0.21
+
+    voice_converter:
+      flow_decoder:
+        num_flows: 4
+        num_layers: 4
+        use_only_mean: false
+      inference:
+        temperature: 1.0
+
+    audio_mixer:
+      normalization_method: 'rms'
+      crossfade_duration_ms: 10.0
+      fade_curve: 'linear'
+      prevent_clipping: true
+
+# Default preset to use if none specified
+default_preset: 'balanced'

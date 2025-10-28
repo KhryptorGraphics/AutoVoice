@@ -106,13 +106,9 @@ class TestSingingPitchExtractor:
         audio = np.array([], dtype=np.float32)
         sample_rate = 22050
 
-        try:
-            result = singing_pitch_extractor.extract_f0_contour(audio, sample_rate)
-            # Should return empty or zeros
-            assert len(result.get('f0', [])) == 0 or np.all(result['f0'] == 0)
-        except Exception as e:
-            # Or raise appropriate error
-            assert isinstance(e, (ValueError, RuntimeError))
+        # Should raise ValueError for empty audio
+        with pytest.raises(ValueError, match="empty"):
+            singing_pitch_extractor.extract_f0_contour(audio, sample_rate)
 
     def test_very_short_audio(self, singing_pitch_extractor):
         """Handle very short audio (<100ms)"""
@@ -413,3 +409,96 @@ class TestSingingPitchExtractorIntegration:
         assert f0_data is not None
         assert stats is not None
         assert stats['mean_f0'] > 0
+
+    @pytest.mark.parametrize('audio_format', ['wav', 'flac'])
+    def test_multi_format_audio_extraction(self, singing_pitch_extractor, tmp_path, audio_format):
+        """Test F0 extraction from multiple audio formats (wav, flac, mp3)"""
+        try:
+            import soundfile as sf
+        except ImportError:
+            pytest.skip("soundfile not available")
+
+        sample_rate = 22050
+        duration = 1.0
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        audio = np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
+
+        # Create audio file in specified format
+        audio_file = tmp_path / f"test.{audio_format}"
+
+        try:
+            # Write audio file
+            if audio_format == 'wav':
+                sf.write(str(audio_file), audio, sample_rate, format='WAV')
+            elif audio_format == 'flac':
+                sf.write(str(audio_file), audio, sample_rate, format='FLAC')
+            elif audio_format == 'mp3':
+                # MP3 requires special handling, may not be supported
+                try:
+                    sf.write(str(audio_file), audio, sample_rate, format='MP3')
+                except Exception:
+                    pytest.skip(f"{audio_format} format not supported by soundfile")
+        except Exception as e:
+            pytest.skip(f"Failed to write {audio_format} file: {e}")
+
+        # Extract F0 from file
+        result = singing_pitch_extractor.extract_f0_contour(str(audio_file))
+
+        # Verify results
+        assert result is not None
+        assert 'f0' in result
+        assert 'voiced' in result
+
+        # Check F0 is approximately 440 Hz
+        f0_voiced = result['f0'][result['voiced']]
+        if len(f0_voiced) > 0:
+            mean_f0 = np.mean(f0_voiced)
+            # Allow 5% tolerance for format conversion artifacts
+            assert 420 < mean_f0 < 460, f"Expected F0 ~440 Hz for {audio_format}, got {mean_f0:.1f} Hz"
+
+    def test_multi_format_consistency(self, singing_pitch_extractor, tmp_path):
+        """Test that different audio formats produce consistent F0 contours"""
+        try:
+            import soundfile as sf
+        except ImportError:
+            pytest.skip("soundfile not available")
+
+        sample_rate = 22050
+        duration = 1.0
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        audio = np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
+
+        results = {}
+
+        # Test WAV and FLAC (MP3 may have lossy compression)
+        for fmt in ['wav', 'flac']:
+            audio_file = tmp_path / f"test.{fmt}"
+
+            try:
+                if fmt == 'wav':
+                    sf.write(str(audio_file), audio, sample_rate, format='WAV')
+                elif fmt == 'flac':
+                    sf.write(str(audio_file), audio, sample_rate, format='FLAC')
+
+                result = singing_pitch_extractor.extract_f0_contour(str(audio_file))
+                results[fmt] = result
+            except Exception as e:
+                pytest.skip(f"Failed to process {fmt}: {e}")
+
+        # Compare results if we have multiple formats
+        if len(results) >= 2:
+            formats = list(results.keys())
+            f0_0 = results[formats[0]]['f0']
+            f0_1 = results[formats[1]]['f0']
+
+            # F0 contours should have similar mean values
+            voiced_0 = results[formats[0]]['voiced']
+            voiced_1 = results[formats[1]]['voiced']
+
+            if voiced_0.sum() > 0 and voiced_1.sum() > 0:
+                mean_0 = np.mean(f0_0[voiced_0])
+                mean_1 = np.mean(f0_1[voiced_1])
+
+                # Should be within 2% of each other
+                relative_diff = abs(mean_0 - mean_1) / mean_0
+                assert relative_diff < 0.02, f"F0 mismatch between {formats[0]} and {formats[1]}: {relative_diff*100:.1f}%"

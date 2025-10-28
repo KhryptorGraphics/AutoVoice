@@ -1,22 +1,23 @@
 # Core ML/Deep Learning dependencies (CUDA-enabled)
-torch>=2.0.0,<2.2.0  # PyTorch with CUDA support
-torchaudio>=2.0.0,<2.2.0  # Audio processing extensions for PyTorch
-torchvision>=0.15.0,<0.17.0  # Vision utilities (for potential visual features)
+# NOTE: Using PyTorch nightly for Python 3.13 support
+torch>=2.0.0  # PyTorch with CUDA support (nightly: 2.10.0+)
+torchaudio>=2.0.0  # Audio processing extensions for PyTorch
+torchvision>=0.15.0  # Vision utilities (for potential visual features)
 
 # TensorRT for optimized inference (optional but recommended)
 # Note: Install tensorrt separately with: pip install tensorrt~=8.6.0 --index-url https://pypi.nvidia.com
 # tensorrt>=8.6.0,<9.0.0  # Uncomment if NVIDIA index is configured
 
 # ONNX for model conversion
-onnx>=1.14.0,<1.16.0
-onnxruntime-gpu>=1.16.0,<1.18.0  # GPU-accelerated ONNX runtime
+onnx>=1.14.0
+onnxruntime>=1.16.0  # ONNX runtime (use onnxruntime-gpu for GPU support)
 
 # Core dependencies with relaxed version constraints
-numpy>=1.24,<1.27
+numpy>=1.24  # Relaxed for Python 3.13 compatibility
 librosa>=0.10,<0.11
 soundfile>=0.12,<0.13
-scipy>=1.10,<1.12
-matplotlib>=3.7,<3.9
+scipy>=1.10,<1.13
+matplotlib>=3.7,<3.10
 
 # Web framework dependencies
 flask>=2.3,<3.0
@@ -33,13 +34,23 @@ aiohttp>=3.9,<4.0
 
 # Audio processing and ML utilities
 webrtcvad>=2.0,<3.0  # Voice activity detection
-crepe>=0.0.12  # Pitch detection
-torchcrepe>=0.3.0  # PyTorch-based CREPE for GPU-accelerated pitch detection
+crepe>=0.0.12  # Pitch detection (CPU fallback)
+torchcrepe>=0.0.23,<0.1  # PyTorch-based CREPE for GPU-accelerated pitch detection; tested with torch 2.0/2.1 and torchcrepe 0.0.23–0.0.25; relax upper bound if needed in the future
 praat-parselmouth>=0.4.0  # Advanced audio analysis
+pyrubberband>=0.3.0  # Pitch-preserving time stretch for singing voice augmentation
 resemblyzer>=0.1.1  # Pre-trained speaker encoder for voice cloning (Apache-2.0 license)
 noisereduce>=3.0.0  # Noise reduction
 demucs>=4.0.0,<5.0.0  # State-of-the-art music source separation (Meta/Facebook)
-# spleeter>=2.4.0,<3.0.0  # Fast music separation fallback (Deezer) - Optional: Install with `pip install spleeter` if needed
+
+# Spleeter: Fast music separation fallback (Deezer)
+# NOTE: Spleeter pulls heavy TensorFlow dependencies which may conflict with PyTorch CUDA setup
+# TensorFlow compatibility: 2.5.x - 2.13.x (2.14+ may have breaking changes)
+# WARNING: TensorFlow can significantly increase install size (~500MB+) and install time
+# TensorFlow GPU support requires compatible CUDA/cuDNN versions - see docs for your environment
+# For CPU-only environments, TensorFlow will auto-install tensorflow-cpu variant
+# To use GPU acceleration with Spleeter, ensure your CUDA/cuDNN versions match TensorFlow requirements
+spleeter>=2.4.0,<3.0.0
+tensorflow>=2.12.0,<2.14.0  # Pinned for stability; use tensorflow-cpu==2.12.* for CPU-only if needed
 
 # Development and testing
 pytest>=7.4,<8.0

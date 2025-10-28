@@ -105,11 +105,11 @@ gpu_audio:
 
 # Vocal Separation Settings
 vocal_separation:
-  # Model selection: 'htdemucs', 'htdemucs_ft', 'mdx_extra', 'spleeter:2stems'
+  # Model selection: 'htdemucs', 'htdemucs_ft', 'mdx_extra'
   model: 'htdemucs'  # Hybrid Transformer Demucs (best quality)
 
   # Processing parameters
-  sample_rate: 44100  # Native Demucs sample rate
+  sample_rate: 44100  # Native Demucs sample rate (resamples if input differs)
   shifts: 1  # Number of random shifts for better quality (0-10)
   overlap: 0.25  # Overlap between chunks (0.0-0.5)
   split: true  # Split audio into chunks to save memory
@@ -117,22 +117,29 @@ vocal_separation:
   # Backend preferences
   backend_priority: ['demucs', 'spleeter']  # Try in order
   fallback_enabled: true  # Auto-fallback if primary fails
+  defer_model_load: true  # Lazy load models on first use (default: true, prevents heavy downloads at init)
 
   # Caching configuration
   cache_enabled: true
   cache_dir: '~/.cache/autovoice/separated/'
   cache_size_limit_gb: 10  # Maximum cache size
   cache_ttl_days: 30  # Time-to-live for cached files
+  lru_access_tracking: true  # Enable LRU access tracking via timestamp files
 
   # GPU optimization
   gpu_acceleration: true
-  mixed_precision: true  # Use FP16 for faster inference
-  batch_size: 1  # Batch size for processing
+  mixed_precision: true  # Use FP16 for faster inference on CUDA devices
 
-  # Output settings
-  output_format: 'numpy'  # 'numpy' or 'torch'
-  normalize_output: true  # Normalize separated stems
-  preserve_sample_rate: true  # Match input sample rate
+  # Output settings (always returns numpy arrays)
+  normalize_output: true  # Normalize separated stems to prevent clipping
+  preserve_sample_rate: true  # Resample output to match input sample rate
+  show_progress: false  # Show separation progress (for debugging)
+
+  # Quality presets: 'fast', 'balanced', 'quality'
+  quality_preset: 'balanced'  # Default quality preset
+
+  # Batch processing
+  batch_max_workers: 4  # Maximum parallel workers for batch processing
 
 # Singing Pitch Extraction (CREPE/torchcrepe)
 singing_pitch:
@@ -155,10 +162,20 @@ singing_pitch:
   median_filter_width: 3      # Frames for median filtering
   mean_filter_width: 3        # Frames for mean smoothing
 
-  # Vibrato detection
+  # Vibrato detection and classification
   vibrato_rate_range: [4.0, 8.0]  # Hz, typical singing vibrato
   vibrato_min_depth_cents: 20.0   # Minimum depth to consider vibrato
   vibrato_min_duration_ms: 250.0  # Minimum segment duration
+  vibrato_regularity_threshold: 0.5  # Autocorrelation threshold for regularity (0.0-1.0)
+
+  # Pitch correction parameters
+  pitch_correction_tolerance_cents: 50.0  # Tolerance for pitch correction suggestions
+  pitch_correction_reference_scale: 'C'   # Default reference scale (C, D, E, F, G, A, B)
+
+  # Real-time streaming parameters
+  realtime_overlap_frames: 5       # Number of frames to overlap between chunks
+  realtime_buffer_size: 4096       # Size of overlap buffer in samples
+  realtime_smoothing_window: 5     # Temporal smoothing window size (frames)
 
   # GPU optimization
   gpu_acceleration: true
@@ -207,7 +224,7 @@ singing_analysis:
 # Voice Cloning Settings
 voice_cloning:
   # Audio duration constraints
-  min_duration: 5.0   # Minimum audio length in seconds
+  min_duration: 30.0  # Minimum audio length in seconds (30-60s recommended for best quality)
   max_duration: 60.0  # Maximum audio length in seconds
 
   # Speaker embedding
@@ -225,11 +242,260 @@ voice_cloning:
   # Validation thresholds
   min_sample_rate: 8000   # Minimum acceptable sample rate (Hz)
   max_sample_rate: 48000  # Maximum acceptable sample rate (Hz)
-  silence_threshold: 0.01  # Minimum RMS for non-silent audio
+  silence_threshold: 0.001  # Minimum RMS for non-silent audio (lowered to accept quieter samples)
+  min_snr_db: 10.0  # Minimum Signal-to-Noise Ratio in dB (disable by setting to null)
 
   # Speaker similarity
   similarity_threshold: 0.75  # Cosine similarity threshold for same speaker
 
+  # Multi-sample support
+  multi_sample_quality_weighting: true  # Weight embeddings by SNR when averaging
+  multi_sample_min_samples: 1  # Minimum number of samples required
+  multi_sample_max_samples: 10  # Maximum number of samples per profile
+
+  # Profile versioning
+  versioning_enabled: true  # Enable profile version tracking
+  version_history_max_entries: 50  # Maximum version history entries
+  schema_version: '1.0.0'  # Profile schema version
+
   # GPU optimization
   gpu_acceleration: true
   device: 'cuda'  # 'cuda' or 'cpu'
+
+# Audio Mixing Settings
+audio_mixing:
+  # Normalization method: 'rms', 'peak', or 'lufs'
+  normalization_method: 'rms'  # RMS normalization for consistent loudness
+
+  # Target levels (dB)
+  target_vocal_level_db: -20.0  # Vocals relative level
+  target_instrumental_level_db: -23.0  # Instrumental (LUFS standard)
+
+  # Length alignment
+  auto_align_length: true  # Automatically align audio lengths
+  alignment_method: 'trim'  # 'trim' (cut longer) or 'pad' (pad shorter)
+
+  # Crossfade settings
+  fade_in_ms: 10.0   # Fade-in duration at start
+  fade_out_ms: 10.0  # Fade-out duration at end
+  fade_curve: 'linear'  # 'linear' or 'cosine'
+
+  # Output settings
+  output_format: 'stereo'  # 'stereo' or 'mono'
+  prevent_clipping: true  # Apply limiter to prevent clipping
+  headroom_db: -1.0  # Headroom for peak limiting
+
+# Singing Voice Conversion Pipeline
+singing_conversion_pipeline:
+  # Caching configuration
+  cache_enabled: true
+  cache_dir: '~/.cache/autovoice/converted/'
+  cache_size_limit_gb: 5.0  # Maximum cache size
+  cache_ttl_days: 7  # Time-to-live for cached conversions
+
+  # Progress tracking
+  enable_progress_tracking: true
+
+  # Intermediate results (for debugging)
+  save_intermediate_results: false  # Save separated vocals, F0 data, etc.
+  intermediate_dir: '~/.cache/autovoice/intermediate/'
+
+  # Volume defaults
+  vocal_volume: 1.0  # Default vocal volume multiplier
+  instrumental_volume: 0.9  # Default instrumental volume
+
+  # Output settings
+  output_sample_rate: 44100  # Output sample rate (Hz)
+  output_format: 'wav'  # Output format for saved files
+
+  # GPU optimization
+  gpu_acceleration: true
+  device: 'cuda'  # 'cuda' or 'cpu'
+  enable_memory_cleanup: false  # Clean GPU memory between pipeline stages
+
+  # Error handling
+  fallback_on_mixing_error: true  # Return dry vocals if mixing fails
+  max_retries: 1  # Retry failed stages
+
+# Enhancement Sections
+
+# Vocal Separator Enhancements
+vocal_separator_enhancements:
+  # Quality presets for quick configuration
+  quality_preset: 'balanced'  # 'fast', 'balanced', 'high_quality'
+  # fast: shifts=0, overlap=0.1
+  # balanced: shifts=1, overlap=0.25 (default)
+  # high_quality: shifts=2, overlap=0.5
+
+  # Parallel processing
+  batch_max_workers: 4  # Maximum parallel workers for batch separation
+
+  # Cache management
+  lru_access_tracking: true  # Track access times for better LRU eviction
+  cache_compression: false  # Compress cached files (trades CPU for disk space)
+
+# Pitch Extractor Enhancements
+pitch_extractor_enhancements:
+  # Vibrato detection parameters
+  vibrato_detection:
+    enabled: true
+    rate_range: [4.0, 8.0]  # Hz, typical singing vibrato rate
+    min_depth_cents: 20.0   # Minimum depth to detect vibrato
+    min_duration_ms: 250.0  # Minimum segment duration
+
+  # Pitch correction and smoothing
+  pitch_correction:
+    enabled: false  # Enable pitch correction/quantization
+    snap_to_scale: false  # Snap pitches to musical scale
+    scale_type: 'chromatic'  # 'chromatic', 'major', 'minor'
+    correction_strength: 0.5  # 0.0-1.0, blend factor
+
+  # Real-time parameters
+  realtime:
+    low_latency_mode: false  # Optimize for latency over accuracy
+    max_latency_ms: 50.0  # Maximum acceptable latency
+    use_lightweight_model: false  # Use 'tiny' model for speed
+
+# Voice Cloner Enhancements
+voice_cloner_enhancements:
+  # Audio quality validation
+  min_snr_db: 10.0  # Minimum signal-to-noise ratio (dB)
+  require_clean_audio: false  # Reject noisy samples
+
+  # Multi-sample averaging
+  multi_sample:
+    enabled: false  # Average embeddings from multiple samples
+    min_samples: 3  # Minimum samples for averaging
+    max_samples: 10  # Maximum samples to average
+    similarity_threshold: 0.85  # Minimum similarity to include in average
+
+  # Profile versioning
+  versioning:
+    enabled: true  # Enable profile version tracking
+    auto_backup: true  # Backup old versions on update
+    max_versions: 5  # Maximum versions to keep
+
+# Voice Converter Enhancements
+voice_converter_enhancements:
+  # Temperature controls for sampling
+  temperature:
+    default: 1.0  # Default sampling temperature
+    min: 0.1  # Minimum temperature (more deterministic)
+    max: 2.0  # Maximum temperature (more random)
+
+  # Pitch shifting
+  pitch_shift:
+    enabled: false  # Enable automatic pitch shifting
+    semitones: 0  # Pitch shift amount in semitones (-12 to +12)
+    preserve_formants: true  # Preserve formant structure
+
+  # Quality vs speed presets
+  quality_preset: 'balanced'  # 'fast', 'balanced', 'high_quality'
+  # fast: Lower inference steps, FP16
+  # balanced: Standard settings (default)
+  # high_quality: More inference steps, FP32
+
+  # Post-processing
+  post_processing:
+    apply_denoising: false  # Apply noise reduction to output
+    apply_normalization: true  # Normalize output levels
+    apply_compression: false  # Apply dynamic range compression
+
+# CUDA Kernel Tuning Parameters
+cuda_kernels:
+  # Pitch Detection Kernel Tuning
+  pitch_detection:
+    block_size: 256          # Threads per block for pitch detection
+    frame_length: 2048       # Analysis window size (samples)
+    hop_length: 512          # Hop size between frames (samples)
+    fmin: 80.0               # Minimum frequency (Hz) for singing
+    fmax: 1000.0             # Maximum frequency (Hz) for singing
+    threshold: 0.15          # CMND threshold for pitch acceptance
+    shared_mem_size: 2572    # Shared memory size (floats): frame_length + prefix(534) + history(20)
+    enable_harmonic_weighting: true  # Use harmonic weighting to reduce octave errors
+    enable_early_exit: true  # Enable prefix-based early exit pruning
+
+  # Mel-Spectrogram Kernel Tuning (Singing Voice)
+  mel_spectrogram_singing:
+    block_size: 256          # Threads per block
+    n_fft: 2048              # FFT size for singing voice
+    hop_length: 512          # Hop size (samples)
+    mel_bins: 128            # Number of mel bins
+    sample_rate: 44100       # Singing voice sample rate (Hz)
+    fmin: 80.0               # Minimum mel frequency (Hz)
+    fmax: 8000.0             # Maximum mel frequency (Hz)
+    apply_a_weighting: false # Apply perceptual A-weighting
+    shared_mem_size: 1152    # Shared memory: n_fft/2 + mel_bins floats
+    use_cufft_plan_cache: true  # Enable cuFFT plan caching
+
+  # Formant Extraction Kernel Tuning
+  formant_extraction:
+    block_size: 128          # Threads per block
+    frame_length: 2048       # LPC analysis window (samples)
+    lpc_order: 14            # LPC order (10-14 for speech, 14-16 for singing)
+    num_formants: 4          # Number of formants to extract (3-5)
+    sample_rate: 44100       # Sample rate (Hz)
+    root_finding_iterations: 100  # Durand-Kerner iterations
+    shared_mem_size: 2063    # frame_length + lpc_order + 1
+    enable_validation: true  # Validate formant ranges (F1: 200-1000 Hz, etc.)
+
+  # Optimized STFT Kernel Tuning
+  optimized_stft:
+    block_size: 256          # Threads per block
+    n_fft: 2048              # FFT size
+    hop_length: 512          # Hop size (samples)
+    batch_size: 32           # Batch size for parallel processing
+    shared_mem_size: 2048    # Shared memory for windowed frames
+    use_cufft_plan_cache: true  # Enable cuFFT plan caching
+    window_type: 'hann'      # Window function type
+
+  # Optimized ISTFT Kernel Tuning
+  optimized_istft:
+    block_size: 256          # Threads per block for overlap-add
+    n_fft: 2048              # FFT size
+    hop_length: 512          # Hop size (samples)
+    batch_size: 32           # Batch size
+    shared_mem_size: 2560    # Shared memory: n_fft + 512 for window_sum
+    use_cufft_plan_cache: true  # Enable cuFFT plan caching
+    precompute_window_sum: true  # Precompute window sum for O(1) normalization
+    window_type: 'hann'      # Window function type
+    perfect_reconstruction: true  # Enable perfect reconstruction normalization
+
+  # Real-Time Voice Conversion Kernel Tuning
+  realtime_voice_conversion:
+    block_size: 256          # Threads per block
+    chunk_size: 4410         # Chunk size (100ms at 44.1kHz)
+    overlap_size: 1102       # Overlap size (25%)
+    n_fft: 2048              # FFT size
+    hop_length: 512          # Hop size (samples)
+    shared_mem_size: 5512    # Shared memory: chunk_size + overlap_size
+    feature_dim: 128         # Output feature dimension
+
+  # Vibrato Analysis Kernel Tuning
+  vibrato_analysis:
+    block_size: 256          # Threads per block
+    window_size: 20          # Analysis window (frames, ~200ms)
+    hop_length: 512          # Hop size (samples)
+    sample_rate: 44100       # Sample rate (Hz)
+    min_rate_hz: 4.0         # Minimum vibrato rate (Hz)
+    max_rate_hz: 8.0         # Maximum vibrato rate (Hz)
+    min_depth_cents: 20.0    # Minimum vibrato depth (cents)
+    autocorr_threshold: 0.5  # Autocorrelation threshold
+    shared_mem_size: 20      # Window data in shared memory
+
+  # General Kernel Settings
+  general:
+    enable_plan_caching: true     # Enable cuFFT plan caching globally
+    max_cached_plans: 8           # Maximum number of cached cuFFT plans
+    use_streams: true             # Use CUDA streams for async execution
+    default_stream: 0             # Default CUDA stream (0 = default stream)
+    enable_nvtx_markers: false    # Enable NVTX markers for profiling
+    enable_error_checking: true   # Enable comprehensive CUDA error checking
+
+  # Performance Profiling
+  profiling:
+    enable_profiling: false       # Enable kernel profiling
+    profile_output_dir: '~/.cache/autovoice/profiles/'
+    use_nsight_compute: false     # Use Nsight Compute for detailed metrics
+    use_nsight_systems: false     # Use Nsight Systems for timeline analysis
+    collect_metrics: ['sm_efficiency', 'memory_throughput', 'occupancy']

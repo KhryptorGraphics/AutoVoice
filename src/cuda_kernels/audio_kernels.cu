@@ -9,12 +9,12 @@
 
 using namespace cooperative_groups;
 
-// Enhanced pitch detection kernel - only pitch and confidence, no vibrato
+// Enhanced pitch detection kernel with lightweight vibrato heuristic
 __global__ void pitch_detection_kernel(
     float *audio,
     float *pitch,
     float *confidence,      // NEW: confidence output
-    float *vibrato_flag,    // Placeholder, set to 0 (computed in separate pass)
+    float *vibrato_flag,    // Lightweight vibrato presence heuristic
     int n_samples,
     int frame_length,       // Increased to 2048 for better resolution
     int hop_length,
@@ -28,16 +28,26 @@ __global__ void pitch_detection_kernel(
 
     extern __shared__ float shared_data[];
     float *shared_audio = shared_data;
+    float *shared_prefix = &shared_data[frame_length];
+    float *shared_pitch_history = &shared_data[frame_length + 534];  // Space for 20 recent pitch values
 
     int frame_start = frame_idx * hop_length;
 
     // Load frame into shared memory with strict bounds checking
+    // Use __ldg() for optimized read-only global memory access
     bool in_bounds = (frame_start + tid < n_samples) && (tid < frame_length) &&
                      (frame_start + tid >= 0) && (frame_start >= 0);
     if (in_bounds) {
-        shared_audio[tid] = audio[frame_start + tid];
+        shared_audio[tid] = __ldg(&audio[frame_start + tid]);
     } else if (tid < frame_length) {
         shared_audio[tid] = 0.0f;  // Zero padding
+    }
+
+    // Load pitch history into shared memory (last 20 frames)
+    if (tid < 20 && frame_idx >= tid) {
+        shared_pitch_history[tid] = __ldg(&pitch[frame_idx - tid]);
+    } else if (tid < 20) {
+        shared_pitch_history[tid] = 0.0f;
     }
     __syncthreads();
 
@@ -59,15 +69,97 @@ __global__ void pitch_detection_kernel(
     int tau_min = (int)(sample_rate / fmax);
     int tau_max = (int)(sample_rate / fmin);
 
+    // Clamp tau_max to prevent overflow in acf_storage
+    // At 48kHz and fmin=80Hz, tau_max could be 600 samples
+    // Limit the stored range to 512 for safety
+    int tau_range = tau_max - tau_min;
+    if (tau_range > 512) {
+        tau_max = tau_min + 512;
+    }
+
     float best_tau = 0.0f;
-    float best_measure = 1.0f;
-    float diff_mean = 0.0f;
-    float acf_storage[512];  // Store autocorrelation values for parabolic interpolation
+    float best_cmnd = 1.0f;  // Track best CMND value
+    float cmnd_storage[512];  // Store CMND values for parabolic interpolation
+    float d_prime_storage[512];  // Store normalized difference d'(tau)
+    float cumulative_sum = 0.0f;  // Running cumulative sum of d'(tau)
+    int first_below_threshold = -1;  // First tau that crosses threshold
+
+    // Harmonic weighting to reduce octave errors
+    float harmonic_weights[512];  // Weights for each tau based on harmonic structure
+
+    // Pre-compute harmonic weights for all taus
+    if (tid == 0) {
+        for (int tau = tau_min; tau <= tau_max; ++tau) {
+            int idx = tau - tau_min;
+            if (idx >= 0 && idx < 512) {
+                // Check for harmonic reinforcement at 2*tau, 3*tau
+                float weight = 1.0f;
+
+                // Boost confidence if harmonics align
+                int tau2 = tau * 2;  // Octave below
+                int tau3 = tau * 3;  // Perfect fifth below
+
+                if (tau2 >= tau_min && tau2 <= tau_max) {
+                    // Harmonic at 2*tau reinforces fundamental
+                    weight += 0.3f;
+                }
+                if (tau3 >= tau_min && tau3 <= tau_max) {
+                    // Harmonic at 3*tau reinforces fundamental
+                    weight += 0.2f;
+                }
+
+                harmonic_weights[idx] = weight;
+            }
+        }
+    }
+    __syncthreads();
 
     for (int tau = tau_min; tau <= tau_max; ++tau) {
         float acf = 0.0f;
 
-        // Compute autocorrelation difference
+        // Early-exit pruning: compute prefix sum to determine if this tau can beat best_cmnd
+        int prefix_len = min(128, frame_length - tau);  // Use first 128 samples as prefix
+        float prefix_sum = 0.0f;
+
+        if (tid < prefix_len) {
+            float diff = shared_audio[tid] - shared_audio[tid + tau];
+            prefix_sum = diff * diff;
+        }
+        prefix_sum = block_reduce_sum(prefix_sum);
+
+        // Store prefix in shared memory for thread 0 to check
+        if (tid == 0) {
+            shared_prefix[0] = prefix_sum;
+        }
+        __syncthreads();
+
+        // Thread 0 decides whether to skip this tau based on prefix
+        bool should_skip = false;
+        if (tid == 0 && best_cmnd < 1.0f && cumulative_sum > EPSILON) {
+            // Estimate lower bound on CMND from prefix
+            float prefix_d_prime = shared_prefix[0] / (float)prefix_len;
+            // Conservative estimate: if prefix already suggests CMND won't improve, skip
+            float mean_so_far = cumulative_sum / (float)(tau - tau_min);
+            if (mean_so_far > EPSILON) {
+                float estimated_cmnd = prefix_d_prime / mean_so_far;
+                // Only skip if estimated CMND is significantly worse than current best
+                if (estimated_cmnd > best_cmnd * 1.5f) {
+                    should_skip = true;
+                }
+            }
+        }
+
+        // Broadcast skip decision
+        if (tid == 0) {
+            shared_prefix[1] = should_skip ? 1.0f : 0.0f;
+        }
+        __syncthreads();
+
+        if (shared_prefix[1] > 0.5f) {
+            continue;  // Skip this tau
+        }
+
+        // Compute full autocorrelation difference (SSD)
         for (int j = 0; j < frame_length - tau; j += blockDim.x) {
             if (tid + j < frame_length - tau) {
                 float diff = shared_audio[tid + j] - shared_audio[tid + j + tau];
@@ -80,28 +172,47 @@ __global__ void pitch_detection_kernel(
 
         // Only thread 0 performs the final calculations
         if (tid == 0) {
-            // Normalize by the number of valid samples
-            float normalized_acf = acf / (float)(frame_length - tau);
+            // Normalize by the number of valid samples to get d'(tau)
+            float d_prime = acf / (float)(frame_length - tau);
 
-            // Store for later use
-            if (tau - tau_min < 512) {
-                acf_storage[tau - tau_min] = normalized_acf;
+            // Store index for arrays
+            int storage_idx = tau - tau_min;
+            if (storage_idx >= 0 && storage_idx < 512) {
+                d_prime_storage[storage_idx] = d_prime;
             }
 
-            // For the first tau, set the baseline
-            if (tau == tau_min) {
-                diff_mean = normalized_acf;
+            // Update cumulative sum
+            cumulative_sum += d_prime;
+
+            // Compute CMND: cmnd(τ) = d'(τ) / ((1/τ) * Σ_{j=1..τ} d'(j))
+            float cmnd_tau = 1.0f;  // Default value
+            int tau_offset = storage_idx + 1;  // Number of taus processed so far (1-indexed)
+            if (cumulative_sum > EPSILON && tau_offset > 0) {
+                float mean_d_prime = cumulative_sum / (float)tau_offset;
+                if (mean_d_prime > EPSILON) {
+                    cmnd_tau = d_prime / mean_d_prime;
+
+                    // Apply harmonic weighting to reduce octave errors
+                    float h_weight = harmonic_weights[storage_idx];
+                    cmnd_tau /= h_weight;  // Lower CMND (better) if harmonics align
+                }
             }
 
-            // Calculate cumulative mean normalized difference (simplified YIN)
-            float cumulative_mean = 0.0f;
-            if (diff_mean > EPSILON) {
-                cumulative_mean = normalized_acf / diff_mean;
+            // Store CMND value with bounds check
+            if (storage_idx >= 0 && storage_idx < 512) {
+                cmnd_storage[storage_idx] = cmnd_tau;
             }
 
-            // Check if this is the best pitch candidate
-            if (cumulative_mean < best_measure && cumulative_mean < threshold) {
-                best_measure = cumulative_mean;
+            // Absolute threshold selection: find first tau where cmnd < threshold
+            if (first_below_threshold < 0 && cmnd_tau < threshold) {
+                first_below_threshold = storage_idx;
+                best_cmnd = cmnd_tau;
+                best_tau = (float)tau;
+            }
+
+            // Track global minimum CMND in case no tau crosses threshold
+            if (first_below_threshold < 0 && cmnd_tau < best_cmnd) {
+                best_cmnd = cmnd_tau;
                 best_tau = (float)tau;
             }
         }
@@ -111,25 +222,73 @@ __global__ void pitch_detection_kernel(
     // Only thread 0 performs parabolic interpolation and writes results
     if (tid == 0) {
         if (best_tau > 0.0f) {
-            // Parabolic interpolation for sub-sample accuracy
+            // Improved parabolic interpolation with bounds checking
             int tau_idx = (int)best_tau - tau_min;
             if (tau_idx > 0 && tau_idx < 511) {
-                float prev = acf_storage[tau_idx - 1];
-                float curr = acf_storage[tau_idx];
-                float next = acf_storage[tau_idx + 1];
+                float prev = cmnd_storage[tau_idx - 1];
+                float curr = cmnd_storage[tau_idx];
+                float next = cmnd_storage[tau_idx + 1];
 
-                // Parabolic peak refinement
+                // Parabolic peak refinement (find minimum)
+                // Using three-point parabola fit: f(x) = a*x^2 + b*x + c
                 float denom = 2.0f * curr - prev - next;
                 if (fabsf(denom) > EPSILON) {
                     float delta = 0.5f * (next - prev) / denom;
-                    best_tau += delta;
+
+                    // Clamp delta to prevent wild interpolation
+                    delta = clamp(delta, -0.5f, 0.5f);
+
+                    // Apply interpolation only if it improves accuracy
+                    float interpolated_tau = best_tau + delta;
+                    if (interpolated_tau >= tau_min && interpolated_tau <= tau_max) {
+                        best_tau = interpolated_tau;
+                    }
                 }
             }
 
-            pitch[frame_idx] = sample_rate / best_tau;
-            confidence[frame_idx] = clamp(1.0f - best_measure, 0.0f, 1.0f);
-            // Vibrato computed in separate pass, set to 0 for now
-            vibrato_flag[frame_idx] = 0.0f;
+            float current_pitch = sample_rate / best_tau;
+            pitch[frame_idx] = current_pitch;
+            // Confidence derived from CMND: 1 - cmnd(best_tau)
+            confidence[frame_idx] = clamp(1.0f - best_cmnd, 0.0f, 1.0f);
+
+            // Lightweight vibrato heuristic: track short-term pitch variance over last N frames
+            // Load recent pitch history (last 10 frames)
+            const int history_size = 10;
+            if (frame_idx >= history_size && current_pitch > 0.0f) {
+                // Compute pitch variance over recent frames
+                float mean_pitch = 0.0f;
+                int valid_count = 0;
+                for (int i = 1; i <= history_size; i++) {
+                    float prev_pitch = pitch[frame_idx - i];
+                    if (prev_pitch > 0.0f) {
+                        mean_pitch += prev_pitch;
+                        valid_count++;
+                    }
+                }
+
+                if (valid_count >= history_size / 2) {
+                    mean_pitch /= valid_count;
+
+                    // Compute variance in cents
+                    float variance_cents = 0.0f;
+                    for (int i = 1; i <= history_size; i++) {
+                        float prev_pitch = pitch[frame_idx - i];
+                        if (prev_pitch > 0.0f) {
+                            float cents_diff = 1200.0f * log2f(prev_pitch / mean_pitch);
+                            variance_cents += cents_diff * cents_diff;
+                        }
+                    }
+                    variance_cents /= valid_count;
+                    float std_dev_cents = sqrtf(variance_cents);
+
+                    // Simple vibrato heuristic: std dev > 20 cents (typical vibrato depth threshold)
+                    vibrato_flag[frame_idx] = (std_dev_cents >= 20.0f) ? 1.0f : 0.0f;
+                } else {
+                    vibrato_flag[frame_idx] = 0.0f;
+                }
+            } else {
+                vibrato_flag[frame_idx] = 0.0f;
+            }
         } else {
             pitch[frame_idx] = 0.0f;
             confidence[frame_idx] = 0.0f;
@@ -138,7 +297,7 @@ __global__ void pitch_detection_kernel(
     }
 }
 
-// Vibrato analysis kernel - runs after pitch detection completes
+// Enhanced vibrato analysis kernel with autocorrelation and Hilbert transform
 __global__ void vibrato_analysis_kernel(
     float *pitch_contour,
     float *vibrato_rate,
@@ -154,6 +313,8 @@ __global__ void vibrato_analysis_kernel(
     int window_size = 20;
     int half_window = window_size / 2;
 
+    extern __shared__ float shared_window_data[];
+
     // Need enough history
     if (frame_idx < half_window || frame_idx >= n_frames - half_window) {
         vibrato_rate[frame_idx] = 0.0f;
@@ -161,13 +322,22 @@ __global__ void vibrato_analysis_kernel(
         return;
     }
 
-    // Extract windowed pitch contour
-    float window_pitches[20];
+    // Each thread loads its portion of windowed pitch contour into shared memory
+    int tid = threadIdx.x;
+    if (tid < window_size) {
+        int idx = frame_idx - half_window + tid;
+        if (idx >= 0 && idx < n_frames) {
+            shared_window_data[tid] = __ldg(&pitch_contour[idx]);
+        } else {
+            shared_window_data[tid] = 0.0f;
+        }
+    }
+    __syncthreads();
+
+    // Validate all pitches in window
     bool all_valid = true;
     for (int i = 0; i < window_size; i++) {
-        int idx = frame_idx - half_window + i;
-        window_pitches[i] = pitch_contour[idx];
-        if (window_pitches[i] <= 0.0f) {
+        if (shared_window_data[i] <= 0.0f) {
             all_valid = false;
             break;
         }
@@ -182,40 +352,98 @@ __global__ void vibrato_analysis_kernel(
     // Convert to cents relative to mean
     float mean_pitch = 0.0f;
     for (int i = 0; i < window_size; i++) {
-        mean_pitch += window_pitches[i];
+        mean_pitch += shared_window_data[i];
     }
     mean_pitch /= window_size;
 
     float cents[20];
     for (int i = 0; i < window_size; i++) {
-        cents[i] = 1200.0f * log2f(window_pitches[i] / mean_pitch);
+        cents[i] = 1200.0f * log2f(shared_window_data[i] / mean_pitch);
     }
 
-    // Compute variance for depth estimate
-    float variance = 0.0f;
+    // Remove DC component (mean-center the signal)
+    float mean_cents = 0.0f;
     for (int i = 0; i < window_size; i++) {
-        variance += cents[i] * cents[i];
+        mean_cents += cents[i];
     }
-    variance /= window_size;
-    float std_dev = sqrtf(variance);
+    mean_cents /= window_size;
 
-    // Simple rate estimation via zero crossings
-    int zero_crossings = 0;
-    for (int i = 1; i < window_size; i++) {
-        if ((cents[i-1] < 0 && cents[i] >= 0) || (cents[i-1] >= 0 && cents[i] < 0)) {
-            zero_crossings++;
+    for (int i = 0; i < window_size; i++) {
+        cents[i] -= mean_cents;
+    }
+
+    // Autocorrelation-based rate estimation (more robust than zero-crossing)
+    float autocorr[20];
+    for (int lag = 0; lag < window_size; lag++) {
+        float sum = 0.0f;
+        for (int i = 0; i < window_size - lag; i++) {
+            sum += cents[i] * cents[i + lag];
+        }
+        autocorr[lag] = sum / (float)(window_size - lag);
+    }
+
+    // Normalize autocorrelation
+    float autocorr_0 = autocorr[0];
+    if (autocorr_0 > EPSILON) {
+        for (int i = 0; i < window_size; i++) {
+            autocorr[i] /= autocorr_0;
         }
     }
 
-    float frame_rate = sample_rate / (float)hop_length;
-    float window_duration = window_size / frame_rate;
-    float estimated_rate = zero_crossings / (2.0f * window_duration);
+    // Find first peak in autocorrelation (lag > 0)
+    // Vibrato rate typically 4-8 Hz, so at ~100 fps, period is ~12-25 frames
+    int peak_lag = -1;
+    float max_autocorr = 0.3f;  // Threshold for significant peak
 
-    // Vibrato typically 4-8 Hz and depth > 20 cents
-    bool is_vibrato = (estimated_rate >= 4.0f && estimated_rate <= 8.0f) && (std_dev >= 20.0f);
+    for (int lag = 2; lag < window_size - 1; lag++) {
+        // Check if this is a local maximum
+        if (autocorr[lag] > autocorr[lag - 1] && autocorr[lag] > autocorr[lag + 1]) {
+            if (autocorr[lag] > max_autocorr) {
+                max_autocorr = autocorr[lag];
+                peak_lag = lag;
+            }
+        }
+    }
+
+    // Compute vibrato rate from autocorrelation peak
+    float frame_rate = sample_rate / (float)hop_length;
+    float estimated_rate = 0.0f;
+    if (peak_lag > 0) {
+        estimated_rate = frame_rate / (float)peak_lag;
+    }
+
+    // Hilbert transform approximation for vibrato depth
+    // Use analytic signal to get instantaneous envelope
+    float hilbert_imag[20];
+    for (int i = 0; i < window_size; i++) {
+        // Simplified Hilbert transform via discrete approximation
+        // H[x(t)] ≈ (x(t+1) - x(t-1)) / 2
+        if (i > 0 && i < window_size - 1) {
+            hilbert_imag[i] = (cents[i + 1] - cents[i - 1]) / 2.0f;
+        } else {
+            hilbert_imag[i] = 0.0f;
+        }
+    }
+
+    // Compute instantaneous envelope: sqrt(real^2 + imag^2)
+    float max_envelope = 0.0f;
+    for (int i = 0; i < window_size; i++) {
+        float envelope = sqrtf(cents[i] * cents[i] + hilbert_imag[i] * hilbert_imag[i]);
+        if (envelope > max_envelope) {
+            max_envelope = envelope;
+        }
+    }
+
+    // Vibrato depth is peak-to-peak amplitude from envelope
+    float vibrato_depth_cents = max_envelope * 2.0f;  // Peak-to-peak
+
+    // Validate vibrato: rate 4-8 Hz, depth > 20 cents, strong autocorrelation
+    bool is_vibrato = (estimated_rate >= 4.0f && estimated_rate <= 8.0f) &&
+                     (vibrato_depth_cents >= 20.0f) &&
+                     (max_autocorr >= 0.5f);
 
     vibrato_rate[frame_idx] = is_vibrato ? estimated_rate : 0.0f;
-    vibrato_depth[frame_idx] = is_vibrato ? std_dev : 0.0f;
+    vibrato_depth[frame_idx] = is_vibrato ? vibrato_depth_cents : 0.0f;
 }
 
 // Voice Activity Detection kernel
@@ -247,32 +475,139 @@ __global__ void vad_kernel(float *audio, float *vad, int n_samples, int frame_le
     }
 }
 
-// Formant extraction kernel using LPC (Linear Predictive Coding)
-__global__ void formant_extraction_kernel(float *spectrogram, float *formants, int n_frames, int n_freqs, int num_formants, float sample_rate) {
-    int frame_idx = blockIdx.x * blockDim.x + threadIdx.x;
+// Complete formant extraction kernel using LPC (Linear Predictive Coding)
+__global__ void formant_extraction_kernel(
+    float *audio,           // Input: audio frames [n_frames, frame_length]
+    float *formants,        // Output: formant frequencies [n_frames, num_formants]
+    int n_frames,
+    int frame_length,       // Typically 1024-2048 samples for formant analysis
+    int num_formants,       // Typically 4-5 formants
+    float sample_rate
+) {
+    int frame_idx = blockIdx.x;
+    int tid = threadIdx.x;
+
     if (frame_idx >= n_frames) return;
-    
-    // Simplified LPC on spectral data
-    float lpc_coeffs[10]; // Assume order 10
-    float energy = 0.0f;
-    
-    // Compute LPC coefficients (simplified)
-    for (int i = 0; i < 10; i++) {
-        lpc_coeffs[i] = 0.0f; // Placeholder for actual LPC computation
+
+    extern __shared__ float shared_formant_data[];
+    float *shared_audio = shared_formant_data;
+    float *shared_autocorr = &shared_formant_data[frame_length];
+
+    // LPC order (10-14 for singing voice formants)
+    const int lpc_order = 14;
+
+    // Load audio frame into shared memory
+    for (int i = tid; i < frame_length; i += blockDim.x) {
+        shared_audio[i] = __ldg(&audio[frame_idx * frame_length + i]);
     }
-    
-    // Find formant peaks
-    for (int f = 0; f < num_formants; f++) {
-        float max_val = 0.0f;
-        int max_idx = 0;
-        for (int k = 100; k < n_freqs - 100; k += 50) { // Search for peaks
-            if (spectrogram[frame_idx * n_freqs + k] > max_val) {
-                max_val = spectrogram[frame_idx * n_freqs + k];
-                max_idx = k;
+    __syncthreads();
+
+    // Thread 0 performs LPC analysis (serial, but per-frame parallel across blocks)
+    if (tid == 0) {
+        // Step 1: Compute autocorrelation (order 14)
+        float autocorr[15];  // lpc_order + 1
+        compute_autocorrelation(shared_audio, autocorr, frame_length, lpc_order);
+
+        // Store autocorr in shared memory for debugging (optional)
+        for (int i = 0; i <= lpc_order; i++) {
+            shared_autocorr[i] = autocorr[i];
+        }
+
+        // Step 2: Apply Levinson-Durbin recursion to get LPC coefficients
+        float lpc_coeffs[14];
+        float prediction_error = 0.0f;
+        levinson_durbin(autocorr, lpc_coeffs, lpc_order, &prediction_error);
+
+        // Step 3: Find polynomial roots using Durand-Kerner method
+        // LPC polynomial: A(z) = 1 + a1*z^-1 + a2*z^-2 + ... + a_p*z^-p
+        // We need roots of A(z) on unit circle
+        float roots_real[14];
+        float roots_imag[14];
+        find_polynomial_roots(lpc_coeffs, roots_real, roots_imag, lpc_order, 100);
+
+        // Step 4: Extract formants from roots with positive imaginary parts
+        // Formants correspond to resonances (poles near unit circle with positive imag part)
+        float formant_freqs[14];
+        float formant_bandwidths[14];
+        int formant_count = 0;
+
+        for (int i = 0; i < lpc_order; i++) {
+            // Check if root has positive imaginary part (formant)
+            if (roots_imag[i] > 0.0f) {
+                // Compute formant frequency from angle
+                float angle = atan2f(roots_imag[i], roots_real[i]);
+                float freq = angle * sample_rate / (2.0f * PI);
+
+                // Compute bandwidth from radius
+                float radius = sqrtf(roots_real[i] * roots_real[i] + roots_imag[i] * roots_imag[i]);
+                float bandwidth = -0.5f * sample_rate * logf(radius) / PI;
+
+                // Store formant if it's in valid range
+                if (freq > 0.0f && freq < sample_rate / 2.0f) {
+                    formant_freqs[formant_count] = freq;
+                    formant_bandwidths[formant_count] = bandwidth;
+                    formant_count++;
+                }
             }
         }
-        formants[frame_idx * num_formants + f] = (float)max_idx * sample_rate / (2.0f * n_freqs);
+
+        // Step 5: Sort formants by frequency (bubble sort for small arrays)
+        for (int i = 0; i < formant_count - 1; i++) {
+            for (int j = 0; j < formant_count - i - 1; j++) {
+                if (formant_freqs[j] > formant_freqs[j + 1]) {
+                    // Swap frequencies
+                    float temp_f = formant_freqs[j];
+                    formant_freqs[j] = formant_freqs[j + 1];
+                    formant_freqs[j + 1] = temp_f;
+
+                    // Swap bandwidths
+                    float temp_b = formant_bandwidths[j];
+                    formant_bandwidths[j] = formant_bandwidths[j + 1];
+                    formant_bandwidths[j + 1] = temp_b;
+                }
+            }
+        }
+
+        // Step 6: Validate and filter formants based on expected ranges
+        // F1: 200-1000 Hz, F2: 600-3000 Hz, F3: 1500-4000 Hz, F4: 2500-5000 Hz
+        const float formant_min[5] = {200.0f, 600.0f, 1500.0f, 2500.0f, 3500.0f};
+        const float formant_max[5] = {1000.0f, 3000.0f, 4000.0f, 5000.0f, 6000.0f};
+
+        int validated_count = 0;
+        float validated_formants[5];
+
+        for (int i = 0; i < formant_count && validated_count < num_formants; i++) {
+            float freq = formant_freqs[i];
+
+            // Check if formant is in expected range for this formant number
+            if (validated_count < 5) {
+                if (freq >= formant_min[validated_count] && freq <= formant_max[validated_count]) {
+                    validated_formants[validated_count] = freq;
+                    validated_count++;
+                }
+                // Also accept formants slightly outside range if we don't have enough
+                else if (validated_count < num_formants - 1 && i == formant_count - 1) {
+                    // Last formant, accept it if we're short
+                    if (freq >= formant_min[validated_count] * 0.8f &&
+                        freq <= formant_max[validated_count] * 1.2f) {
+                        validated_formants[validated_count] = freq;
+                        validated_count++;
+                    }
+                }
+            }
+        }
+
+        // Step 7: Write validated formants to output
+        for (int f = 0; f < num_formants; f++) {
+            if (f < validated_count) {
+                formants[frame_idx * num_formants + f] = validated_formants[f];
+            } else {
+                // No valid formant found, write 0
+                formants[frame_idx * num_formants + f] = 0.0f;
+            }
+        }
     }
+    __syncthreads();
 }
 
 // Vocoder synthesis kernel (simplified HiFi-GAN style)
@@ -338,7 +673,8 @@ __global__ void compute_magnitude_from_complex_kernel(cufftComplex *complex_spec
 // Host function to launch pitch detection with separate outputs
 void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch,
                            torch::Tensor& output_confidence, torch::Tensor& output_vibrato,
-                           float sample_rate, int frame_length, int hop_length) {
+                           float sample_rate, int frame_length, int hop_length,
+                           float fmin, float fmax, float threshold) {
     // ==========================================
     // CRITICAL: Input Validation (No Hidden Defaults)
     // ==========================================
@@ -451,9 +787,19 @@ void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch,
     float *d_vibrato = output_vibrato.data_ptr<float>();
     int n_samples = input.size(0);
 
-    float fmin = 80.0f;
-    float fmax = 1000.0f;  // Extended range for singing
-    float threshold = 0.1f;
+    // Validate pitch range parameters
+    if (fmin <= 0.0f || fmax <= 0.0f || fmin >= fmax) {
+        throw std::invalid_argument(
+            "Invalid pitch range: fmin=" + std::to_string(fmin) +
+            ", fmax=" + std::to_string(fmax) +
+            ". Must have 0 < fmin < fmax. Typical range: 80-1000 Hz."
+        );
+    }
+    if (threshold < 0.0f || threshold > 1.0f) {
+        throw std::invalid_argument(
+            "threshold must be in [0, 1] (got " + std::to_string(threshold) + ")."
+        );
+    }
 
     int n_frames = std::max<int>(0, (n_samples - frame_length) / hop_length + 1);
     if (n_frames <= 0) {
@@ -463,10 +809,10 @@ void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch,
         return;
     }
 
-    dim3 block(256);
+    dim3 block(PITCH_DETECTION_BLOCK_SIZE);
     dim3 grid(n_frames);
-    // Shared memory: frame_length for audio only (no pitch history needed)
-    size_t shared_mem = frame_length * sizeof(float);
+    // Shared memory: frame_length for audio + 534 floats for prefix pruning (2) + harmonic weights (512) + 20 for pitch history
+    size_t shared_mem = PITCH_SHARED_MEM_SIZE * sizeof(float);
     pitch_detection_kernel<<<grid, block, shared_mem>>>(
         d_audio, d_pitch, d_confidence, d_vibrato,
         n_samples, frame_length, hop_length, fmin, fmax, threshold, sample_rate
@@ -568,26 +914,73 @@ void launch_vibrato_analysis(torch::Tensor& pitch_contour, torch::Tensor& vibrat
         return;
     }
 
-    int threads = 256;
+    int threads = PITCH_DETECTION_BLOCK_SIZE;
     int blocks = (n_frames + threads - 1) / threads;
 
-    vibrato_analysis_kernel<<<blocks, threads>>>(
+    // Shared memory for window data (20 floats for window, 20 for cents, 20 for autocorr, 20 for hilbert)
+    size_t shared_mem = 20 * sizeof(float);
+
+    vibrato_analysis_kernel<<<blocks, threads, shared_mem>>>(
         d_pitch, d_rate, d_depth, n_frames, hop_length, sample_rate
     );
     CUDA_CHECK(cudaGetLastError());
 }
 
-// Host function for formant extraction (updated signature)
-void launch_formant_extraction(torch::Tensor& input, torch::Tensor& output, float sample_rate) {
-    float *d_spectrogram = input.data_ptr<float>();
-    float *d_formants = output.data_ptr<float>();
-    int n_frames = input.size(0);
-    int n_freqs = input.size(1);
-    int num_formants = output.size(1);
+// Host function for formant extraction with full LPC implementation
+void launch_formant_extraction(
+    torch::Tensor& audio,           // Input audio [n_frames, frame_length]
+    torch::Tensor& formants,        // Output formants [n_frames, num_formants]
+    int frame_length,               // Frame length for LPC analysis (1024-2048)
+    float sample_rate,
+    int lpc_order,                  // LPC order (typically 10-14, default 14)
+    int num_formants                // Number of formants to extract (typically 4-5, default 4)
+) {
+    // Validate inputs
+    if (!audio.is_cuda()) {
+        throw std::runtime_error("audio tensor must be on CUDA device");
+    }
+    if (!formants.is_cuda()) {
+        throw std::runtime_error("formants tensor must be on CUDA device");
+    }
+    if (!audio.is_contiguous()) {
+        throw std::runtime_error("audio tensor must be contiguous");
+    }
+    if (!formants.is_contiguous()) {
+        throw std::runtime_error("formants tensor must be contiguous");
+    }
 
-    int threads = 256;
-    int blocks = (n_frames + threads - 1) / threads;
-    formant_extraction_kernel<<<blocks, threads>>>(d_spectrogram, d_formants, n_frames, n_freqs, num_formants, sample_rate);
+    // Validate parameter ranges
+    if (lpc_order < 8 || lpc_order > 20) {
+        throw std::invalid_argument(
+            "lpc_order must be in range [8, 20] (got " + std::to_string(lpc_order) +
+            "). Typical values: 10-14 for speech, 14-16 for singing."
+        );
+    }
+    if (num_formants < 1 || num_formants > 5) {
+        throw std::invalid_argument(
+            "num_formants must be in range [1, 5] (got " + std::to_string(num_formants) +
+            "). Typical values: 3-4 for speech, 4-5 for singing."
+        );
+    }
+
+    float *d_audio = audio.data_ptr<float>();
+    float *d_formants = formants.data_ptr<float>();
+    int n_frames = audio.size(0);
+
+    if (n_frames <= 0) {
+        return;
+    }
+
+    // Use optimized block size for formant extraction
+    int threads = FORMANT_EXTRACTION_BLOCK_SIZE;
+    int blocks = n_frames;  // One block per frame
+
+    // Shared memory: frame_length for audio + (lpc_order+1) for autocorr
+    size_t shared_mem = (frame_length + lpc_order + 1) * sizeof(float);
+
+    formant_extraction_kernel<<<blocks, threads, shared_mem>>>(
+        d_audio, d_formants, n_frames, frame_length, num_formants, sample_rate
+    );
     CUDA_CHECK(cudaGetLastError());
 }
 

@@ -103,14 +103,35 @@ Both `launch_pitch_detection` and `launch_vibrato_analysis` now have comprehensi
 
 ## Build and Test Instructions
 
-### Rebuild the Extension
+### Automated Setup (Recommended)
+
+Use the automated scripts in `scripts/` directory:
+
+```bash
+# Step 1: Fix PyTorch environment (if needed)
+./scripts/setup_pytorch_env.sh
+
+# Step 2: Build extensions and run all tests
+./scripts/build_and_test.sh
+
+# Step 3 (Optional): Quick verification
+./scripts/verify_bindings.py
+```
+
+See `scripts/README.md` for detailed documentation of all scripts.
+
+### Manual Setup
+
+#### Rebuild the Extension
 ```bash
 pip install -e .
 ```
 
-### Verify Bindings
+#### Verify Bindings
 ```bash
 python tests/test_bindings_smoke.py
+# or use the automated verification script
+./scripts/verify_bindings.py
 ```
 
 This will check:
@@ -118,7 +139,7 @@ This will check:
 2. Functions are exposed in the module
 3. Functions are callable with correct signatures
 
-### Run Integration Tests
+#### Run Integration Tests
 ```bash
 pytest tests/test_pitch_extraction.py::TestSingingPitchExtractor::test_extract_f0_realtime_cuda -v
 ```
@@ -154,9 +175,10 @@ pytest tests/test_pitch_extraction.py::TestSingingPitchExtractor::test_extract_f
 - [x] Parameter names and types match Python caller expectations
 - [x] No default parameters hidden in Python that differ from C++
 - [x] Error checking with CUDA_CHECK remains in place
-- [ ] Extension rebuilt successfully (blocked by torch library issue)
-- [ ] Smoke test passes
-- [ ] Integration test passes
+- [x] Automated scripts created for environment setup and testing
+- [ ] Extension rebuilt successfully (requires PyTorch fix - use scripts/setup_pytorch_env.sh)
+- [ ] Smoke test passes (use scripts/build_and_test.sh)
+- [ ] Integration test passes (use scripts/build_and_test.sh)
 
 ## Notes
 

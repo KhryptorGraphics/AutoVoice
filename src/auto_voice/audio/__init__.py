@@ -11,8 +11,9 @@ if TYPE_CHECKING:
     from .source_separator import VocalSeparator
     from .pitch_extractor import SingingPitchExtractor
     from .singing_analyzer import SingingAnalyzer
+    from .mixer import AudioMixer
 
-__all__ = ['AudioProcessor', 'GPUAudioProcessor', 'VocalSeparator', 'SingingPitchExtractor', 'SingingAnalyzer']
+__all__ = ['AudioProcessor', 'GPUAudioProcessor', 'VocalSeparator', 'SingingPitchExtractor', 'SingingAnalyzer', 'AudioMixer']
 
 # Module-level cache for lazy-loaded classes
 _module_cache = {}
@@ -57,6 +58,10 @@ def __getattr__(name):
             from .singing_analyzer import SingingAnalyzer
             _module_cache[name] = SingingAnalyzer
             return SingingAnalyzer
+        elif name == 'AudioMixer':
+            from .mixer import AudioMixer
+            _module_cache[name] = AudioMixer
+            return AudioMixer
     except Exception as e:
         import logging
         logger = logging.getLogger(__name__)

@@ -184,8 +184,13 @@ class SpeakerEncoder:
                                 "Using first 60 seconds recommended for consistency."
                             )
 
+                    # Preprocess with resemblyzer's preprocess_wav for consistency
+                    if sample_rate is None:
+                        raise SpeakerEncodingError("sample_rate is required for torch.Tensor input")
+                    preprocessed_wav = preprocess_wav(audio_np, source_sr=sample_rate)
+
                     # Extract embedding
-                    embedding = self.encoder.embed_utterance(audio_np)
+                    embedding = self.encoder.embed_utterance(preprocessed_wav)
 
                 # Handle numpy array input
                 elif isinstance(audio, np.ndarray):
@@ -212,8 +217,13 @@ class SpeakerEncoder:
                                 "Optimal duration is 10-60 seconds."
                             )
 
+                    # Preprocess with resemblyzer's preprocess_wav for consistency
+                    if sample_rate is None:
+                        raise SpeakerEncodingError("sample_rate is required for np.ndarray input")
+                    preprocessed_wav = preprocess_wav(audio, source_sr=sample_rate)
+
                     # Extract embedding
-                    embedding = self.encoder.embed_utterance(audio)
+                    embedding = self.encoder.embed_utterance(preprocessed_wav)
 
                 else:
                     raise SpeakerEncodingError(
@@ -246,24 +256,29 @@ class SpeakerEncoder:
     def extract_embeddings_batch(
         self,
         audio_list: List[Union[np.ndarray, str]],
-        sample_rate: Optional[int] = None
-    ) -> List[np.ndarray]:
+        sample_rate: Optional[int] = None,
+        on_error: str = 'zero'
+    ) -> List[Optional[np.ndarray]]:
         """Extract speaker embeddings from multiple audio files/arrays
 
         Args:
             audio_list: List of audio arrays or file paths
             sample_rate: Sample rate for array inputs
+            on_error: Error handling strategy:
+                      - 'zero': Return zero vector (default, backward compatible)
+                      - 'none': Return None
+                      - 'raise': Raise exception
 
         Returns:
-            List of 256-dimensional embeddings
+            List of 256-dimensional embeddings (or None if on_error='none')
 
         Example:
             >>> embeddings = encoder.extract_embeddings_batch([
             ...     'voice1.wav',
             ...     'voice2.wav',
             ...     'voice3.wav'
-            ... ])
-            >>> print(len(embeddings))  # 3
+            ... ], on_error='none')
+            >>> print(len([e for e in embeddings if e is not None]))  # 3
         """
         embeddings = []
 
@@ -273,11 +288,17 @@ class SpeakerEncoder:
                 embeddings.append(embedding)
             except Exception as e:
                 self.logger.error(f"Failed to extract embedding for item {i}: {e}")
-                # Append None or zero embedding for failed items
-                embeddings.append(np.zeros(256, dtype=np.float32))
+
+                if on_error == 'raise':
+                    raise
+                elif on_error == 'none':
+                    embeddings.append(None)
+                else:  # 'zero' (default)
+                    embeddings.append(np.zeros(256, dtype=np.float32))
 
         if len(audio_list) > 5:
-            self.logger.info(f"Batch extracted {len(embeddings)} embeddings")
+            successful = len([e for e in embeddings if e is not None and not np.allclose(e, 0)])
+            self.logger.info(f"Batch extracted {successful}/{len(embeddings)} embeddings")
 
         return embeddings
 

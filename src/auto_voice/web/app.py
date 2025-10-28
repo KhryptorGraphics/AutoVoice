@@ -42,6 +42,7 @@ from ..audio.processor import AudioProcessor
 from ..models.voice_model import VoiceModel
 from ..inference.synthesizer import VoiceSynthesizer
 from ..inference.voice_cloner import VoiceCloner
+from ..inference.singing_conversion_pipeline import SingingConversionPipeline
 from .api import api_bp
 from .websocket_handler import WebSocketHandler
 
@@ -57,6 +58,7 @@ audio_processor = None
 voice_model = None
 synthesizer = None
 voice_cloner = None
+singing_conversion_pipeline = None
 config = None
 
 UPLOAD_FOLDER = '/tmp/autovoice_uploads'
@@ -68,7 +70,7 @@ def allowed_file(filename):
 
 def create_app(config_path=None, config=None):
     """Create and configure Flask application"""
-    global app, socketio, gpu_manager, audio_processor, voice_model, synthesizer, voice_cloner
+    global app, socketio, gpu_manager, audio_processor, voice_model, synthesizer, voice_cloner, singing_conversion_pipeline
 
     if not FLASK_AVAILABLE:
         logger.warning("Flask not installed. Web interface not available.")
@@ -145,6 +147,26 @@ def create_app(config_path=None, config=None):
             'load_voice_profile': lambda self, profile_id: {'profile_id': profile_id},
             'delete_voice_profile': lambda self, profile_id: True
         })()
+
+        singing_conversion_pipeline = type('MockSingingConversionPipeline', (), {
+            'convert_song': lambda self, song_path, target_profile_id, **kwargs: {
+                'mixed_audio': np.random.rand(44100) if NUMPY_AVAILABLE else [0] * 44100,
+                'sample_rate': 44100,
+                'duration': 1.0,
+                'metadata': {
+                    'target_profile_id': target_profile_id,
+                    'vocal_volume': kwargs.get('vocal_volume', 1.0),
+                    'instrumental_volume': kwargs.get('instrumental_volume', 0.9),
+                    'f0_stats': {'min_f0': 100.0, 'max_f0': 400.0}
+                }
+            },
+            'convert_vocals_only': lambda self, vocals_path, target_profile_id, **kwargs: {
+                'vocals': np.random.rand(44100) if NUMPY_AVAILABLE else [0] * 44100,
+                'sample_rate': 44100
+            },
+            'clear_cache': lambda self: None,
+            'get_cache_info': lambda self: {'total_size_mb': 0.0, 'num_conversions': 0}
+        })()
     else:
         # Initialize real components
         try:
@@ -161,8 +183,23 @@ def create_app(config_path=None, config=None):
             synthesizer = VoiceSynthesizer(voice_model, audio_processor, gpu_manager)
 
             logger.info("Initializing Voice Cloner...")
+            # Merge voice cloning config with audio config
+            vc_config = {**app_config.get('voice_cloning', {}), 'audio_config': app_config.get('audio', {})}
             voice_cloner = VoiceCloner(
-                config=app_config.get('voice_cloning', {}),
+                config=vc_config,
+                device=gpu_manager.get_device() if hasattr(gpu_manager, 'get_device') else None,
+                gpu_manager=gpu_manager
+            )
+
+            logger.info("Initializing Singing Conversion Pipeline...")
+            # Merge pipeline config with model config
+            pipeline_config = {
+                **app_config.get('singing_conversion_pipeline', {}),
+                'model_config': app_config.get('singing_voice_converter', {}),
+                'mixer_config': app_config.get('audio_mixing', {})
+            }
+            singing_conversion_pipeline = SingingConversionPipeline(
+                config=pipeline_config,
                 device=gpu_manager.get_device() if hasattr(gpu_manager, 'get_device') else None,
                 gpu_manager=gpu_manager
             )
@@ -182,6 +219,7 @@ def create_app(config_path=None, config=None):
             voice_model = type('MockVoiceModel', (), {'is_loaded': lambda: False})()
             synthesizer = type('MockSynthesizer', (), {})()
             voice_cloner = type('MockVoiceCloner', (), {})()
+            singing_conversion_pipeline = type('MockSingingConversionPipeline', (), {})()
 
     # Set app context attributes for blueprints
     app.app_config = app_config
@@ -190,6 +228,7 @@ def create_app(config_path=None, config=None):
     app.gpu_manager = gpu_manager
     app.voice_model = voice_model
     app.voice_cloner = voice_cloner
+    app.singing_conversion_pipeline = singing_conversion_pipeline
 
     # Register API blueprint
     app.register_blueprint(api_bp)
@@ -297,7 +336,9 @@ def create_app(config_path=None, config=None):
                 'gpu_available': gpu_status.get('available', False),
                 'model_loaded': voice_model.is_loaded() if voice_model and hasattr(voice_model, 'is_loaded') else False,
                 'api': True,
-                'synthesizer': synthesizer is not None
+                'synthesizer': synthesizer is not None,
+                'voice_cloner': voice_cloner is not None,
+                'singing_conversion_pipeline': singing_conversion_pipeline is not None
             },
             'system': {}
         }
@@ -343,6 +384,19 @@ def create_app(config_path=None, config=None):
         else:
             components['synthesizer'] = 'not_initialized'
             is_ready = False
+
+        # Check voice_cloner (optional, not critical for readiness)
+        if voice_cloner:
+            components['voice_cloner'] = 'ready'
+        else:
+            components['voice_cloner'] = 'not_initialized'
+
+        # Check singing conversion pipeline (optional, not critical for readiness)
+        if singing_conversion_pipeline:
+            components['singing_conversion_pipeline'] = 'ready'
+        else:
+            components['singing_conversion_pipeline'] = 'not_initialized'
+            # Pipeline is optional, don't fail readiness
 
         status_code = 200 if is_ready else 503
         return jsonify({

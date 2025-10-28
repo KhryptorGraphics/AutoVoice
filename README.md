@@ -55,7 +55,11 @@ cd autovoice
 # Install dependencies
 pip install -r requirements.txt
 
-# Build CUDA extensions
+# Setup environment and build (automated)
+./scripts/setup_pytorch_env.sh  # Fix PyTorch if needed
+./scripts/build_and_test.sh     # Build and verify
+
+# Or build manually
 python setup.py build_ext --inplace
 
 # Run the application
@@ -289,6 +293,23 @@ See [Monitoring Guide](docs/monitoring-guide.md) for complete monitoring setup.
 - **CPU Fallback**: Supported for non-GPU environments
 
 ## 🐛 Troubleshooting
+
+### Automated Environment Setup
+
+For PyTorch environment issues (especially Python 3.13 compatibility):
+
+```bash
+# Run automated environment setup script
+./scripts/setup_pytorch_env.sh
+
+# Build and test everything
+./scripts/build_and_test.sh
+
+# Quick verification
+./scripts/verify_bindings.py
+```
+
+See `scripts/README.md` for detailed troubleshooting guide.
 
 ### CUDA Not Available
 
