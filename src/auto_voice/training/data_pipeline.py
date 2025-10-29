@@ -53,19 +53,44 @@ class AudioProcessor:
         )
         
     def load_audio(self, filepath: Union[str, Path]) -> np.ndarray:
-        """Load and preprocess audio file"""
+        """Load and preprocess audio file.
+
+        Supports both audio files (wav, mp3, flac, etc.) and numpy arrays (.npy).
+        """
         try:
-            # Load audio with librosa for consistent preprocessing
-            audio, sr = librosa.load(str(filepath), sr=self.config.sample_rate)
-            
-            # Apply preemphasis filter
-            audio = self._preemphasis(audio)
-            
-            # Normalize audio
-            audio = self._normalize_audio(audio)
-            
-            return audio
-            
+            filepath = Path(filepath)
+
+            # Handle .npy files
+            if filepath.suffix.lower() == '.npy':
+                audio = np.load(str(filepath))
+
+                # Ensure 1D array
+                if audio.ndim > 1:
+                    audio = audio.flatten()
+
+                # Resample if needed (assume original is at target sample rate if not specified)
+                # For .npy files, we assume they're already at the correct sample rate
+                # If resampling is needed, it should be done before saving to .npy
+
+                # Apply preemphasis filter
+                audio = self._preemphasis(audio)
+
+                # Normalize audio
+                audio = self._normalize_audio(audio)
+
+                return audio
+            else:
+                # Load audio with librosa for consistent preprocessing
+                audio, sr = librosa.load(str(filepath), sr=self.config.sample_rate)
+
+                # Apply preemphasis filter
+                audio = self._preemphasis(audio)
+
+                # Normalize audio
+                audio = self._normalize_audio(audio)
+
+                return audio
+
         except Exception as e:
             logger.error(f"Failed to load audio {filepath}: {e}")
             return np.zeros(self.config.min_audio_length)

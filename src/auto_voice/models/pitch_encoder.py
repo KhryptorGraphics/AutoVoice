@@ -180,3 +180,69 @@ class PitchEncoder(nn.Module):
         pitch_emb = pitch_emb.transpose(1, 2)
 
         return pitch_emb
+
+    def export_to_onnx(
+        self,
+        onnx_path: str,
+        opset_version: int = 17,
+        input_sample: Optional[Dict[str, torch.Tensor]] = None
+    ) -> str:
+        """
+        Export PitchEncoder to ONNX format.
+
+        Args:
+            onnx_path: Output path for ONNX model
+            opset_version: ONNX opset version
+            input_sample: Sample inputs dict with 'f0' and 'voiced' tensors
+                         If None, creates default sample (50 frames)
+
+        Returns:
+            Path to exported ONNX model
+
+        Example:
+            >>> pitch_encoder = PitchEncoder(pitch_dim=192)
+            >>> pitch_encoder.export_to_onnx('pitch_encoder.onnx')
+        """
+        self.eval()
+
+        # Create default inputs if not provided
+        if input_sample is None:
+            f0_sample = torch.randn(1, 50)  # 50 frames at 50Hz
+            voiced_sample = torch.ones(1, 50, dtype=torch.bool)  # All voiced
+            input_sample = {'f0': f0_sample, 'voiced': voiced_sample}
+
+        device = next(self.parameters()).device
+        f0_input = input_sample['f0'].to(device)
+        voiced_input = input_sample['voiced'].to(device)
+
+        # Ensure voiced_input is boolean tensor
+        if voiced_input.dtype != torch.bool:
+            voiced_input = voiced_input.bool()
+
+        # Define dynamic axes for both inputs and output
+        dynamic_axes = {
+            'f0_input': {0: 'batch_size', 1: 'time_steps'},
+            'voiced_mask': {0: 'batch_size', 1: 'time_steps'},
+            'pitch_features': {0: 'batch_size', 1: 'time_steps'}
+        }
+
+        logger.info(f"Exporting PitchEncoder to ONNX: {onnx_path}")
+
+        try:
+            torch.onnx.export(
+                self,
+                (f0_input, voiced_input),
+                onnx_path,
+                export_params=True,
+                verbose=False,
+                opset_version=opset_version,
+                do_constant_folding=True,
+                input_names=['f0_input', 'voiced_mask'],
+                output_names=['pitch_features'],
+                dynamic_axes=dynamic_axes
+            )
+            logger.info(f"PitchEncoder exported successfully to {onnx_path}")
+            return onnx_path
+        except Exception as e:
+            logger.error(f"PitchEncoder ONNX export failed: {e}")
+            raise

@@ -375,12 +375,12 @@ class TestVocalSeparatorPitchExtractorIntegration:
             vocals_mono = vocals
 
         # Step 2: Extract pitch from vocals
-        # Sample rate should match separator's configured rate
-        sample_rate = separator.config.get('sample_rate', 44100)
+        # Use actual sample rate from separator (separated audio is at processing sample_rate)
+        actual_sample_rate = separator.config['sample_rate']
 
         f0_data = pitch_extractor.extract_f0_contour(
             vocals_mono,
-            sample_rate=sample_rate,
+            sample_rate=actual_sample_rate,
             return_confidence=True,
             return_times=True
         )
@@ -398,7 +398,7 @@ class TestVocalSeparatorPitchExtractorIntegration:
         assert np.all(np.isfinite(f0_data['f0'][f0_data['voiced']]))
 
         # Validate sample rate consistency
-        assert f0_data['sample_rate'] == sample_rate
+        assert f0_data['sample_rate'] == actual_sample_rate
 
         logger.info(
             f"Integration test passed: separated vocals ({len(vocals_mono)} samples) "
@@ -419,8 +419,8 @@ class TestVocalSeparatorPitchExtractorIntegration:
         if separator is None or pitch_extractor is None:
             pytest.skip("Required components not available")
 
-        # Get separator's target sample rate
-        separator_sr = separator.config.get('sample_rate', 44100)
+        # Get actual sample rate from separator (separated audio is at processing sample_rate)
+        actual_sample_rate = separator.config['sample_rate']
 
         try:
             vocals, _ = separator.separate_vocals(str(song_file_stereo))
@@ -431,11 +431,11 @@ class TestVocalSeparatorPitchExtractorIntegration:
         if vocals.ndim == 2:
             vocals = np.mean(vocals, axis=0)
 
-        # Extract pitch with matching sample rate
-        f0_data = pitch_extractor.extract_f0_contour(vocals, sample_rate=separator_sr)
+        # Extract pitch with actual sample rate
+        f0_data = pitch_extractor.extract_f0_contour(vocals, sample_rate=actual_sample_rate)
 
         # Validate alignment
-        assert f0_data['sample_rate'] == separator_sr
+        assert f0_data['sample_rate'] == actual_sample_rate
 
         # Calculate expected number of frames
         hop_length = f0_data['hop_length']
@@ -445,7 +445,7 @@ class TestVocalSeparatorPitchExtractorIntegration:
         assert abs(len(f0_data['f0']) - expected_frames) <= 5
 
         logger.info(
-            f"Sample rate alignment validated: {separator_sr} Hz, "
+            f"Sample rate alignment validated: {actual_sample_rate} Hz, "
             f"{len(vocals)} samples -> {len(f0_data['f0'])} frames"
         )
 
@@ -503,12 +503,73 @@ class TestVoiceClonerConverterIntegration:
         assert np.all(np.isfinite(embedding))
 
         # Step 3: Test conversion with embedding
-        # Skip actual conversion if SVC not available, just validate embedding format
-        pytest.skip("SingingVoiceConverter not tested in this integration test")
+        device = pipeline_instance['device']
+
+        try:
+            # Instantiate SingingVoiceConverter
+            converter = SingingVoiceConverter(device=device)
+        except Exception as e:
+            pytest.skip(f"SingingVoiceConverter not available: {e}")
+
+        # Load audio for conversion
+        audio_processor = pipeline_instance['audio_processor']
+        try:
+            audio, sr = audio_processor.load_audio(str(song_file_mono))
+        except Exception as e:
+            pytest.skip(f"Failed to load audio: {e}")
+
+        # Ensure audio is on correct device with float32 dtype
+        if isinstance(audio, np.ndarray):
+            audio_tensor = torch.from_numpy(audio).float().to(device)
+        else:
+            audio_tensor = audio.float().to(device)
+
+        # Ensure embedding is on correct device with float32 dtype
+        if isinstance(embedding, np.ndarray):
+            embedding_tensor = torch.from_numpy(embedding).float().to(device)
+        else:
+            embedding_tensor = embedding.float().to(device)
+
+        # Validate embedding dimension compatibility
+        assert embedding_tensor.shape[0] == 256, \
+            f"Expected embedding dimension 256, got {embedding_tensor.shape[0]}"
+
+        # Perform voice conversion with correct parameter names
+        converted_audio = converter.convert(
+            source_audio=audio_tensor,
+            target_speaker_embedding=embedding_tensor,
+            source_sample_rate=sr
+        )
+
+        # Validate output
+        assert converted_audio is not None, "Conversion returned None"
+
+        # Check for non-silent output
+        if isinstance(converted_audio, torch.Tensor):
+            converted_np = converted_audio.cpu().numpy()
+        else:
+            converted_np = converted_audio
+
+        assert converted_np.size > 0, "Converted audio is empty"
+        assert not np.all(converted_np == 0), "Converted audio is silent"
+        assert np.all(np.isfinite(converted_np)), "Converted audio contains NaN or Inf"
+
+        # Validate length consistency (should be similar to input)
+        input_length = audio_tensor.shape[-1] if isinstance(audio_tensor, torch.Tensor) else len(audio_tensor)
+        output_length = len(converted_np)
+        length_ratio = output_length / input_length
+        assert 0.9 <= length_ratio <= 1.1, \
+            f"Output length ratio {length_ratio:.2f} not in expected range [0.9, 1.1]"
+
+        # Check device consistency
+        if torch.cuda.is_available() and device == 'cuda':
+            # Ensure output was processed on GPU
+            assert isinstance(converted_audio, torch.Tensor), \
+                "Expected torch.Tensor output for CUDA device"
 
         logger.info(
             f"Profile integration test passed: created profile {profile_id}, "
-            f"embedding shape {embedding.shape}"
+            f"embedding shape {embedding.shape}, converted audio length {output_length}"
         )
 
     def test_profile_compatibility(self, voice_profile_fixture):
@@ -574,9 +635,11 @@ class TestEndToEndPipeline:
         else:
             vocals_mono = vocals
 
-        sample_rate = separator.config.get('sample_rate', 44100)
+        # Use actual sample rate from separator (separated audio is at processing sample_rate)
+        # VocalSeparator resamples to its configured sample_rate, so use that directly
+        actual_sample_rate = separator.config['sample_rate']
 
-        f0_data = pitch_extractor.extract_f0_contour(vocals_mono, sample_rate=sample_rate)
+        f0_data = pitch_extractor.extract_f0_contour(vocals_mono, sample_rate=actual_sample_rate)
 
         # Step 3: Get speaker embedding from profile
         embedding = voice_profile_fixture['embedding']
@@ -688,6 +751,130 @@ class TestDataFlow:
 
         logger.info("Data type consistency validated: float32, float64, int16")
 
+    def test_feature_alignment_validation(self, pipeline_instance, sample_audio_22khz):
+        """Test F0 contour alignment with audio samples.
+
+        Validates that F0 contour length correctly aligns with audio length
+        based on hop_length and sample_rate. This ensures proper feature
+        interpolation in the voice converter.
+
+        Validates:
+        1. F0 frame count matches expected based on audio length and hop_length
+        2. Interpolation maintains temporal alignment
+        3. No off-by-one errors in frame calculations
+        """
+        pitch_extractor = pipeline_instance['pitch_extractor']
+
+        if pitch_extractor is None:
+            pytest.skip("SingingPitchExtractor not available")
+
+        sample_rate = 22050
+        audio = sample_audio_22khz
+
+        # Extract F0 with explicit hop_length
+        f0_data = pitch_extractor.extract_f0_contour(
+            audio,
+            sample_rate=sample_rate,
+            return_times=True
+        )
+
+        # Get hop_length used
+        hop_length = f0_data.get('hop_length', 512)  # Default hop_length
+
+        # Calculate expected number of frames
+        # Standard formula: (n_samples - frame_length) // hop_length + 1
+        # But pitch extractors may use different conventions
+        audio_length = len(audio)
+        frame_length = f0_data.get('frame_length', 2048)  # Default frame_length
+
+        # Expected frames using standard STFT formula
+        expected_frames_min = (audio_length - frame_length) // hop_length + 1
+        expected_frames_max = audio_length // hop_length + 1
+
+        actual_frames = len(f0_data['f0'])
+
+        # Assert F0 length is within expected range
+        assert expected_frames_min <= actual_frames <= expected_frames_max, \
+            f"F0 frame count {actual_frames} not in expected range [{expected_frames_min}, {expected_frames_max}]. " \
+            f"Audio length: {audio_length}, hop_length: {hop_length}, frame_length: {frame_length}"
+
+        # Validate timing alignment if times are provided
+        if 'times' in f0_data:
+            times = f0_data['times']
+            assert len(times) == actual_frames, \
+                f"Time array length {len(times)} doesn't match F0 array length {actual_frames}"
+
+            # Check that times are evenly spaced by hop_length
+            if len(times) > 1:
+                time_diffs = np.diff(times)
+                expected_time_diff = hop_length / sample_rate
+
+                # Allow small tolerance for floating point errors
+                np.testing.assert_allclose(
+                    time_diffs,
+                    expected_time_diff,
+                    rtol=0.01,
+                    atol=0.001,
+                    err_msg=f"Time spacing inconsistent. Expected {expected_time_diff:.4f}s per frame"
+                )
+
+        # Test actual voice conversion to validate alignment
+        try:
+            from src.auto_voice.models.singing_voice_converter import SingingVoiceConverter
+            import torch
+        except ImportError:
+            pytest.skip("SingingVoiceConverter not available for conversion test")
+
+        # Create converter instance
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        converter = SingingVoiceConverter(config={
+            'device': device,
+            'model_sample_rate': 16000,  # Standard model sample rate
+            'hop_length': 512
+        })
+
+        # Create dummy target speaker embedding (256-dimensional)
+        target_embedding = np.random.randn(256).astype(np.float32)
+
+        # Ensure audio is float32 and on correct device
+        audio_tensor = torch.from_numpy(audio.astype(np.float32)).float().to(device)
+        embedding_tensor = torch.from_numpy(target_embedding).float().to(device)
+
+        # Perform voice conversion with correct parameter names
+        output_sample_rate = 44100  # Typical output sample rate
+        converted_audio = converter.convert(
+            source_audio=audio_tensor,
+            target_speaker_embedding=embedding_tensor,
+            source_f0=f0_data['f0'],
+            source_sample_rate=sample_rate,
+            output_sample_rate=output_sample_rate
+        )
+
+        # Validate output duration alignment
+        # Expected output length: (input_samples / input_sr) * output_sr
+        expected_duration_sec = len(audio) / sample_rate
+        expected_output_samples = int(expected_duration_sec * output_sample_rate)
+
+        # Allow 5% tolerance for resampling and frame alignment
+        tolerance = 0.05
+        min_expected = int(expected_output_samples * (1 - tolerance))
+        max_expected = int(expected_output_samples * (1 + tolerance))
+
+        actual_output_samples = len(converted_audio)
+        assert min_expected <= actual_output_samples <= max_expected, \
+            f"Output length {actual_output_samples} not in expected range [{min_expected}, {max_expected}]. " \
+            f"Input: {len(audio)} samples @ {sample_rate}Hz, Output: {actual_output_samples} samples @ {output_sample_rate}Hz"
+
+        # Validate no NaN or Inf values in output
+        assert np.all(np.isfinite(converted_audio)), "Converted audio contains NaN or Inf"
+
+        logger.info(
+            f"Feature alignment validated with conversion: "
+            f"{actual_frames} F0 frames for {audio_length} samples "
+            f"(hop: {hop_length}, frame: {frame_length}), "
+            f"output: {actual_output_samples} samples @ {output_sample_rate}Hz"
+        )
+
 
 # ============================================================================
 # 3. Performance Tests
@@ -744,6 +931,189 @@ class TestPerformance:
 
         logger.info(f"GPU memory usage: {memory_used_mb:.2f} MB")
 
+    @pytest.mark.cuda
+    def test_pipeline_stage_gpu_memory_cleanup(self, song_file_mono, pipeline_instance, voice_profile_fixture, cuda_available):
+        """Test per-stage GPU memory cleanup across full pipeline.
+
+        Validates that each stage cleans up GPU memory properly by tracking
+        peak memory per stage independently. Ensures that peak memory for
+        individual stages is less than total pipeline memory, confirming
+        per-stage cleanup.
+
+        Tests stages:
+        1. Vocal separation
+        2. Pitch extraction
+        3. Voice cloning
+        4. Voice conversion
+        """
+        if not cuda_available:
+            pytest.skip("CUDA not available")
+
+        separator = pipeline_instance['separator']
+        pitch_extractor = pipeline_instance['pitch_extractor']
+        voice_cloner = pipeline_instance['voice_cloner']
+
+        if separator is None or pitch_extractor is None or voice_cloner is None:
+            pytest.skip("Required components not available")
+
+        # Instantiate converter
+        try:
+            converter = SingingVoiceConverter(device='cuda')
+        except Exception as e:
+            pytest.skip(f"SingingVoiceConverter not available: {e}")
+
+        stage_memories = {}
+
+        # Initial cleanup
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+
+        # Stage 1: Vocal separation
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        baseline_stage1 = torch.cuda.memory_allocated()
+
+        try:
+            vocals, instrumental = separator.separate_vocals(str(song_file_mono))
+        except Exception as e:
+            pytest.skip(f"Separation failed: {e}")
+
+        torch.cuda.synchronize()
+        peak_stage1 = torch.cuda.max_memory_allocated()
+        after_stage1 = torch.cuda.memory_allocated()
+        stage_memories['source_separation'] = (peak_stage1 - baseline_stage1) / 1e6
+
+        # Assert cleanup within 20MB of baseline
+        cleanup_delta_mb = abs(after_stage1 - baseline_stage1) / (1024 * 1024)
+        assert cleanup_delta_mb < 20, \
+            f"Stage 1 (source_separation) failed to clean up: {cleanup_delta_mb:.2f} MB from baseline"
+
+        # Prepare for next stage
+        if vocals.ndim == 2:
+            vocals_mono = np.mean(vocals, axis=0)
+        else:
+            vocals_mono = vocals
+
+        # Stage 2: Pitch extraction
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        baseline_stage2 = torch.cuda.memory_allocated()
+
+        # Use actual sample rate from separator (separated audio is at processing sample_rate)
+        actual_sample_rate = separator.config['sample_rate']
+        try:
+            f0_data = pitch_extractor.extract_f0_contour(vocals_mono, sample_rate=actual_sample_rate)
+        except Exception as e:
+            pytest.skip(f"Pitch extraction failed: {e}")
+
+        torch.cuda.synchronize()
+        peak_stage2 = torch.cuda.max_memory_allocated()
+        after_stage2 = torch.cuda.memory_allocated()
+        stage_memories['pitch_extraction'] = (peak_stage2 - baseline_stage2) / 1e6
+
+        # Assert cleanup within 20MB of baseline
+        cleanup_delta_mb = abs(after_stage2 - baseline_stage2) / (1024 * 1024)
+        assert cleanup_delta_mb < 20, \
+            f"Stage 2 (pitch extraction) failed to clean up: {cleanup_delta_mb:.2f} MB from baseline"
+
+        # Stage 3: Voice cloning (profile already exists from fixture)
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        baseline_stage3 = torch.cuda.memory_allocated()
+
+        embedding = voice_profile_fixture['embedding']
+        if isinstance(embedding, np.ndarray):
+            embedding_tensor = torch.from_numpy(embedding).float().to('cuda')
+        else:
+            embedding_tensor = embedding.float().to('cuda')
+
+        torch.cuda.synchronize()
+        peak_stage3 = torch.cuda.max_memory_allocated()
+        after_stage3 = torch.cuda.memory_allocated()
+        # Voice cloning is mostly CPU-based for Resemblyzer, so minimal GPU usage expected
+        stage_memories['voice_cloning'] = (peak_stage3 - baseline_stage3) / 1e6
+
+        # Assert cleanup within 20MB of baseline
+        cleanup_delta_mb = abs(after_stage3 - baseline_stage3) / (1024 * 1024)
+        assert cleanup_delta_mb < 20, \
+            f"Stage 3 (voice cloning) failed to clean up: {cleanup_delta_mb:.2f} MB from baseline"
+
+        # Stage 4: Voice conversion
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        baseline_stage4 = torch.cuda.memory_allocated()
+
+        audio_processor = pipeline_instance['audio_processor']
+        audio, sr = audio_processor.load_audio(str(song_file_mono))
+
+        if isinstance(audio, np.ndarray):
+            audio_tensor = torch.from_numpy(audio).float().to('cuda')
+        else:
+            audio_tensor = audio.float().to('cuda')
+
+        converted_audio = converter.convert(
+            source_audio=audio_tensor,
+            target_speaker_embedding=embedding_tensor,
+            source_sample_rate=sr
+        )
+
+        torch.cuda.synchronize()
+        peak_stage4 = torch.cuda.max_memory_allocated()
+        after_stage4 = torch.cuda.memory_allocated()
+        stage_memories['voice_conversion'] = (peak_stage4 - baseline_stage4) / 1e6
+
+        # Assert cleanup within 20MB of baseline
+        cleanup_delta_mb = abs(after_stage4 - baseline_stage4) / (1024 * 1024)
+        assert cleanup_delta_mb < 20, \
+            f"Stage 4 (voice conversion) failed to clean up: {cleanup_delta_mb:.2f} MB from baseline"
+
+        # Now measure total pipeline memory without resets
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        initial_total = torch.cuda.memory_allocated()
+
+        # Run full pipeline without resets
+        vocals, _ = separator.separate_vocals(str(song_file_mono), use_cache=False)
+        if vocals.ndim == 2:
+            vocals = np.mean(vocals, axis=0)
+        f0_data = pitch_extractor.extract_f0_contour(vocals, sample_rate=actual_sample_rate)
+        audio_tensor = torch.from_numpy(audio).float().to('cuda') if isinstance(audio, np.ndarray) else audio.float().to('cuda')
+        converted_audio = converter.convert(
+            source_audio=audio_tensor,
+            target_speaker_embedding=embedding_tensor,
+            source_sample_rate=sr
+        )
+
+        torch.cuda.synchronize()
+        total_peak_memory = torch.cuda.max_memory_allocated()
+        total_memory_used = (total_peak_memory - initial_total) / (1024 * 1024)
+
+        # Assert per-stage cleanup: each stage's peak < total pipeline peak
+        for stage_name, stage_memory in stage_memories.items():
+            if stage_memory > 0:  # Only check stages with GPU usage
+                assert stage_memory < total_memory_used, \
+                    f"Stage '{stage_name}' peak memory ({stage_memory:.2f} MB) >= " \
+                    f"total pipeline memory ({total_memory_used:.2f} MB). " \
+                    f"Indicates insufficient per-stage cleanup."
+
+        logger.info(
+            f"Pipeline stage memory cleanup validated:\n"
+            f"  Source separation: {stage_memories['source_separation']:.2f} MB\n"
+            f"  Pitch extraction: {stage_memories['pitch_extraction']:.2f} MB\n"
+            f"  Voice cloning: {stage_memories['voice_cloning']:.2f} MB\n"
+            f"  Voice conversion: {stage_memories['voice_conversion']:.2f} MB\n"
+            f"  Total pipeline: {total_memory_used:.2f} MB"
+        )
+
+        # Cleanup
+        torch.cuda.empty_cache()
+
     def test_memory_leak_detection(self, song_file_mono, pipeline_instance, memory_leak_detector):
         """Test for memory leaks in repeated operations.
 
@@ -770,8 +1140,9 @@ class TestPerformance:
                 if vocals.ndim == 2:
                     vocals = np.mean(vocals, axis=0)
 
-                sample_rate = separator.config.get('sample_rate', 44100)
-                f0_data = pitch_extractor.extract_f0_contour(vocals, sample_rate=sample_rate)
+                # Use actual sample rate from separator (separated audio is at processing sample_rate)
+                actual_sample_rate = separator.config['sample_rate']
+                f0_data = pitch_extractor.extract_f0_contour(vocals, sample_rate=actual_sample_rate)
 
                 # Cleanup
                 del vocals
@@ -883,10 +1254,11 @@ class TestPerformance:
         if vocals.ndim == 2:
             vocals = np.mean(vocals, axis=0)
 
-        sample_rate = separator.config.get('sample_rate', 44100)
+        # Use actual sample rate from separator (separated audio is at processing sample_rate)
+        actual_sample_rate = separator.config['sample_rate']
 
         start = time.perf_counter()
-        f0_data = pitch_extractor.extract_f0_contour(vocals, sample_rate=sample_rate)
+        f0_data = pitch_extractor.extract_f0_contour(vocals, sample_rate=actual_sample_rate)
         extraction_time = time.perf_counter() - start
 
         total_time = separation_time + extraction_time

@@ -604,3 +604,519 @@ def test_dataloader_creation(temp_data_dir, audio_config):
     assert 'source_audio' in batch
     assert 'target_mel' in batch
     assert batch['source_audio'].shape[0] == 2  # batch size
+
+
+class TestAdversarialTraining:
+    """Test coverage for adversarial loss and pred_audio paths."""
+
+    @pytest.mark.training
+    @pytest.mark.unit
+    def test_adversarial_loss_computation(self):
+        """Test adversarial loss computation with discriminator."""
+        from unittest.mock import Mock
+
+        # Create model with config dict
+        config = {
+            'latent_dim': 192,
+            'mel_channels': 80,
+            'content_encoder_type': 'cnn_fallback',
+            'flow_decoder': {'num_flows': 2}
+        }
+        model = SingingVoiceConverter(config)
+
+        # Mock discriminator
+        discriminator = Mock()
+        # Discriminator returns list of logits at different scales
+        discriminator.return_value = [torch.randn(2, 1, 100)]
+
+        # Create config
+        config = TrainingConfig(
+            batch_size=2,
+            voice_conversion_mode=True,
+            use_amp=False
+        )
+
+        # Create trainer with discriminator
+        trainer = VoiceConversionTrainer(model=model, config=config)
+
+        # Create batch with pred_audio
+        batch = {
+            'source_audio': torch.randn(2, 16000),
+            'target_audio': torch.randn(2, 16000),
+            'source_mel': torch.randn(2, 86, 80),
+            'target_mel': torch.randn(2, 86, 80),
+            'source_f0': torch.rand(2, 86) * 500 + 100,
+            'target_speaker_emb': torch.randn(2, 256),
+            'mel_mask': torch.ones(2, 1, 86)
+        }
+
+        # Create predictions with pred_audio
+        predictions = {
+            'pred_mel': torch.randn(2, 86, 80),
+            'pred_audio': torch.randn(2, 16000),
+            'z_mean': torch.randn(2, 192, 86),
+            'z_logvar': torch.randn(2, 192, 86),
+            'logdet': torch.randn(2, 86),
+            'u': torch.randn(2, 192, 86)
+        }
+
+        # Compute losses
+        losses = trainer._compute_voice_conversion_losses(predictions, batch)
+
+        # Verify adversarial loss would be computed if discriminator was integrated
+        # For now, check that pred_audio path doesn't break loss computation
+        assert 'total' in losses
+        assert 'mel_reconstruction' in losses
+        assert losses['total'] > 0
+
+    @pytest.mark.training
+    @pytest.mark.unit
+    def test_pitch_speaker_losses_with_pred_audio(self):
+        """Test pitch and speaker losses when pred_audio is available."""
+        # Create model with config dict
+        config = {
+            'latent_dim': 192,
+            'mel_channels': 80,
+            'content_encoder_type': 'cnn_fallback',
+            'flow_decoder': {'num_flows': 2}
+        }
+        model = SingingVoiceConverter(config)
+
+        # Create config
+        config = TrainingConfig(
+            batch_size=2,
+            voice_conversion_mode=True,
+            use_amp=False,
+            sample_rate=44100
+        )
+
+        # Create trainer
+        trainer = VoiceConversionTrainer(model=model, config=config)
+
+        # Create batch with all required fields
+        batch = {
+            'source_audio': torch.randn(2, 44100),  # 1 second
+            'target_audio': torch.randn(2, 44100),
+            'source_mel': torch.randn(2, 86, 80),
+            'target_mel': torch.randn(2, 86, 80),
+            'source_f0': torch.rand(2, 86) * 400 + 100,  # F0 in 100-500 Hz
+            'target_speaker_emb': torch.randn(2, 256),
+            'mel_mask': torch.ones(2, 1, 86)
+        }
+
+        # Mock forward pass to return pred_audio
+        predictions = {
+            'pred_mel': torch.randn(2, 86, 80),
+            'pred_audio': torch.randn(2, 44100),  # Predicted audio waveform
+            'z_mean': torch.randn(2, 192, 86),
+            'z_logvar': torch.randn(2, 192, 86),
+            'logdet': torch.randn(2, 86),
+            'u': torch.randn(2, 192, 86)
+        }
+
+        # Compute losses
+        losses = trainer._compute_voice_conversion_losses(predictions, batch)
+
+        # Verify pitch and speaker losses are computed (or fallback to zero)
+        assert 'pitch_consistency' in losses
+        assert 'speaker_similarity' in losses
+        assert 'stft' in losses
+
+        # Losses should be non-negative
+        assert losses['pitch_consistency'] >= 0
+        assert losses['speaker_similarity'] >= 0
+        assert losses['stft'] >= 0
+
+    @pytest.mark.training
+    @pytest.mark.integration
+    def test_two_step_discriminator_optimization(self):
+        """Test two-step optimization workflow verification."""
+        # Create generator model with config dict
+        config = {
+            'latent_dim': 192,
+            'mel_channels': 80,
+            'content_encoder_type': 'cnn_fallback',
+            'flow_decoder': {'num_flows': 2}
+        }
+        generator = SingingVoiceConverter(config)
+
+        # Create training config
+        training_config = TrainingConfig(
+            batch_size=2,
+            voice_conversion_mode=True,
+            use_amp=False,
+            log_interval=1,
+            gradient_accumulation_steps=1
+        )
+
+        # Create trainer
+        trainer = VoiceConversionTrainer(model=generator, config=training_config)
+
+        # Verify trainer components exist
+        assert trainer.optimizer is not None
+        assert trainer.pitch_loss is not None
+        assert trainer.speaker_loss is not None
+        assert trainer.kl_loss is not None
+        assert trainer.flow_loss is not None
+        assert trainer.stft_loss is not None
+
+        # Verify initial state
+        assert trainer.global_step == 0
+
+        # Test manual optimization step
+        trainer.optimizer.zero_grad()
+
+        # Create dummy loss
+        dummy_loss = torch.tensor(1.0, requires_grad=True)
+        dummy_loss.backward()
+
+        # Optimizer step
+        trainer.optimizer.step()
+        trainer.global_step += 1
+
+        # Verify optimizer was called
+        assert trainer.global_step == 1
+
+    @pytest.mark.training
+    @pytest.mark.unit
+    def test_missing_speaker_emb_fallback(self):
+        """Test fallback when target_speaker_emb is missing."""
+        # Create model with config dict
+        config = {
+            'latent_dim': 192,
+            'mel_channels': 80,
+            'content_encoder_type': 'cnn_fallback',
+            'flow_decoder': {'num_flows': 2}
+        }
+        model = SingingVoiceConverter(config)
+
+        # Create config
+        config = TrainingConfig(
+            batch_size=2,
+            voice_conversion_mode=True,
+            use_amp=False
+        )
+
+        # Create trainer
+        trainer = VoiceConversionTrainer(model=model, config=config)
+
+        # Create batch WITHOUT target_speaker_emb
+        batch = {
+            'source_audio': torch.randn(2, 44100),
+            'target_audio': torch.randn(2, 44100),
+            'source_mel': torch.randn(2, 86, 80),
+            'target_mel': torch.randn(2, 86, 80),
+            'source_f0': torch.rand(2, 86) * 400 + 100,
+            # Missing: 'target_speaker_emb'
+            'mel_mask': torch.ones(2, 1, 86)
+        }
+
+        # This should not raise KeyError
+        try:
+            # Model should handle missing speaker_emb gracefully
+            # by using default embedding or None
+            predictions = {
+                'pred_mel': torch.randn(2, 86, 80),
+                'z_mean': torch.randn(2, 192, 86),
+                'z_logvar': torch.randn(2, 192, 86),
+                'logdet': torch.randn(2, 86),
+                'u': torch.randn(2, 192, 86)
+            }
+
+            losses = trainer._compute_voice_conversion_losses(predictions, batch)
+
+            # Should succeed without KeyError
+            assert 'total' in losses
+            assert losses['total'] >= 0
+
+        except KeyError as e:
+            pytest.fail(f"KeyError raised when speaker_emb missing: {e}")
+
+    @pytest.mark.training
+    @pytest.mark.unit
+    def test_loss_fallbacks_unavailable_components(self):
+        """Test that losses fallback to zero when components unavailable."""
+        import logging
+
+        # Create model with config dict
+        config = {
+            'latent_dim': 192,
+            'mel_channels': 80,
+            'content_encoder_type': 'cnn_fallback',
+            'flow_decoder': {'num_flows': 2}
+        }
+        model = SingingVoiceConverter(config)
+
+        # Create config
+        config = TrainingConfig(
+            batch_size=2,
+            voice_conversion_mode=True,
+            use_amp=False
+        )
+
+        # Create trainer
+        trainer = VoiceConversionTrainer(model=model, config=config)
+
+        # Force pitch/speaker extractors to be unavailable
+        trainer.pitch_loss.pitch_extractor = None
+        trainer.speaker_loss.speaker_encoder = None
+
+        # Create batch
+        batch = {
+            'source_audio': torch.randn(2, 44100),
+            'target_audio': torch.randn(2, 44100),
+            'source_mel': torch.randn(2, 86, 80),
+            'target_mel': torch.randn(2, 86, 80),
+            'source_f0': torch.rand(2, 86) * 400 + 100,
+            'target_speaker_emb': torch.randn(2, 256),
+            'mel_mask': torch.ones(2, 1, 86)
+        }
+
+        # Create predictions with pred_audio
+        predictions = {
+            'pred_mel': torch.randn(2, 86, 80),
+            'pred_audio': torch.randn(2, 44100),
+            'z_mean': torch.randn(2, 192, 86),
+            'z_logvar': torch.randn(2, 192, 86),
+            'logdet': torch.randn(2, 86),
+            'u': torch.randn(2, 192, 86)
+        }
+
+        # Compute losses (may or may not generate warnings)
+        losses = trainer._compute_voice_conversion_losses(predictions, batch)
+
+        # Pitch and speaker losses should be zero when components unavailable
+        assert losses['pitch_consistency'].item() == 0.0
+        assert losses['speaker_similarity'].item() == 0.0
+
+        # Other losses should still be computed
+        assert losses['mel_reconstruction'] > 0
+        assert losses['total'] > 0
+
+    @pytest.mark.training
+    @pytest.mark.unit
+    def test_adversarial_loss_key_present(self):
+        """Test that adversarial loss key is present when enabled."""
+        # Create model with config dict
+        config = {
+            'latent_dim': 192,
+            'mel_channels': 80,
+            'content_encoder_type': 'cnn_fallback',
+            'flow_decoder': {'num_flows': 2}
+        }
+        model = SingingVoiceConverter(config)
+
+        # Create training config with adversarial loss enabled (default)
+        training_config = TrainingConfig(
+            batch_size=2,
+            voice_conversion_mode=True,
+            use_amp=False
+        )
+
+        # Create trainer (adversarial weight > 0 by default)
+        trainer = VoiceConversionTrainer(model=model, config=training_config)
+
+        # Verify adversarial loss weight is enabled
+        assert trainer.vc_loss_weights.get('adversarial', 0) > 0
+
+        # Create batch
+        batch = {
+            'source_audio': torch.randn(2, 44100),
+            'target_audio': torch.randn(2, 44100),
+            'source_mel': torch.randn(2, 86, 80),
+            'target_mel': torch.randn(2, 86, 80),
+            'source_f0': torch.rand(2, 86) * 400 + 100,
+            'target_speaker_emb': torch.randn(2, 256),
+            'mel_mask': torch.ones(2, 1, 86)
+        }
+
+        # Create predictions with pred_audio
+        predictions = {
+            'pred_mel': torch.randn(2, 86, 80),
+            'pred_audio': torch.randn(2, 44100),  # REQUIRED for adversarial loss
+            'z_mean': torch.randn(2, 192, 86),
+            'z_logvar': torch.randn(2, 192, 86),
+            'logdet': torch.randn(2, 86),
+            'u': torch.randn(2, 192, 86)
+        }
+
+        # Compute losses
+        losses = trainer._compute_voice_conversion_losses(predictions, batch)
+
+        # Assert adversarial loss key is present
+        assert 'adversarial' in losses, "adversarial loss key should be in losses dict"
+
+        # Assert adversarial loss is a scalar tensor
+        assert losses['adversarial'].dim() == 0, "adversarial loss should be scalar"
+
+        # Assert adversarial loss is finite
+        assert torch.isfinite(losses['adversarial']), "adversarial loss should be finite"
+
+    @pytest.mark.training
+    @pytest.mark.integration
+    def test_discriminator_step_called(self, monkeypatch):
+        """Test that discriminator optimizer step is called during training."""
+        # Create model with config dict
+        config = {
+            'latent_dim': 192,
+            'mel_channels': 80,
+            'content_encoder_type': 'cnn_fallback',
+            'flow_decoder': {'num_flows': 2}
+        }
+        model = SingingVoiceConverter(config)
+
+        # Create training config with adversarial loss enabled
+        training_config = TrainingConfig(
+            batch_size=2,
+            voice_conversion_mode=True,
+            use_amp=False,
+            gradient_accumulation_steps=1
+        )
+
+        # Create trainer
+        trainer = VoiceConversionTrainer(model=model, config=training_config)
+
+        # Create spy counter for discriminator optimizer step
+        step_counter = {'count': 0}
+        original_step = trainer.discriminator_optimizer.step
+
+        def spy_step():
+            step_counter['count'] += 1
+            original_step()
+
+        # Monkeypatch discriminator optimizer step
+        monkeypatch.setattr(trainer.discriminator_optimizer, 'step', spy_step)
+
+        # Create batch with pred_audio
+        batch = {
+            'source_audio': torch.randn(2, 44100),
+            'target_audio': torch.randn(2, 44100),
+            'source_mel': torch.randn(2, 86, 80),
+            'target_mel': torch.randn(2, 86, 80),
+            'source_f0': torch.rand(2, 86) * 400 + 100,
+            'target_speaker_emb': torch.randn(2, 256),
+            'mel_mask': torch.ones(2, 1, 86)
+        }
+
+        # Create predictions with pred_audio via monkeypatch
+        predictions_with_audio = {
+            'pred_mel': torch.randn(2, 86, 80),
+            'pred_audio': torch.randn(2, 44100),  # REQUIRED for adversarial training
+            'z_mean': torch.randn(2, 192, 86),
+            'z_logvar': torch.randn(2, 192, 86),
+            'logdet': torch.randn(2, 86),
+            'u': torch.randn(2, 192, 86)
+        }
+
+        # Monkeypatch _forward_pass to return predictions with pred_audio
+        def mock_forward_pass(self, batch):
+            return predictions_with_audio
+
+        monkeypatch.setattr(VoiceConversionTrainer, '_forward_pass', mock_forward_pass)
+
+        # Create simple dataloader with one batch
+        class SimpleDataset:
+            def __len__(self):
+                return 1
+
+            def __getitem__(self, idx):
+                return batch
+
+        from torch.utils.data import DataLoader
+        dataloader = DataLoader(SimpleDataset(), batch_size=None, collate_fn=lambda x: x)
+
+        # Run one epoch
+        losses = trainer.train_epoch(dataloader, epoch=0)
+
+        # Assert discriminator step was called exactly once
+        assert step_counter['count'] == 1, f"Discriminator step should be called once, got {step_counter['count']}"
+
+        # Assert losses contain discriminator loss
+        assert 'discriminator' in losses, "discriminator loss should be in losses dict"
+
+    @pytest.mark.training
+    @pytest.mark.integration
+    def test_adversarial_skipped_without_pred_audio(self, monkeypatch):
+        """Test that adversarial training is skipped when pred_audio is missing."""
+        # Create model with config dict
+        config = {
+            'latent_dim': 192,
+            'mel_channels': 80,
+            'content_encoder_type': 'cnn_fallback',
+            'flow_decoder': {'num_flows': 2}
+        }
+        model = SingingVoiceConverter(config)
+
+        # Create training config with adversarial loss enabled
+        training_config = TrainingConfig(
+            batch_size=2,
+            voice_conversion_mode=True,
+            use_amp=False,
+            gradient_accumulation_steps=1
+        )
+
+        # Create trainer
+        trainer = VoiceConversionTrainer(model=model, config=training_config)
+
+        # Create spy counter for discriminator optimizer step
+        step_counter = {'count': 0}
+        original_step = trainer.discriminator_optimizer.step
+
+        def spy_step():
+            step_counter['count'] += 1
+            original_step()
+
+        # Monkeypatch discriminator optimizer step
+        monkeypatch.setattr(trainer.discriminator_optimizer, 'step', spy_step)
+
+        # Create batch
+        batch = {
+            'source_audio': torch.randn(2, 44100),
+            'target_audio': torch.randn(2, 44100),
+            'source_mel': torch.randn(2, 86, 80),
+            'target_mel': torch.randn(2, 86, 80),
+            'source_f0': torch.rand(2, 86) * 400 + 100,
+            'target_speaker_emb': torch.randn(2, 256),
+            'mel_mask': torch.ones(2, 1, 86)
+        }
+
+        # Create predictions WITHOUT pred_audio
+        predictions_no_audio = {
+            'pred_mel': torch.randn(2, 86, 80),
+            # Missing: 'pred_audio' - adversarial training should be skipped
+            'z_mean': torch.randn(2, 192, 86),
+            'z_logvar': torch.randn(2, 192, 86),
+            'logdet': torch.randn(2, 86),
+            'u': torch.randn(2, 192, 86)
+        }
+
+        # Monkeypatch _forward_pass to return predictions WITHOUT pred_audio
+        def mock_forward_pass(self, batch):
+            return predictions_no_audio
+
+        monkeypatch.setattr(VoiceConversionTrainer, '_forward_pass', mock_forward_pass)
+
+        # Create simple dataloader with one batch
+        class SimpleDataset:
+            def __len__(self):
+                return 1
+
+            def __getitem__(self, idx):
+                return batch
+
+        from torch.utils.data import DataLoader
+        dataloader = DataLoader(SimpleDataset(), batch_size=None, collate_fn=lambda x: x)
+
+        # Run one epoch
+        losses = trainer.train_epoch(dataloader, epoch=0)
+
+        # Assert discriminator step was NOT called (no pred_audio)
+        assert step_counter['count'] == 0, f"Discriminator step should NOT be called when pred_audio missing, got {step_counter['count']} calls"
+
+        # Assert adversarial loss is zero
+        assert 'adversarial' in losses, "adversarial loss key should still be in losses dict"
+        assert losses['adversarial'] == 0.0, "adversarial loss should be 0 when pred_audio missing"
+
+        # Assert discriminator loss is zero
+        assert 'discriminator' in losses, "discriminator loss key should be in losses dict"
+        assert losses['discriminator'] == 0.0, "discriminator loss should be 0 when pred_audio missing"

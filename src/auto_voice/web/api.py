@@ -33,6 +33,20 @@ except ImportError:
     torchaudio = None
     TORCHAUDIO_AVAILABLE = False
 
+try:
+    import soundfile
+    SOUNDFILE_AVAILABLE = True
+except ImportError:
+    soundfile = None
+    SOUNDFILE_AVAILABLE = False
+
+try:
+    import librosa
+    LIBROSA_AVAILABLE = True
+except ImportError:
+    librosa = None
+    LIBROSA_AVAILABLE = False
+
 # Import voice cloning exceptions
 try:
     from ..inference.voice_cloner import InvalidAudioError
@@ -48,29 +62,27 @@ except ImportError:
     ProfileNotFoundError = None
     PROFILE_NOT_FOUND_ERROR_AVAILABLE = False
 
+# Import singing conversion exceptions
+try:
+    from ..inference.singing_conversion_pipeline import SeparationError, ConversionError
+    SINGING_CONVERSION_ERRORS_AVAILABLE = True
+except ImportError:
+    SeparationError = None
+    ConversionError = None
+    SINGING_CONVERSION_ERRORS_AVAILABLE = False
+
+# Import shared utilities
+from .utils import allowed_file, ALLOWED_AUDIO_EXTENSIONS
+
 logger = logging.getLogger(__name__)
 
 # Use /api/v1 prefix for versioned API
 api_bp = Blueprint('api', __name__, url_prefix='/api/v1')
 
 UPLOAD_FOLDER = '/tmp/autovoice_uploads'
-ALLOWED_EXTENSIONS = {'wav', 'mp3', 'flac', 'ogg', 'm4a'}  # Removed 'webm' - not guaranteed supported
+ALLOWED_EXTENSIONS = ALLOWED_AUDIO_EXTENSIONS  # Use shared constant
 MAX_TEXT_LENGTH = 5000
 MAX_AUDIO_DURATION = 600  # 10 minutes
-
-
-def allowed_file(filename):
-    """Check if the file extension is allowed and filename is safe."""
-    if not filename or '.' not in filename:
-        return False
-    
-    # Check for path traversal attempts
-    if '..' in filename or '/' in filename or '\\' in filename:
-        return False
-    
-    # Check file extension
-    extension = filename.rsplit('.', 1)[1].lower()
-    return extension in ALLOWED_EXTENSIONS
 
 
 def validate_request_json(required_fields):
@@ -101,7 +113,7 @@ def health_check():
     """API-specific health check endpoint."""
     import time
     from datetime import datetime, timezone
-    
+
     audio_processor = getattr(current_app, 'audio_processor', None)
     inference_engine = getattr(current_app, 'inference_engine', None)
     gpu_manager = getattr(current_app, 'gpu_manager', None)
@@ -148,6 +160,46 @@ def health_check():
     })
 
 
+@api_bp.route('/health/live', methods=['GET'])
+def health_liveness():
+    """Kubernetes liveness probe endpoint - checks if service is running."""
+    return jsonify({
+        'status': 'live',
+        'timestamp': time.time()
+    }), 200
+
+
+@api_bp.route('/health/ready', methods=['GET'])
+def health_readiness():
+    """Kubernetes readiness probe endpoint - checks if service can handle requests."""
+    from datetime import datetime, timezone
+
+    inference_engine = getattr(current_app, 'inference_engine', None)
+    audio_processor = getattr(current_app, 'audio_processor', None)
+
+    # Check if critical components are initialized
+    ready = bool(inference_engine and audio_processor)
+
+    if ready:
+        return jsonify({
+            'status': 'ready',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'components': {
+                'inference_engine': bool(inference_engine),
+                'audio_processor': bool(audio_processor)
+            }
+        }), 200
+    else:
+        return jsonify({
+            'status': 'not_ready',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'components': {
+                'inference_engine': bool(inference_engine),
+                'audio_processor': bool(audio_processor)
+            }
+        }), 503
+
+
 @api_bp.route('/synthesize', methods=['POST'])
 @validate_request_json(['text', 'speaker_id'])
 def synthesize_voice():
@@ -165,12 +217,7 @@ def synthesize_voice():
     Returns:
         JSON with base64-encoded audio and metadata
     """
-    if not TORCH_AVAILABLE:
-        return jsonify({
-            'error': 'Voice synthesis service unavailable',
-            'message': 'PyTorch not installed'
-        }), 503
-
+    # Check inference engine availability
     inference_engine = getattr(current_app, 'inference_engine', None)
     if not inference_engine:
         return jsonify({
@@ -707,12 +754,7 @@ def convert_voice():
     Returns:
         JSON with converted audio and metadata
     """
-    if not TORCH_AVAILABLE:
-        return jsonify({
-            'error': 'Voice conversion service unavailable',
-            'message': 'PyTorch not installed'
-        }), 503
-
+    # Check inference engine availability
     inference_engine = getattr(current_app, 'inference_engine', None)
     if not inference_engine:
         return jsonify({
@@ -758,6 +800,21 @@ def convert_voice():
         return jsonify({'error': 'Invalid file format'}), 400
 
 
+@api_bp.route('/clone', methods=['POST'])
+def clone_voice_legacy():
+    """Legacy route for voice cloning - deprecated in favor of /api/v1/voice/clone.
+
+    Returns:
+        JSON with deprecation warning and redirect information
+    """
+    return jsonify({
+        'error': 'Endpoint deprecated',
+        'message': 'This endpoint is deprecated. Please use /api/v1/voice/clone instead.',
+        'redirect_to': '/api/v1/voice/clone',
+        'status_code': 410
+    }), 410
+
+
 @api_bp.route('/voice/clone', methods=['POST'])
 def clone_voice():
     """Clone a voice from reference audio and create voice profile.
@@ -779,13 +836,7 @@ def clone_voice():
             'created_at': str (ISO timestamp)
         }
     """
-    if not TORCH_AVAILABLE:
-        return jsonify({
-            'error': 'Voice cloning service unavailable',
-            'message': 'PyTorch not installed'
-        }), 503
-
-    # Get voice cloner from app context
+    # Check voice cloner availability
     voice_cloner = getattr(current_app, 'voice_cloner', None)
     if not voice_cloner:
         return jsonify({
@@ -796,7 +847,7 @@ def clone_voice():
     # Check for audio file (accept both 'reference_audio' and 'audio' for backward compatibility)
     file = request.files.get('reference_audio') or request.files.get('audio')
     if not file:
-        return jsonify({'error': 'No audio file provided. Use "reference_audio" field.'}), 400
+        return jsonify({'error': 'No audio file provided. Use "reference_audio" or "audio" field.'}), 400
 
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
@@ -815,26 +866,49 @@ def clone_voice():
                 file.save(tmp_file.name)
 
                 try:
-                    # Create voice profile
+                    # Create voice profile - wrap in try/except for audio decoding errors
                     logger.info(f"Creating voice profile from {secure_name}")
 
-                    profile = voice_cloner.create_voice_profile(
-                        audio=tmp_file.name,
-                        user_id=user_id,
-                        metadata={
-                            'filename': secure_name,
-                            'format': os.path.splitext(secure_name)[1][1:],  # Remove leading dot
-                            'upload_time': time.time()
-                        }
-                    )
+                    try:
+                        profile = voice_cloner.create_voice_profile(
+                            audio=tmp_file.name,
+                            user_id=user_id,
+                            metadata={
+                                'filename': secure_name,
+                                'format': os.path.splitext(secure_name)[1][1:],  # Remove leading dot
+                                'upload_time': time.time()
+                            }
+                        )
 
-                    # Profile already excludes embedding from VoiceCloner.create_voice_profile()
-                    logger.info(f"Voice profile created: {profile['profile_id']}")
+                        # Profile already excludes embedding from VoiceCloner.create_voice_profile()
+                        logger.info(f"Voice profile created: {profile['profile_id']}")
 
-                    return jsonify({
-                        'status': 'success',
-                        **profile
-                    }), 201
+                        return jsonify({
+                            'status': 'success',
+                            **profile
+                        }), 201
+
+                    except (RuntimeError, ValueError, OSError) as e:
+                        # Catch decoding/parsing errors from torchaudio/librosa/AudioProcessor/soundfile
+                        error_str = str(e).lower()
+                        is_audio_error = any(keyword in error_str for keyword in [
+                            'decode', 'format', 'codec', 'unsupported', 'invalid', 'corrupt',
+                            'read', 'parse', 'libsndfile', 'audio', 'sox', 'ffmpeg'
+                        ])
+
+                        # Also check for soundfile.LibsndfileError if available
+                        is_soundfile_error = SOUNDFILE_AVAILABLE and soundfile and hasattr(soundfile, 'LibsndfileError') and isinstance(e, soundfile.LibsndfileError)
+
+                        if is_audio_error or is_soundfile_error:
+                            logger.warning(f"Audio format/decoding error: {e}")
+                            return jsonify({
+                                'error': 'Invalid audio format',
+                                'error_code': 'audio_decoding_failed',
+                                'message': 'Unable to decode audio file. Please provide a valid audio file.',
+                                'details': str(e) if current_app.debug else None
+                            }), 400
+                        # Re-raise if not a decoding error
+                        raise
 
                 finally:
                     # Clean up temporary file
@@ -974,6 +1048,11 @@ def get_voice_profile(profile_id: str):
 
     try:
         profile = voice_cloner.load_voice_profile(profile_id)
+
+        # COMMENT 2 FIX: Handle None return for missing profiles (MockVoiceCloner compatibility)
+        if profile is None:
+            return jsonify({'error': 'Profile not found'}), 404
+
         # Remove embedding from response
         response_profile = {k: v for k, v in profile.items() if k != 'embedding'}
 
@@ -1051,21 +1130,7 @@ def convert_song():
             }
         }
     """
-    if not TORCH_AVAILABLE:
-        return jsonify({
-            'error': 'Voice conversion service unavailable',
-            'message': 'PyTorch not installed'
-        }), 503
-
-    # Get singing conversion pipeline from app context
-    pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
-    if not pipeline:
-        return jsonify({
-            'error': 'Voice conversion service unavailable',
-            'message': 'Singing conversion pipeline not initialized'
-        }), 503
-
-    # Check for song file
+    # Check for song file first (basic input validation)
     if 'song' not in request.files:
         return jsonify({'error': 'No song file provided'}), 400
 
@@ -1073,10 +1138,22 @@ def convert_song():
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
 
+    # Validate file type
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Invalid file format. Allowed: WAV, MP3, FLAC, OGG, M4A'}), 400
+
     # Get required profile_id
     profile_id = request.form.get('profile_id')
     if not profile_id:
         return jsonify({'error': 'profile_id is required'}), 400
+
+    # Check pipeline availability AFTER validating inputs
+    pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
+    if not pipeline:
+        return jsonify({
+            'error': 'Voice conversion service unavailable',
+            'message': 'Singing conversion pipeline not initialized'
+        }), 503
 
     # Get optional parameters
     try:
@@ -1090,8 +1167,8 @@ def convert_song():
     if not (0.0 <= vocal_volume <= 2.0) or not (0.0 <= instrumental_volume <= 2.0):
         return jsonify({'error': 'Volume must be between 0.0 and 2.0'}), 400
 
-    if file and allowed_file(file.filename):
-        try:
+    # Process file (already validated above)
+    try:
             # Save to temporary file
             secure_name = secure_filename(file.filename)
             if not secure_name:
@@ -1119,72 +1196,31 @@ def convert_song():
                     sample_rate = result['sample_rate']
                     mixed_audio = result['mixed_audio']
 
-                    # Encode mixed audio as WAV
+                    # Encode mixed audio as WAV using wave module (torchaudio.save to BytesIO is unsupported)
+                    import wave
                     mixed_buffer = io.BytesIO()
-                    if TORCHAUDIO_AVAILABLE:
-                        try:
-                            # Convert to tensor if needed
-                            if isinstance(mixed_audio, np.ndarray):
-                                mixed_tensor = torch.from_numpy(mixed_audio.astype(np.float32))
-                            else:
-                                mixed_tensor = mixed_audio
+                    with wave.open(mixed_buffer, 'wb') as wav_file:
+                        # Determine number of channels
+                        if mixed_audio.ndim == 1:
+                            n_channels = 1
+                            audio_data = mixed_audio
+                        elif mixed_audio.shape[1] == 2:  # (T, 2) format
+                            n_channels = 2
+                            audio_data = mixed_audio
+                        elif mixed_audio.shape[0] == 2:  # (2, T) format
+                            n_channels = 2
+                            audio_data = mixed_audio.T
+                        else:
+                            n_channels = 1
+                            audio_data = mixed_audio.flatten()
 
-                            # Ensure correct shape for torchaudio.save: (channels, samples)
-                            if mixed_tensor.ndim == 1:
-                                mixed_tensor = mixed_tensor.unsqueeze(0)
-                            elif mixed_tensor.ndim == 2 and mixed_tensor.shape[1] == 2:
-                                # Convert from (T, 2) to (2, T)
-                                mixed_tensor = mixed_tensor.T
-
-                            torchaudio.save(mixed_buffer, mixed_tensor, sample_rate, format='wav')
-                            logger.debug("Encoded mixed audio using torchaudio")
-                        except Exception as e:
-                            logger.warning(f"torchaudio encoding failed: {e}, using wave module")
-                            # Fallback to wave module
-                            import wave
-                            mixed_buffer = io.BytesIO()
-                            with wave.open(mixed_buffer, 'wb') as wav_file:
-                                # Determine number of channels
-                                if mixed_audio.ndim == 1:
-                                    n_channels = 1
-                                    audio_data = mixed_audio
-                                elif mixed_audio.shape[1] == 2:  # (T, 2) format
-                                    n_channels = 2
-                                    audio_data = mixed_audio
-                                elif mixed_audio.shape[0] == 2:  # (2, T) format
-                                    n_channels = 2
-                                    audio_data = mixed_audio.T
-
-                                wav_file.setnchannels(n_channels)
-                                wav_file.setsampwidth(2)  # 16-bit
-                                wav_file.setframerate(sample_rate)
-                                # Convert to int16
-                                audio_int16 = (audio_data * 32767).astype(np.int16)
-                                wav_file.writeframes(audio_int16.tobytes())
-                    else:
-                        # Fallback to wave module
-                        import wave
-                        with wave.open(mixed_buffer, 'wb') as wav_file:
-                            # Determine number of channels
-                            if mixed_audio.ndim == 1:
-                                n_channels = 1
-                                audio_data = mixed_audio
-                            elif mixed_audio.shape[1] == 2:  # (T, 2) format
-                                n_channels = 2
-                                audio_data = mixed_audio
-                            elif mixed_audio.shape[0] == 2:  # (2, T) format
-                                n_channels = 2
-                                audio_data = mixed_audio.T
-                            else:
-                                n_channels = 1
-                                audio_data = mixed_audio.flatten()
-
-                            wav_file.setnchannels(n_channels)
-                            wav_file.setsampwidth(2)  # 16-bit
-                            wav_file.setframerate(sample_rate)
-                            # Convert to int16
-                            audio_int16 = (audio_data * 32767).astype(np.int16)
-                            wav_file.writeframes(audio_int16.tobytes())
+                        wav_file.setnchannels(n_channels)
+                        wav_file.setsampwidth(2)  # 16-bit
+                        wav_file.setframerate(sample_rate)
+                        # Clip to prevent wrap-around artifacts, then convert to int16
+                        audio_data = np.clip(audio_data, -1.0, 1.0)
+                        audio_int16 = (audio_data * 32767).astype(np.int16)
+                        wav_file.writeframes(audio_int16.tobytes())
 
                     mixed_buffer.seek(0)
                     mixed_audio_b64 = base64.b64encode(mixed_buffer.read()).decode('utf-8')
@@ -1201,131 +1237,57 @@ def convert_song():
 
                     # Add stems if requested and available
                     if return_stems and result.get('vocals') is not None:
-                        # Encode vocals stem as WAV
-                        vocals_buffer = io.BytesIO()
+                        # Encode vocals stem as WAV using wave module (torchaudio.save to BytesIO is unsupported)
                         vocals = result['vocals']
+                        vocals_buffer = io.BytesIO()
+                        with wave.open(vocals_buffer, 'wb') as wav_file:
+                            if vocals.ndim == 1:
+                                n_channels = 1
+                                v_data = vocals
+                            elif vocals.shape[1] == 2:
+                                n_channels = 2
+                                v_data = vocals
+                            elif vocals.shape[0] == 2:
+                                n_channels = 2
+                                v_data = vocals.T
+                            else:
+                                n_channels = 1
+                                v_data = vocals.flatten()
 
-                        if TORCHAUDIO_AVAILABLE:
-                            try:
-                                if isinstance(vocals, np.ndarray):
-                                    vocals_tensor = torch.from_numpy(vocals.astype(np.float32))
-                                else:
-                                    vocals_tensor = vocals
-
-                                if vocals_tensor.ndim == 1:
-                                    vocals_tensor = vocals_tensor.unsqueeze(0)
-                                elif vocals_tensor.ndim == 2 and vocals_tensor.shape[1] == 2:
-                                    vocals_tensor = vocals_tensor.T
-
-                                torchaudio.save(vocals_buffer, vocals_tensor, sample_rate, format='wav')
-                            except Exception:
-                                # Wave fallback
-                                import wave
-                                vocals_buffer = io.BytesIO()
-                                with wave.open(vocals_buffer, 'wb') as wav_file:
-                                    if vocals.ndim == 1:
-                                        n_channels = 1
-                                        v_data = vocals
-                                    elif vocals.shape[1] == 2:
-                                        n_channels = 2
-                                        v_data = vocals
-                                    elif vocals.shape[0] == 2:
-                                        n_channels = 2
-                                        v_data = vocals.T
-                                    else:
-                                        n_channels = 1
-                                        v_data = vocals.flatten()
-
-                                    wav_file.setnchannels(n_channels)
-                                    wav_file.setsampwidth(2)
-                                    wav_file.setframerate(sample_rate)
-                                    audio_int16 = (v_data * 32767).astype(np.int16)
-                                    wav_file.writeframes(audio_int16.tobytes())
-                        else:
-                            import wave
-                            with wave.open(vocals_buffer, 'wb') as wav_file:
-                                if vocals.ndim == 1:
-                                    n_channels = 1
-                                    v_data = vocals
-                                elif vocals.shape[1] == 2:
-                                    n_channels = 2
-                                    v_data = vocals
-                                elif vocals.shape[0] == 2:
-                                    n_channels = 2
-                                    v_data = vocals.T
-                                else:
-                                    n_channels = 1
-                                    v_data = vocals.flatten()
-
-                                wav_file.setnchannels(n_channels)
-                                wav_file.setsampwidth(2)
-                                wav_file.setframerate(sample_rate)
-                                audio_int16 = (v_data * 32767).astype(np.int16)
-                                wav_file.writeframes(audio_int16.tobytes())
+                            wav_file.setnchannels(n_channels)
+                            wav_file.setsampwidth(2)
+                            wav_file.setframerate(sample_rate)
+                            # Clip vocals stem to prevent wrap-around artifacts
+                            v_data = np.clip(v_data, -1.0, 1.0)
+                            audio_int16 = (v_data * 32767).astype(np.int16)
+                            wav_file.writeframes(audio_int16.tobytes())
 
                         vocals_buffer.seek(0)
 
-                        # Encode instrumental stem as WAV
-                        instrumental_buffer = io.BytesIO()
+                        # Encode instrumental stem as WAV using wave module (torchaudio.save to BytesIO is unsupported)
                         instrumental = result['instrumental']
+                        instrumental_buffer = io.BytesIO()
+                        with wave.open(instrumental_buffer, 'wb') as wav_file:
+                            if instrumental.ndim == 1:
+                                n_channels = 1
+                                i_data = instrumental
+                            elif instrumental.shape[1] == 2:
+                                n_channels = 2
+                                i_data = instrumental
+                            elif instrumental.shape[0] == 2:
+                                n_channels = 2
+                                i_data = instrumental.T
+                            else:
+                                n_channels = 1
+                                i_data = instrumental.flatten()
 
-                        if TORCHAUDIO_AVAILABLE:
-                            try:
-                                if isinstance(instrumental, np.ndarray):
-                                    inst_tensor = torch.from_numpy(instrumental.astype(np.float32))
-                                else:
-                                    inst_tensor = instrumental
-
-                                if inst_tensor.ndim == 1:
-                                    inst_tensor = inst_tensor.unsqueeze(0)
-                                elif inst_tensor.ndim == 2 and inst_tensor.shape[1] == 2:
-                                    inst_tensor = inst_tensor.T
-
-                                torchaudio.save(instrumental_buffer, inst_tensor, sample_rate, format='wav')
-                            except Exception:
-                                # Wave fallback
-                                import wave
-                                instrumental_buffer = io.BytesIO()
-                                with wave.open(instrumental_buffer, 'wb') as wav_file:
-                                    if instrumental.ndim == 1:
-                                        n_channels = 1
-                                        i_data = instrumental
-                                    elif instrumental.shape[1] == 2:
-                                        n_channels = 2
-                                        i_data = instrumental
-                                    elif instrumental.shape[0] == 2:
-                                        n_channels = 2
-                                        i_data = instrumental.T
-                                    else:
-                                        n_channels = 1
-                                        i_data = instrumental.flatten()
-
-                                    wav_file.setnchannels(n_channels)
-                                    wav_file.setsampwidth(2)
-                                    wav_file.setframerate(sample_rate)
-                                    audio_int16 = (i_data * 32767).astype(np.int16)
-                                    wav_file.writeframes(audio_int16.tobytes())
-                        else:
-                            import wave
-                            with wave.open(instrumental_buffer, 'wb') as wav_file:
-                                if instrumental.ndim == 1:
-                                    n_channels = 1
-                                    i_data = instrumental
-                                elif instrumental.shape[1] == 2:
-                                    n_channels = 2
-                                    i_data = instrumental
-                                elif instrumental.shape[0] == 2:
-                                    n_channels = 2
-                                    i_data = instrumental.T
-                                else:
-                                    n_channels = 1
-                                    i_data = instrumental.flatten()
-
-                                wav_file.setnchannels(n_channels)
-                                wav_file.setsampwidth(2)
-                                wav_file.setframerate(sample_rate)
-                                audio_int16 = (i_data * 32767).astype(np.int16)
-                                wav_file.writeframes(audio_int16.tobytes())
+                            wav_file.setnchannels(n_channels)
+                            wav_file.setsampwidth(2)
+                            wav_file.setframerate(sample_rate)
+                            # Clip instrumental stem to prevent wrap-around artifacts
+                            i_data = np.clip(i_data, -1.0, 1.0)
+                            audio_int16 = (i_data * 32767).astype(np.int16)
+                            wav_file.writeframes(audio_int16.tobytes())
 
                         instrumental_buffer.seek(0)
 
@@ -1347,33 +1309,31 @@ def convert_song():
                     except Exception as e:
                         logger.warning(f"Failed to delete temp file: {e}")
 
-        except Exception as e:
-            logger.error(f"Song conversion error: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Song conversion error: {e}", exc_info=True)
 
-            # Provide specific error messages
-            error_message = str(e)
-            if 'profile' in error_message.lower() and 'not found' in error_message.lower():
-                return jsonify({
-                    'error': 'Voice profile not found',
-                    'message': f'Profile {profile_id} does not exist'
-                }), 404
-            elif 'separation' in error_message.lower():
-                return jsonify({
-                    'error': 'Vocal separation failed',
-                    'message': 'Failed to separate vocals from instrumental'
-                }), 500
-            elif 'conversion' in error_message.lower():
-                return jsonify({
-                    'error': 'Voice conversion failed',
-                    'message': 'Failed to convert vocals to target voice'
-                }), 500
-            else:
-                return jsonify({
-                    'error': 'Song conversion failed',
-                    'message': error_message if current_app.debug else 'Internal processing error'
-                }), 500
-    else:
-        return jsonify({'error': 'Invalid file format. Allowed: WAV, MP3, FLAC, OGG, M4A'}), 400
+        # Check for specific exception types first
+        if SINGING_CONVERSION_ERRORS_AVAILABLE and SeparationError and isinstance(e, SeparationError):
+            return jsonify({
+                'error': 'Vocal separation failed',
+                'message': str(e)
+            }), 500
+        elif SINGING_CONVERSION_ERRORS_AVAILABLE and ConversionError and isinstance(e, ConversionError):
+            return jsonify({
+                'error': 'Voice conversion failed',
+                'message': str(e)
+            }), 500
+        elif isinstance(e, FileNotFoundError):
+            return jsonify({
+                'error': 'Voice profile not found',
+                'message': f'Profile {profile_id} does not exist'
+            }), 404
+        else:
+            # Generic error fallback
+            return jsonify({
+                'error': 'Song conversion failed',
+                'message': str(e) if current_app.debug else 'Internal processing error'
+            }), 500
 
 
 @api_bp.route('/gpu_status', methods=['GET'])

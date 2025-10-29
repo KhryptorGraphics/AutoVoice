@@ -9,7 +9,7 @@
 #include <vector>
 
 // External kernel launchers from other files (updated to match actual signatures)
-void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output, float sample_rate);
+void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch, torch::Tensor& output_confidence, torch::Tensor& output_vibrato, float sample_rate, int frame_length, int hop_length, float fmin, float fmax, float threshold);
 void launch_spectrogram_computation(torch::Tensor& input, torch::Tensor& output, int n_fft, int hop_length, int win_length);
 
 // Helper function for checking CUDA errors
@@ -49,14 +49,46 @@ torch::Tensor pitch_shift_cuda(torch::Tensor audio, float shift_factor, int samp
 
     auto output = torch::zeros_like(audio);
 
-    // Use the existing pitch detection kernel (updated to use tensor signature)
-    launch_pitch_detection(audio, output, static_cast<float>(sample_rate));
+    // Use the enhanced pitch detection kernel which provides pitch, confidence and vibrato outputs
+    // Allocate output tensors for detection results. Use frame_length consistent with kernels (2048)
+    int frame_length = 2048;
+    int hop_length = 512; // default hop used across kernels; caller may vary
 
-    // Apply shift factor
-    output = output * shift_factor;
+    int n_samples = audio.size(0);
+    int n_frames = std::max<int>(0, (n_samples - frame_length) / hop_length + 1);
 
-    return output;
-}
+    auto options = audio.options();
+    torch::Tensor output_pitch = torch::zeros({n_frames}, options);
+    torch::Tensor output_confidence = torch::zeros({n_frames}, options);
+    torch::Tensor output_vibrato = torch::zeros({n_frames}, options);
+
+    // Use sensible defaults for fmin/fmax/threshold; these could be exposed via bindings later
+    float fmin = 80.0f;
+    float fmax = 1000.0f;
+    float threshold = 0.1f;
+
+    launch_pitch_detection(audio, output_pitch, output_confidence, output_vibrato, static_cast<float>(sample_rate), frame_length, hop_length, fmin, fmax, threshold);
+
+    // Apply shift factor to detected pitch contour as a placeholder for actual pitch shift algorithm
+    // Here we simply scale the detected pitch contour and reconstruct an output audio placeholder
+    // In production, output_pitch would inform a resynthesis algorithm
+    if (n_frames > 0) {
+        // Map per-frame pitch back to audio length simply by repeating frame values (placeholder)
+        for (int i = 0; i < n_frames; ++i) {
+            int start = i * hop_length;
+            int end = std::min(n_samples, start + hop_length);
+            float pitch_val = output_pitch[i].item<float>() * shift_factor;
+            for (int j = start; j < end; ++j) {
+                output[j] = output[j] + pitch_val * 0.0f; // placeholder: no real synthesis
+            }
+        }
+    }
+
+    // Return original audio scaled slightly as placeholder for shifted audio
+    output = audio * shift_factor;
+     
+     return output;
+ }
 
 // Time stretching placeholder
 torch::Tensor time_stretch_cuda(torch::Tensor audio, float stretch_factor) {

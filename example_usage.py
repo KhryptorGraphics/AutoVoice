@@ -215,6 +215,195 @@ def example_gpu_memory_management():
     gpu_manager.clear_cache()
     print("✓ GPU cache cleared")
 
+def example_voice_cloning():
+    """Example of creating voice profiles."""
+    print("\n" + "="*60)
+    print("EXAMPLE 5: Voice Cloning")
+    print("="*60)
+
+    try:
+        from auto_voice.inference import VoiceCloner
+
+        # Initialize cloner
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        cloner = VoiceCloner(device=device)
+        print(f"Using device: {device}")
+
+        # Create voice profile from audio sample
+        print("\nCreating voice profile...")
+        print("(Note: Provide a real audio file for actual usage)")
+
+        # Example profile structure (demonstration only)
+        print("\nVoice Profile Structure:")
+        print("-" * 40)
+        print("profile = cloner.create_voice_profile(")
+        print("    audio='my_voice.wav',")
+        print("    user_id='user123',")
+        print("    profile_name='My Singing Voice'")
+        print(")")
+        print("\nProfile contains:")
+        print("  • profile_id: Unique identifier (UUID)")
+        print("  • vocal_range: Min/max pitch in Hz and note names")
+        print("  • quality_metrics: SNR, quality score")
+        print("  • speaker_embedding: 256-dimensional vector")
+        print("  • audio_info: Duration, sample rate, format")
+
+        print("\n✓ Voice cloning example completed")
+
+    except ImportError as e:
+        print(f"⚠️  Voice cloning not available: {e}")
+        print("Install voice conversion dependencies to enable this feature")
+
+def example_song_conversion():
+    """Example of converting songs to target voice."""
+    print("\n" + "="*60)
+    print("EXAMPLE 6: Song Conversion")
+    print("="*60)
+
+    try:
+        from auto_voice.inference import SingingConversionPipeline
+
+        # Initialize pipeline
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        pipeline = SingingConversionPipeline(
+            device=device,
+            quality_preset='balanced'
+        )
+        print(f"Using device: {device}")
+        print(f"Quality preset: balanced")
+
+        # Conversion example
+        print("\nSong Conversion Process:")
+        print("-" * 40)
+        print("result = pipeline.convert_song(")
+        print("    song_path='song.mp3',")
+        print("    target_profile_id='550e8400-...',")
+        print("    vocal_volume=1.0,")
+        print("    instrumental_volume=0.9,")
+        print("    pitch_shift_semitones=0,")
+        print("    temperature=1.0,")
+        print("    return_stems=True")
+        print(")")
+
+        print("\nConversion Pipeline Stages:")
+        print("  1. Vocal Separation (0-25%): Demucs separates vocals from instrumental")
+        print("  2. Pitch Extraction (25-40%): Torchcrepe extracts F0 contour")
+        print("  3. Voice Conversion (40-80%): So-VITS-SVC converts to target voice")
+        print("  4. Audio Mixing (80-100%): Mix converted vocals with instrumental")
+
+        print("\nQuality Presets:")
+        print("  • fast: ~0.5x real-time (15-30s for 30s song)")
+        print("  • balanced: ~1x real-time (30-60s for 30s song)")
+        print("  • quality: ~2x real-time (60-120s for 30s song)")
+
+        print("\n✓ Song conversion example completed")
+
+    except ImportError as e:
+        print(f"⚠️  Song conversion not available: {e}")
+        print("Install voice conversion dependencies to enable this feature")
+
+def example_quality_evaluation():
+    """Example of evaluating voice conversion quality."""
+    print("\n" + "="*60)
+    print("EXAMPLE 7: Quality Evaluation")
+    print("="*60)
+
+    try:
+        from auto_voice.utils.quality_metrics import QualityMetricsAggregator
+
+        # Initialize metrics aggregator
+        metrics = QualityMetricsAggregator()
+        print("Quality Metrics Aggregator initialized")
+
+        print("\nQuality Metrics Overview:")
+        print("-" * 40)
+
+        print("\n1. Pitch Accuracy:")
+        print("   • RMSE (Hz): Root mean square error in Hz domain")
+        print("   • Target: < 10 Hz (imperceptible to listeners)")
+        print("   • RMSE (log2): Error in logarithmic scale")
+        print("   • Correlation: Pitch contour correlation (>0.9)")
+
+        print("\n2. Speaker Similarity:")
+        print("   • Cosine Similarity: Vector similarity of embeddings")
+        print("   • Target: > 0.85 (85% match)")
+        print("   • Embedding Distance: L2 distance")
+
+        print("\n3. Naturalness:")
+        print("   • Mel Cepstral Distortion (MCD): < 6.0 dB")
+        print("   • Spectral Distortion: Frequency domain error")
+        print("   • MOS Estimation: Mean Opinion Score")
+
+        print("\n4. Intelligibility:")
+        print("   • STOI: Short-Time Objective Intelligibility (>0.9)")
+        print("   • ESTOI: Extended STOI")
+        print("   • PESQ: Perceptual Evaluation of Speech Quality")
+
+        print("\nQuality Targets:")
+        print("-" * 40)
+        print("  Pitch RMSE (Hz)   : < 10.0 Hz")
+        print("  Speaker Similarity: > 0.85")
+        print("  MCD               : < 6.0 dB")
+        print("  STOI              : > 0.9")
+        print("  Overall Score     : > 0.75")
+
+        print("\n✓ Quality evaluation example completed")
+
+    except ImportError as e:
+        print(f"⚠️  Quality metrics not available: {e}")
+        print("Install quality evaluation dependencies to enable this feature")
+
+def example_batch_conversion():
+    """Example of batch song conversion."""
+    print("\n" + "="*60)
+    print("EXAMPLE 8: Batch Conversion")
+    print("="*60)
+
+    print("\nBatch Conversion Workflow:")
+    print("-" * 40)
+
+    print("\n1. Sequential Processing:")
+    print("   Convert songs one by one with progress tracking")
+    print("   • Lower memory usage")
+    print("   • Predictable resource consumption")
+    print("   • Recommended for single GPU")
+
+    print("\n2. Parallel Processing:")
+    print("   Convert multiple songs simultaneously")
+    print("   • Requires multiple GPUs or CPU")
+    print("   • Faster overall completion")
+    print("   • Higher memory usage")
+
+    print("\nBatch Configuration:")
+    print("-" * 40)
+    print("songs = [")
+    print("    {'filename': 'song1.mp3', 'pitch_shift': 0},")
+    print("    {'filename': 'song2.mp3', 'pitch_shift': -2},")
+    print("    {'filename': 'song3.mp3', 'vocal_volume': 1.2}")
+    print("]")
+
+    print("\nBatch Processing Example:")
+    print("-" * 40)
+    print("# Command-line batch conversion:")
+    print("python examples/demo_batch_conversion.py \\")
+    print("  --profile-id 550e8400-... \\")
+    print("  --songs-dir data/songs \\")
+    print("  --output-dir converted/ \\")
+    print("  --quality balanced")
+
+    print("\n# With metadata file:")
+    print("python examples/demo_batch_conversion.py \\")
+    print("  --metadata batch_config.json")
+
+    print("\nBatch Results:")
+    print("-" * 40)
+    print("  • Processing time statistics")
+    print("  • Average quality metrics")
+    print("  • Success/failure summary")
+    print("  • Per-song conversion details")
+
+    print("\n✓ Batch conversion example completed")
+
 def main():
     """Run all examples."""
     print("\n" + "#"*60)
@@ -222,11 +411,17 @@ def main():
     print("#"*60)
 
     try:
-        # Run examples
+        # Run TTS examples
         example_basic_synthesis()
         example_voice_analysis()
         example_configuration()
         example_gpu_memory_management()
+
+        # Run voice conversion examples
+        example_voice_cloning()
+        example_song_conversion()
+        example_quality_evaluation()
+        example_batch_conversion()
 
         print("\n" + "#"*60)
         print("# All examples completed successfully!")

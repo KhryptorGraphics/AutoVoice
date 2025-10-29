@@ -4,7 +4,7 @@ Flow Decoder for Singing Voice Conversion
 Implements normalizing flow with affine coupling layers for latent space modeling.
 """
 
-from typing import Optional, Union, Tuple
+from typing import Optional, Union, Tuple, Dict
 import logging
 
 import torch
@@ -89,8 +89,7 @@ class DDSConv(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        x_mask: torch.Tensor,
-        g: Optional[torch.Tensor] = None
+        x_mask: torch.Tensor
     ) -> torch.Tensor:
         """
         Forward pass through DDS conv stack.
@@ -98,15 +97,10 @@ class DDSConv(nn.Module):
         Args:
             x: Input [B, C, T]
             x_mask: Mask [B, 1, T]
-            g: Global conditioning [B, C, T]
 
         Returns:
             Output [B, C, T]
         """
-        # Add global conditioning
-        if g is not None:
-            x = x + g
-
         # Pass through conv stack with residual
         y = self.net(x * x_mask)
         return (x + y) * x_mask
@@ -327,3 +321,91 @@ class FlowDecoder(nn.Module):
         # AffineCouplingLayer doesn't use weight norm currently
         # This method is here for API consistency
         logger.info("Weight normalization removal called on FlowDecoder (no-op)")
+
+    def export_to_onnx(
+        self,
+        onnx_path: str,
+        opset_version: int = 17,
+        cond_channels: int = 704,
+        input_sample: Optional[Dict[str, torch.Tensor]] = None
+    ) -> str:
+        """
+        Export FlowDecoder to ONNX format with inverse=True frozen.
+
+        Creates a wrapper that always performs inverse inference (u -> z for generation).
+        The 'inverse' parameter is NOT exposed as an input; it's hardcoded to True.
+
+        Args:
+            onnx_path: Output path for ONNX model
+            opset_version: ONNX opset version
+            cond_channels: Conditioning dimension (content + pitch + speaker)
+            input_sample: Sample inputs dict with 'latent', 'mask', 'conditioning'
+                         If None, creates default sample (50 time steps)
+
+        Returns:
+            Path to exported ONNX model
+
+        Example:
+            >>> flow = FlowDecoder(in_channels=192, cond_channels=704)
+            >>> flow.export_to_onnx('flow_decoder.onnx', cond_channels=704)
+        """
+        self.eval()
+
+        # Create wrapper that freezes inverse=True
+        class FlowDecoderInverseWrapper(nn.Module):
+            def __init__(self, decoder):
+                super().__init__()
+                self.decoder = decoder
+
+            def forward(self, latent_input, mask, conditioning):
+                """Forward with inverse=True frozen internally."""
+                return self.decoder(latent_input, mask, cond=conditioning, inverse=True)
+
+        wrapper = FlowDecoderInverseWrapper(self)
+        wrapper.eval()
+
+        # Create default inputs if not provided
+        if input_sample is None:
+            batch_size, time_steps = 1, 50
+            latent_input = torch.randn(batch_size, self.in_channels, time_steps)
+            mask = torch.ones(batch_size, 1, time_steps)
+            conditioning = torch.randn(batch_size, cond_channels, time_steps)
+            input_sample = {
+                'latent': latent_input,
+                'mask': mask,
+                'conditioning': conditioning
+            }
+
+        device = next(self.parameters()).device
+        latent_input = input_sample['latent'].to(device)
+        mask = input_sample['mask'].to(device)
+        conditioning = input_sample['conditioning'].to(device)
+
+        # Define dynamic axes (no 'inverse' in input_names or dynamic_axes)
+        dynamic_axes = {
+            'latent_input': {0: 'batch_size', 2: 'time_steps'},
+            'mask': {0: 'batch_size', 2: 'time_steps'},
+            'conditioning': {0: 'batch_size', 2: 'time_steps'},
+            'output_latent': {0: 'batch_size', 2: 'time_steps'}
+        }
+
+        logger.info(f"Exporting FlowDecoder to ONNX (inverse=True frozen): {onnx_path}")
+
+        try:
+            torch.onnx.export(
+                wrapper,
+                (latent_input, mask, conditioning),
+                onnx_path,
+                export_params=True,
+                verbose=False,
+                opset_version=opset_version,
+                do_constant_folding=True,
+                input_names=['latent_input', 'mask', 'conditioning'],
+                output_names=['output_latent'],
+                dynamic_axes=dynamic_axes
+            )
+            logger.info(f"FlowDecoder exported successfully to {onnx_path}")
+            return onnx_path
+        except Exception as e:
+            logger.error(f"FlowDecoder ONNX export failed: {e}")
+            raise

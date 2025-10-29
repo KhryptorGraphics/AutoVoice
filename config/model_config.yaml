@@ -70,6 +70,59 @@ pitch_corrector:
   real_time: true
   latency_ms: 10
 
+# TensorRT Optimization Configuration for Voice Conversion
+tensorrt:
+  voice_conversion:
+    enabled: true
+    precision: "fp16"  # Options: fp32, fp16, int8
+    workspace_mb: 2048  # 2GB workspace for optimization
+    # Dynamic shape ranges for variable-length inputs
+    dynamic_shapes:
+      content_encoder:
+        input_audio:
+          min: [1, 8000]      # 0.5s at 16kHz
+          opt: [1, 48000]     # 3s at 16kHz
+          max: [1, 160000]    # 10s at 16kHz
+      pitch_encoder:
+        f0_input:
+          min: [1, 25]        # 0.5s at 50Hz F0 rate
+          opt: [1, 150]       # 3s at 50Hz
+          max: [1, 500]       # 10s at 50Hz
+        voiced_mask:
+          min: [1, 25]
+          opt: [1, 150]
+          max: [1, 500]
+      flow_decoder:
+        latent_input:
+          min: [1, 192, 25]   # latent_dim=192
+          opt: [1, 192, 150]
+          max: [1, 192, 500]
+        mask:
+          min: [1, 1, 25]
+          opt: [1, 1, 150]
+          max: [1, 1, 500]
+        conditioning:
+          min: [1, 704, 25]   # cond_dim=704 (content+pitch+speaker)
+          opt: [1, 704, 150]
+          max: [1, 704, 500]
+      mel_projection:
+        latent_input:
+          min: [1, 192, 25]
+          opt: [1, 192, 150]
+          max: [1, 192, 500]
+    # INT8 calibration settings
+    int8_calibration:
+      enabled: false
+      cache_file: "./tensorrt_engines/calibration.cache"
+      num_samples: 500
+      dataset_path: "./data/calibration_samples.npz"
+    # Optimization flags
+    optimization:
+      strict_types: true
+      prefer_precision_constraints: true
+      builder_optimization_level: 5
+      disable_timing_cache: false
+
 # Training Parameters
 training:
   batch_size: 16  # Adjust based on GPU memory
@@ -342,10 +395,16 @@ voice_conversion_training:
       enabled: true
       snr_db_range: [20, 40]  # 20-40 dB SNR
 
-    # Vocal tract length perturbation
+    # Vocal tract length perturbation (VTLP)
+    # Simulates different vocal tract lengths by warping mel-spectrogram frequency axis
+    # Useful for data augmentation to improve model robustness to speaker variations
     vtlp:
-      enabled: true
-      alpha_range: [0.9, 1.1]  # ±10% warping
+      enabled: true  # Enable/disable VTLP augmentation
+      alpha_range: [0.9, 1.1]  # Warping factor range (0.9 = 10% compression, 1.1 = 10% expansion)
+                               # Values < 1.0: Simulate shorter vocal tract (higher formants)
+                               # Values > 1.0: Simulate longer vocal tract (lower formants)
+                               # Recommended range: [0.9, 1.1] for singing voice conversion
+                               # More aggressive: [0.85, 1.15] for broader speaker diversity
 
   # Checkpoint settings
   checkpoint:

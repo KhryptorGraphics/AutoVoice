@@ -66,7 +66,8 @@ class PairedVoiceDataset(torch.utils.data.Dataset):
         augmentation_prob: float = 0.5,
         cache_size: int = 500,
         device: Optional[str] = None,
-        gpu_manager: Optional[Any] = None
+        gpu_manager: Optional[Any] = None,
+        pitch_time_stretch_strict: bool = False
     ):
         """Initialize PairedVoiceDataset.
 
@@ -94,6 +95,7 @@ class PairedVoiceDataset(torch.utils.data.Dataset):
         self.cache_size = cache_size
         self.device = device
         self.gpu_manager = gpu_manager
+        self.pitch_time_stretch_strict = pitch_time_stretch_strict
 
         # Initialize audio processor
         self.audio_processor = AudioProcessor(self.audio_config)
@@ -122,6 +124,10 @@ class PairedVoiceDataset(torch.utils.data.Dataset):
         # Initialize cache
         self.cache: Dict[int, Dict[str, torch.Tensor]] = {}
         self.cache_lock = threading.RLock()
+
+        # Log strict mode status
+        if self.pitch_time_stretch_strict:
+            logger.info("Strict pitch-preserving time stretch mode is ACTIVE - will require pyrubberband")
 
         logger.info(
             f"Initialized PairedVoiceDataset with {len(self.pairs)} pairs, "
@@ -346,8 +352,9 @@ class PairedVoiceDataset(torch.utils.data.Dataset):
         if not self.transforms:
             return data
 
-        # Apply each transform with configured probability
+        # Track which type of data was modified
         audio_modified = False
+        mel_modified = False
 
         for transform in self.transforms:
             # Apply transform probabilistically using augmentation_prob
@@ -358,10 +365,25 @@ class PairedVoiceDataset(torch.utils.data.Dataset):
                     'audio_config': self.audio_config,
                     'sample_rate': self.audio_config.sample_rate
                 }
-                data = transform(data_with_config)
-                audio_modified = True
 
-        # If audio was modified, recompute mel-spectrograms and features
+                # Detect transform and pass strict flag for pitch_preserving_time_stretch
+                if hasattr(transform, '__name__') and transform.__name__ == 'pitch_preserving_time_stretch':
+                    data = transform(data_with_config, strict=self.pitch_time_stretch_strict)
+                else:
+                    data = transform(data_with_config)
+
+                # Detect which type of data was modified based on transform method name
+                transform_name = transform.__name__ if hasattr(transform, '__name__') else str(transform)
+
+                # Audio-modifying transforms
+                if transform_name in ['pitch_preserving_time_stretch', 'noise_injection_snr']:
+                    audio_modified = True
+                # Mel-only transforms
+                elif transform_name in ['formant_shift', 'vocal_tract_length_perturbation']:
+                    mel_modified = True
+
+        # Only recompute features if audio was modified
+        # Mel-only transforms directly modify mel spectrograms and should NOT trigger recomputation
         if audio_modified:
             data = self._recompute_features(data)
 
@@ -538,24 +560,37 @@ class SingingAugmentation:
     @staticmethod
     def pitch_preserving_time_stretch(
         data: Dict[str, torch.Tensor],
-        rate_range: Tuple[float, float] = (0.9, 1.1)
+        rate_range: Tuple[float, float] = (0.9, 1.1),
+        strict: bool = False
     ) -> Dict[str, torch.Tensor]:
         """Apply time stretch while preserving pitch.
 
         Essential for singing voice augmentation where pitch must be preserved.
-        Uses pyrubberband if available, otherwise falls back to librosa phase vocoder.
+        Uses pyrubberband if available, otherwise falls back to librosa phase vocoder
+        which may alter pitch slightly.
 
         Args:
             data: Sample dict with audio and features (must include 'sample_rate')
             rate_range: Time stretch rate range (e.g., (0.9, 1.1) for ±10%)
+            strict: If True, raise exception when pyrubberband is unavailable (default: False)
 
         Returns:
             Augmented sample dict
+
+        Raises:
+            RuntimeError: If strict=True and pyrubberband is not available
         """
         rate = random.uniform(*rate_range)
 
         if abs(rate - 1.0) < 0.01:  # Skip if rate very close to 1.0
             return data
+
+        # Check strict mode
+        if strict and not PYRUBBERBAND_AVAILABLE:
+            raise RuntimeError(
+                "pitch_preserving_time_stretch requires pyrubberband in strict mode. "
+                "Install with: pip install pyrubberband"
+            )
 
         # Get sample rate from data dict (passed by dataset)
         sample_rate = data.get('sample_rate', 44100)
@@ -565,7 +600,7 @@ class SingingAugmentation:
         if PYRUBBERBAND_AVAILABLE:
             source_audio_stretched = pyrb.time_stretch(source_audio_np, sample_rate, rate)
         else:
-            # Fallback to librosa phase vocoder
+            # Fallback to librosa phase vocoder (may alter pitch slightly)
             logger.warning("pyrubberband not available, using librosa phase vocoder (may change pitch)")
             source_audio_stretched = librosa.effects.time_stretch(source_audio_np, rate=rate)
 
@@ -613,34 +648,33 @@ class SingingAugmentation:
         source_mel = data['source_mel'].numpy()
         # Simple frequency axis warping (approximate formant shift)
         shift_factor = 2 ** (n_steps / 12)
-        n_mels, mel_len = source_mel.shape[1], source_mel.shape[0]
+        n_mels = source_mel.shape[1]
+        source_mel_len = data['lengths'].item() if 'lengths' in data else source_mel.shape[0]
 
-        # Create warped frequency indices
-        freq_indices = np.arange(n_mels) * shift_factor
-        freq_indices = np.clip(freq_indices, 0, n_mels - 1)
+        # Compute warped bin coordinates once for all frequencies
+        freq = np.arange(n_mels) * shift_factor
+        freq = np.clip(freq, 0, n_mels - 1)
 
-        # Interpolate mel values
-        source_mel_shifted = np.zeros_like(source_mel)
-        for t in range(mel_len):
-            source_mel_shifted[t] = np.interp(
-                np.arange(n_mels),
-                freq_indices,
-                source_mel[t]
-            )
+        # Build vectorized interpolation weights
+        i0 = np.floor(freq).astype(int)
+        i1 = np.clip(i0 + 1, 0, n_mels - 1)
+        w = freq - i0  # Interpolation weights
+
+        # Slice source mel to actual length and apply vectorized interpolation
+        source_mel_actual = source_mel[:source_mel_len]  # [mel_len, n_mels]
+        source_mel_shifted = (1 - w) * source_mel_actual[:, i0] + w * source_mel_actual[:, i1]
 
         # Apply to target mel
         target_mel = data['target_mel'].numpy()
-        target_mel_shifted = np.zeros_like(target_mel)
-        for t in range(len(target_mel)):
-            target_mel_shifted[t] = np.interp(
-                np.arange(n_mels),
-                freq_indices,
-                target_mel[t]
-            )
+        target_mel_len = data['lengths'].item() if 'lengths' in data else target_mel.shape[0]
 
-        # Update data
-        data['source_mel'] = torch.from_numpy(source_mel_shifted).float()
-        data['target_mel'] = torch.from_numpy(target_mel_shifted).float()
+        # Slice target mel to actual length and apply same vectorized interpolation
+        target_mel_actual = target_mel[:target_mel_len]  # [mel_len, n_mels]
+        target_mel_shifted = (1 - w) * target_mel_actual[:, i0] + w * target_mel_actual[:, i1]
+
+        # Update data - preserve dtype and ensure contiguity
+        data['source_mel'] = torch.from_numpy(np.ascontiguousarray(source_mel_shifted)).float()
+        data['target_mel'] = torch.from_numpy(np.ascontiguousarray(target_mel_shifted)).float()
 
         # F0 and audio remain unchanged (only timbre changes)
 
@@ -706,26 +740,28 @@ class SingingAugmentation:
         # Apply to source mel
         source_mel = data['source_mel'].numpy()
         n_mels = source_mel.shape[1]
+        source_mel_len = data['lengths'].item() if 'lengths' in data else source_mel.shape[0]
 
         # Create warped frequency bins
         original_bins = np.arange(n_mels)
         warped_bins = original_bins * alpha
         warped_bins = np.clip(warped_bins, 0, n_mels - 1)
 
-        # Interpolate
+        # Interpolate - only process up to actual mel length
         source_mel_warped = np.zeros_like(source_mel)
-        for t in range(len(source_mel)):
+        for t in range(min(source_mel_len, source_mel.shape[0])):
             source_mel_warped[t] = np.interp(original_bins, warped_bins, source_mel[t])
 
         # Apply to target mel
         target_mel = data['target_mel'].numpy()
+        target_mel_len = data['lengths'].item() if 'lengths' in data else target_mel.shape[0]
         target_mel_warped = np.zeros_like(target_mel)
-        for t in range(len(target_mel)):
+        for t in range(min(target_mel_len, target_mel.shape[0])):
             target_mel_warped[t] = np.interp(original_bins, warped_bins, target_mel[t])
 
-        # Update data
-        data['source_mel'] = torch.from_numpy(source_mel_warped).float()
-        data['target_mel'] = torch.from_numpy(target_mel_warped).float()
+        # Update data - preserve dtype and ensure contiguity
+        data['source_mel'] = torch.from_numpy(np.ascontiguousarray(source_mel_warped)).float()
+        data['target_mel'] = torch.from_numpy(np.ascontiguousarray(target_mel_warped)).float()
 
         return data
 
@@ -786,10 +822,11 @@ class PairedVoiceCollator:
 
         # Fill tensors
         for i, item in enumerate(batch):
-            # Audio
-            audio_len = item['source_audio'].size(0)
-            source_audio[i, :audio_len] = item['source_audio']
-            target_audio[i, :audio_len] = item['target_audio']
+            # Audio - use actual target audio length independently
+            source_audio_len = item['source_audio'].size(0)
+            target_audio_len = item['target_audio'].size(0)
+            source_audio[i, :source_audio_len] = item['source_audio']
+            target_audio[i, :target_audio_len] = item['target_audio']
 
             # Mel
             mel_len = item['source_mel'].size(0)
@@ -890,6 +927,8 @@ def create_paired_train_val_datasets(
     audio_config: Optional[AudioConfig] = None,
     train_transforms: Optional[List[Callable]] = None,
     augmentation_prob: float = 0.5,
+    pitch_time_stretch_strict: bool = False,
+    enable_vtlp: bool = False,
     **dataset_kwargs
 ) -> Tuple[PairedVoiceDataset, PairedVoiceDataset]:
     """Create training and validation datasets from separate metadata files.
@@ -901,6 +940,7 @@ def create_paired_train_val_datasets(
         audio_config: Audio processing configuration
         train_transforms: Augmentation transforms for training (default: standard augmentations)
         augmentation_prob: Probability of applying each transform (default: 0.5)
+        enable_vtlp: Enable Vocal Tract Length Perturbation augmentation (default: False)
         **dataset_kwargs: Additional arguments for PairedVoiceDataset
 
     Returns:
@@ -914,6 +954,10 @@ def create_paired_train_val_datasets(
             SingingAugmentation.noise_injection_snr
         ]
 
+        # Add VTLP augmentation if enabled
+        if enable_vtlp:
+            train_transforms.append(SingingAugmentation.vocal_tract_length_perturbation)
+
     # Create training dataset with augmentation
     train_dataset = PairedVoiceDataset(
         data_dir=data_dir,
@@ -921,6 +965,7 @@ def create_paired_train_val_datasets(
         audio_config=audio_config,
         transforms=train_transforms,
         augmentation_prob=augmentation_prob,
+        pitch_time_stretch_strict=pitch_time_stretch_strict,
         **dataset_kwargs
     )
 
@@ -931,6 +976,7 @@ def create_paired_train_val_datasets(
         audio_config=audio_config,
         transforms=None,  # No augmentation for validation
         augmentation_prob=0.0,  # Ensure no augmentation for validation
+        pitch_time_stretch_strict=False,  # Strict mode off for validation
         **dataset_kwargs
     )
 

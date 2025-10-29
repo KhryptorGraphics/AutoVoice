@@ -4,16 +4,38 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, List, Tuple
+from typing import Dict, Any, Optional, Union, List, Tuple, TYPE_CHECKING, Protocol
 
+if TYPE_CHECKING:
+    from ..utils.gpu_manager import GPUManager
+    import yaml as _yaml
+    import torchcrepe as _torchcrepe
+    import librosa as _librosa
+else:
+    # Runtime imports with fallbacks
+    try:
+        import yaml
+    except ImportError:
+        yaml = None  # type: ignore
+
+    try:
+        import torchcrepe
+    except ImportError:
+        torchcrepe = None  # type: ignore
+
+    try:
+        import librosa
+    except ImportError:
+        librosa = None  # type: ignore
+
+# NumPy and PyTorch availability checks
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
-    np = None
+    np = None  # type: ignore
 
 try:
     import torch
@@ -21,18 +43,12 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+    torch = None  # type: ignore
+    F = None  # type: ignore
 
-try:
-    import torchcrepe
-    TORCHCREPE_AVAILABLE = True
-except ImportError:
-    TORCHCREPE_AVAILABLE = False
-
-try:
-    import librosa
-    LIBROSA_AVAILABLE = True
-except ImportError:
-    LIBROSA_AVAILABLE = False
+# Feature availability flags
+TORCHCREPE_AVAILABLE = torchcrepe is not None
+LIBROSA_AVAILABLE = librosa is not None
 
 from .processor import AudioProcessor
 
@@ -82,7 +98,7 @@ class SingingPitchExtractor:
         self,
         config: Optional[Dict[str, Any]] = None,
         device: Optional[str] = None,
-        gpu_manager: Optional[Any] = None
+        gpu_manager: Optional["GPUManager"] = None
     ):
         """Initialize SingingPitchExtractor
 
@@ -127,6 +143,8 @@ class SingingPitchExtractor:
         self.batch_size = self.config.get('batch_size', 2048)
         self.decoder = self.config.get('decoder', 'viterbi')
         self.confidence_threshold = self.config.get('confidence_threshold', 0.21)
+        # COMMENT 3 FIX: Add dedicated cuda_cmnd_threshold instead of reusing confidence_threshold
+        self.cuda_cmnd_threshold = self.config.get('cuda_cmnd_threshold', 0.15)
         self.median_filter_width = self.config.get('median_filter_width', 3)
         self.mean_filter_width = self.config.get('mean_filter_width', 3)
 
@@ -149,6 +167,8 @@ class SingingPitchExtractor:
         self.gpu_acceleration = self.config.get('gpu_acceleration', True)
         self.mixed_precision = self.config.get('mixed_precision', True)
         self.use_cuda_kernel_fallback = self.config.get('use_cuda_kernel_fallback', True)
+        # COMMENT 5 FIX: Add use_gpu_vibrato_analysis flag
+        self.use_gpu_vibrato_analysis = self.config.get('use_gpu_vibrato_analysis', False)
 
         self.logger.info(
             f"SingingPitchExtractor initialized: model={self.model}, device={self.device}, "
@@ -242,6 +262,8 @@ class SingingPitchExtractor:
             'batch_size': 2048,
             'decoder': 'viterbi',
             'confidence_threshold': 0.21,
+            # COMMENT 3 FIX: Add cuda_cmnd_threshold default
+            'cuda_cmnd_threshold': 0.15,
             'median_filter_width': 3,
             'mean_filter_width': 3,
             'vibrato_rate_range': [4.0, 8.0],
@@ -255,7 +277,9 @@ class SingingPitchExtractor:
             'realtime_smoothing_window': 5,
             'gpu_acceleration': True,
             'mixed_precision': True,
-            'use_cuda_kernel_fallback': True
+            'use_cuda_kernel_fallback': True,
+            # COMMENT 5 FIX: Add use_gpu_vibrato_analysis default
+            'use_gpu_vibrato_analysis': False
         }
 
         # Load from YAML if available
@@ -299,11 +323,11 @@ class SingingPitchExtractor:
 
     def extract_f0_contour(
         self,
-        audio: Union[torch.Tensor, np.ndarray, str],
+        audio: Union["torch.Tensor", "np.ndarray", str],
         sample_rate: Optional[int] = None,
         return_confidence: bool = True,
         return_times: bool = True
-    ) -> Dict[str, Union[torch.Tensor, np.ndarray]]:
+    ) -> Dict[str, Any]:
         """Extract F0 contour from audio using torchcrepe
 
         Args:
@@ -397,8 +421,10 @@ class SingingPitchExtractor:
                 if voiced.dim() > 1:
                     voiced = voiced.squeeze(0)
 
-                # Detect vibrato
-                vibrato_data = self._detect_vibrato(pitch, voiced, sample_rate, hop_length)
+                # COMMENT 5 FIX: Detect vibrato with GPU kernel if enabled
+                vibrato_data = self._detect_vibrato_with_gpu_fallback(
+                    pitch, voiced, sample_rate, hop_length
+                )
 
                 # Ensure all tensors are 1D and convert to numpy
                 pitch_np = pitch.squeeze().cpu().numpy() if isinstance(pitch, torch.Tensor) else pitch
@@ -494,6 +520,79 @@ class SingingPitchExtractor:
         result = windows.mean(dim=1)
 
         return result
+
+    def _detect_vibrato_with_gpu_fallback(
+        self,
+        f0: torch.Tensor,
+        voiced: torch.Tensor,
+        sample_rate: int,
+        hop_length: int
+    ) -> Dict[str, Any]:
+        """Detect vibrato with GPU kernel fallback to CPU implementation
+
+        COMMENT 5 FIX: Wrapper that tries GPU vibrato analysis kernel first,
+        falls back to CPU _detect_vibrato on failure or if disabled.
+
+        Args:
+            f0: Pitch contour in Hz
+            voiced: Voiced/unvoiced mask
+            sample_rate: Sample rate
+            hop_length: Hop length in samples
+
+        Returns:
+            Dictionary with vibrato parameters
+        """
+        # COMMENT 5 FIX: Try GPU vibrato analysis if enabled
+        if self.use_gpu_vibrato_analysis and self.device != 'cpu':
+            try:
+                _ck = self._load_cuda_extension()
+                if _ck is not None and hasattr(_ck, 'launch_vibrato_analysis'):
+                    # Ensure tensors are on GPU
+                    if isinstance(f0, torch.Tensor):
+                        f0_gpu = f0.to(self.device) if f0.device.type != 'cuda' else f0
+                    else:
+                        f0_gpu = torch.from_numpy(f0).to(self.device)
+
+                    # Prepare output tensors
+                    n_frames = len(f0_gpu)
+                    vibrato_rate = torch.zeros(n_frames, device=self.device)
+                    vibrato_depth = torch.zeros(n_frames, device=self.device)
+
+                    # Call GPU kernel
+                    _ck.launch_vibrato_analysis(
+                        f0_gpu, vibrato_rate, vibrato_depth,
+                        hop_length, float(sample_rate)
+                    )
+
+                    # Process results
+                    rate_vals = vibrato_rate.cpu().numpy()
+                    depth_vals = vibrato_depth.cpu().numpy()
+
+                    # Filter valid vibrato detections
+                    valid_mask = (rate_vals > 0) & (depth_vals >= self.vibrato_min_depth_cents)
+                    if np.any(valid_mask):
+                        mean_rate = float(np.mean(rate_vals[valid_mask]))
+                        mean_depth = float(np.mean(depth_vals[valid_mask]))
+
+                        return {
+                            'has_vibrato': True,
+                            'rate_hz': mean_rate,
+                            'depth_cents': mean_depth,
+                            'segments': []  # GPU kernel doesn't provide segments
+                        }
+                    else:
+                        return {
+                            'has_vibrato': False,
+                            'rate_hz': 0.0,
+                            'depth_cents': 0.0,
+                            'segments': []
+                        }
+
+            except Exception as e:
+                self.logger.debug(f"GPU vibrato analysis failed, falling back to CPU: {e}")
+
+        # COMMENT 5 FIX: Fallback to CPU implementation
+        return self._detect_vibrato(f0, voiced, sample_rate, hop_length)
 
     def _detect_vibrato(
         self,
@@ -640,7 +739,10 @@ class SingingPitchExtractor:
             }
 
     def _moving_average(self, x: np.ndarray, window: int) -> np.ndarray:
-        """Compute moving average with NaN handling using efficient convolution"""
+        """Compute moving average with NaN handling using efficient convolution
+
+        COMMENT 1 FIX: Use NumPy-only implementation without SciPy dependency
+        """
         if window < 2:
             return x.copy()
 
@@ -653,10 +755,10 @@ class SingingPitchExtractor:
         # Create uniform kernel
         kernel = np.ones(window) / window
 
+        # COMMENT 1 FIX: Use np.convolve instead of scipy.signal.convolve
         # Convolve both the data and the mask
-        from scipy.signal import convolve
-        sum_values = convolve(x_filled, kernel, mode='same')
-        sum_weights = convolve(valid_mask.astype(float), kernel, mode='same')
+        sum_values = np.convolve(x_filled, kernel, mode='same')
+        sum_weights = np.convolve(valid_mask.astype(float), kernel, mode='same')
 
         # Avoid division by zero
         result = np.where(sum_weights > 0, sum_values / sum_weights, np.nan)
@@ -1165,11 +1267,14 @@ class SingingPitchExtractor:
             self.logger.warning(f"Failed to parse note name {note_name}: {e}")
             return 440.0
 
-    def create_realtime_state(self) -> Dict[str, Any]:
+    def create_realtime_state(self, sample_rate: Optional[int] = None) -> Dict[str, Any]:
         """Create initial state dictionary for real-time streaming
 
         This method initializes the state required for stateful real-time pitch
         extraction with overlap buffering and smoothing.
+
+        Args:
+            sample_rate: Optional sample rate to store in state for consistency validation
 
         Returns:
             Dictionary containing:
@@ -1177,10 +1282,11 @@ class SingingPitchExtractor:
                 - 'smoothing_history': Empty pitch history for temporal smoothing
                 - 'frame_count': Frame counter for tracking
                 - 'last_pitch': Last valid pitch value for continuity
+                - 'sample_rate': Stored sample rate for consistency (COMMENT 6 FIX)
 
         Example:
             >>> extractor = SingingPitchExtractor()
-            >>> state = extractor.create_realtime_state()
+            >>> state = extractor.create_realtime_state(sample_rate=22050)
             >>> for chunk in audio_stream:
             ...     f0 = extractor.extract_f0_realtime(chunk, state=state)
             ...     # Process f0...
@@ -1188,13 +1294,16 @@ class SingingPitchExtractor:
         Note:
             - Creates CPU tensors by default; will be moved to device during processing
             - Thread-safe for concurrent state creation
+            - COMMENT 6 FIX: sample_rate stored for persistence and validation
         """
         with self.lock:
             return {
                 'overlap_buffer': torch.zeros(self.realtime_buffer_size, dtype=torch.float32),
                 'smoothing_history': [],
                 'frame_count': 0,
-                'last_pitch': 0.0
+                'last_pitch': 0.0,
+                # COMMENT 6 FIX: Store sample_rate in state
+                'sample_rate': sample_rate
             }
 
     def reset_realtime_state(self, state: Dict[str, Any]) -> None:
@@ -1212,7 +1321,7 @@ class SingingPitchExtractor:
             >>> extractor.reset_realtime_state(state)  # Clear for new stream
 
         Note:
-            - Preserves tensor device placement
+            - Preserves tensor device placement and sample_rate (COMMENT 6 FIX)
             - Thread-safe for concurrent reset operations
         """
         with self.lock:
@@ -1221,14 +1330,16 @@ class SingingPitchExtractor:
             state['smoothing_history'] = []
             state['frame_count'] = 0
             state['last_pitch'] = 0.0
+            # COMMENT 6 FIX: Preserve sample_rate across resets
 
     def extract_f0_realtime(
         self,
-        audio_chunk: torch.Tensor,
+        audio_chunk: "torch.Tensor",
         sample_rate: Optional[int] = None,
         state: Optional[Dict[str, Any]] = None,
-        use_cuda_kernel: bool = True
-    ) -> torch.Tensor:
+        use_cuda_kernel: bool = True,
+        return_device: str = 'cpu'  # COMMENT 4 FIX: Add return_device flag
+    ) -> "torch.Tensor":
         """Extract F0 for real-time applications with stateful overlap buffering and smoothing
 
         This method provides optimized real-time pitch extraction using CUDA kernels or
@@ -1242,10 +1353,13 @@ class SingingPitchExtractor:
                 processing with overlap buffering and smoothing. If None, processes
                 without state (less smooth).
             use_cuda_kernel: Use CUDA kernel if available (default: True)
+            return_device: Device for return tensor ('cpu' or 'cuda'). Default: 'cpu' (COMMENT 4 FIX)
 
         Returns:
-            F0 tensor with pitch values in Hz. Shape depends on chunk size and hop length.
-            Returns single-frame or multi-frame tensor depending on input size.
+            F0 tensor with pitch values in Hz on specified device. Shape depends on chunk
+            size and hop length. Returns single-frame or multi-frame tensor depending on input size.
+            Returns empty tensor (or single zero) when chunk produces zero frames (too short).
+            COMMENT 4 FIX: Returns tensor normalized to CPU by default (.detach().cpu())
 
         Example:
             >>> # Stateless processing (simple)
@@ -1262,14 +1376,26 @@ class SingingPitchExtractor:
             - Handles rapid pitch changes with temporal smoothing
             - Edge case: silence returns zeros
             - Edge case: noise is filtered using confidence threshold
+            - Edge case: short chunks producing zero frames return empty/zero tensor (COMMENT 2)
             - State management is thread-safe
             - Falls back to torchcrepe if CUDA kernel unavailable
             - Uses 'tiny' model for real-time speed
         """
         with self.lock:
-            # Use default sample rate if not provided
-            if sample_rate is None:
+            # COMMENT 6 FIX: Use sample_rate from state if available, validate consistency
+            if state is not None and 'sample_rate' in state and state['sample_rate'] is not None:
+                if sample_rate is not None and sample_rate != state['sample_rate']:
+                    self.logger.warning(
+                        f"Sample rate mismatch: provided {sample_rate} Hz, state has {state['sample_rate']} Hz. "
+                        f"Using state sample rate for consistency."
+                    )
+                sample_rate = state['sample_rate']
+            elif sample_rate is None:
                 sample_rate = 22050  # Default
+
+            # COMMENT 6 FIX: Store sample_rate in state if provided
+            if state is not None and 'sample_rate' not in state:
+                state['sample_rate'] = sample_rate
 
             # Process with overlap buffer if state provided
             if state is not None:
@@ -1286,9 +1412,10 @@ class SingingPitchExtractor:
                 else:
                     combined_audio = audio_chunk
 
+                # COMMENT 2 FIX: Guard overlap buffer update with positive check
                 # Update overlap buffer with last portion of current chunk
                 overlap_size = min(len(audio_chunk) // 4, self.realtime_buffer_size)  # 25% overlap
-                if len(audio_chunk) >= overlap_size:
+                if overlap_size > 0 and len(audio_chunk) >= overlap_size:
                     state['overlap_buffer'] = audio_chunk[-overlap_size:].clone()
 
                 audio_to_process = combined_audio
@@ -1298,44 +1425,56 @@ class SingingPitchExtractor:
         # Try CUDA kernel if requested and available
         if use_cuda_kernel and self.use_cuda_kernel_fallback:
             try:
-                # Try module name first, then namespaced import
-                _ck = None
-                try:
-                    import cuda_kernels as _ck
-                except ImportError:
-                    try:
-                        from auto_voice import cuda_kernels as _ck
-                    except ImportError:
-                        _ck = None
-
+                # COMMENT 7 FIX: Use _load_cuda_extension with fallback paths
+                _ck = self._load_cuda_extension()
                 if _ck is None:
-                    raise ImportError("cuda_kernels not available in either namespace")
+                    raise ImportError("cuda_kernels not available via any fallback path")
 
+                # COMMENT 1 FIX: Use audio_to_process instead of undefined 'audio'
                 # Prepare tensors
-                if audio.device.type != 'cuda':
-                    audio = audio.cuda()
+                if audio_to_process.device.type != 'cuda':
+                    audio_to_process = audio_to_process.cuda()
 
                 # Compute frame parameters consistently with CUDA kernel
                 frame_length = 2048  # Must match CUDA kernel default
                 hop_length = int(self.hop_length_ms * sample_rate / 1000.0)
 
+                # COMMENT 1 FIX: Use audio_to_process for frame count
                 # Compute n_frames identically to CUDA kernel
-                n_samples = len(audio)
+                n_samples = len(audio_to_process)
                 n_frames = max(0, (n_samples - frame_length) // hop_length + 1)
 
-                output_pitch = torch.zeros(n_frames, device=audio.device)
-                output_confidence = torch.zeros(n_frames, device=audio.device)
-                output_vibrato = torch.zeros(n_frames, device=audio.device)
+                # COMMENT 2 FIX: Early return for short chunks producing zero frames
+                if n_frames <= 0:
+                    # Return empty tensor or single zero on requested device
+                    if return_device == 'cpu':
+                        return torch.zeros(1, dtype=torch.float32)
+                    else:
+                        return torch.zeros(1, dtype=torch.float32, device=self.device)
 
-                _ck.launch_pitch_detection(audio, output_pitch, output_confidence,
+                output_pitch = torch.zeros(n_frames, device=audio_to_process.device)
+                output_confidence = torch.zeros(n_frames, device=audio_to_process.device)
+                output_vibrato = torch.zeros(n_frames, device=audio_to_process.device)
+
+                # COMMENT 1 FIX: Use audio_to_process in kernel call
+                # COMMENT 3 FIX: Use cuda_cmnd_threshold instead of confidence_threshold
+                _ck.launch_pitch_detection(audio_to_process, output_pitch, output_confidence,
                                           output_vibrato, float(sample_rate),
                                           frame_length, hop_length,
                                           float(self.fmin), float(self.fmax),
-                                          float(self.confidence_threshold))
+                                          float(self.cuda_cmnd_threshold))
 
+                # COMMENT 1 FIX: Temporal smoothing operates on result from audio_to_process
                 # Apply temporal smoothing if state provided
                 if state is not None:
                     output_pitch = self._apply_temporal_smoothing(output_pitch, state)
+
+                # COMMENT 1 FIX: Return-device normalization operates on result from audio_to_process
+                # COMMENT 4 FIX: Normalize to requested device
+                if return_device == 'cpu' and output_pitch.device.type != 'cpu':
+                    output_pitch = output_pitch.detach().cpu()
+                elif return_device == 'cuda' and output_pitch.device.type == 'cpu':
+                    output_pitch = output_pitch.to(self.device)
 
                 return output_pitch
             except Exception as e:
@@ -1344,8 +1483,9 @@ class SingingPitchExtractor:
         # Fallback to torchcrepe with tiny model for speed
         with torch.no_grad():
             hop_length = int(self.hop_length_ms * sample_rate / 1000.0)
+            # COMMENT 1 FIX: Use audio_to_process instead of undefined 'audio'
             pred = torchcrepe.predict(
-                audio,
+                audio_to_process,
                 sample_rate,
                 hop_length=hop_length,
                 fmin=self.fmin,
@@ -1367,6 +1507,12 @@ class SingingPitchExtractor:
             # Apply temporal smoothing if state provided
             if state is not None:
                 pitch = self._apply_temporal_smoothing(pitch, state)
+
+            # COMMENT 4 FIX: Normalize to requested device
+            if return_device == 'cpu' and pitch.device.type != 'cpu':
+                pitch = pitch.detach().cpu()
+            elif return_device == 'cuda' and pitch.device.type == 'cpu':
+                pitch = pitch.to(self.device)
 
             return pitch
 
@@ -1423,9 +1569,9 @@ class SingingPitchExtractor:
 
     def batch_extract(
         self,
-        audio_list: List[Union[torch.Tensor, str]],
+        audio_list: List[Union["torch.Tensor", str]],
         sample_rate: Optional[int] = None
-    ) -> List[Dict]:
+    ) -> List[Optional[Dict[str, Any]]]:
         """Extract F0 from multiple audio files/tensors with true batching
 
         Args:
@@ -1526,17 +1672,22 @@ class SingingPitchExtractor:
                         pitch = pitch_batch[batch_idx] if pitch_batch.dim() > 1 else pitch_batch
                         periodicity = periodicity_batch[batch_idx] if periodicity_batch.dim() > 1 else periodicity_batch
 
-                        # Trim to original length based on actual audio length
+                        # COMMENT 3 FIX: Trim to original length using torchcrepe-aligned framing formula
                         # Only trim if this item was padded
                         if orig_len < max_len:
                             # Compute expected number of frames from original unpadded length
-                            # torchcrepe computes frames as: max(0, (n_samples - win_length) / hop_length + 1)
-                            # We approximate by computing frames directly from original length
-                            expected_frames = max(1, (orig_len - hop_length) // hop_length + 1)
+                            # torchcrepe uses: max(0, (n_samples - win_length) // hop_length + 1)
+                            # with win_length=1024 by default (matches torchcrepe's CREPE model)
+                            win_length = 1024  # Torchcrepe default window length
+                            expected_frames = max(0, (orig_len - win_length) // hop_length + 1)
 
                             if expected_frames > 0 and len(pitch) > expected_frames:
                                 pitch = pitch[:expected_frames]
                                 periodicity = periodicity[:expected_frames]
+                            elif expected_frames == 0:
+                                # Audio too short, return single zero frame
+                                pitch = pitch[:1] * 0
+                                periodicity = periodicity[:1] * 0
 
                         # Post-process
                         pitch, periodicity = self._post_process(pitch, periodicity, hop_length, sr)
@@ -1544,8 +1695,10 @@ class SingingPitchExtractor:
                         # Compute voiced mask
                         voiced = periodicity > self.confidence_threshold
 
-                        # Detect vibrato
-                        vibrato_data = self._detect_vibrato(pitch, voiced, sr, hop_length)
+                        # COMMENT 5 FIX: Detect vibrato with GPU kernel if enabled
+                        vibrato_data = self._detect_vibrato_with_gpu_fallback(
+                            pitch, voiced, sr, hop_length
+                        )
 
                         # Convert to numpy
                         pitch_np = pitch.squeeze().cpu().numpy() if isinstance(pitch, torch.Tensor) else pitch
@@ -1623,6 +1776,83 @@ class SingingPitchExtractor:
             'range_semitones': float(range_semitones),
             'voiced_fraction': voiced_fraction
         }
+
+    def _load_cuda_extension(self) -> Optional[Any]:
+        """Load CUDA extension with fallback import paths
+
+        COMMENT 7 FIX: Augment with fallback paths and AUTOVOICE_CUDA_MODULE env var
+
+        Tries multiple import strategies in order:
+        1. Environment variable AUTOVOICE_CUDA_MODULE
+        2. Direct import: cuda_kernels
+        3. Namespaced imports: auto_voice.cuda_kernels, src.cuda_kernels
+        4. Relative import from package
+        5. sys.modules scan for already-imported modules ending with .cuda_kernels
+
+        The sys.modules scan handles cases where extensions are preloaded or use
+        non-standard packaging. It prefers longer module names (more specific) to
+        avoid ambiguous picks.
+
+        Returns:
+            CUDA kernels module if available, None otherwise
+        """
+        # COMMENT 7 FIX: Check environment variable first
+        env_module = os.environ.get('AUTOVOICE_CUDA_MODULE')
+        if env_module:
+            try:
+                import importlib
+                module = importlib.import_module(env_module)
+                self.logger.info(f"Loaded CUDA extension from env var: {env_module}")
+                return module
+            except ImportError as e:
+                self.logger.warning(f"Failed to import CUDA module from env var {env_module}: {e}")
+
+        # COMMENT 7 FIX: Try standard import paths
+        import_paths = [
+            'cuda_kernels',
+            'auto_voice.cuda_kernels',
+            'src.cuda_kernels'
+        ]
+
+        for import_path in import_paths:
+            try:
+                import importlib
+                module = importlib.import_module(import_path)
+                self.logger.info(f"Loaded CUDA extension from: {import_path}")
+                return module
+            except ImportError:
+                continue
+
+        # COMMENT 7 FIX: Try relative import as last resort
+        try:
+            from .. import cuda_kernels
+            self.logger.info("Loaded CUDA extension via relative import")
+            return cuda_kernels
+        except ImportError:
+            pass
+
+        # NEW: Scan sys.modules for already-imported CUDA modules
+        # This handles cases where extensions are preloaded or use non-standard packaging
+        import sys
+        candidates = []
+
+        for module_name, module_obj in sys.modules.items():
+            if module_obj is None:
+                continue
+            # Match modules ending with '.cuda_kernels' or exactly 'cuda_kernels'
+            if module_name == 'cuda_kernels' or module_name.endswith('.cuda_kernels'):
+                candidates.append((module_name, module_obj))
+                self.logger.debug(f"Found candidate CUDA module in sys.modules: {module_name}")
+
+        if candidates:
+            # Prefer more specific names (longer module names) to avoid ambiguous picks
+            candidates.sort(key=lambda x: len(x[0]), reverse=True)
+            selected_name, selected_module = candidates[0]
+            self.logger.info(f"Loaded CUDA extension from sys.modules: {selected_name}")
+            return selected_module
+
+        self.logger.warning("CUDA extension not available via any import path or sys.modules scan")
+        return None
 
     @staticmethod
     def _null_context():

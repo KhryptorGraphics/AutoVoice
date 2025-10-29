@@ -14,10 +14,12 @@
         </header>
 
         <nav class="tabs">
-            <button class="tab-button active" onclick="showTab('synthesize')">Text to Speech</button>
-            <button class="tab-button" onclick="showTab('convert')">Voice Conversion</button>
-            <button class="tab-button" onclick="showTab('clone')">Voice Cloning</button>
-            <button class="tab-button" onclick="showTab('status')">System Status</button>
+            <button class="tab-button active" onclick="showTab('synthesize', this)">Text to Speech</button>
+            <button class="tab-button" onclick="showTab('convert', this)">Voice Conversion</button>
+            <button class="tab-button" onclick="showTab('clone', this)">Create Profile</button>
+            <button class="tab-button" onclick="window.location.href='/song-conversion'">Song Conversion</button>
+            <button class="tab-button" onclick="window.location.href='/profiles'">Profile Management</button>
+            <button class="tab-button" onclick="showTab('status', this)">System Status</button>
         </nav>
 
         <div class="content">
@@ -92,27 +94,43 @@
                 </div>
             </div>
 
-            <!-- Voice Cloning Tab -->
+            <!-- Create Profile Tab -->
             <div id="clone" class="tab-content">
-                <h2>Voice Cloning</h2>
-                <form id="clone-form" enctype="multipart/form-data">
+                <h2>Create Voice Profile</h2>
+                <p>Upload a reference audio sample to create a voice profile for song conversion</p>
+                <form id="voice-cloning-form" enctype="multipart/form-data">
                     <div class="form-group">
-                        <label for="reference-audio">Reference Audio (voice to clone):</label>
+                        <label for="reference-audio">Reference Audio (voice to profile):</label>
                         <input type="file" id="reference-audio" name="reference" accept="audio/*" required>
+                        <small>Upload a clear audio sample (10-60 seconds recommended)</small>
                     </div>
-                    
+
                     <div class="form-group">
-                        <label for="clone-text">Text to synthesize with cloned voice:</label>
-                        <textarea id="clone-text" name="text" rows="5" required>This is my cloned voice speaking!</textarea>
+                        <label for="user-id">User ID (optional):</label>
+                        <input type="text" id="user-id" name="user_id" placeholder="Enter a unique identifier">
+                        <small>Leave blank for auto-generated ID</small>
                     </div>
-                    
-                    <button type="submit" class="btn btn-primary">Clone & Synthesize</button>
+
+                    <button type="submit" class="btn btn-primary">Create Voice Profile</button>
                 </form>
-                
-                <div id="clone-result" class="result" style="display: none;">
-                    <h3>Result:</h3>
-                    <audio id="clone-audio" controls></audio>
-                    <button onclick="downloadAudio('clone-audio')" class="btn btn-secondary">Download</button>
+
+                <div id="voice-cloning-result" class="result" style="display: none;">
+                </div>
+            </div>
+
+            <!-- Song Conversion Tab -->
+            <div id="song" class="tab-content">
+                <h2>Song Voice Conversion</h2>
+                <p>Convert vocals in any song to match your voice profile</p>
+                <div style="text-align: center; padding: 3rem;">
+                    <i class="fas fa-music" style="font-size: 4rem; color: #007bff; margin-bottom: 1rem;"></i>
+                    <h3>Professional Song Conversion Interface</h3>
+                    <p style="color: #6c757d; margin-bottom: 2rem;">
+                        Access the full-featured song conversion interface with step-by-step workflow
+                    </p>
+                    <button onclick="window.location.href='/song-conversion'" class="btn btn-primary" style="font-size: 1.1rem; padding: 1rem 2rem;">
+                        <i class="fas fa-arrow-right"></i> Go to Song Conversion
+                    </button>
                 </div>
             </div>
 
@@ -145,6 +163,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js" type="module"></script>
 </body>
 </html>

@@ -1,0 +1,468 @@
+{% extends "base.html" %}
+
+{% block title %}Song Conversion - AutoVoice{% endblock %}
+
+{% block extra_head %}
+<style>
+    .conversion-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 2rem;
+    }
+
+    .workflow-steps {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 3rem;
+        padding: 1rem;
+        background: linear-gradient(to right, #f8f9fa, #e9ecef);
+        border-radius: 8px;
+    }
+
+    .workflow-step {
+        flex: 1;
+        text-align: center;
+        padding: 1rem;
+        position: relative;
+    }
+
+    .workflow-step:not(:last-child)::after {
+        content: '→';
+        position: absolute;
+        right: -1rem;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 1.5rem;
+        color: #6c757d;
+    }
+
+    .workflow-step.active {
+        background: #007bff;
+        color: white;
+        border-radius: 8px;
+    }
+
+    .workflow-step.completed {
+        background: #28a745;
+        color: white;
+        border-radius: 8px;
+    }
+
+    .workflow-step .step-number {
+        display: inline-block;
+        width: 2rem;
+        height: 2rem;
+        line-height: 2rem;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.3);
+        margin-bottom: 0.5rem;
+        font-weight: bold;
+    }
+
+    .conversion-section {
+        background: white;
+        border-radius: 8px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .profile-selector {
+        display: flex;
+        gap: 1rem;
+        align-items: end;
+        margin-bottom: 2rem;
+    }
+
+    .profile-selector .form-group {
+        flex: 1;
+        margin: 0;
+    }
+
+    .upload-area {
+        border: 2px dashed #dee2e6;
+        border-radius: 8px;
+        padding: 3rem;
+        text-align: center;
+        background: #f8f9fa;
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+
+    .upload-area:hover {
+        border-color: #007bff;
+        background: #e7f3ff;
+    }
+
+    .upload-area.drag-over {
+        border-color: #28a745;
+        background: #d4edda;
+    }
+
+    .upload-area i {
+        font-size: 3rem;
+        color: #6c757d;
+        margin-bottom: 1rem;
+    }
+
+    .volume-controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2rem;
+        margin: 2rem 0;
+    }
+
+    .volume-control {
+        padding: 1rem;
+        background: #f8f9fa;
+        border-radius: 8px;
+    }
+
+    .volume-control label {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 0.5rem;
+        font-weight: 600;
+    }
+
+    .volume-control input[type="range"] {
+        width: 100%;
+    }
+
+    .progress-container {
+        margin: 2rem 0;
+    }
+
+    .progress-bar {
+        width: 100%;
+        height: 30px;
+        background: #e9ecef;
+        border-radius: 15px;
+        overflow: hidden;
+        position: relative;
+    }
+
+    .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #007bff, #0056b3);
+        transition: width 0.3s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: bold;
+    }
+
+    .progress-stage {
+        margin-top: 0.5rem;
+        text-align: center;
+        color: #6c757d;
+        font-style: italic;
+    }
+
+    .results-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2rem;
+        margin-top: 2rem;
+    }
+
+    .result-card {
+        background: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
+    }
+
+    .result-card h4 {
+        margin-top: 0;
+        color: #495057;
+        border-bottom: 2px solid #007bff;
+        padding-bottom: 0.5rem;
+    }
+
+    .audio-player-container {
+        margin: 1rem 0;
+    }
+
+    .audio-player-container audio {
+        width: 100%;
+        margin-bottom: 1rem;
+    }
+
+    .metadata-list {
+        list-style: none;
+        padding: 0;
+    }
+
+    .metadata-list li {
+        padding: 0.5rem 0;
+        border-bottom: 1px solid #dee2e6;
+        display: flex;
+        justify-content: space-between;
+    }
+
+    .metadata-list li:last-child {
+        border-bottom: none;
+    }
+
+    .metadata-list .label {
+        font-weight: 600;
+        color: #495057;
+    }
+
+    .metadata-list .value {
+        color: #6c757d;
+    }
+
+    .stems-section {
+        margin-top: 2rem;
+        padding-top: 2rem;
+        border-top: 2px solid #dee2e6;
+    }
+
+    .stems-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.5rem;
+        margin-top: 1rem;
+    }
+
+    .stem-card {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
+    }
+
+    .stem-card h5 {
+        margin-top: 0;
+        color: #007bff;
+    }
+
+    .btn-group {
+        display: flex;
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+
+    .btn {
+        padding: 0.75rem 1.5rem;
+        border: none;
+        border-radius: 6px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .btn-primary {
+        background: #007bff;
+        color: white;
+    }
+
+    .btn-primary:hover {
+        background: #0056b3;
+    }
+
+    .btn-secondary {
+        background: #6c757d;
+        color: white;
+    }
+
+    .btn-secondary:hover {
+        background: #545b62;
+    }
+
+    .btn-success {
+        background: #28a745;
+        color: white;
+    }
+
+    .btn-success:hover {
+        background: #218838;
+    }
+
+    .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    .hidden {
+        display: none;
+    }
+
+    .file-info {
+        margin-top: 1rem;
+        padding: 1rem;
+        background: #e7f3ff;
+        border-radius: 6px;
+        display: none;
+    }
+
+    .file-info.visible {
+        display: block;
+    }
+
+    .file-info i {
+        color: #007bff;
+        margin-right: 0.5rem;
+    }
+
+    .alert {
+        padding: 1rem;
+        border-radius: 6px;
+        margin-bottom: 1rem;
+    }
+
+    .alert-error {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+    }
+
+    .alert-success {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+    }
+
+    .alert-info {
+        background: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="conversion-container">
+    <h1><i class="fas fa-music"></i> Song Voice Conversion</h1>
+    <p class="subtitle">Transform vocals in any song to match your selected voice profile</p>
+
+    <form id="song-conversion-form">
+        <!-- Workflow Steps -->
+        <div class="workflow-steps">
+            <div class="workflow-step active" id="step-profile">
+                <div class="step-number">1</div>
+                <div class="step-label">Select Profile</div>
+            </div>
+            <div class="workflow-step" id="step-upload">
+                <div class="step-number">2</div>
+                <div class="step-label">Upload Song</div>
+            </div>
+            <div class="workflow-step" id="step-configure">
+                <div class="step-number">3</div>
+                <div class="step-label">Configure</div>
+            </div>
+            <div class="workflow-step" id="step-convert">
+                <div class="step-number">4</div>
+                <div class="step-label">Convert</div>
+            </div>
+            <div class="workflow-step" id="step-results">
+                <div class="step-number">5</div>
+                <div class="step-label">Results</div>
+            </div>
+        </div>
+
+        <!-- Profile Selection -->
+        <div class="conversion-section" id="profile-section">
+            <h2><i class="fas fa-user-circle"></i> Step 1: Select Voice Profile</h2>
+            <div class="profile-selector">
+                <div class="form-group">
+                    <label for="profile-selector">Voice Profile:</label>
+                    <select id="profile-selector" name="profile_id" class="form-control">
+                        <option value="">-- Select a profile --</option>
+                    </select>
+                </div>
+                <button type="button" class="btn btn-secondary" onclick="window.location.href='/profiles'">
+                    <i class="fas fa-cog"></i> Manage Profiles
+                </button>
+            </div>
+            <div id="profile-info" class="file-info">
+                <i class="fas fa-info-circle"></i>
+                <span id="profile-info-text">Profile information will appear here</span>
+            </div>
+        </div>
+
+        <!-- Upload Section -->
+        <div class="conversion-section hidden" id="upload-section">
+            <h2><i class="fas fa-cloud-upload-alt"></i> Step 2: Upload Song</h2>
+            <div class="upload-area" id="upload-area">
+                <i class="fas fa-file-audio"></i>
+                <h3>Drag & Drop your song here</h3>
+                <p>or click to browse</p>
+                <input type="file" id="song-file" name="song" accept="audio/*" style="display: none;">
+            </div>
+            <div id="file-info" class="file-info">
+                <i class="fas fa-check-circle"></i>
+                <span id="file-info-text">File information will appear here</span>
+            </div>
+        </div>
+
+        <!-- Configuration Section -->
+        <div class="conversion-section hidden" id="config-section">
+            <h2><i class="fas fa-sliders-h"></i> Step 3: Configure Settings</h2>
+
+            <div class="volume-controls">
+                <div class="volume-control">
+                    <label for="vocal-volume">
+                        <span><i class="fas fa-microphone"></i> Vocal Volume</span>
+                        <span id="vocal-volume-value">1.0</span>
+                    </label>
+                    <input type="range" id="vocal-volume" name="vocal_volume" min="0" max="2" step="0.1" value="1.0">
+                </div>
+
+                <div class="volume-control">
+                    <label for="instrumental-volume">
+                        <span><i class="fas fa-guitar"></i> Instrumental Volume</span>
+                        <span id="instrumental-volume-value">1.0</span>
+                    </label>
+                    <input type="range" id="instrumental-volume" name="instrumental_volume" min="0" max="2" step="0.1" value="1.0">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="return-stems" name="return_stems">
+                    Return separated vocal and instrumental tracks
+                </label>
+            </div>
+
+            <div class="btn-group">
+                <button type="submit" class="btn btn-primary" id="start-conversion">
+                    <i class="fas fa-play"></i> Start Conversion
+                </button>
+            </div>
+        </div>
+    </form>
+
+    <!-- Progress Section -->
+    <div class="conversion-section hidden" id="conversion-progress">
+        <h2><i class="fas fa-spinner fa-spin"></i> Step 4: Converting...</h2>
+        <div class="progress-container">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill" style="width: 0%">0%</div>
+            </div>
+            <div class="progress-stage" id="progress-stage">Initializing...</div>
+        </div>
+        <!-- COMMENT 4 FIX: Add cancel button -->
+        <div class="btn-group" style="margin-top: 1rem;">
+            <button type="button" class="btn btn-secondary" id="cancel-conversion-btn">
+                <i class="fas fa-times"></i> Cancel Conversion
+            </button>
+        </div>
+    </div>
+
+    <!-- Results Section -->
+    <div class="conversion-section hidden" id="conversion-results">
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<!-- COMMENT 1 FIX: Removed inline initializer to prevent duplicate initialization -->
+<!-- Initialization is now handled centrally in app.js global DOMContentLoaded handler -->
+{% endblock %}

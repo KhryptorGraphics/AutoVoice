@@ -153,12 +153,17 @@ singing_pitch:
   # Time resolution
   hop_length_ms: 10.0  # 10ms hop for high time resolution
 
+  # COMMENT 5 FIX: Shared win_length for CUDA/torchcrepe alignment
+  win_length: 1024  # Window length in samples (matches torchcrepe default and batch trimming)
+
   # Processing parameters
   batch_size: 2048  # GPU batch size for torchcrepe
   decoder: 'viterbi'  # 'viterbi', 'argmax', or 'weighted_argmax'
 
   # Post-processing
-  confidence_threshold: 0.21  # Periodicity threshold for voiced/unvoiced
+  confidence_threshold: 0.21  # Periodicity threshold for voiced/unvoiced (torchcrepe)
+  # COMMENT 3 FIX: Add dedicated cuda_cmnd_threshold for CUDA kernel pitch detection
+  cuda_cmnd_threshold: 0.15   # CMND threshold for CUDA kernel pitch acceptance (lower = more permissive)
   median_filter_width: 3      # Frames for median filtering
   mean_filter_width: 3        # Frames for mean smoothing
 
@@ -181,6 +186,8 @@ singing_pitch:
   gpu_acceleration: true
   mixed_precision: true  # Use FP16 for faster inference
   use_cuda_kernel_fallback: true  # Use CUDA kernel for real-time
+  # COMMENT 5 FIX: Add use_gpu_vibrato_analysis flag
+  use_gpu_vibrato_analysis: false  # Use GPU vibrato analysis kernel (experimental, falls back to CPU)
 
 # Singing Voice Analysis
 singing_analysis:

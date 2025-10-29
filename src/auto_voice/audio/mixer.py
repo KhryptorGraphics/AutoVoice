@@ -22,6 +22,12 @@ try:
 except ImportError:
     SOUNDFILE_AVAILABLE = False
 
+try:
+    import pyloudnorm as pyln
+    PYLOUDNORM_AVAILABLE = True
+except ImportError:
+    PYLOUDNORM_AVAILABLE = False
+
 from .processor import AudioProcessor
 from ..utils.data_utils import DataPreprocessor
 from ..utils.logging_config import get_logger
@@ -39,7 +45,7 @@ class AudioMixer:
 
     This class provides utilities for:
     - Mixing vocals and instrumental with volume control
-    - Volume normalization (RMS, peak, LUFS)
+    - Volume normalization (RMS, peak, LUFS/ITU-R BS.1770-4)
     - Length alignment and synchronization
     - Stereo/mono conversion
     - Clipping prevention
@@ -73,6 +79,15 @@ class AudioMixer:
         self.audio_processor = AudioProcessor()
         self.data_preprocessor = DataPreprocessor()
         self.lock = threading.RLock()
+
+        # Validate LUFS availability if configured
+        if self.config['normalization_method'] == 'lufs' and not PYLOUDNORM_AVAILABLE:
+            logger.warning(
+                "LUFS normalization requested but pyloudnorm is not installed. "
+                "Falling back to RMS normalization. "
+                "Install pyloudnorm with: pip install pyloudnorm>=0.1.0"
+            )
+            self.config['normalization_method'] = 'rms'
 
         logger.info(f"AudioMixer initialized with normalization: {self.config['normalization_method']}")
 
@@ -148,7 +163,8 @@ class AudioMixer:
         instrumental: Union[np.ndarray, str],
         vocal_volume: float = 1.0,
         instrumental_volume: float = 1.0,
-        sample_rate: Optional[int] = None
+        sample_rate: Optional[int] = None,
+        instrumental_sample_rate: Optional[int] = None
     ) -> Tuple[np.ndarray, int]:
         """Mix vocals and instrumental tracks.
 
@@ -167,6 +183,7 @@ class AudioMixer:
             vocal_volume: Volume multiplier for vocals (0.0-2.0)
             instrumental_volume: Volume multiplier for instrumental (0.0-2.0)
             sample_rate: Sample rate (required if inputs are arrays)
+            instrumental_sample_rate: Optional sample rate for instrumental if it differs from vocals
 
         Returns:
             Tuple of (mixed_audio, sample_rate)
@@ -185,7 +202,7 @@ class AudioMixer:
                     sample_rate = vocal_sr
 
                 if isinstance(instrumental, str):
-                    instrumental, inst_sr = self.audio_processor.load_audio(instrumental, return_sr=True)
+                    instrumental, inst_sr = self.audio_processor.load_audio(instrumental, return_sr=True, preserve_channels=True)
                     # Convert torch.Tensor to NumPy array
                     if hasattr(instrumental, 'detach'):
                         instrumental = instrumental.detach().cpu().numpy()
@@ -204,49 +221,89 @@ class AudioMixer:
                 if sample_rate is None:
                     raise MixingError("sample_rate must be provided for array inputs")
 
-                # Normalize shape to 1D mono before further processing
-                # Explicit channel detection: if dimension is 2, average across it
+                # Resample instrumental if it has a different sample rate than vocals
+                if instrumental_sample_rate is not None and instrumental_sample_rate != sample_rate:
+                    logger.info(f"Resampling instrumental from {instrumental_sample_rate} Hz to {sample_rate} Hz")
+                    instrumental = self._resample_if_needed(instrumental, instrumental_sample_rate, sample_rate)
+
+                # Normalize shape to time-major (T,) or (T, 2) format
+                # Preserve instrumental stereo, upmix vocals to match if needed
+
+                # Process vocals: convert to (T,) mono
                 if vocals.ndim > 1:
                     if vocals.shape[0] == 2:
-                        # (2, T) format - average across channels (axis 0)
+                        # (2, T) format - average to mono
                         vocals = np.mean(vocals, axis=0)
                     elif vocals.shape[1] == 2:
-                        # (T, 2) format - average across channels (axis 1)
+                        # (T, 2) format - average to mono
                         vocals = np.mean(vocals, axis=1)
                     else:
-                        # Ambiguous shape - assume first dimension with smaller size is channels
+                        # Ambiguous shape - assume smaller dimension is channels
                         vocals = np.mean(vocals, axis=0) if vocals.shape[0] <= vocals.shape[1] else np.mean(vocals, axis=1)
                 vocals = vocals.flatten()
 
+                # Process instrumental: keep stereo if present, normalize to (T,) or (T, 2)
                 if instrumental.ndim > 1:
                     if instrumental.shape[0] == 2:
-                        # (2, T) format - average across channels (axis 0)
-                        instrumental = np.mean(instrumental, axis=0)
+                        # (2, T) format - transpose to (T, 2)
+                        instrumental = instrumental.T
                     elif instrumental.shape[1] == 2:
-                        # (T, 2) format - average across channels (axis 1)
-                        instrumental = np.mean(instrumental, axis=1)
+                        # (T, 2) format - already correct
+                        pass
+                    elif instrumental.shape[0] == 1:
+                        # (1, T) format - flatten to mono
+                        instrumental = instrumental.flatten()
+                    elif instrumental.shape[1] == 1:
+                        # (T, 1) format - flatten to mono
+                        instrumental = instrumental.flatten()
                     else:
-                        # Ambiguous shape - assume first dimension with smaller size is channels
-                        instrumental = np.mean(instrumental, axis=0) if instrumental.shape[0] <= instrumental.shape[1] else np.mean(instrumental, axis=1)
-                instrumental = instrumental.flatten()
+                        # Multi-channel > 2: average to mono
+                        instrumental = np.mean(instrumental, axis=0 if instrumental.shape[0] <= instrumental.shape[1] else 1)
+                        instrumental = instrumental.flatten()
+                else:
+                    # Already 1D mono
+                    instrumental = instrumental.flatten()
+
+                # Determine target channel count from instrumental
+                inst_is_stereo = instrumental.ndim == 2 and instrumental.shape[1] == 2
+
+                # Upmix vocals to match instrumental if needed
+                if inst_is_stereo:
+                    # Duplicate vocals to stereo (T, 2)
+                    vocals = np.stack([vocals, vocals], axis=1)
 
                 # Validate inputs after conversion
                 if vocals.size == 0 or instrumental.size == 0:
                     raise MixingError("Audio inputs cannot be empty")
 
-                # Align lengths
+                # Align lengths (works on time dimension only)
                 if self.config['auto_align_length']:
                     vocals, instrumental = self._align_audio_lengths(vocals, instrumental, sample_rate)
 
-                # Normalize individual tracks to initial baseline
-                vocals_normalized = self.data_preprocessor.normalize_audio(
-                    vocals,
-                    method=self.config['normalization_method']
-                )
-                instrumental_normalized = self.data_preprocessor.normalize_audio(
-                    instrumental,
-                    method=self.config['normalization_method']
-                )
+                # Normalize individual tracks to initial baseline (per-channel if stereo)
+                if vocals.ndim == 1:
+                    vocals_normalized = self.data_preprocessor.normalize_audio(
+                        vocals,
+                        method=self.config['normalization_method']
+                    )
+                else:  # (T, 2) stereo
+                    # Normalize each channel separately
+                    vocals_normalized = np.stack([
+                        self.data_preprocessor.normalize_audio(vocals[:, 0], method=self.config['normalization_method']),
+                        self.data_preprocessor.normalize_audio(vocals[:, 1], method=self.config['normalization_method'])
+                    ], axis=1)
+
+                if instrumental.ndim == 1:
+                    instrumental_normalized = self.data_preprocessor.normalize_audio(
+                        instrumental,
+                        method=self.config['normalization_method']
+                    )
+                else:  # (T, 2) stereo
+                    # Normalize each channel separately
+                    instrumental_normalized = np.stack([
+                        self.data_preprocessor.normalize_audio(instrumental[:, 0], method=self.config['normalization_method']),
+                        self.data_preprocessor.normalize_audio(instrumental[:, 1], method=self.config['normalization_method'])
+                    ], axis=1)
 
                 # Apply target level adjustments first
                 vocals_adjusted = self._normalize_to_target_level(
@@ -264,7 +321,7 @@ class AudioMixer:
                 vocals_adjusted = vocals_adjusted * vocal_volume
                 instrumental_adjusted = instrumental_adjusted * instrumental_volume
 
-                # Mix tracks
+                # Mix tracks (element-wise addition works for both mono and stereo)
                 mixed = vocals_adjusted + instrumental_adjusted
 
                 # Prevent clipping
@@ -276,11 +333,16 @@ class AudioMixer:
                         if max_amplitude > target_peak:
                             mixed = mixed * (target_peak / max_amplitude)
 
-                # Convert to output format (channel-first convention: (2, T))
-                if self.config['output_format'] == 'stereo':
-                    mixed = self._convert_to_stereo(mixed)
+                # Convert to output format if needed
+                if self.config['output_format'] == 'stereo' and mixed.ndim == 1:
+                    # Only convert mono to stereo if needed (already stereo stays as-is)
+                    mixed = np.stack([mixed, mixed], axis=1)  # Time-major (T, 2)
 
-                logger.info(f"Mixed audio: {len(mixed) if mixed.ndim == 1 else mixed.shape} (channels, samples) at {sample_rate}Hz")
+                # Log shape information
+                if mixed.ndim == 1:
+                    logger.info(f"Mixed audio: {len(mixed)} samples (mono) at {sample_rate}Hz")
+                else:
+                    logger.info(f"Mixed audio: {mixed.shape} (time, channels) at {sample_rate}Hz")
 
                 return mixed, sample_rate
 
@@ -396,7 +458,9 @@ class AudioMixer:
         audio2: np.ndarray,
         sample_rate: int
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Align two audio arrays to same length and apply crossfade if configured.
+        """Align two audio arrays to same length (time dimension only).
+
+        Works with both mono (T,) and stereo (T, 2) arrays.
 
         Args:
             audio1: First audio array
@@ -406,21 +470,30 @@ class AudioMixer:
         Returns:
             Tuple of aligned audio arrays
         """
-        len1, len2 = len(audio1), len(audio2)
+        # Get time dimension (first dimension for both mono and stereo)
+        len1 = audio1.shape[0]
+        len2 = audio2.shape[0]
 
         if len1 == len2:
             result1, result2 = audio1, audio2
         elif self.config['alignment_method'] == 'trim':
-            # Trim longer to match shorter
+            # Trim longer to match shorter (time dimension only)
             min_len = min(len1, len2)
-            result1, result2 = audio1[:min_len], audio2[:min_len]
+            result1 = audio1[:min_len] if audio1.ndim == 1 else audio1[:min_len, :]
+            result2 = audio2[:min_len] if audio2.ndim == 1 else audio2[:min_len, :]
         else:  # pad
-            # Pad shorter with zeros
+            # Pad shorter with zeros (time dimension only)
             max_len = max(len1, len2)
             if len1 < max_len:
-                audio1 = np.pad(audio1, (0, max_len - len1), mode='constant')
+                if audio1.ndim == 1:
+                    audio1 = np.pad(audio1, (0, max_len - len1), mode='constant')
+                else:  # stereo
+                    audio1 = np.pad(audio1, ((0, max_len - len1), (0, 0)), mode='constant')
             if len2 < max_len:
-                audio2 = np.pad(audio2, (0, max_len - len2), mode='constant')
+                if audio2.ndim == 1:
+                    audio2 = np.pad(audio2, (0, max_len - len2), mode='constant')
+                else:  # stereo
+                    audio2 = np.pad(audio2, ((0, max_len - len2), (0, 0)), mode='constant')
             result1, result2 = audio1, audio2
 
         # Apply crossfade if configured
@@ -446,6 +519,8 @@ class AudioMixer:
     ) -> np.ndarray:
         """Normalize audio to target dB level.
 
+        Works with both mono (T,) and stereo (T, 2) arrays.
+
         Args:
             audio: Audio array
             target_db: Target level in dB
@@ -455,7 +530,7 @@ class AudioMixer:
             Normalized audio array
         """
         if method == 'rms':
-            # Compute current RMS
+            # Compute current RMS (across all samples/channels)
             rms = np.sqrt(np.mean(audio ** 2))
             if rms > 0:
                 # Compute gain to reach target
@@ -465,7 +540,7 @@ class AudioMixer:
             return audio
 
         elif method == 'peak':
-            # Peak normalization
+            # Peak normalization (across all samples/channels)
             peak = np.abs(audio).max()
             if peak > 0:
                 target_amplitude = 10 ** (target_db / 20.0)
@@ -474,10 +549,53 @@ class AudioMixer:
             return audio
 
         elif method == 'lufs':
-            # LUFS normalization (simplified)
-            # For full LUFS, would need pyloudnorm library
-            logger.warning("LUFS normalization not fully implemented, using RMS")
-            return self._normalize_to_target_level(audio, target_db, method='rms')
+            # LUFS (Loudness Units Full Scale) normalization per ITU-R BS.1770-4
+            if not PYLOUDNORM_AVAILABLE:
+                logger.warning("pyloudnorm not available, falling back to RMS normalization")
+                return self._normalize_to_target_level(audio, target_db, method='rms')
+
+            try:
+                # Get sample rate from config (default 44100)
+                sample_rate = self.config.get('sample_rate', 44100)
+
+                # Create loudness meter
+                meter = pyln.Meter(sample_rate)
+
+                # Ensure audio is in correct format for pyloudnorm
+                # pyloudnorm expects (samples,) for mono or (samples, channels) for multi-channel
+                if audio.ndim == 1:
+                    audio_for_meter = audio
+                else:
+                    audio_for_meter = audio  # Already in (T, 2) format
+
+                # Measure integrated loudness (LUFS)
+                current_loudness = meter.integrated_loudness(audio_for_meter)
+
+                # Handle silence or extremely quiet audio
+                if np.isinf(current_loudness) or current_loudness < -70.0:
+                    logger.debug("Audio too quiet for LUFS measurement, returning unchanged")
+                    return audio
+
+                # Calculate gain needed to reach target LUFS
+                # target_db is in dB relative to full scale, convert to LUFS
+                target_loudness = target_db  # LUFS is already in dB relative to full scale
+                loudness_delta = target_loudness - current_loudness
+                gain_db = loudness_delta
+                gain = 10 ** (gain_db / 20.0)
+
+                # Apply gain
+                normalized = audio * gain
+
+                logger.debug(
+                    f"LUFS normalization: {current_loudness:.1f} LUFS → {target_loudness:.1f} LUFS "
+                    f"(gain: {gain_db:+.1f} dB)"
+                )
+
+                return normalized
+
+            except Exception as e:
+                logger.warning(f"LUFS normalization failed: {e}, falling back to RMS")
+                return self._normalize_to_target_level(audio, target_db, method='rms')
 
         else:
             logger.warning(f"Unknown normalization method: {method}, using RMS")
@@ -491,18 +609,23 @@ class AudioMixer:
     ) -> np.ndarray:
         """Resample audio if source and target sample rates differ.
 
+        Handles both mono (T,) and stereo (T, 2) time-major arrays correctly.
+
         Args:
             audio: Audio array to resample
             source_sr: Source sample rate
             target_sr: Target sample rate
 
         Returns:
-            Resampled audio array
+            Resampled audio array in original orientation
         """
         if source_sr == target_sr:
             return audio
 
         logger.info(f"Resampling audio from {source_sr} Hz to {target_sr} Hz")
+
+        # Detect if input is time-major stereo (T, 2)
+        is_time_major_stereo = audio.ndim == 2 and audio.shape[1] == 2
 
         try:
             # Try torchaudio first
@@ -516,15 +639,27 @@ class AudioMixer:
                 else:
                     audio_tensor = audio
 
-                # Add channel dim if mono
+                # Normalize to channel-first (C, T) for torchaudio
                 if audio_tensor.ndim == 1:
+                    # Mono: add channel dim
                     audio_tensor = audio_tensor.unsqueeze(0)
+                elif audio_tensor.ndim == 2:
+                    if is_time_major_stereo:
+                        # (T, 2) → (2, T) for torchaudio
+                        audio_tensor = audio_tensor.T
 
                 resampler = T.Resample(orig_freq=source_sr, new_freq=target_sr)
                 resampled = resampler(audio_tensor)
 
-                # Convert back to numpy and remove channel dim
-                result = resampled.squeeze(0).numpy()
+                # Convert back to numpy and restore original orientation
+                result = resampled.numpy()
+                if audio.ndim == 1:
+                    # Remove channel dim for mono
+                    result = result.squeeze(0)
+                elif is_time_major_stereo:
+                    # (2, T) → (T, 2) to restore time-major
+                    result = result.T
+
                 logger.debug(f"Resampled using torchaudio: {source_sr} Hz -> {target_sr} Hz")
                 return result
 
@@ -533,11 +668,33 @@ class AudioMixer:
 
                 # Fallback to librosa
                 if LIBROSA_AVAILABLE:
-                    result = librosa.resample(
-                        audio.astype(np.float32) if isinstance(audio, np.ndarray) else audio,
-                        orig_sr=source_sr,
-                        target_sr=target_sr
-                    )
+                    if isinstance(audio, np.ndarray):
+                        audio_np = audio.astype(np.float32)
+                    else:
+                        audio_np = audio
+
+                    # Librosa handles 1D or 2D (channels, time)
+                    if audio_np.ndim == 1:
+                        # Mono: resample directly
+                        result = librosa.resample(
+                            audio_np,
+                            orig_sr=source_sr,
+                            target_sr=target_sr
+                        )
+                    elif is_time_major_stereo:
+                        # (T, 2) time-major stereo: resample each channel separately
+                        ch0 = librosa.resample(audio_np[:, 0], orig_sr=source_sr, target_sr=target_sr)
+                        ch1 = librosa.resample(audio_np[:, 1], orig_sr=source_sr, target_sr=target_sr)
+                        # Re-stack as (T, 2)
+                        result = np.stack([ch0, ch1], axis=1)
+                    else:
+                        # (2, T) channel-first: resample directly (librosa expects this)
+                        result = librosa.resample(
+                            audio_np,
+                            orig_sr=source_sr,
+                            target_sr=target_sr
+                        )
+
                     logger.debug(f"Resampled using librosa: {source_sr} Hz -> {target_sr} Hz")
                     return result
                 else:
@@ -549,30 +706,33 @@ class AudioMixer:
             return audio
 
     def _convert_to_stereo(self, audio: np.ndarray) -> np.ndarray:
-        """Convert mono audio to stereo in (2, T) channel-first format.
+        """Convert mono audio to stereo in (T, 2) time-major format.
+
+        NOTE: This method is currently unused but maintained for API completeness.
+        The mix() method handles stereo conversion inline using time-major (T, 2) format.
 
         Args:
-            audio: Mono audio array (1D)
+            audio: Mono audio array (1D or 2D)
 
         Returns:
-            Stereo audio array in (2, T) shape (channel-first convention)
+            Stereo audio array in (T, 2) shape (time-major convention to match mix())
         """
         if audio.ndim == 1:
-            # Duplicate mono to stereo in (2, T) format (channel-first)
-            return np.stack([audio, audio], axis=0)
+            # Duplicate mono to stereo in (T, 2) format (time-major)
+            return np.stack([audio, audio], axis=1)
         elif audio.ndim == 2:
-            if audio.shape[0] == 2:
-                # Already in (2, T) format
+            if audio.shape[1] == 2:
+                # Already in (T, 2) format
                 return audio
-            elif audio.shape[1] == 2:
-                # Convert from (T, 2) to (2, T)
+            elif audio.shape[0] == 2:
+                # Convert from (2, T) to (T, 2)
                 return audio.T
-            elif audio.shape[0] == 1:
-                # Convert (1, T) to (2, T)
-                return np.concatenate([audio, audio], axis=0)
             elif audio.shape[1] == 1:
-                # Convert (T, 1) to (2, T)
-                return np.stack([audio[:, 0], audio[:, 0]], axis=0)
+                # Convert (T, 1) to (T, 2)
+                return np.concatenate([audio, audio], axis=1)
+            elif audio.shape[0] == 1:
+                # Convert (1, T) to (T, 2)
+                return np.stack([audio[0, :], audio[0, :]], axis=1)
 
         logger.warning(f"Unexpected audio shape: {audio.shape}, returning as-is")
         return audio

@@ -208,6 +208,157 @@ class TestFFTKernels:
             pytest.skip("CUDA kernels not available")
 
     @pytest.mark.cuda
+    def test_optimized_stft_kernel(self, audio_waveform, cuda_device):
+        """Test new optimized STFT kernel accuracy."""
+        try:
+            import cuda_kernels
+
+            n_fft = 2048
+            hop_length = 512
+
+            # Create Hann window
+            window = torch.hann_window(n_fft, device=cuda_device)
+
+            # Compute expected frames
+            n_frames = (audio_waveform.shape[1] - n_fft) // hop_length + 1
+            stft_shape = (audio_waveform.shape[0], n_frames, n_fft // 2 + 1, 2)  # complex output
+
+            # Create output tensors
+            stft_output = torch.zeros(stft_shape, dtype=torch.cfloat, device=cuda_device)
+
+            # Test optimized STFT
+            cuda_kernels.launch_optimized_stft(
+                audio_waveform, window, stft_output, n_fft, hop_length
+            )
+
+            assert stft_output.device.type == "cuda"
+            assert stft_output.shape == stft_shape
+            assert not torch.isnan(stft_output).any()
+            assert not torch.isinf(stft_output).any()
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    def test_optimized_istft_kernel(self, cuda_device):
+        """Test new optimized ISTFT kernel accuracy."""
+        try:
+            import cuda_kernels
+
+            batch_size, n_frames, n_freqs = 1, 100, 1025  # n_fft=2048 -> 1025 freq bins
+            n_fft = (n_freqs - 1) * 2
+            hop_length = 512
+
+            # Create test STFT data (complex)
+            stft_input = torch.randn(batch_size, n_frames, n_freqs, 2, device=cuda_device, dtype=torch.cfloat)
+
+            # Create Hann window
+            window = torch.hann_window(n_fft, device=cuda_device)
+
+            # Expected output length
+            expected_length = (n_frames - 1) * hop_length + n_fft
+            audio_output = torch.zeros(batch_size, expected_length, device=cuda_device)
+
+            # Test optimized ISTFT
+            cuda_kernels.launch_optimized_istft(
+                stft_input, window, audio_output, n_fft, hop_length
+            )
+
+            assert audio_output.device.type == "cuda"
+            assert audio_output.shape == (batch_size, expected_length)
+            assert not torch.isnan(audio_output).any()
+            assert not torch.isinf(audio_output).any()
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    def test_stft_istft_perfect_reconstruction(self, audio_waveform, cuda_device):
+        """Test perfect reconstruction: optimized STFT -> optimized ISTFT with references."""
+        try:
+            import cuda_kernels
+
+            n_fft = 2048
+            hop_length = 512
+
+            # Create Hann window
+            window = torch.hann_window(n_fft, device=cuda_device)
+
+            # Forward: audio -> STFT
+            n_frames = (audio_waveform.shape[1] - n_fft) // hop_length + 1
+            stft_output = torch.zeros(audio_waveform.shape[0], n_frames, n_fft // 2 + 1,
+                                     dtype=torch.cfloat, device=cuda_device)
+
+            cuda_kernels.launch_optimized_stft(audio_waveform, window, stft_output, n_fft, hop_length)
+
+            # Backward: STFT -> audio
+            expected_length = (n_frames - 1) * hop_length + n_fft
+            reconstructed = torch.zeros(audio_waveform.shape[0], expected_length, device=cuda_device)
+
+            cuda_kernels.launch_optimized_istft(stft_output, window, reconstructed, n_fft, hop_length)
+
+            # Compare reconstruction accuracy
+            min_length = min(reconstructed.shape[1], audio_waveform.shape[1])
+            reconstruction_error = torch.mean(
+                (reconstructed[:, :min_length] - audio_waveform[:, :min_length]) ** 2
+            ).item()
+
+            # Should achieve very low reconstruction error (< 1e-5 as specified)
+            assert reconstruction_error < 1e-5, f"Reconstruction error {reconstruction_error} > 1e-5"
+            print(".6f")
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    def test_stft_istft_librosa_comparison(self, audio_waveform, cuda_device):
+        """Compare optimized STFT/ISTFT with librosa reference for accuracy."""
+        try:
+            import librosa
+            import cuda_kernels
+
+            # Convert to numpy for librosa
+            audio_np = audio_waveform.cpu().numpy().squeeze()
+
+            n_fft = 2048
+            hop_length = 512
+            window = torch.hann_window(n_fft, device=cuda_device)
+
+            # Librosa reference STFT
+            stft_ref = librosa.stft(audio_np, n_fft=n_fft, hop_length=hop_length, window='hann')
+
+            # CUDA STFT
+            n_frames = (audio_waveform.shape[1] - n_fft) // hop_length + 1
+            stft_cuda = torch.zeros(audio_waveform.shape[0], n_frames, n_fft // 2 + 1,
+                                   dtype=torch.cfloat, device=cuda_device)
+            cuda_kernels.launch_optimized_stft(audio_waveform, window, stft_cuda, n_fft, hop_length)
+            stft_cuda_np = stft_cuda.cpu().numpy().squeeze()
+
+            # Compare STFT results
+            stft_error = np.mean(np.abs(stft_cuda_np - stft_ref) ** 2)
+            print(".6f")
+            assert stft_error < 1e-10  # Very tight tolerance for STFT accuracy
+
+            # Test reconstruction: librosa ISTFT
+            audio_ref = librosa.istft(stft_ref, hop_length=hop_length, window='hann')
+
+            # CUDA ISTFT
+            expected_length = (n_frames - 1) * hop_length + n_fft
+            reconstructed_cuda = torch.zeros(audio_waveform.shape[0], expected_length, device=cuda_device)
+            cuda_kernels.launch_optimized_istft(stft_cuda, window, reconstructed_cuda, n_fft, hop_length)
+
+            # Compare reconstruction
+            min_len = min(len(audio_ref), reconstructed_cuda.shape[1])
+            recon_error = np.mean((audio_ref[:min_len] - reconstructed_cuda[0, :min_len].cpu().numpy()) ** 2)
+            print(".6f")
+            assert recon_error < 1e-12  # Should match librosa perfectly
+
+        except ImportError:
+            pytest.skip("librosa not available, skipping comparison test")
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
     def test_istft_reconstruction(self, audio_waveform, cuda_device):
         """Test inverse STFT reconstruction accuracy."""
         try:
@@ -459,6 +610,197 @@ class TestTrainingKernels:
 # Memory Kernel Tests
 # ============================================================================
 
+class TestEnhancedAudioKernels:
+    """Test enhanced audio processing CUDA kernels."""
+
+    @pytest.mark.cuda
+    def test_launch_pitch_detection(self, audio_waveform, cuda_device):
+        """Test enhanced pitch detection kernel."""
+        try:
+            import cuda_kernels
+
+            frame_length = 2048
+            hop_length = 512
+            sample_rate = 16000
+            fmin, fmax = 80.0, 1000.0
+            threshold = 0.3
+
+            # Create output tensors
+            n_frames = (audio_waveform.shape[1] - frame_length) // hop_length + 1
+            pitch_output = torch.zeros(n_frames, device=cuda_device)
+            confidence_output = torch.zeros(n_frames, device=cuda_device)
+            vibrato_output = torch.zeros(n_frames, device=cuda_device)
+
+            # Test pitch detection
+            cuda_kernels.launch_pitch_detection(
+                audio_waveform, pitch_output, confidence_output, vibrato_output,
+                sample_rate, frame_length, hop_length, fmin, fmax, threshold
+            )
+
+            assert pitch_output.device.type == "cuda"
+            assert confidence_output.device.type == "cuda"
+            assert vibrato_output.device.type == "cuda"
+            assert pitch_output.shape == (n_frames,)
+            # Pitch should be non-negative, confidence in [0,1], vibrato 0 or 1
+            assert torch.all(pitch_output >= 0)
+            assert torch.all((confidence_output >= 0) & (confidence_output <= 1))
+            assert torch.all((vibrato_output == 0) | (vibrato_output == 1))
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    def test_launch_formant_extraction(self, cuda_device):
+        """Test formant extraction kernel."""
+        try:
+            import cuda_kernels
+
+            frame_length = 2048
+            sample_rate = 16000
+            lpc_order = 14
+            num_formants = 4
+
+            # Create test audio frames
+            batch_size = 1
+            n_frames = 10
+            audio_frames = torch.randn(batch_size, n_frames, frame_length, device=cuda_device)
+
+            # Create output tensor for formants
+            formants_output = torch.zeros(n_frames, num_formants, device=cuda_device)
+
+            # Test formant extraction
+            cuda_kernels.launch_formant_extraction(
+                audio_frames, formants_output, frame_length, sample_rate, lpc_order, num_formants
+            )
+
+            assert formants_output.device.type == "cuda"
+            assert formants_output.shape == (n_frames, num_formants)
+            # Formants should be >= 0 (frequencies)
+            assert torch.all(formants_output >= 0)
+            assert not torch.isnan(formants_output).any()
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    def test_launch_formant_extraction_configurable_lpc(self, cuda_device):
+        """Test formant extraction with different LPC orders."""
+        try:
+            import cuda_kernels
+
+            frame_length = 2048
+            sample_rate = 16000
+            num_formants = 4
+
+            # Test different LPC orders
+            for lpc_order in [10, 12, 14, 16]:
+                batch_size = 1
+                n_frames = 5
+                audio_frames = torch.randn(batch_size, n_frames, frame_length, device=cuda_device)
+                formants_output = torch.zeros(n_frames, num_formants, device=cuda_device)
+
+                cuda_kernels.launch_formant_extraction(
+                    audio_frames, formants_output, frame_length, sample_rate, lpc_order, num_formants
+                )
+
+                assert formants_output.device.type == "cuda"
+                assert formants_output.shape == (n_frames, num_formants)
+                assert torch.all(formants_output >= 0)
+                assert not torch.isnan(formants_output).any()
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    def test_launch_mel_spectrogram_singing(self, audio_waveform, cuda_device):
+        """Test mel-spectrogram optimized for singing voice."""
+        try:
+            import cuda_kernels
+
+            n_fft = 2048
+            hop_length = 512
+            n_mels = 128
+            apply_a_weighting = True
+
+            # Create Hann window and mel filterbank
+            window = torch.hann_window(n_fft, device=cuda_device)
+            mel_filterbank = torch.randn(n_mels, n_fft // 2 + 1, device=cuda_device)
+
+            # Compute expected dimensions
+            n_frames = (audio_waveform.shape[1] - n_fft) // hop_length + 1
+            mel_output = torch.zeros(audio_waveform.shape[0], n_frames, n_mels, device=cuda_device)
+
+            # Test mel-spectrogram singing
+            cuda_kernels.launch_mel_spectrogram_singing(
+                audio_waveform, window, mel_filterbank, mel_output,
+                n_fft, hop_length, apply_a_weighting
+            )
+
+            assert mel_output.device.type == "cuda"
+            assert mel_output.shape == (audio_waveform.shape[0], n_frames, n_mels)
+            assert torch.all(mel_output >= 0)  # Log mel should be non-negative after log compression
+            assert not torch.isnan(mel_output).any()
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    def test_launch_realtime_voice_conversion(self, cuda_device):
+        """Test real-time voice conversion kernel."""
+        try:
+            import cuda_kernels
+
+            chunk_size = 4410  # 100ms at 44.1kHz
+            overlap_size = 1102  # 25% overlap
+            n_fft = 2048
+            hop_length = 512
+            feature_dim = 256
+
+            # Create input tensors
+            audio_chunk = torch.randn(chunk_size, device=cuda_device)
+            overlap_buffer = torch.zeros(overlap_size, device=cuda_device)
+            window = torch.hann_window(n_fft, device=cuda_device)
+            features_output = torch.zeros(feature_dim, device=cuda_device)
+
+            # Test real-time voice conversion
+            cuda_kernels.launch_realtime_voice_conversion(
+                audio_chunk, overlap_buffer, features_output, window, n_fft, hop_length
+            )
+
+            assert features_output.device.type == "cuda"
+            assert features_output.shape == (feature_dim,)
+            assert not torch.isnan(features_output).any()
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    def test_perceptual_weighting(self, mel_spectrogram, cuda_device):
+        """Test A-weighting perceptual weighting."""
+        try:
+            import cuda_kernels
+
+            batch_size, n_frames, mel_bins = mel_spectrogram.shape
+            mel_frequencies = torch.logspace(1, 4, mel_bins, device=cuda_device)  # log-spaced freqs
+
+            # Create copy for comparison
+            mel_original = mel_spectrogram.clone()
+
+            # Apply perceptual weighting
+            cuda_kernels.apply_perceptual_weighting(
+                mel_spectrogram, mel_frequencies, n_frames, mel_bins, batch_size
+            )
+
+            assert mel_spectrogram.device.type == "cuda"
+            assert mel_spectrogram.shape == mel_original.shape
+            assert not torch.isnan(mel_spectrogram).any()
+            # Output should be different from input (weighting applied)
+            assert not torch.allclose(mel_spectrogram, mel_original, atol=1e-6)
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+
 class TestMemoryKernels:
     """Test memory management CUDA kernels."""
 
@@ -570,6 +912,364 @@ class TestPerformance:
 
             # CUDA kernel should be competitive (within 2x of PyTorch)
             assert cuda_time < torch_time * 2.0
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+
+# ============================================================================
+# Audio Kernel Performance Benchmarks
+# ============================================================================
+
+class TestAudioKernelPerformance:
+    """Performance benchmarks for CUDA audio kernels vs reference implementations."""
+
+    @pytest.mark.cuda
+    @pytest.mark.performance
+    @pytest.mark.slow
+    def test_stft_speedup_vs_torch(self, cuda_device):
+        """Test optimized STFT speedup vs torch.stft (target: ≥5x)."""
+        try:
+            import cuda_kernels
+            import time
+
+            # Generate test audio (2 seconds at 44.1kHz)
+            audio = torch.randn(1, 88200, device=cuda_device)
+            n_fft = 2048
+            hop_length = 512
+            window = torch.hann_window(n_fft, device=cuda_device)
+
+            # Prepare CUDA output
+            n_frames = (audio.shape[1] - n_fft) // hop_length + 1
+            stft_cuda = torch.zeros(audio.shape[0], n_frames, n_fft // 2 + 1,
+                                   dtype=torch.cfloat, device=cuda_device)
+
+            # Warmup: 10 iterations
+            for _ in range(10):
+                cuda_kernels.launch_optimized_stft(audio, window, stft_cuda, n_fft, hop_length)
+                _ = torch.stft(audio, n_fft, hop_length, window=window, return_complex=True)
+            torch.cuda.synchronize()
+
+            # Benchmark CUDA optimized STFT: 100 iterations
+            start = time.perf_counter()
+            for _ in range(100):
+                cuda_kernels.launch_optimized_stft(audio, window, stft_cuda, n_fft, hop_length)
+            torch.cuda.synchronize()
+            cuda_time = time.perf_counter() - start
+
+            # Benchmark PyTorch STFT: 100 iterations
+            start = time.perf_counter()
+            for _ in range(100):
+                _ = torch.stft(audio, n_fft, hop_length, window=window, return_complex=True)
+            torch.cuda.synchronize()
+            torch_time = time.perf_counter() - start
+
+            speedup = torch_time / cuda_time
+            print(f"\nSTFT Performance:")
+            print(f"  CUDA optimized: {cuda_time:.4f}s")
+            print(f"  PyTorch:        {torch_time:.4f}s")
+            print(f"  Speedup:        {speedup:.2f}x")
+
+            # Assert minimum 5x speedup
+            assert speedup >= 5.0, f"STFT speedup {speedup:.2f}x < 5.0x target"
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    @pytest.mark.performance
+    @pytest.mark.slow
+    def test_istft_speedup_vs_torch(self, cuda_device):
+        """Test optimized ISTFT speedup vs torch.istft (target: ≥5x)."""
+        try:
+            import cuda_kernels
+            import time
+
+            # Generate test STFT data
+            batch_size, n_frames, n_freqs = 1, 172, 1025  # ~2s audio
+            n_fft = (n_freqs - 1) * 2
+            hop_length = 512
+            stft_input = torch.randn(batch_size, n_frames, n_freqs, dtype=torch.cfloat, device=cuda_device)
+            window = torch.hann_window(n_fft, device=cuda_device)
+
+            # Prepare CUDA output
+            expected_length = (n_frames - 1) * hop_length + n_fft
+            audio_cuda = torch.zeros(batch_size, expected_length, device=cuda_device)
+
+            # Warmup: 10 iterations
+            for _ in range(10):
+                cuda_kernels.launch_optimized_istft(stft_input, window, audio_cuda, n_fft, hop_length)
+                _ = torch.istft(stft_input.squeeze(0).transpose(0, 1), n_fft, hop_length, window=window)
+            torch.cuda.synchronize()
+
+            # Benchmark CUDA optimized ISTFT: 100 iterations
+            start = time.perf_counter()
+            for _ in range(100):
+                cuda_kernels.launch_optimized_istft(stft_input, window, audio_cuda, n_fft, hop_length)
+            torch.cuda.synchronize()
+            cuda_time = time.perf_counter() - start
+
+            # Benchmark PyTorch ISTFT: 100 iterations
+            start = time.perf_counter()
+            for _ in range(100):
+                _ = torch.istft(stft_input.squeeze(0).transpose(0, 1), n_fft, hop_length, window=window)
+            torch.cuda.synchronize()
+            torch_time = time.perf_counter() - start
+
+            speedup = torch_time / cuda_time
+            print(f"\nISTFT Performance:")
+            print(f"  CUDA optimized: {cuda_time:.4f}s")
+            print(f"  PyTorch:        {torch_time:.4f}s")
+            print(f"  Speedup:        {speedup:.2f}x")
+
+            # Assert minimum 5x speedup
+            assert speedup >= 5.0, f"ISTFT speedup {speedup:.2f}x < 5.0x target"
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    @pytest.mark.performance
+    @pytest.mark.slow
+    def test_mel_spectrogram_speedup_vs_librosa(self, cuda_device):
+        """Test mel-spectrogram speedup vs librosa (target: ≥10x)."""
+        librosa = pytest.importorskip("librosa")
+        try:
+            import cuda_kernels
+            import time
+
+            # Generate test audio (2 seconds at 44.1kHz)
+            audio_cuda = torch.randn(1, 88200, device=cuda_device)
+            audio_np = audio_cuda.cpu().numpy().squeeze()
+
+            n_fft = 2048
+            hop_length = 512
+            n_mels = 128
+
+            # Prepare CUDA inputs
+            window = torch.hann_window(n_fft, device=cuda_device)
+            mel_filterbank = torch.randn(n_mels, n_fft // 2 + 1, device=cuda_device)
+            n_frames = (audio_cuda.shape[1] - n_fft) // hop_length + 1
+            mel_output = torch.zeros(audio_cuda.shape[0], n_frames, n_mels, device=cuda_device)
+
+            # Warmup: 5 iterations
+            for _ in range(5):
+                cuda_kernels.launch_mel_spectrogram_singing(
+                    audio_cuda, window, mel_filterbank, mel_output, n_fft, hop_length, True
+                )
+                _ = librosa.feature.melspectrogram(y=audio_np, sr=44100, n_fft=n_fft,
+                                                   hop_length=hop_length, n_mels=n_mels)
+            torch.cuda.synchronize()
+
+            # Benchmark CUDA mel-spectrogram: 50 iterations
+            start = time.perf_counter()
+            for _ in range(50):
+                cuda_kernels.launch_mel_spectrogram_singing(
+                    audio_cuda, window, mel_filterbank, mel_output, n_fft, hop_length, True
+                )
+            torch.cuda.synchronize()
+            cuda_time = time.perf_counter() - start
+
+            # Benchmark librosa mel-spectrogram: 50 iterations
+            start = time.perf_counter()
+            for _ in range(50):
+                _ = librosa.feature.melspectrogram(y=audio_np, sr=44100, n_fft=n_fft,
+                                                   hop_length=hop_length, n_mels=n_mels)
+            librosa_time = time.perf_counter() - start
+
+            speedup = librosa_time / cuda_time
+            print(f"\nMel-Spectrogram Performance:")
+            print(f"  CUDA optimized: {cuda_time:.4f}s")
+            print(f"  Librosa:        {librosa_time:.4f}s")
+            print(f"  Speedup:        {speedup:.2f}x")
+
+            # Assert minimum 10x speedup
+            assert speedup >= 10.0, f"Mel-spectrogram speedup {speedup:.2f}x < 10.0x target"
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    @pytest.mark.performance
+    @pytest.mark.slow
+    def test_pitch_detection_speedup_vs_torchcrepe(self, cuda_device):
+        """Test pitch detection speedup vs torchcrepe (target: ≥5x)."""
+        torchcrepe = pytest.importorskip("torchcrepe")
+        try:
+            import cuda_kernels
+            import time
+
+            # Generate test audio (2 seconds at 16kHz)
+            audio_cuda = torch.randn(1, 32000, device=cuda_device)
+
+            frame_length = 2048
+            hop_length = 512
+            sample_rate = 16000
+            fmin, fmax = 80.0, 1000.0
+            threshold = 0.3
+
+            # Prepare CUDA outputs
+            n_frames = (audio_cuda.shape[1] - frame_length) // hop_length + 1
+            pitch_output = torch.zeros(n_frames, device=cuda_device)
+            confidence_output = torch.zeros(n_frames, device=cuda_device)
+            vibrato_output = torch.zeros(n_frames, device=cuda_device)
+
+            # Warmup: 5 iterations
+            for _ in range(5):
+                cuda_kernels.launch_pitch_detection(
+                    audio_cuda, pitch_output, confidence_output, vibrato_output,
+                    sample_rate, frame_length, hop_length, fmin, fmax, threshold
+                )
+                _ = torchcrepe.predict(audio_cuda, sample_rate, hop_length, fmin, fmax,
+                                      model='tiny', device=cuda_device, return_periodicity=True)
+            torch.cuda.synchronize()
+
+            # Benchmark CUDA pitch detection: 50 iterations
+            start = time.perf_counter()
+            for _ in range(50):
+                cuda_kernels.launch_pitch_detection(
+                    audio_cuda, pitch_output, confidence_output, vibrato_output,
+                    sample_rate, frame_length, hop_length, fmin, fmax, threshold
+                )
+            torch.cuda.synchronize()
+            cuda_time = time.perf_counter() - start
+
+            # Benchmark torchcrepe: 50 iterations
+            start = time.perf_counter()
+            for _ in range(50):
+                _ = torchcrepe.predict(audio_cuda, sample_rate, hop_length, fmin, fmax,
+                                      model='tiny', device=cuda_device, return_periodicity=True)
+            torch.cuda.synchronize()
+            crepe_time = time.perf_counter() - start
+
+            speedup = crepe_time / cuda_time
+            print(f"\nPitch Detection Performance:")
+            print(f"  CUDA optimized: {cuda_time:.4f}s")
+            print(f"  Torchcrepe:     {crepe_time:.4f}s")
+            print(f"  Speedup:        {speedup:.2f}x")
+
+            # Assert minimum 5x speedup
+            assert speedup >= 5.0, f"Pitch detection speedup {speedup:.2f}x < 5.0x target"
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    @pytest.mark.performance
+    @pytest.mark.slow
+    def test_formant_extraction_speedup_vs_parselmouth(self, cuda_device):
+        """Test formant extraction speedup vs parselmouth (target: ≥20x)."""
+        parselmouth = pytest.importorskip("parselmouth")
+        try:
+            import cuda_kernels
+            import time
+
+            frame_length = 2048
+            sample_rate = 16000
+            lpc_order = 14
+            num_formants = 4
+            n_frames = 50
+
+            # Generate test audio frames
+            batch_size = 1
+            audio_frames = torch.randn(batch_size, n_frames, frame_length, device=cuda_device)
+
+            # Prepare CUDA output
+            formants_output = torch.zeros(n_frames, num_formants, device=cuda_device)
+
+            # Prepare parselmouth data (convert to numpy)
+            audio_np = audio_frames.cpu().numpy().reshape(-1)
+
+            # Warmup: 5 iterations
+            for _ in range(5):
+                cuda_kernels.launch_formant_extraction(
+                    audio_frames, formants_output, frame_length, sample_rate, lpc_order, num_formants
+                )
+                # Parselmouth processing
+                sound = parselmouth.Sound(audio_np, sampling_frequency=sample_rate)
+                _ = sound.to_formant_burg(max_number_of_formants=num_formants)
+            torch.cuda.synchronize()
+
+            # Benchmark CUDA formant extraction: 50 iterations
+            start = time.perf_counter()
+            for _ in range(50):
+                cuda_kernels.launch_formant_extraction(
+                    audio_frames, formants_output, frame_length, sample_rate, lpc_order, num_formants
+                )
+            torch.cuda.synchronize()
+            cuda_time = time.perf_counter() - start
+
+            # Benchmark parselmouth: 50 iterations
+            start = time.perf_counter()
+            for _ in range(50):
+                sound = parselmouth.Sound(audio_np, sampling_frequency=sample_rate)
+                _ = sound.to_formant_burg(max_number_of_formants=num_formants)
+            parselmouth_time = time.perf_counter() - start
+
+            speedup = parselmouth_time / cuda_time
+            print(f"\nFormant Extraction Performance:")
+            print(f"  CUDA optimized: {cuda_time:.4f}s")
+            print(f"  Parselmouth:    {parselmouth_time:.4f}s")
+            print(f"  Speedup:        {speedup:.2f}x")
+
+            # Assert minimum 20x speedup
+            assert speedup >= 20.0, f"Formant extraction speedup {speedup:.2f}x < 20.0x target"
+
+        except ImportError:
+            pytest.skip("CUDA kernels not available")
+
+    @pytest.mark.cuda
+    @pytest.mark.performance
+    def test_realtime_voice_conversion_latency(self, cuda_device):
+        """Test real-time voice conversion latency (target: <10ms per 100ms chunk)."""
+        try:
+            import cuda_kernels
+            import time
+
+            # 100ms chunks at 44.1kHz
+            chunk_size = 4410
+            overlap_size = 1102  # 25% overlap
+            n_fft = 2048
+            hop_length = 512
+            feature_dim = 256
+
+            # Create input tensors
+            audio_chunk = torch.randn(chunk_size, device=cuda_device)
+            overlap_buffer = torch.zeros(overlap_size, device=cuda_device)
+            window = torch.hann_window(n_fft, device=cuda_device)
+            features_output = torch.zeros(feature_dim, device=cuda_device)
+
+            # Warmup: 10 iterations
+            for _ in range(10):
+                cuda_kernels.launch_realtime_voice_conversion(
+                    audio_chunk, overlap_buffer, features_output, window, n_fft, hop_length
+                )
+            torch.cuda.synchronize()
+
+            # Benchmark single-call latency: 100 iterations
+            latencies = []
+            for _ in range(100):
+                start = time.perf_counter()
+                cuda_kernels.launch_realtime_voice_conversion(
+                    audio_chunk, overlap_buffer, features_output, window, n_fft, hop_length
+                )
+                torch.cuda.synchronize()
+                latency_ms = (time.perf_counter() - start) * 1000
+                latencies.append(latency_ms)
+
+            avg_latency = np.mean(latencies)
+            p95_latency = np.percentile(latencies, 95)
+            p99_latency = np.percentile(latencies, 99)
+
+            print(f"\nReal-time Voice Conversion Latency (100ms chunks):")
+            print(f"  Average:     {avg_latency:.2f}ms")
+            print(f"  95th percentile: {p95_latency:.2f}ms")
+            print(f"  99th percentile: {p99_latency:.2f}ms")
+
+            # Assert average latency < 10ms for real-time capability
+            assert avg_latency < 10.0, f"Average latency {avg_latency:.2f}ms >= 10ms target"
+            # Assert p99 latency < 15ms (allow some headroom)
+            assert p99_latency < 15.0, f"P99 latency {p99_latency:.2f}ms >= 15ms"
+
         except ImportError:
             pytest.skip("CUDA kernels not available")
 

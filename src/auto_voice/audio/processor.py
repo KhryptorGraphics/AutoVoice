@@ -84,16 +84,19 @@ class AudioProcessor:
             self.mel_transform = None
             self.amplitude_to_db = None
     
-    def load_audio(self, path: str, target_sr: Optional[int] = None, return_sr: bool = False) -> Union[torch.Tensor, np.ndarray, Tuple[Union[torch.Tensor, np.ndarray], int]]:
+    def load_audio(self, path: str, target_sr: Optional[int] = None, return_sr: bool = False, preserve_channels: bool = False) -> Union[torch.Tensor, np.ndarray, Tuple[Union[torch.Tensor, np.ndarray], int]]:
         """Load audio from file
 
         Args:
             path: Path to audio file
             target_sr: Target sample rate (uses self.sample_rate if None)
             return_sr: If True, return (audio, original_sample_rate) tuple
+            preserve_channels: If True, preserve original channel count; if False (default), downmix to mono
 
         Returns:
             Audio tensor/array, or (audio, original_sr) if return_sr=True
+            When preserve_channels=False: mono audio (1D tensor)
+            When preserve_channels=True: multi-channel audio (2D tensor with shape [channels, samples])
         """
         if target_sr is None:
             target_sr = self.sample_rate
@@ -106,28 +109,43 @@ class AudioProcessor:
             if TORCHAUDIO_AVAILABLE:
                 waveform, sample_rate = torchaudio.load(str(path))
                 original_sr = sample_rate
-                # Convert to mono if stereo
-                if waveform.shape[0] > 1:
+                # Convert to mono if stereo (unless preserve_channels is True)
+                if not preserve_channels and waveform.shape[0] > 1:
                     waveform = torch.mean(waveform, dim=0, keepdim=True)
                 # Resample if needed
                 if sample_rate != target_sr:
                     resampler = T.Resample(sample_rate, target_sr)
                     waveform = resampler(waveform)
-                result = waveform.squeeze(0)  # Remove channel dimension
+                # Squeeze only if not preserving channels
+                if preserve_channels:
+                    result = waveform  # Keep channel dimension [channels, samples]
+                else:
+                    result = waveform.squeeze(0)  # Remove channel dimension for mono
                 return (result, original_sr) if return_sr else result
             elif LIBROSA_AVAILABLE:
                 # Load without resampling first to get original SR
-                audio_orig, original_sr = librosa.load(str(path), sr=None)
+                # librosa.load with mono=False preserves channels
+                audio_orig, original_sr = librosa.load(str(path), sr=None, mono=not preserve_channels)
                 # Resample if needed
                 if original_sr != target_sr:
-                    audio = librosa.resample(audio_orig, orig_sr=original_sr, target_sr=target_sr)
+                    if preserve_channels and audio_orig.ndim == 2:
+                        # Resample each channel separately for multi-channel audio
+                        audio = np.stack([
+                            librosa.resample(audio_orig[i], orig_sr=original_sr, target_sr=target_sr)
+                            for i in range(audio_orig.shape[0])
+                        ])
+                    else:
+                        audio = librosa.resample(audio_orig, orig_sr=original_sr, target_sr=target_sr)
                 else:
                     audio = audio_orig
                 result = torch.from_numpy(audio.astype(np.float32))
                 return (result, original_sr) if return_sr else result
             else:
                 logger.warning("Neither torchaudio nor librosa available. Using dummy audio.")
-                result = torch.randn(target_sr * 3)  # 3 seconds of dummy audio
+                if preserve_channels:
+                    result = torch.randn(2, target_sr * 3)  # 2-channel dummy audio
+                else:
+                    result = torch.randn(target_sr * 3)  # Mono dummy audio
                 return (result, target_sr) if return_sr else result
         except Exception as e:
             logger.error(f"Error loading audio from {path}: {e}")

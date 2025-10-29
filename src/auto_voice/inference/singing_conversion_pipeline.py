@@ -87,7 +87,10 @@ class SingingConversionPipeline:
         config: Optional[Dict[str, Any]] = None,
         device: Optional[str] = None,
         gpu_manager: Optional[Any] = None,
-        preset: Optional[str] = None
+        preset: Optional[str] = None,
+        voice_cloner: Optional[Any] = None,
+        use_tensorrt: bool = False,
+        tensorrt_precision: str = 'fp16'
     ):
         """Initialize SingingConversionPipeline.
 
@@ -96,11 +99,17 @@ class SingingConversionPipeline:
             device: Device string ('cuda', 'cpu', etc.)
             gpu_manager: Optional GPU manager instance
             preset: Preset name ('fast', 'balanced', 'quality', 'custom')
+            voice_cloner: Optional VoiceCloner instance (for loading voice profiles)
+            use_tensorrt: Enable TensorRT optimization (default: False)
+            tensorrt_precision: TensorRT precision ('fp16' or 'fp32', default: 'fp16')
         """
         self.config = self._load_config(config, preset)
         self.device = device or self.config.get('device', 'cuda')
         self.gpu_manager = gpu_manager
         self.current_preset = preset or self.config.get('preset', 'balanced')
+        self.voice_cloner = voice_cloner
+        self.use_tensorrt = use_tensorrt
+        self.tensorrt_precision = tensorrt_precision
 
         # Initialize cache directory
         self.cache_dir = os.path.expanduser(self.config['cache_dir'])
@@ -134,11 +143,64 @@ class SingingConversionPipeline:
         if voice_converter_config:
             model_config = {**model_config, **voice_converter_config}
         self.voice_converter = SingingVoiceConverter(model_config)
-        if device:
-            self.voice_converter = self.voice_converter.to(device)
-        self.voice_converter.eval()
-        self.voice_converter.prepare_for_inference()
+        # Guard model API calls with hasattr checks
+        if device and hasattr(self.voice_converter, 'to'):
+            converted_model = self.voice_converter.to(device)
+            # Only reassign if to() returns a new instance
+            if converted_model is not None:
+                self.voice_converter = converted_model
+        if hasattr(self.voice_converter, 'eval'):
+            self.voice_converter.eval()
+        if hasattr(self.voice_converter, 'prepare_for_inference'):
+            self.voice_converter.prepare_for_inference()
         logger.info("✓ SingingVoiceConverter initialized")
+
+        # Initialize TensorRT if requested
+        if self.use_tensorrt:
+            try:
+                import tensorrt as trt
+                logger.info(f"TensorRT requested with precision: {self.tensorrt_precision}")
+
+                # Try to load existing TensorRT engines
+                engine_dir = os.path.expanduser('~/.cache/autovoice/tensorrt_engines')
+                if hasattr(self.voice_converter, 'load_tensorrt_engines'):
+                    engines_loaded = self.voice_converter.load_tensorrt_engines(engine_dir=engine_dir)
+
+                    if engines_loaded:
+                        logger.info("✓ TensorRT engines loaded successfully")
+                    else:
+                        # Engines not found, try to build them
+                        logger.info("TensorRT engines not found, attempting to build...")
+                        onnx_dir = os.path.expanduser('~/.cache/autovoice/onnx_models')
+
+                        # Export to ONNX if needed
+                        if not os.path.exists(onnx_dir) or not os.listdir(onnx_dir):
+                            logger.info("Exporting models to ONNX...")
+                            if hasattr(self.voice_converter, 'export_to_onnx'):
+                                self.voice_converter.export_to_onnx(export_dir=onnx_dir)
+
+                        # Build TensorRT engines
+                        if hasattr(self.voice_converter, 'create_tensorrt_engines'):
+                            fp16 = (self.tensorrt_precision == 'fp16')
+                            self.voice_converter.create_tensorrt_engines(
+                                onnx_dir=onnx_dir,
+                                engine_dir=engine_dir,
+                                fp16=fp16
+                            )
+                            logger.info("✓ TensorRT engines built successfully")
+                        else:
+                            logger.warning("Voice converter does not support TensorRT engine creation")
+                            self.use_tensorrt = False
+                else:
+                    logger.warning("Voice converter does not support TensorRT, falling back to PyTorch")
+                    self.use_tensorrt = False
+
+            except ImportError:
+                logger.warning("TensorRT not available, falling back to PyTorch inference")
+                self.use_tensorrt = False
+            except Exception as e:
+                logger.warning(f"TensorRT initialization failed: {e}, falling back to PyTorch")
+                self.use_tensorrt = False
 
         # AudioMixer config
         mixer_config = self.config.get('mixer_config', {})
@@ -152,8 +214,20 @@ class SingingConversionPipeline:
         self.audio_processor = AudioProcessor()
         logger.info("✓ AudioProcessor initialized")
 
-        self.voice_storage = VoiceProfileStorage()
-        logger.info("✓ VoiceProfileStorage initialized")
+        # Use VoiceCloner if provided, otherwise fallback to direct storage with consistent path
+        if self.voice_cloner is None:
+            # Get storage_dir from config to match VoiceCloner's storage path
+            # Accept both 'storage_dir' and 'voice_profile_dir' as aliases for backward compatibility
+            storage_dir = (
+                self.config.get('storage_dir') or
+                self.config.get('voice_profile_dir') or
+                os.path.expanduser('~/.cache/autovoice/voice_profiles/')
+            )
+            self.voice_storage = VoiceProfileStorage(storage_dir=storage_dir)
+            logger.info(f"✓ VoiceProfileStorage initialized (direct access, storage_dir={storage_dir})")
+        else:
+            self.voice_storage = None
+            logger.info("✓ Using VoiceCloner for profile access")
 
         # Initialize thread lock
         self.lock = threading.RLock()
@@ -304,23 +378,31 @@ class SingingConversionPipeline:
         target_profile_id: str,
         vocal_volume: float = 1.0,
         instrumental_volume: float = 0.9,
+        pitch_shift: float = 0.0,
+        preset: Optional[str] = None,
         progress_callback: Optional[Callable[[float, str], None]] = None,
+        profiling_callback: Optional[Callable[[str, float], None]] = None,
         return_stems: bool = False
     ) -> Dict[str, Any]:
         """Convert singing voice in a song to target voice.
 
         Primary method for end-to-end conversion. Performs:
         1. Vocal separation (0-25%)
-        2. Pitch extraction (25-40%)
+        2. F0 extraction (25-40%)
         3. Voice conversion (40-80%)
         4. Audio mixing (80-100%)
+
+        Progress callback stages: 'source_separation', 'pitch_extraction', 'voice_conversion', 'audio_mixing'
 
         Args:
             song_path: Path to input song file (MP3/WAV/FLAC)
             target_profile_id: Voice profile ID for target speaker
             vocal_volume: Volume multiplier for vocals (0.0-2.0, default: 1.0)
             instrumental_volume: Volume multiplier for instrumental (0.0-2.0, default: 0.9)
-            progress_callback: Optional callback(progress_percent, stage_name)
+            pitch_shift: Pitch shift in semitones (default: 0.0, range: -12 to +12)
+            preset: Quality preset name ('fast', 'balanced', 'quality', default: None uses current)
+            progress_callback: Optional callback(progress: float, stage: str) - progress 0.0-100.0 first, then stage name
+            profiling_callback: Optional callback(stage_name: str, elapsed_ms: float) - called at completion of each stage with timing
             return_stems: Return separated vocals/instrumental in addition to mix
 
         Returns:
@@ -331,10 +413,13 @@ class SingingConversionPipeline:
                 'duration': float,
                 'vocals': np.ndarray (if return_stems=True),
                 'instrumental': np.ndarray (if return_stems=True),
+                'f0_contour': np.ndarray,
                 'metadata': {
                     'target_profile_id': str,
                     'vocal_volume': float,
                     'instrumental_volume': float,
+                    'pitch_shift': float,
+                    'preset': str,
                     'f0_stats': dict
                 }
             }
@@ -346,32 +431,57 @@ class SingingConversionPipeline:
         with self.lock:
             start_time = time.time()
 
+            # Apply preset if specified
+            if preset is not None:
+                self.set_preset(preset, clear_cache=False)
+
             # Initial progress callback
             if progress_callback:
-                progress_callback(0.0, 'Starting conversion')
+                progress_callback(0.0, 'source_separation')
 
             # Validate inputs
             if not os.path.exists(song_path):
                 raise FileNotFoundError(f"Song file not found: {song_path}")
 
-            # Check cache
-            if self.config['cache_enabled']:
+            # Check cache (bypass if return_stems=True since cache doesn't store stems)
+            if self.config['cache_enabled'] and not return_stems:
                 cache_key = self._get_cache_key(
                     song_path, target_profile_id,
-                    {'vocal_volume': vocal_volume, 'instrumental_volume': instrumental_volume}
+                    {
+                        'vocal_volume': vocal_volume,
+                        'instrumental_volume': instrumental_volume,
+                        'pitch_shift': pitch_shift,
+                        'preset': preset or self.current_preset
+                    }
                 )
                 cached_result = self._load_from_cache(cache_key)
                 if cached_result:
                     logger.info(f"Cache hit for conversion: {cache_key}")
                     if progress_callback:
-                        progress_callback(100.0, 'Loaded from cache')
+                        progress_callback(100.0, 'audio_mixing')
                     return cached_result
+            elif self.config['cache_enabled'] and return_stems:
+                logger.info("Bypassing cache because return_stems=True (stems not cached)")
 
             logger.info(f"Starting song conversion: {song_path} -> profile {target_profile_id}")
 
+            # Start timing for profiling
+            import time
+            t0 = time.time()
+            stage_start = t0
+
+            # Load original audio to get sample rate
+            _, original_sr = self.audio_processor.load_audio(song_path, return_sr=True)
+            sample_rate = original_sr
+
             # Load target speaker embedding
             try:
-                profile = self.voice_storage.load_profile(target_profile_id)
+                # Use VoiceCloner if available, otherwise fallback to direct storage
+                if self.voice_cloner is not None:
+                    profile = self.voice_cloner.load_voice_profile(target_profile_id)
+                else:
+                    profile = self.voice_storage.load_profile(target_profile_id)
+
                 if profile is None:
                     raise FileNotFoundError(f"Voice profile not found: {target_profile_id}")
                 target_embedding = profile.get('embedding')
@@ -379,32 +489,53 @@ class SingingConversionPipeline:
                     raise ValueError(f"Profile {target_profile_id} has no embedding")
                 target_embedding = np.array(target_embedding)
                 logger.info(f"Loaded target embedding: shape {target_embedding.shape}")
+            except FileNotFoundError:
+                # Backward-compatible fallback: try loading .npz file directly
+                storage_dir = (
+                    self.config.get('storage_dir') or
+                    self.config.get('voice_profile_dir') or
+                    os.path.expanduser('~/.cache/autovoice/voice_profiles/')
+                )
+                npz_path = Path(storage_dir) / f'{target_profile_id}.npz'
+                if npz_path.exists():
+                    logger.info(f"Loading legacy .npz profile: {npz_path}")
+                    try:
+                        npz_data = np.load(str(npz_path))
+                        target_embedding = npz_data['embedding']
+                        logger.info(f"Loaded target embedding from .npz: shape {target_embedding.shape}")
+                    except Exception as npz_error:
+                        logger.error(f"Failed to load .npz profile: {npz_error}")
+                        raise FileNotFoundError(f"Voice profile not found: {target_profile_id}")
+                else:
+                    # Re-raise FileNotFoundError to allow API to map it to 404
+                    logger.error(f"Voice profile not found: {target_profile_id}")
+                    raise
             except Exception as e:
+                # Wrap other exceptions as SingingConversionError
                 logger.error(f"Failed to load profile: {e}", exc_info=True)
                 raise SingingConversionError(f"Failed to load voice profile: {e}")
-
-            # Load audio to get original sample rate before separation
-            try:
-                _, original_sr = self.audio_processor.load_audio(song_path, return_sr=True)
-                logger.info(f"Input audio sample rate: {original_sr} Hz")
-            except Exception as e:
-                logger.warning(f"Could not detect original sample rate: {e}, using config default")
-                original_sr = self.config['output_sample_rate']
 
             # Stage 1: Vocal Separation (0-25%)
             try:
                 if progress_callback:
-                    progress_callback(0.0, 'Starting vocal separation')
+                    progress_callback(0.0, 'source_separation')
 
-                # VocalSeparator now returns (vocals, instrumental, sample_rate)
-                vocals, instrumental, separated_sr = self.vocal_separator.separate_vocals(song_path)
-                # Use the actual sample rate from separation
-                sample_rate = separated_sr
+                # VocalSeparator returns (vocals, instrumental)
+                vocals, instrumental = self.vocal_separator.separate_vocals(song_path)
 
                 if progress_callback:
-                    progress_callback(25.0, 'Vocal separation complete')
+                    progress_callback(25.0, 'source_separation')
 
                 logger.info(f"Separated vocals: {vocals.shape}, instrumental: {instrumental.shape} at {sample_rate} Hz")
+
+                # Profiling callback for separation stage
+                if profiling_callback:
+                    t_sep = (time.time() - stage_start) * 1000  # Convert to ms
+                    try:
+                        profiling_callback('separation', t_sep)
+                    except Exception as e:
+                        logger.warning(f"Profiling callback error: {e}")
+                    stage_start = time.time()
 
                 # Optional GPU memory cleanup after separation
                 if self.config.get('enable_memory_cleanup', False):
@@ -422,19 +553,28 @@ class SingingConversionPipeline:
                 logger.error(f"Vocal separation failed: {e}", exc_info=True)
                 raise SeparationError(f"Failed to separate vocals: {e}")
 
-            # Stage 2: Pitch Extraction (25-40%)
+            # Stage 2: F0 Extraction (25-40%)
             try:
                 if progress_callback:
-                    progress_callback(25.0, 'Starting pitch extraction')
+                    progress_callback(25.0, 'pitch_extraction')
 
                 f0_data = self.pitch_extractor.extract_f0_contour(vocals, sample_rate)
 
                 if progress_callback:
-                    progress_callback(40.0, 'Pitch extraction complete')
+                    progress_callback(40.0, 'pitch_extraction')
 
                 # Get pitch statistics
                 f0_stats = self.pitch_extractor.get_pitch_statistics(f0_data)
                 logger.info(f"Extracted F0: min={f0_stats['min_f0']:.1f}Hz, max={f0_stats['max_f0']:.1f}Hz")
+
+                # Profiling callback for f0_extraction stage
+                if profiling_callback:
+                    t_f0 = (time.time() - stage_start) * 1000  # Convert to ms
+                    try:
+                        profiling_callback('f0_extraction', t_f0)
+                    except Exception as e:
+                        logger.warning(f"Profiling callback error: {e}")
+                    stage_start = time.time()
 
                 # Optional GPU memory cleanup after pitch extraction
                 if self.config.get('enable_memory_cleanup', False):
@@ -456,24 +596,48 @@ class SingingConversionPipeline:
             # Stage 3: Voice Conversion (40-80%)
             try:
                 if progress_callback:
-                    progress_callback(40.0, 'Starting voice conversion')
+                    progress_callback(40.0, 'voice_conversion')
 
                 # Prepare F0 for converter
                 source_f0 = f0_data['f0'] if f0_data else None
 
-                # Convert vocals
-                converted_vocals = self.voice_converter.convert(
-                    vocals,
-                    target_embedding,
-                    source_f0=source_f0,
-                    source_sample_rate=sample_rate,
-                    output_sample_rate=self.config['output_sample_rate']
-                )
+                # Convert vocals with pitch shift using TensorRT if enabled
+                if self.use_tensorrt and hasattr(self.voice_converter, 'convert_with_tensorrt'):
+                    logger.info("Using TensorRT-accelerated conversion")
+                    converted_vocals = self.voice_converter.convert_with_tensorrt(
+                        vocals,
+                        target_embedding,
+                        source_f0=source_f0,
+                        source_sample_rate=sample_rate,
+                        output_sample_rate=self.config['output_sample_rate'],
+                        pitch_shift_semitones=pitch_shift
+                    )
+                    # If convert_with_tensorrt returns tuple (audio, timing_info), extract audio
+                    if isinstance(converted_vocals, tuple):
+                        converted_vocals = converted_vocals[0]
+                else:
+                    converted_vocals = self.voice_converter.convert(
+                        vocals,
+                        target_embedding,
+                        source_f0=source_f0,
+                        source_sample_rate=sample_rate,
+                        output_sample_rate=self.config['output_sample_rate'],
+                        pitch_shift_semitones=pitch_shift
+                    )
 
                 if progress_callback:
-                    progress_callback(80.0, 'Voice conversion complete')
+                    progress_callback(80.0, 'voice_conversion')
 
                 logger.info(f"Converted vocals: {converted_vocals.shape}")
+
+                # Profiling callback for conversion stage
+                if profiling_callback:
+                    t_conv = (time.time() - stage_start) * 1000  # Convert to ms
+                    try:
+                        profiling_callback('conversion', t_conv)
+                    except Exception as e:
+                        logger.warning(f"Profiling callback error: {e}")
+                    stage_start = time.time()
 
                 # Optional GPU memory cleanup after voice conversion
                 if self.config.get('enable_memory_cleanup', False):
@@ -494,7 +658,7 @@ class SingingConversionPipeline:
             # Stage 4: Audio Mixing (80-100%)
             try:
                 if progress_callback:
-                    progress_callback(80.0, 'Starting audio mixing')
+                    progress_callback(80.0, 'audio_mixing')
 
                 # Resample instrumental if needed using AudioMixer's resampling utility
                 if sample_rate != self.config['output_sample_rate']:
@@ -582,9 +746,17 @@ class SingingConversionPipeline:
                 )
 
                 if progress_callback:
-                    progress_callback(100.0, 'Mixing complete')
+                    progress_callback(100.0, 'audio_mixing')
 
                 logger.info(f"Final mix: {mixed_audio.shape} at {final_sample_rate}Hz")
+
+                # Profiling callback for mixing stage
+                if profiling_callback:
+                    t_mix = (time.time() - stage_start) * 1000  # Convert to ms
+                    try:
+                        profiling_callback('mixing', t_mix)
+                    except Exception as e:
+                        logger.warning(f"Profiling callback error: {e}")
 
                 # Optional GPU memory cleanup after mixing
                 if self.config.get('enable_memory_cleanup', False):
@@ -608,32 +780,65 @@ class SingingConversionPipeline:
                     raise SingingConversionError(f"Failed to mix audio: {e}")
 
             # Build result dictionary
-            duration = len(mixed_audio) / final_sample_rate if mixed_audio.ndim == 1 else mixed_audio.shape[1] / final_sample_rate
+            # Duration is always computed from first dimension (time axis) for both mono (T,) and stereo (T, 2)
+            duration = mixed_audio.shape[0] / final_sample_rate
+
+            # Convert f0_contour to list for JSON serialization if present
+            f0_contour = None
+            if f0_data is not None and 'f0' in f0_data:
+                import numpy as np
+                f0_array = f0_data['f0']
+                # Convert to list for serialization
+                f0_contour = f0_array.tolist() if isinstance(f0_array, np.ndarray) else f0_array
+
             result = {
                 'mixed_audio': mixed_audio,
                 'sample_rate': final_sample_rate,
                 'duration': duration,
                 'vocals': converted_vocals if return_stems else None,
                 'instrumental': instrumental if return_stems else None,
+                'f0_contour': f0_contour,
                 'metadata': {
                     'target_profile_id': target_profile_id,
                     'vocal_volume': vocal_volume,
                     'instrumental_volume': instrumental_volume,
+                    'pitch_shift': pitch_shift,
+                    'preset': preset or self.current_preset,
                     'f0_stats': f0_stats,
-                    'processing_time': time.time() - start_time,
-                    'input_sample_rate': separated_sr,
-                    'output_sample_rate': final_sample_rate
+                    'processing_time': time.time() - t0,
+                    'input_sample_rate': sample_rate,
+                    'output_sample_rate': final_sample_rate,
+                    'tensorrt': {
+                        'enabled': self.use_tensorrt and hasattr(self.voice_converter, 'trt_enabled') and self.voice_converter.trt_enabled,
+                        'precision': self.tensorrt_precision if self.use_tensorrt else None
+                    }
                 }
             }
 
-            # Save to cache
-            if self.config['cache_enabled']:
+            # Save to cache (skip if return_stems=True since stems are not cached)
+            if self.config['cache_enabled'] and not return_stems:
                 try:
+                    # Ensure cache_key is available (may not be computed if cache was bypassed earlier)
+                    if 'cache_key' not in locals():
+                        cache_key = self._get_cache_key(
+                            song_path, target_profile_id,
+                            {'vocal_volume': vocal_volume, 'instrumental_volume': instrumental_volume}
+                        )
                     self._save_to_cache(cache_key, result)
                 except Exception as e:
                     logger.warning(f"Failed to save to cache: {e}")
+            elif self.config['cache_enabled'] and return_stems:
+                logger.debug("Skipping cache save: stems are not cached (return_stems=True)")
 
-            logger.info(f"Song conversion complete in {time.time() - start_time:.2f}s")
+            logger.info(f"Song conversion complete in {time.time() - t0:.2f}s")
+
+            # Profiling callback for total time
+            if profiling_callback:
+                total_time = (time.time() - t0) * 1000  # Convert to ms
+                try:
+                    profiling_callback('total', total_time)
+                except Exception as e:
+                    logger.warning(f"Profiling callback error: {e}")
 
             return result
 
@@ -646,6 +851,8 @@ class SingingConversionPipeline:
         """Convert isolated vocals (no separation needed).
 
         Simplified method for converting already-separated vocals.
+
+        Progress callback stages: 'pitch_extraction', 'voice_conversion'
 
         Args:
             vocals_path: Path to vocals file
@@ -664,32 +871,37 @@ class SingingConversionPipeline:
                 vocals, sample_rate = self.audio_processor.load_audio(vocals_path, return_sr=True)
 
                 # Load target embedding
-                profile = self.voice_storage.load_profile(target_profile_id)
+                # Use VoiceCloner if available, otherwise fallback to direct storage
+                if self.voice_cloner is not None:
+                    profile = self.voice_cloner.load_voice_profile(target_profile_id)
+                else:
+                    profile = self.voice_storage.load_profile(target_profile_id)
+
                 if profile is None:
                     raise FileNotFoundError(f"Voice profile not found: {target_profile_id}")
                 target_embedding = np.array(profile['embedding'])
 
                 # Extract pitch with error handling
                 if progress_callback:
-                    progress_callback(0.0, 'Starting pitch extraction')
+                    progress_callback(0.0, 'pitch_extraction')
 
                 try:
                     f0_data = self.pitch_extractor.extract_f0_contour(vocals, sample_rate)
                     f0_stats = self.pitch_extractor.get_pitch_statistics(f0_data)
 
                     if progress_callback:
-                        progress_callback(33.0, 'Pitch extraction complete')
+                        progress_callback(33.0, 'pitch_extraction')
                 except Exception as e:
                     logger.warning(f"Pitch extraction failed: {e}, continuing without F0 guidance")
                     f0_data = None
                     f0_stats = {}
 
                     if progress_callback:
-                        progress_callback(33.0, 'Pitch extraction skipped')
+                        progress_callback(33.0, 'pitch_extraction')
 
                 # Convert vocals
                 if progress_callback:
-                    progress_callback(33.0, 'Starting voice conversion')
+                    progress_callback(33.0, 'voice_conversion')
 
                 converted_vocals = self.voice_converter.convert(
                     vocals,
@@ -700,7 +912,7 @@ class SingingConversionPipeline:
                 )
 
                 if progress_callback:
-                    progress_callback(100.0, 'Voice conversion complete')
+                    progress_callback(100.0, 'voice_conversion')
 
                 return {
                     'vocals': converted_vocals,
@@ -721,7 +933,7 @@ class SingingConversionPipeline:
         Args:
             song_path: Path to song file
             target_profile_id: Target profile ID
-            params: Conversion parameters
+            params: Conversion parameters (vocal_volume, instrumental_volume, pitch_shift, preset, etc.)
 
         Returns:
             Cache key string (hex digest)
@@ -729,8 +941,28 @@ class SingingConversionPipeline:
         # Get file modification time
         mtime = os.path.getmtime(song_path) if os.path.exists(song_path) else 0
 
-        # Create hash from song path, mtime, profile, and params
-        key_string = f"{song_path}:{mtime}:{target_profile_id}:{params['vocal_volume']}:{params['instrumental_volume']}"
+        # Create hash from song path, mtime, profile, and all conversion-affecting params
+        # Include all parameters that affect the conversion output
+        import json
+
+        # Build stable key with all conversion parameters
+        key_parts = [
+            song_path,
+            str(mtime),
+            target_profile_id,
+            str(params.get('vocal_volume', 1.0)),
+            str(params.get('instrumental_volume', 0.9)),
+            str(params.get('pitch_shift', 0.0)),
+            str(params.get('preset', self.current_preset)),
+        ]
+
+        # Include converter options if present
+        converter_options = params.get('converter_options', {})
+        if converter_options:
+            # Sort keys for stable serialization
+            key_parts.append(json.dumps(converter_options, sort_keys=True))
+
+        key_string = ':'.join(key_parts)
         return hashlib.md5(key_string.encode()).hexdigest()
 
     def _load_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:

@@ -37,12 +37,13 @@ void synchronize_stream();
 void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch,
                            torch::Tensor& output_confidence, torch::Tensor& output_vibrato,
                            float sample_rate, int frame_length, int hop_length,
-                           float fmin, float fmax, float threshold);
+                           float fmin, float fmax, float threshold,
+                           bool use_harmonic_weighting, int vibrato_method);
 void launch_vibrato_analysis(torch::Tensor& pitch_contour, torch::Tensor& vibrato_rate,
                             torch::Tensor& vibrato_depth, int hop_length, float sample_rate);
 void launch_voice_activity_detection(torch::Tensor& input, torch::Tensor& output, float threshold);
 void launch_spectrogram_computation(torch::Tensor& input, torch::Tensor& output, int n_fft, int hop_length, int win_length);
-void launch_formant_extraction(torch::Tensor& input, torch::Tensor& output, int frame_length, float sample_rate, int lpc_order, int num_formants);
+void launch_formant_extraction(torch::Tensor& audio, torch::Tensor& formants, int frame_length, float sample_rate, int lpc_order, int num_formants);
 void launch_vocoder_synthesis(torch::Tensor& mel_spec, torch::Tensor& audio_out);
 void launch_create_cuda_graph();
 void launch_execute_cuda_graph();
@@ -52,14 +53,17 @@ void launch_async_memory_copy(torch::Tensor& dst, torch::Tensor& src, uintptr_t 
 
 // Forward declarations for FFT kernels from fft_kernels.cu
 void launch_mel_spectrogram_singing(torch::Tensor& audio, torch::Tensor& window, torch::Tensor& mel_filterbank,
-                                   torch::Tensor& mel_output, int n_fft, int hop_length, bool apply_a_weighting);
+                                   torch::Tensor& mel_output, int n_fft, int hop_length, bool apply_a_weighting,
+                                   c10::optional<torch::Tensor> mel_frequencies = c10::nullopt);
 void launch_optimized_stft(torch::Tensor& audio, torch::Tensor& window, torch::Tensor& stft_output,
                           int n_fft, int hop_length);
 void launch_optimized_istft(torch::Tensor& stft_input, torch::Tensor& window, torch::Tensor& audio_output,
                            int n_fft, int hop_length);
 void launch_realtime_voice_conversion(torch::Tensor& audio_chunk, torch::Tensor& overlap_buffer,
                                      torch::Tensor& features_output, torch::Tensor& window,
-                                     int n_fft, int hop_length);
+                                     int n_fft, int hop_length,
+                                     c10::optional<torch::Tensor> speaker_embedding = c10::nullopt,
+                                     c10::optional<torch::Tensor> pitch_features = c10::nullopt);
 void apply_perceptual_weighting(torch::Tensor& mel_spectrogram, torch::Tensor& mel_frequencies,
                                int n_frames, int mel_bins, int batch_size);
 void clear_cufft_plan_cache();
@@ -144,11 +148,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     // Enhanced pitch detection and vibrato analysis bindings
     m.def("launch_pitch_detection", &launch_pitch_detection,
-          "Enhanced pitch detection (GPU)",
+          "Enhanced pitch detection with configurable harmonic weighting and vibrato method (GPU)",
           py::arg("input"), py::arg("output_pitch"), py::arg("output_confidence"),
           py::arg("output_vibrato"), py::arg("sample_rate"),
           py::arg("frame_length"), py::arg("hop_length"),
-          py::arg("fmin"), py::arg("fmax"), py::arg("threshold"));
+          py::arg("fmin"), py::arg("fmax"), py::arg("threshold"),
+          py::arg("use_harmonic_weighting") = true, py::arg("vibrato_method") = 0);
 
     m.def("launch_vibrato_analysis", &launch_vibrato_analysis,
           "Vibrato analysis (GPU)",
@@ -166,7 +171,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           "Mel-spectrogram optimized for singing voice (GPU)",
           py::arg("audio"), py::arg("window"), py::arg("mel_filterbank"),
           py::arg("mel_output"), py::arg("n_fft") = 2048, py::arg("hop_length") = 512,
-          py::arg("apply_a_weighting") = false);
+          py::arg("apply_a_weighting") = false, py::arg("mel_frequencies") = c10::nullopt);
 
     // Optimized STFT with batched FFT execution
     m.def("launch_optimized_stft", &launch_optimized_stft,
@@ -180,11 +185,26 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("stft_input"), py::arg("window"), py::arg("audio_output"),
           py::arg("n_fft") = 2048, py::arg("hop_length") = 512);
 
-    // Real-time voice conversion for low-latency streaming
+    // Real-time feature extraction for low-latency streaming
+    m.def("launch_realtime_feature_extraction", &launch_realtime_voice_conversion,
+          "Real-time feature extraction with chunked processing (GPU)",
+          py::arg("audio_chunk"), py::arg("overlap_buffer"), py::arg("features_output"),
+          py::arg("window"), py::arg("n_fft") = 2048, py::arg("hop_length") = 512,
+          py::arg("speaker_embedding") = c10::nullopt, py::arg("pitch_features") = c10::nullopt);
+
+    // Additional binding with standardized name for consistency
+    m.def("realtime_voice_conversion", &launch_realtime_voice_conversion,
+          "Real-time voice conversion with chunked processing (GPU)",
+          py::arg("audio_chunk"), py::arg("overlap_buffer"), py::arg("features_output"),
+          py::arg("window"), py::arg("n_fft") = 2048, py::arg("hop_length") = 512,
+          py::arg("speaker_embedding") = c10::nullopt, py::arg("pitch_features") = c10::nullopt);
+
+    // Backward compatibility alias
     m.def("launch_realtime_voice_conversion", &launch_realtime_voice_conversion,
           "Real-time voice conversion with chunked processing (GPU)",
           py::arg("audio_chunk"), py::arg("overlap_buffer"), py::arg("features_output"),
-          py::arg("window"), py::arg("n_fft") = 2048, py::arg("hop_length") = 512);
+          py::arg("window"), py::arg("n_fft") = 2048, py::arg("hop_length") = 512,
+          py::arg("speaker_embedding") = c10::nullopt, py::arg("pitch_features") = c10::nullopt);
 
     // Perceptual weighting (A-weighting) for mel-spectrograms
     m.def("apply_perceptual_weighting", &apply_perceptual_weighting,

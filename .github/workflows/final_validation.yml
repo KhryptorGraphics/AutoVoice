@@ -1,0 +1,472 @@
+name: Final Validation Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      skip_gpu_tests:
+        description: 'Skip GPU-dependent tests'
+        required: false
+        default: 'false'
+        type: boolean
+      validation_level:
+        description: 'Validation level'
+        required: false
+        default: 'standard'
+        type: choice
+        options:
+          - quick
+          - standard
+          - comprehensive
+
+env:
+  PYTHON_VERSION: '3.10'
+  CUDA_VERSION: '11.8.0'
+
+jobs:
+  validation:
+    name: System Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10']
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Cache Dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/torch
+          key: pip-${{ hashFiles('requirements.txt') }}-${{ runner.os }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsndfile1 \
+            ffmpeg \
+            portaudio19-dev \
+            build-essential
+
+      - name: Check GPU Availability
+        id: gpu_check
+        run: |
+          if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
+            echo "gpu_available=true" >> $GITHUB_OUTPUT
+            echo "✅ GPU detected"
+          else
+            echo "gpu_available=false" >> $GITHUB_OUTPUT
+            echo "⚠️ No GPU available - CPU-only mode"
+          fi
+
+      - name: Install CUDA Toolkit
+        if: steps.gpu_check.outputs.gpu_available == 'true'
+        uses: Jimver/cuda-toolkit@v0.2.11
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cufft"]'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+          pip install \
+            pytest==7.4.3 \
+            pytest-html==4.1.1 \
+            pytest-json-report==1.5.0 \
+            pytest-cov==4.1.0 \
+            pytest-timeout==2.2.0 \
+            pytest-xdist==3.5.0 \
+            pylint==3.0.3 \
+            flake8==7.0.0 \
+            mypy==1.8.0 \
+            radon==6.0.1 \
+            bandit==1.7.6 \
+            black==24.1.1 \
+            isort==5.13.2
+
+      - name: Install Package in Editable Mode
+        run: |
+          pip install -e .
+          echo "✅ Package installed in editable mode"
+
+      - name: Verify Installation
+        run: |
+          python --version
+          pip list
+          python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+          python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
+          python -c "import auto_voice; print(f'AutoVoice package: {auto_voice.__version__ if hasattr(auto_voice, \"__version__\") else \"installed\"}')"
+
+      - name: Create Validation Directories
+        run: |
+          mkdir -p validation_results/{reports,logs,artifacts}
+          mkdir -p tests/data/validation
+
+      - name: Generate Test Data
+        run: |
+          python tests/data/validation/generate_test_data.py
+          echo "✅ Test data generated"
+          ls -lh tests/data/validation/
+
+      - name: Run System Validation Tests
+        id: system_validation
+        continue-on-error: true
+        env:
+          SKIP_GPU_TESTS: ${{ steps.gpu_check.outputs.gpu_available == 'false' || github.event.inputs.skip_gpu_tests == 'true' }}
+          VALIDATION_LEVEL: ${{ github.event.inputs.validation_level || 'standard' }}
+        run: |
+          pytest tests/test_system_validation.py \
+            -v \
+            --tb=short \
+            --json-report \
+            --json-report-file=validation_results/reports/system_validation.json \
+            --html=validation_results/reports/system_validation.html \
+            --self-contained-html \
+            --cov=src/auto_voice \
+            --cov-report=html:validation_results/reports/coverage \
+            --cov-report=json:validation_results/reports/coverage.json \
+            --timeout=300 \
+            -n auto \
+            2>&1 | tee validation_results/logs/system_validation.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Run End-to-End Tests
+        id: e2e_tests
+        continue-on-error: true
+        env:
+          SKIP_GPU_TESTS: ${{ steps.gpu_check.outputs.gpu_available == 'false' }}
+        run: |
+          pytest tests/test_end_to_end.py \
+            -v \
+            --tb=short \
+            --json-report \
+            --json-report-file=validation_results/reports/e2e_tests.json \
+            --html=validation_results/reports/e2e_tests.html \
+            --self-contained-html \
+            --timeout=600 \
+            2>&1 | tee validation_results/logs/e2e_tests.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Check Performance Tests Availability
+        id: check_perf_tests
+        if: github.event.inputs.validation_level != 'quick'
+        run: |
+          if [ -f tests/test_performance.py ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+            echo "✅ Performance tests found"
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Performance tests not found, skipping"
+          fi
+
+      - name: Run Performance Tests
+        id: perf_tests
+        continue-on-error: true
+        if: |
+          github.event.inputs.validation_level != 'quick' &&
+          steps.check_perf_tests.outputs.available == 'true'
+        run: |
+          pytest tests/test_performance.py \
+            -v \
+            --tb=short \
+            --json-report \
+            --json-report-file=validation_results/reports/performance.json \
+            --html=validation_results/reports/performance.html \
+            --self-contained-html \
+            --timeout=900 \
+            2>&1 | tee validation_results/logs/performance.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Run Code Quality Validation
+        id: quality_validation
+        continue-on-error: true
+        run: |
+          python scripts/validate_code_quality.py \
+            --output validation_results/reports/code_quality.json \
+            2>&1 | tee validation_results/logs/code_quality.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Run Integration Validation
+        id: integration_validation
+        continue-on-error: true
+        run: |
+          python scripts/validate_integration.py \
+            --output validation_results/reports/integration.json \
+            2>&1 | tee validation_results/logs/integration.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Run Documentation Validation
+        id: docs_validation
+        continue-on-error: true
+        run: |
+          python scripts/validate_documentation.py \
+            --output validation_results/reports/documentation.json \
+            2>&1 | tee validation_results/logs/documentation.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Run Security Scan
+        id: security_scan
+        continue-on-error: true
+        if: github.event.inputs.validation_level == 'comprehensive'
+        run: |
+          bandit -r src/auto_voice \
+            -f json \
+            -o validation_results/reports/security.json \
+            2>&1 | tee validation_results/logs/security.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Generate Final Validation Report
+        id: final_report
+        run: |
+          # Build arguments dynamically based on available files
+          ARGS=""
+
+          [ -f validation_results/reports/system_validation.json ] && \
+            ARGS="$ARGS --system-validation validation_results/reports/system_validation.json"
+
+          [ -f validation_results/reports/e2e_tests.json ] && \
+            ARGS="$ARGS --e2e-tests validation_results/reports/e2e_tests.json"
+
+          [ -f validation_results/reports/performance.json ] && \
+            ARGS="$ARGS --performance validation_results/reports/performance.json"
+
+          [ -f validation_results/reports/code_quality.json ] && \
+            ARGS="$ARGS --code-quality validation_results/reports/code_quality.json"
+
+          [ -f validation_results/reports/integration.json ] && \
+            ARGS="$ARGS --integration validation_results/reports/integration.json"
+
+          [ -f validation_results/reports/documentation.json ] && \
+            ARGS="$ARGS --documentation validation_results/reports/documentation.json"
+
+          [ -f validation_results/reports/security.json ] && \
+            ARGS="$ARGS --security validation_results/reports/security.json"
+
+          # Always specify output paths
+          ARGS="$ARGS --output validation_results/FINAL_VALIDATION_REPORT.md"
+          ARGS="$ARGS --summary validation_results/reports/summary.json"
+
+          echo "Running: python scripts/generate_validation_report.py $ARGS"
+
+          python scripts/generate_validation_report.py $ARGS \
+            2>&1 | tee validation_results/logs/final_report.log
+
+      - name: Display Validation Summary
+        run: |
+          echo "=== Validation Summary ==="
+          cat validation_results/FINAL_VALIDATION_REPORT.md
+
+      - name: Parse Validation Results
+        id: results
+        run: |
+          # Check for summary.json first (new location), then fall back to final_report.json
+          RESULT_FILE=""
+          if [ -f validation_results/reports/summary.json ]; then
+            RESULT_FILE="validation_results/reports/summary.json"
+          elif [ -f validation_results/reports/final_report.json ]; then
+            RESULT_FILE="validation_results/reports/final_report.json"
+          fi
+
+          if [ -n "$RESULT_FILE" ]; then
+            echo "Using result file: $RESULT_FILE"
+
+            overall_pass=$(python -c "
+          import json
+          with open('$RESULT_FILE') as f:
+              data = json.load(f)
+              print('true' if data.get('overall_status') == 'PASS' else 'false')
+          ")
+            echo "overall_pass=$overall_pass" >> $GITHUB_OUTPUT
+
+            score=$(python -c "
+          import json
+          with open('$RESULT_FILE') as f:
+              data = json.load(f)
+              print(data.get('overall_score', 0))
+          ")
+            echo "score=$score" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No validation result file found"
+            echo "overall_pass=false" >> $GITHUB_OUTPUT
+            echo "score=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Validation Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-results-${{ matrix.python-version }}
+          path: |
+            validation_results/
+          retention-days: 30
+
+      - name: Upload Final Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: final-validation-report-${{ matrix.python-version }}
+          path: |
+            validation_results/FINAL_VALIDATION_REPORT.md
+            validation_results/reports/summary.json
+          retention-days: 30
+
+      - name: Upload Test Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports-${{ matrix.python-version }}
+          path: |
+            validation_results/reports/*.html
+            validation_results/reports/*.json
+          retention-days: 30
+
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report-${{ matrix.python-version }}
+          path: validation_results/reports/coverage/
+          retention-days: 30
+
+      - name: Comment PR with Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('validation_results/FINAL_VALIDATION_REPORT.md', 'utf8');
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🔍 Final Validation Report\n\n${report}`
+            });
+
+      - name: Check Validation Thresholds
+        if: steps.results.outputs.overall_pass == 'false'
+        run: |
+          echo "❌ Validation failed to meet required thresholds"
+          echo "Score: ${{ steps.results.outputs.score }}"
+          exit 1
+
+      - name: Validation Success
+        if: steps.results.outputs.overall_pass == 'true'
+        run: |
+          echo "✅ All validation checks passed!"
+          echo "Score: ${{ steps.results.outputs.score }}"
+
+  docker-validation:
+    name: Docker Deployment Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event.inputs.validation_level == 'comprehensive'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check Docker GPU Support
+        id: docker_gpu
+        run: |
+          if docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi 2>/dev/null; then
+            echo "gpu_available=true" >> $GITHUB_OUTPUT
+            echo "✅ Docker GPU support available"
+          else
+            echo "gpu_available=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Docker GPU support not available"
+          fi
+
+      - name: Build Docker Image
+        run: |
+          docker build -t autovoice:validation .
+
+      - name: Run Docker Validation
+        id: docker_test
+        continue-on-error: true
+        env:
+          SKIP_GPU_TESTS: ${{ steps.docker_gpu.outputs.gpu_available == 'false' }}
+        run: |
+          bash scripts/test_docker_deployment.sh \
+            2>&1 | tee docker_validation.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Upload Docker Validation Log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docker-validation-log
+          path: docker_validation.log
+          retention-days: 30
+
+      - name: Check Docker Validation
+        if: steps.docker_test.outputs.exit_code != '0'
+        run: |
+          echo "❌ Docker validation failed"
+          exit 1
+
+  summary:
+    name: Validation Summary
+    runs-on: ubuntu-latest
+    needs: [validation, docker-validation]
+    if: always()
+
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Generate Overall Summary
+        run: |
+          echo "# 📊 Final Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- System Validation: ${{ needs.validation.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker Validation: ${{ needs.docker-validation.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.validation.result }}" == "success" ] && \
+             ([ "${{ needs.docker-validation.result }}" == "success" ] || \
+              [ "${{ needs.docker-validation.result }}" == "skipped" ]); then
+            echo "## ✅ Overall Status: PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Overall Status: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Final Status Check
+        if: |
+          needs.validation.result != 'success' ||
+          (needs.docker-validation.result != 'success' && needs.docker-validation.result != 'skipped')
+        run: |
+          echo "❌ One or more validation jobs failed"
+          exit 1

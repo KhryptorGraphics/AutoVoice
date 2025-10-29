@@ -100,7 +100,8 @@ class TrainingConfig:
         'pitch_consistency': 10.0,
         'speaker_similarity': 5.0,
         'flow_likelihood': 1.0,
-        'stft': 2.5
+        'stft': 2.5,
+        'adversarial': 0.1  # Adversarial loss weight for GAN training
     })
 
 class LossManager:
@@ -232,12 +233,24 @@ class PitchConsistencyLoss(nn.Module):
         """
         super().__init__()
         self.device = device
+        self._extractor_available = True
+        self._warned = False
 
         if VC_COMPONENTS_AVAILABLE:
-            self.pitch_extractor = SingingPitchExtractor(device=device)
+            try:
+                self.pitch_extractor = SingingPitchExtractor(device=device)
+            except Exception as e:
+                self._extractor_available = False
+                self.pitch_extractor = None
+                if not self._warned:
+                    logger.warning(f"Pitch extractor initialization failed: {e}")
+                    self._warned = True
         else:
+            self._extractor_available = False
             self.pitch_extractor = None
-            logger.warning("SingingPitchExtractor not available, pitch consistency loss will be disabled")
+            if not self._warned:
+                logger.warning("SingingPitchExtractor not available, pitch consistency loss will be disabled")
+                self._warned = True
 
     def forward(
         self,
@@ -255,7 +268,10 @@ class PitchConsistencyLoss(nn.Module):
         Returns:
             F0 RMSE loss
         """
-        if self.pitch_extractor is None:
+        if not self._extractor_available:
+            if not self._warned:
+                logger.warning("Pitch loss returning zero (extractor unavailable)")
+                self._warned = True
             return torch.tensor(0.0, device=pred_audio.device)
 
         try:
@@ -310,12 +326,24 @@ class SpeakerSimilarityLoss(nn.Module):
         """
         super().__init__()
         self.device = device
+        self._encoder_available = True
+        self._warned = False
 
         if VC_COMPONENTS_AVAILABLE:
-            self.speaker_encoder = SpeakerEncoder(device=device)
+            try:
+                self.speaker_encoder = SpeakerEncoder(device=device)
+            except Exception as e:
+                self._encoder_available = False
+                self.speaker_encoder = None
+                if not self._warned:
+                    logger.warning(f"Speaker encoder initialization failed: {e}")
+                    self._warned = True
         else:
+            self._encoder_available = False
             self.speaker_encoder = None
-            logger.warning("SpeakerEncoder not available, speaker similarity loss will be disabled")
+            if not self._warned:
+                logger.warning("SpeakerEncoder not available, speaker similarity loss will be disabled")
+                self._warned = True
 
     def forward(
         self,
@@ -333,7 +361,10 @@ class SpeakerSimilarityLoss(nn.Module):
         Returns:
             Speaker cosine distance loss
         """
-        if self.speaker_encoder is None:
+        if not self._encoder_available:
+            if not self._warned:
+                logger.warning("Speaker loss returning zero (encoder unavailable)")
+                self._warned = True
             return torch.tensor(0.0, device=pred_audio.device)
 
         try:
@@ -568,7 +599,7 @@ class VoiceTrainer:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         
         # TensorBoard
-        if self.config.local_rank == 0:  # Only log on main process
+        if getattr(self.config, 'local_rank', 0) == 0:  # Only log on main process
             self.writer = SummaryWriter(self.log_dir / "tensorboard")
             
             # Initialize Weights & Biases if available
@@ -596,7 +627,7 @@ class VoiceTrainer:
         num_batches = len(dataloader)
         
         # Create progress bar
-        if self.config.local_rank == 0:
+        if getattr(self.config, 'local_rank', 0) == 0:
             pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
         else:
             pbar = dataloader
@@ -662,7 +693,7 @@ class VoiceTrainer:
                 epoch_losses[loss_name].append(loss_value.item())
             
             # Update progress bar
-            if self.config.local_rank == 0:
+            if getattr(self.config, 'local_rank', 0) == 0:
                 pbar.set_postfix({
                     'loss': f"{losses['total'].item():.4f}",
                     'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}"
@@ -679,7 +710,7 @@ class VoiceTrainer:
         val_losses = {}
         
         with torch.no_grad():
-            for batch in tqdm(dataloader, desc="Validation", disable=self.config.local_rank != 0):
+            for batch in tqdm(dataloader, desc="Validation", disable=getattr(self.config, 'local_rank', 0) != 0):
                 batch = self._move_batch_to_device(batch)
                 
                 with autocast(enabled=self.config.use_amp):
@@ -730,7 +761,7 @@ class VoiceTrainer:
     
     def _log_training_step(self, losses: Dict[str, torch.Tensor], accumulated_loss: float):
         """Log training step metrics"""
-        if self.config.local_rank != 0:
+        if getattr(self.config, 'local_rank', 0) != 0:
             return
         
         # TensorBoard logging
@@ -779,11 +810,11 @@ class VoiceTrainer:
                     self.scheduler.step(val_losses.get('total', val_losses.get('reconstruction', 0)))
             
             # Logging
-            if self.config.local_rank == 0:
+            if getattr(self.config, 'local_rank', 0) == 0:
                 self._log_epoch(epoch, train_losses, val_losses)
             
             # Checkpointing
-            if self.config.local_rank == 0 and epoch % (self.config.save_interval // len(train_dataloader)) == 0:
+            if getattr(self.config, 'local_rank', 0) == 0 and epoch % (self.config.save_interval // len(train_dataloader)) == 0:
                 self.save_checkpoint(epoch, val_losses.get('total', float('inf')))
             
             # Early stopping
@@ -835,7 +866,7 @@ class VoiceTrainer:
     def save_checkpoint(self, epoch: int, val_loss: float = float('inf'), 
                        additional_info: Optional[Dict[str, Any]] = None):
         """Save comprehensive training checkpoint"""
-        if self.config.local_rank != 0:
+        if getattr(self.config, 'local_rank', 0) != 0:
             return
         
         checkpoint_dir = Path(f"checkpoints/{self.experiment_name}")
@@ -928,7 +959,7 @@ class VoiceConversionTrainer(VoiceTrainer):
     """Specialized trainer for voice conversion with perceptual losses.
 
     Extends VoiceTrainer to add voice conversion-specific loss computation
-    including pitch consistency, speaker similarity, and flow-based losses.
+    including pitch consistency, speaker similarity, flow-based losses, and adversarial training.
     """
 
     def __init__(
@@ -939,6 +970,10 @@ class VoiceConversionTrainer(VoiceTrainer):
         experiment_name: str = "voice_conversion_training"
     ):
         """Initialize voice conversion trainer.
+
+        IMPORTANT: The SingingVoiceConverter model MUST generate pred_audio during
+        forward pass for pitch_consistency and speaker_similarity losses to work.
+        Ensure model.forward() is called with use_vocoder=True (default).
 
         Args:
             model: SingingVoiceConverter model
@@ -955,7 +990,13 @@ class VoiceConversionTrainer(VoiceTrainer):
         # Use voice conversion loss weights
         self.vc_loss_weights = config.vc_loss_weights
 
-        logger.info(f"VoiceConversionTrainer initialized with VC-specific losses")
+        # Initialize discriminator for adversarial training
+        self._setup_discriminator()
+
+        # Warning flags for missing inputs (one-time warnings)
+        self._warned_missing_inputs = False
+
+        logger.info(f"VoiceConversionTrainer initialized with VC-specific losses and adversarial training")
 
     def _setup_vc_losses(self):
         """Setup voice conversion-specific losses."""
@@ -973,20 +1014,56 @@ class VoiceConversionTrainer(VoiceTrainer):
 
         logger.info("Voice conversion losses initialized")
 
+    def _setup_discriminator(self):
+        """Setup discriminator for adversarial training."""
+        from ..models.discriminator import (
+            VoiceDiscriminator,
+            hinge_discriminator_loss,
+            hinge_generator_loss,
+            feature_matching_loss
+        )
+
+        # Create discriminator
+        self.discriminator = VoiceDiscriminator(
+            use_spectral_norm=False,  # Can enable for more stable training
+            num_scales=3,
+            channels=64
+        )
+        self.discriminator = self.discriminator.to(self.device)
+
+        # Create separate optimizer for discriminator
+        self.discriminator_optimizer = optim.AdamW(
+            self.discriminator.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay,
+            **self.config.optimizer_params
+        )
+
+        # Store loss functions
+        self.hinge_discriminator_loss = hinge_discriminator_loss
+        self.hinge_generator_loss = hinge_generator_loss
+        self.feature_matching_loss = feature_matching_loss
+
+        # Feature matching weight (small, for stability)
+        self.feature_matching_weight = 2.0
+
+        logger.info("Discriminator and adversarial training components initialized")
+
     def _forward_pass(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Forward pass for voice conversion model.
+        """Forward pass for voice conversion model with safe handling of optional inputs.
 
         Args:
             batch: Batch dict containing:
                 - source_audio: Source audio waveform [B, T_audio]
                 - target_mel: Target mel-spectrogram [B, T_mel, 80]
-                - source_f0: Source F0 contour [B, T_f0]
-                - target_speaker_emb: Target speaker embedding [B, 256]
-                - mel_mask: Mask for variable lengths [B, 1, T_mel]
+                - source_f0: Source F0 contour [B, T_f0] (optional)
+                - target_speaker_emb: Target speaker embedding [B, 256] (optional)
+                - mel_mask: Mask for variable lengths [B, 1, T_mel] (optional)
 
         Returns:
             Dict with model outputs:
                 - pred_mel: Predicted mel-spectrogram
+                - pred_audio: Predicted audio waveform (for perceptual losses)
                 - z_mean: Latent mean
                 - z_logvar: Latent log variance
                 - z: Sampled latent
@@ -994,14 +1071,44 @@ class VoiceConversionTrainer(VoiceTrainer):
                 - logdet: Flow log determinant
                 - cond: Conditioning features
         """
-        # Call SingingVoiceConverter.forward()
+        # Safe access to optional inputs with defaults
+        source_f0 = batch.get('source_f0')
+        target_speaker_emb = batch.get('target_speaker_emb')
+
+        # Handle missing source_f0: create zero tensor matching target_mel length
+        if source_f0 is None:
+            batch_size = batch['target_mel'].size(0)
+            mel_length = batch['target_mel'].size(1)
+            source_f0 = torch.zeros(batch_size, mel_length, device=batch['target_mel'].device)
+
+            if not self._warned_missing_inputs:
+                logger.warning(
+                    "source_f0 not found in batch. Using zero tensor as default. "
+                    "Pitch consistency loss will be zero for this batch. "
+                    "This can happen when dataset is built with extract_f0=False."
+                )
+                self._warned_missing_inputs = True
+
+        # Handle missing target_speaker_emb: pass None (model handles internally)
+        if target_speaker_emb is None:
+            if not self._warned_missing_inputs:
+                logger.warning(
+                    "target_speaker_emb not found in batch. Passing None to model. "
+                    "Speaker similarity loss will be zero for this batch. "
+                    "This can happen when dataset is built with extract_speaker_emb=False."
+                )
+                self._warned_missing_inputs = True
+
+        # Call SingingVoiceConverter.forward() with use_vocoder=True
+        # This generates pred_audio required for pitch/speaker losses
         outputs = self.model(
             source_audio=batch['source_audio'],
             target_mel=batch['target_mel'],
-            source_f0=batch['source_f0'],
-            target_speaker_emb=batch['target_speaker_emb'],
+            source_f0=source_f0,
+            target_speaker_emb=target_speaker_emb,
             source_sample_rate=self.config.sample_rate,
-            x_mask=batch.get('mel_mask')
+            x_mask=batch.get('mel_mask'),
+            use_vocoder=True  # REQUIRED for perceptual losses
         )
 
         return outputs
@@ -1009,13 +1116,17 @@ class VoiceConversionTrainer(VoiceTrainer):
     def _compute_voice_conversion_losses(
         self,
         predictions: Dict[str, torch.Tensor],
-        batch: Dict[str, torch.Tensor]
+        batch: Dict[str, torch.Tensor],
+        use_feature_matching: bool = False,
+        real_features_list: Optional[List[List[torch.Tensor]]] = None
     ) -> Dict[str, torch.Tensor]:
         """Compute all voice conversion losses.
 
         Args:
             predictions: Model predictions dict
             batch: Input batch dict
+            use_feature_matching: If True, add feature matching loss
+            real_features_list: Real audio discriminator features (for feature matching)
 
         Returns:
             Dict with individual losses and total loss
@@ -1041,35 +1152,106 @@ class VoiceConversionTrainer(VoiceTrainer):
             losses['flow_likelihood'] = flow_loss_val
             total_loss += self.vc_loss_weights['flow_likelihood'] * flow_loss_val
 
-        # 4. Multi-resolution STFT loss
-        if 'pred_mel' in predictions and 'target_mel' in batch:
-            stft_loss_val = self.stft_loss(
-                predictions['pred_mel'].mean(dim=-1),  # Average over mel channels
-                batch['target_mel'].mean(dim=-1)
-            )
+        # 4. Multi-resolution STFT loss (operates on audio waveforms)
+        if 'pred_audio' in predictions and 'target_audio' in batch:
+            # STFT loss should operate on raw audio waveforms, not mel spectrograms
+            stft_loss_val = self.stft_loss(predictions['pred_audio'], batch['target_audio'])
             losses['stft'] = stft_loss_val
             total_loss += self.vc_loss_weights['stft'] * stft_loss_val
+        else:
+            # If audio predictions are not available, omit STFT loss
+            losses['stft'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
 
-        # 5. Pitch consistency loss (expensive, compute less frequently)
-        # Note: We use target mel instead of converting to audio for efficiency
-        # In production, you may want to use a vocoder to convert mel to audio
-        if 'pred_mel' in predictions and 'source_f0' in batch:
-            # Skip pitch loss if it's too expensive
-            # Can be enabled during validation or less frequently during training
+        # 5. Pitch consistency loss
+        if 'pred_audio' in predictions and 'source_f0' in batch:
+            # Convert predicted output to audio and compute pitch consistency
+            try:
+                pitch_loss_val = self.pitch_loss(
+                    predictions['pred_audio'],
+                    batch['source_f0'],
+                    sample_rate=self.config.sample_rate
+                )
+                losses['pitch_consistency'] = pitch_loss_val
+                total_loss += self.vc_loss_weights['pitch_consistency'] * pitch_loss_val
+
+                # Assert that pitch loss is contributing
+                if pitch_loss_val.item() > 0:
+                    logger.debug(f"Pitch consistency loss: {pitch_loss_val.item():.6f}")
+            except Exception as e:
+                logger.warning(f"Pitch consistency loss computation failed: {e}")
+                losses['pitch_consistency'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
+        else:
+            # Log warning if pred_audio is missing
+            if 'pred_audio' not in predictions:
+                logger.warning(
+                    "pred_audio not in predictions. Ensure SingingVoiceConverter.forward() "
+                    "is called with use_vocoder=True. Skipping pitch consistency loss."
+                )
+            # Skip if audio predictions or F0 not available
             losses['pitch_consistency'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
 
-        # 6. Speaker similarity loss (expensive, compute less frequently)
-        if 'pred_mel' in predictions and 'target_speaker_emb' in batch:
-            # Skip speaker loss if it's too expensive
-            # Can be enabled during validation or less frequently during training
+        # 6. Speaker similarity loss
+        # Check if target_speaker_emb is available and not the default zero embedding
+        target_speaker_emb = batch.get('target_speaker_emb')
+        has_valid_speaker_emb = (
+            target_speaker_emb is not None and
+            torch.any(target_speaker_emb != 0)  # Not a zero embedding
+        )
+
+        if 'pred_audio' in predictions and has_valid_speaker_emb:
+            # Compute speaker similarity using predicted audio
+            try:
+                speaker_loss_val = self.speaker_loss(
+                    predictions['pred_audio'],
+                    target_speaker_emb,
+                    sample_rate=self.config.sample_rate
+                )
+                losses['speaker_similarity'] = speaker_loss_val
+                total_loss += self.vc_loss_weights['speaker_similarity'] * speaker_loss_val
+            except Exception as e:
+                logger.warning(f"Speaker similarity loss computation failed: {e}")
+                losses['speaker_similarity'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
+        else:
+            # Skip if audio predictions or embeddings not available/valid
+            if target_speaker_emb is None or not has_valid_speaker_emb:
+                if target_speaker_emb is None:
+                    logger.debug("target_speaker_emb is None, setting speaker_similarity loss to zero")
+                else:
+                    logger.debug("target_speaker_emb is default zero embedding, setting speaker_similarity loss to zero")
             losses['speaker_similarity'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
+
+        # 7. Adversarial loss (generator side)
+        # NOTE: pred_audio is needed for discriminator, computed from vocoder if available
+        if 'pred_audio' in predictions and self.vc_loss_weights.get('adversarial', 0) > 0:
+            # Forward through discriminator
+            fake_logits_list, fake_features_list = self.discriminator(predictions['pred_audio'])
+
+            # Compute generator adversarial loss
+            adv_loss_val = self.hinge_generator_loss(fake_logits_list)
+            losses['adversarial'] = adv_loss_val
+            total_loss += self.vc_loss_weights['adversarial'] * adv_loss_val
+
+            # Feature matching loss (for training stability)
+            if use_feature_matching and real_features_list is not None:
+                fm_loss_val = self.feature_matching_loss(real_features_list, fake_features_list)
+                losses['feature_matching'] = fm_loss_val
+                total_loss += self.feature_matching_weight * fm_loss_val
+            else:
+                losses['feature_matching'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
+        else:
+            losses['adversarial'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
+            losses['feature_matching'] = torch.tensor(0.0, device=predictions['pred_mel'].device)
 
         losses['total'] = total_loss
 
         return losses
 
     def train_epoch(self, dataloader, epoch: int) -> Dict[str, float]:
-        """Train for one epoch with voice conversion losses.
+        """Train for one epoch with voice conversion losses and two-step GAN training.
+
+        Implements proper adversarial training with separate discriminator and generator steps:
+        - STEP A: Update discriminator with real/fake pairs
+        - STEP B: Update generator with all losses (including adversarial)
 
         Args:
             dataloader: Training data loader
@@ -1079,25 +1261,87 @@ class VoiceConversionTrainer(VoiceTrainer):
             Dict with average losses for the epoch
         """
         self.model.train()
+        self.discriminator.train()
         epoch_losses = {}
         num_batches = 0
 
         progress_bar = tqdm(
             dataloader,
             desc=f"Epoch {epoch}",
-            disable=(self.config.local_rank != 0)
+            disable=(getattr(self.config, 'local_rank', 0) != 0)
         )
 
         for batch_idx, batch in enumerate(progress_bar):
             # Move batch to device
             batch = self._move_batch_to_device(batch)
 
-            # Forward pass
+            # ==================================================================
+            # Step 0: Forward pass (compute predictions once)
+            # ==================================================================
             with autocast(enabled=self.config.use_amp):
                 predictions = self._forward_pass(batch)
-                losses = self._compute_voice_conversion_losses(predictions, batch)
 
-            # Backward pass
+            # Check if adversarial training should be performed
+            use_adversarial = (
+                'pred_audio' in predictions and
+                self.vc_loss_weights.get('adversarial', 0) > 0
+            )
+
+            # ==================================================================
+            # STEP A: Discriminator Update (if adversarial training enabled)
+            # ==================================================================
+            d_loss = torch.tensor(0.0, device=self.device)
+            real_features_list = None
+
+            if use_adversarial:
+                # Freeze generator parameters to prevent gradient flow
+                for param in self.model.parameters():
+                    param.requires_grad_(False)
+
+                # Zero discriminator gradients
+                self.discriminator_optimizer.zero_grad(set_to_none=True)
+
+                with autocast(enabled=self.config.use_amp):
+                    # Get real and fake audio
+                    real_audio = batch['target_audio']
+                    fake_audio = predictions['pred_audio'].detach()  # Detach to avoid generator gradients
+
+                    # Forward through discriminator
+                    real_logits_list, real_features_list = self.discriminator(real_audio)
+                    fake_logits_list, _ = self.discriminator(fake_audio)
+
+                    # Compute discriminator loss (hinge loss)
+                    d_loss = self.hinge_discriminator_loss(real_logits_list, fake_logits_list)
+
+                # Backward pass for discriminator
+                if self.scaler:
+                    self.scaler.scale(d_loss).backward()
+                    self.scaler.step(self.discriminator_optimizer)
+                    self.scaler.update()
+                else:
+                    d_loss.backward()
+                    self.discriminator_optimizer.step()
+
+                # Re-enable generator gradients
+                for param in self.model.parameters():
+                    param.requires_grad_(True)
+
+            # ==================================================================
+            # STEP B: Generator Update (all losses including adversarial)
+            # ==================================================================
+            with autocast(enabled=self.config.use_amp):
+                # Compute all generator losses (including adversarial and feature matching)
+                losses = self._compute_voice_conversion_losses(
+                    predictions,
+                    batch,
+                    use_feature_matching=use_adversarial,
+                    real_features_list=real_features_list
+                )
+
+            # Add discriminator loss to losses dict for logging
+            losses['discriminator'] = d_loss
+
+            # Backward pass for generator
             loss = losses['total'] / self.config.gradient_accumulation_steps
 
             if self.scaler:
@@ -1141,8 +1385,9 @@ class VoiceConversionTrainer(VoiceTrainer):
             # Update progress bar
             progress_bar.set_postfix({
                 'loss': losses['total'].item(),
-                'mel': losses.get('mel_reconstruction', 0).item() if 'mel_reconstruction' in losses else 0,
-                'kl': losses.get('kl_divergence', 0).item() if 'kl_divergence' in losses else 0
+                'mel': losses.get('mel_reconstruction', torch.tensor(0)).item(),
+                'adv_g': losses.get('adversarial', torch.tensor(0)).item(),
+                'd_loss': d_loss.item()
             })
 
             # Log to tensorboard/wandb
@@ -1189,7 +1434,7 @@ class VoiceConversionTrainer(VoiceTrainer):
             val_losses[loss_name] /= num_batches
 
         # Log validation metrics
-        if self.config.local_rank == 0:
+        if getattr(self.config, 'local_rank', 0) == 0:
             if self.writer:
                 for loss_name, loss_value in val_losses.items():
                     self.writer.add_scalar(f"val/{loss_name}", loss_value, self.global_step)

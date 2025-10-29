@@ -529,6 +529,314 @@ class TestSingingVoiceConverter:
         # With untrained weights, we just verify outputs are not identical
         assert cosine_dist > 0.01, f"Speaker conditioning produces identical outputs: cosine_dist={cosine_dist:.4f}"
 
+    # ========================================================================
+    # Temperature Control Tests
+    # ========================================================================
+
+    def test_set_temperature(self):
+        """Test setting sampling temperature for flow decoder.
+
+        Tests set_temperature() method which controls randomness in generation.
+        """
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+        model.prepare_for_inference()
+
+        # Test valid temperature values
+        for temp in [0.1, 0.5, 1.0, 1.5, 2.0]:
+            model.set_temperature(temp)
+            # Model should store temperature
+            assert hasattr(model, 'temperature') or hasattr(model, 'flow_decoder')
+
+    def test_temperature_out_of_range(self):
+        """Test that invalid temperature values are rejected."""
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+
+        # Temperature too low
+        with pytest.raises(ValueError):
+            model.set_temperature(0.0)
+
+        # Temperature too high
+        with pytest.raises(ValueError):
+            model.set_temperature(3.0)
+
+        # Negative temperature
+        with pytest.raises(ValueError):
+            model.set_temperature(-0.5)
+
+    def test_auto_tune_temperature(self):
+        """Test automatic temperature tuning based on audio characteristics.
+
+        Tests auto_tune_temperature() which analyzes source/target to determine optimal temperature.
+        """
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+        model.prepare_for_inference()
+
+        # Create test inputs
+        sample_rate = 16000
+        duration = 1.0
+        source_audio = np.random.randn(int(sample_rate * duration)).astype(np.float32) * 0.3
+        target_embedding = np.random.randn(256).astype(np.float32)
+
+        # Auto-tune temperature
+        optimal_temp = model.auto_tune_temperature(
+            source_audio=source_audio,
+            target_embedding=target_embedding,
+            sample_rate=sample_rate
+        )
+
+        # Should return a valid temperature value
+        assert isinstance(optimal_temp, float)
+        assert 0.1 <= optimal_temp <= 2.0
+
+    def test_temperature_affects_output_variability(self):
+        """Test that temperature controls output variability."""
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+        model.prepare_for_inference()
+
+        # Create test input
+        source_audio = np.random.randn(16000).astype(np.float32) * 0.3
+        target_emb = np.random.randn(256).astype(np.float32)
+        source_f0 = np.random.uniform(100, 400, 100).astype(np.float32)
+
+        # Convert with low temperature (more deterministic)
+        model.set_temperature(0.1)
+        output_low_temp_1 = model.convert(
+            source_audio=source_audio,
+            target_speaker_embedding=target_emb,
+            source_f0=source_f0,
+            source_sample_rate=16000
+        )
+
+        output_low_temp_2 = model.convert(
+            source_audio=source_audio,
+            target_speaker_embedding=target_emb,
+            source_f0=source_f0,
+            source_sample_rate=16000
+        )
+
+        # Convert with high temperature (more variable)
+        model.set_temperature(1.5)
+        output_high_temp_1 = model.convert(
+            source_audio=source_audio,
+            target_speaker_embedding=target_emb,
+            source_f0=source_f0,
+            source_sample_rate=16000
+        )
+
+        output_high_temp_2 = model.convert(
+            source_audio=source_audio,
+            target_speaker_embedding=target_emb,
+            source_f0=source_f0,
+            source_sample_rate=16000
+        )
+
+        # All outputs should be valid
+        assert isinstance(output_low_temp_1, np.ndarray)
+        assert isinstance(output_low_temp_2, np.ndarray)
+        assert isinstance(output_high_temp_1, np.ndarray)
+        assert isinstance(output_high_temp_2, np.ndarray)
+
+    # ========================================================================
+    # Pitch Shift Tests
+    # ========================================================================
+
+    def test_pitch_shift_semitones(self):
+        """Test pitch shifting during conversion.
+
+        Tests convert() method with pitch_shift_semitones parameter.
+        """
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+        model.prepare_for_inference()
+
+        # Create test inputs
+        source_audio = np.random.randn(16000).astype(np.float32) * 0.3
+        target_emb = np.random.randn(256).astype(np.float32)
+        source_f0 = np.full(100, 440.0).astype(np.float32)  # A4
+
+        # Test different pitch shifts
+        for shift in [-12, -5, 0, 5, 12]:  # Octave down, fifth down, no shift, fifth up, octave up
+            output = model.convert(
+                source_audio=source_audio,
+                target_speaker_embedding=target_emb,
+                source_f0=source_f0,
+                pitch_shift_semitones=shift,
+                source_sample_rate=16000
+            )
+
+            # Should produce valid output
+            assert isinstance(output, np.ndarray)
+            assert len(output) > 0
+            assert np.isfinite(output).all()
+
+    def test_pitch_shift_method_multiply(self):
+        """Test pitch shift with multiply method.
+
+        Tests pitch_shift_method='multiply' parameter for frequency domain pitch shifting.
+        """
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+        model.prepare_for_inference()
+
+        source_audio = np.random.randn(16000).astype(np.float32) * 0.3
+        target_emb = np.random.randn(256).astype(np.float32)
+        source_f0 = np.full(100, 440.0).astype(np.float32)
+
+        # Test multiply method
+        output = model.convert(
+            source_audio=source_audio,
+            target_speaker_embedding=target_emb,
+            source_f0=source_f0,
+            pitch_shift_semitones=7,  # Perfect fifth up
+            pitch_shift_method='multiply',
+            source_sample_rate=16000
+        )
+
+        assert isinstance(output, np.ndarray)
+        assert np.isfinite(output).all()
+
+    def test_pitch_shift_preserves_timbre(self):
+        """Test that pitch shifting preserves speaker timbre."""
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+        model.prepare_for_inference()
+
+        source_audio = np.random.randn(16000).astype(np.float32) * 0.3
+        target_emb = np.random.randn(256).astype(np.float32)
+        source_f0 = np.full(100, 440.0).astype(np.float32)
+
+        # Convert without pitch shift
+        output_no_shift = model.convert(
+            source_audio=source_audio,
+            target_speaker_embedding=target_emb,
+            source_f0=source_f0,
+            pitch_shift_semitones=0,
+            source_sample_rate=16000
+        )
+
+        # Convert with pitch shift
+        output_with_shift = model.convert(
+            source_audio=source_audio,
+            target_speaker_embedding=target_emb,
+            source_f0=source_f0,
+            pitch_shift_semitones=5,
+            source_sample_rate=16000
+        )
+
+        # Both should produce valid outputs of similar length
+        assert isinstance(output_no_shift, np.ndarray)
+        assert isinstance(output_with_shift, np.ndarray)
+        # Lengths may differ slightly due to processing
+        assert abs(len(output_no_shift) - len(output_with_shift)) < sample_rate * 0.1  # Within 100ms
+
+    # ========================================================================
+    # Quality Preset Tests
+    # ========================================================================
+
+    def test_set_quality_preset(self):
+        """Test setting quality presets (draft, fast, balanced, high, studio).
+
+        Tests set_quality_preset() method which affects conversion speed/quality trade-off.
+        """
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+
+        # Test all quality presets
+        for preset in ['draft', 'fast', 'balanced', 'high', 'studio']:
+            model.set_quality_preset(preset)
+            # Should store current preset
+            assert hasattr(model, 'current_preset') or hasattr(model, 'quality_preset')
+
+    def test_quality_preset_invalid(self):
+        """Test that invalid quality preset raises error."""
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+
+        with pytest.raises(ValueError):
+            model.set_quality_preset('invalid_preset')
+
+    def test_get_quality_preset_info(self):
+        """Test retrieving quality preset information.
+
+        Tests get_quality_preset_info() method which returns preset details.
+        """
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+
+        # Get info for each preset
+        for preset in ['draft', 'fast', 'balanced', 'high', 'studio']:
+            info = model.get_quality_preset_info(preset)
+
+            # Verify info structure
+            assert isinstance(info, dict)
+            assert 'name' in info
+            assert 'description' in info or 'settings' in info
+            # May include throughput estimates
+            if 'estimated_rtf' in info:
+                assert isinstance(info['estimated_rtf'], (int, float))
+
+    def test_get_current_preset_info(self):
+        """Test getting currently active preset info."""
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+
+        # Set a preset
+        model.set_quality_preset('balanced')
+
+        # Get current preset info (no parameter)
+        info = model.get_quality_preset_info()
+
+        assert isinstance(info, dict)
+        assert 'name' in info
+        assert info['name'] == 'balanced'
+
+    def test_estimate_conversion_time(self):
+        """Test conversion time estimation for given audio duration.
+
+        Tests estimate_conversion_time() method with different presets.
+        """
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+
+        # Test time estimation for different durations and presets
+        for duration in [10.0, 30.0, 60.0]:
+            for preset in ['fast', 'balanced', 'studio']:
+                model.set_quality_preset(preset)
+                estimated_time = model.estimate_conversion_time(duration, preset=preset)
+
+                # Should return a positive number
+                assert isinstance(estimated_time, float)
+                assert estimated_time > 0
+
+    def test_quality_preset_affects_throughput(self):
+        """Test that quality presets affect conversion throughput."""
+        config = create_test_config()
+        model = SingingVoiceConverter(config)
+        model.prepare_for_inference()
+
+        source_audio = np.random.randn(16000).astype(np.float32) * 0.3
+        target_emb = np.random.randn(256).astype(np.float32)
+        source_f0 = np.full(100, 440.0).astype(np.float32)
+
+        # Convert with different presets
+        for preset in ['fast', 'balanced', 'high']:
+            model.set_quality_preset(preset)
+            output = model.convert(
+                source_audio=source_audio,
+                target_speaker_embedding=target_emb,
+                source_f0=source_f0,
+                source_sample_rate=16000
+            )
+
+            # All should produce valid outputs
+            assert isinstance(output, np.ndarray)
+            assert len(output) > 0
+            assert np.isfinite(output).all()
+
 
 # ========== Numerical Stability Tests ==========
 

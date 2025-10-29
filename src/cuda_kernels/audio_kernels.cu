@@ -1,3 +1,17 @@
+/***************************************************************************
+#* Kernel tuning constants
+#* NOTE: The kernels below use hardcoded frame/hop size assumptions for
+#* improved performance and simplicity. The primary assumption is a frame
+#* length of 2048 samples and typical hop lengths (e.g., 512). These values
+#* must match any host-side configuration (config/audio_config.yaml) that
+#* assumes a 2048 frame length for pitch detection and spectrogram operations.
+#*
+#* If you wish to make these parameters configurable at runtime, expose a
+#* host-side setter in bindings.cpp that stores tuning parameters and pass
+#* them into the launch_* host functions. For now these values are hardcoded
+#* here and should be treated as the source of truth for kernel expectations.
+#***************************************************************************/
+
 #include "kernel_utils.cuh"
 #include "fft_ops.cuh"
 #include <cuda_runtime.h>
@@ -9,19 +23,21 @@
 
 using namespace cooperative_groups;
 
-// Enhanced pitch detection kernel with lightweight vibrato heuristic
+// Enhanced pitch detection kernel with configurable vibrato method and harmonic weighting
 __global__ void pitch_detection_kernel(
     float *audio,
     float *pitch,
     float *confidence,      // NEW: confidence output
-    float *vibrato_flag,    // Lightweight vibrato presence heuristic
+    float *vibrato_flag,    // Vibrato presence heuristic
     int n_samples,
     int frame_length,       // Increased to 2048 for better resolution
     int hop_length,
     float fmin,
     float fmax,
     float threshold,
-    float sample_rate
+    float sample_rate,
+    bool use_harmonic_weighting,  // Runtime flag: apply harmonic weighting to reduce octave errors
+    int vibrato_method        // Runtime flag: 0=lightweight heuristic, 1=autocorrelation-based
 ) {
     int frame_idx = blockIdx.x;
     int tid = threadIdx.x;
@@ -87,7 +103,7 @@ __global__ void pitch_detection_kernel(
     // Harmonic weighting to reduce octave errors
     float harmonic_weights[512];  // Weights for each tau based on harmonic structure
 
-    // Pre-compute harmonic weights for all taus
+    // Pre-compute harmonic weights for all taus (conditional)
     if (tid == 0) {
         for (int tau = tau_min; tau <= tau_max; ++tau) {
             int idx = tau - tau_min;
@@ -95,17 +111,19 @@ __global__ void pitch_detection_kernel(
                 // Check for harmonic reinforcement at 2*tau, 3*tau
                 float weight = 1.0f;
 
-                // Boost confidence if harmonics align
-                int tau2 = tau * 2;  // Octave below
-                int tau3 = tau * 3;  // Perfect fifth below
+                if (use_harmonic_weighting) {
+                    // Boost confidence if harmonics align
+                    int tau2 = tau * 2;  // Octave below
+                    int tau3 = tau * 3;  // Perfect fifth below
 
-                if (tau2 >= tau_min && tau2 <= tau_max) {
-                    // Harmonic at 2*tau reinforces fundamental
-                    weight += 0.3f;
-                }
-                if (tau3 >= tau_min && tau3 <= tau_max) {
-                    // Harmonic at 3*tau reinforces fundamental
-                    weight += 0.2f;
+                    if (tau2 >= tau_min && tau2 <= tau_max) {
+                        // Harmonic at 2*tau reinforces fundamental
+                        weight += 0.3f;
+                    }
+                    if (tau3 >= tau_min && tau3 <= tau_max) {
+                        // Harmonic at 3*tau reinforces fundamental
+                        weight += 0.2f;
+                    }
                 }
 
                 harmonic_weights[idx] = weight;
@@ -192,9 +210,11 @@ __global__ void pitch_detection_kernel(
                 if (mean_d_prime > EPSILON) {
                     cmnd_tau = d_prime / mean_d_prime;
 
-                    // Apply harmonic weighting to reduce octave errors
-                    float h_weight = harmonic_weights[storage_idx];
-                    cmnd_tau /= h_weight;  // Lower CMND (better) if harmonics align
+                    // Apply harmonic weighting to reduce octave errors (optional)
+                    if (use_harmonic_weighting) {
+                        float h_weight = harmonic_weights[storage_idx];
+                        cmnd_tau /= h_weight;  // Lower CMND (better) if harmonics align
+                    }
                 }
             }
 
@@ -251,10 +271,10 @@ __global__ void pitch_detection_kernel(
             // Confidence derived from CMND: 1 - cmnd(best_tau)
             confidence[frame_idx] = clamp(1.0f - best_cmnd, 0.0f, 1.0f);
 
-            // Lightweight vibrato heuristic: track short-term pitch variance over last N frames
-            // Load recent pitch history (last 10 frames)
-            const int history_size = 10;
-            if (frame_idx >= history_size && current_pitch > 0.0f) {
+            // Vibrato detection based on method selection
+            if (vibrato_method == 0 && frame_idx >= 10 && current_pitch > 0.0f) {
+                // Lightweight vibrato heuristic: track short-term pitch variance over last N frames
+                const int history_size = 10;
                 // Compute pitch variance over recent frames
                 float mean_pitch = 0.0f;
                 int valid_count = 0;
@@ -286,6 +306,9 @@ __global__ void pitch_detection_kernel(
                 } else {
                     vibrato_flag[frame_idx] = 0.0f;
                 }
+            } else if (vibrato_method == 1) {
+                // Advanced vibrato method will be computed separately - leave as 0 for now
+                vibrato_flag[frame_idx] = 0.0f;
             } else {
                 vibrato_flag[frame_idx] = 0.0f;
             }
@@ -482,7 +505,8 @@ __global__ void formant_extraction_kernel(
     int n_frames,
     int frame_length,       // Typically 1024-2048 samples for formant analysis
     int num_formants,       // Typically 4-5 formants
-    float sample_rate
+    float sample_rate,
+    int lpc_order          // Configurable LPC order (10-16 typically)
 ) {
     int frame_idx = blockIdx.x;
     int tid = threadIdx.x;
@@ -493,9 +517,6 @@ __global__ void formant_extraction_kernel(
     float *shared_audio = shared_formant_data;
     float *shared_autocorr = &shared_formant_data[frame_length];
 
-    // LPC order (10-14 for singing voice formants)
-    const int lpc_order = 14;
-
     // Load audio frame into shared memory
     for (int i = tid; i < frame_length; i += blockDim.x) {
         shared_audio[i] = __ldg(&audio[frame_idx * frame_length + i]);
@@ -504,8 +525,8 @@ __global__ void formant_extraction_kernel(
 
     // Thread 0 performs LPC analysis (serial, but per-frame parallel across blocks)
     if (tid == 0) {
-        // Step 1: Compute autocorrelation (order 14)
-        float autocorr[15];  // lpc_order + 1
+        // Step 1: Compute autocorrelation with configurable order
+        float autocorr[21];  // Max order 20 + 1
         compute_autocorrelation(shared_audio, autocorr, frame_length, lpc_order);
 
         // Store autocorr in shared memory for debugging (optional)
@@ -514,21 +535,21 @@ __global__ void formant_extraction_kernel(
         }
 
         // Step 2: Apply Levinson-Durbin recursion to get LPC coefficients
-        float lpc_coeffs[14];
+        float lpc_coeffs[20];  // Max order 20
         float prediction_error = 0.0f;
         levinson_durbin(autocorr, lpc_coeffs, lpc_order, &prediction_error);
 
         // Step 3: Find polynomial roots using Durand-Kerner method
         // LPC polynomial: A(z) = 1 + a1*z^-1 + a2*z^-2 + ... + a_p*z^-p
         // We need roots of A(z) on unit circle
-        float roots_real[14];
-        float roots_imag[14];
+        float roots_real[20];
+        float roots_imag[20];
         find_polynomial_roots(lpc_coeffs, roots_real, roots_imag, lpc_order, 100);
 
         // Step 4: Extract formants from roots with positive imaginary parts
         // Formants correspond to resonances (poles near unit circle with positive imag part)
-        float formant_freqs[14];
-        float formant_bandwidths[14];
+        float formant_freqs[20];
+        float formant_bandwidths[20];
         int formant_count = 0;
 
         for (int i = 0; i < lpc_order; i++) {
@@ -670,11 +691,12 @@ __global__ void compute_magnitude_from_complex_kernel(cufftComplex *complex_spec
     }
 }
 
-// Host function to launch pitch detection with separate outputs
+// Host function to launch pitch detection with runtime flags for harmonic weighting and vibrato method
 void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch,
                            torch::Tensor& output_confidence, torch::Tensor& output_vibrato,
                            float sample_rate, int frame_length, int hop_length,
-                           float fmin, float fmax, float threshold) {
+                           float fmin, float fmax, float threshold,
+                           bool use_harmonic_weighting, int vibrato_method) {
     // ==========================================
     // CRITICAL: Input Validation (No Hidden Defaults)
     // ==========================================
@@ -815,7 +837,8 @@ void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch,
     size_t shared_mem = PITCH_SHARED_MEM_SIZE * sizeof(float);
     pitch_detection_kernel<<<grid, block, shared_mem>>>(
         d_audio, d_pitch, d_confidence, d_vibrato,
-        n_samples, frame_length, hop_length, fmin, fmax, threshold, sample_rate
+        n_samples, frame_length, hop_length, fmin, fmax, threshold, sample_rate,
+        use_harmonic_weighting, vibrato_method
     );
     CUDA_CHECK(cudaGetLastError());
 }
@@ -962,6 +985,12 @@ void launch_formant_extraction(
             "). Typical values: 3-4 for speech, 4-5 for singing."
         );
     }
+    if (num_formants > lpc_order) {
+        throw std::invalid_argument(
+            "num_formants cannot exceed lpc_order (got num_formants=" + std::to_string(num_formants) +
+            ", lpc_order=" + std::to_string(lpc_order) + "). Cannot extract more formants than LPC coefficients."
+        );
+    }
 
     float *d_audio = audio.data_ptr<float>();
     float *d_formants = formants.data_ptr<float>();
@@ -979,7 +1008,7 @@ void launch_formant_extraction(
     size_t shared_mem = (frame_length + lpc_order + 1) * sizeof(float);
 
     formant_extraction_kernel<<<blocks, threads, shared_mem>>>(
-        d_audio, d_formants, n_frames, frame_length, num_formants, sample_rate
+        d_audio, d_formants, n_frames, frame_length, num_formants, sample_rate, lpc_order
     );
     CUDA_CHECK(cudaGetLastError());
 }

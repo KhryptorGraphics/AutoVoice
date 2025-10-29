@@ -45,6 +45,7 @@ from ..inference.voice_cloner import VoiceCloner
 from ..inference.singing_conversion_pipeline import SingingConversionPipeline
 from .api import api_bp
 from .websocket_handler import WebSocketHandler
+from .utils import allowed_file, ALLOWED_AUDIO_EXTENSIONS
 
 # Initialize structured logging
 setup_logging()
@@ -62,11 +63,7 @@ singing_conversion_pipeline = None
 config = None
 
 UPLOAD_FOLDER = '/tmp/autovoice_uploads'
-ALLOWED_EXTENSIONS = {'wav', 'mp3', 'flac', 'ogg', 'm4a'}
-
-def allowed_file(filename):
-    """Check if file has allowed extension"""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+ALLOWED_EXTENSIONS = ALLOWED_AUDIO_EXTENSIONS  # Use shared constant
 
 def create_app(config_path=None, config=None):
     """Create and configure Flask application"""
@@ -135,18 +132,45 @@ def create_app(config_path=None, config=None):
             'text_to_speech': lambda self, text, speaker_id=0, **kwargs: np.random.rand(22050) if NUMPY_AVAILABLE else [0] * 22050
         })()
 
-        voice_cloner = type('MockVoiceCloner', (), {
-            'create_voice_profile': lambda self, audio, **kwargs: {
-                'profile_id': 'test-profile-123',
-                'user_id': kwargs.get('user_id'),
-                'audio_duration': 30.0,
-                'vocal_range': {'min_f0': 100.0, 'max_f0': 400.0},
-                'created_at': '2025-01-15T10:00:00Z'
-            },
-            'list_voice_profiles': lambda self, user_id=None: [],
-            'load_voice_profile': lambda self, profile_id: {'profile_id': profile_id},
-            'delete_voice_profile': lambda self, profile_id: True
-        })()
+        # COMMENT 8 FIX: Implement in-memory profile store for MockVoiceCloner
+        class MockVoiceCloner:
+            def __init__(self):
+                self._profiles = {}  # In-memory profile store keyed by profile_id
+
+            def create_voice_profile(self, audio, **kwargs):
+                import uuid
+                import datetime
+                profile_id = kwargs.get('profile_id', f'test-profile-{uuid.uuid4().hex[:8]}')
+                profile = {
+                    'profile_id': profile_id,
+                    'user_id': kwargs.get('user_id'),
+                    'audio_duration': 30.0,
+                    'vocal_range': {'min_f0': 100.0, 'max_f0': 400.0},
+                    'created_at': datetime.datetime.utcnow().isoformat() + 'Z'
+                }
+                self._profiles[profile_id] = profile
+                return profile
+
+            def list_voice_profiles(self, user_id=None):
+                if user_id is None:
+                    return list(self._profiles.values())
+                return [p for p in self._profiles.values() if p.get('user_id') == user_id]
+
+            def load_voice_profile(self, profile_id):
+                """Load voice profile by ID
+
+                COMMENT 2 FIX: Return None for missing profiles instead of creating fake profile.
+                API route will detect None and return 404.
+                """
+                return self._profiles.get(profile_id)
+
+            def delete_voice_profile(self, profile_id):
+                if profile_id in self._profiles:
+                    del self._profiles[profile_id]
+                    return True
+                return False
+
+        voice_cloner = MockVoiceCloner()
 
         singing_conversion_pipeline = type('MockSingingConversionPipeline', (), {
             'convert_song': lambda self, song_path, target_profile_id, **kwargs: {
@@ -185,23 +209,27 @@ def create_app(config_path=None, config=None):
             logger.info("Initializing Voice Cloner...")
             # Merge voice cloning config with audio config
             vc_config = {**app_config.get('voice_cloning', {}), 'audio_config': app_config.get('audio', {})}
+            # COMMENT 3 FIX: Pass existing audio_processor to avoid config drift
             voice_cloner = VoiceCloner(
                 config=vc_config,
                 device=gpu_manager.get_device() if hasattr(gpu_manager, 'get_device') else None,
-                gpu_manager=gpu_manager
+                gpu_manager=gpu_manager,
+                audio_processor=audio_processor
             )
 
             logger.info("Initializing Singing Conversion Pipeline...")
-            # Merge pipeline config with model config
+            # Merge pipeline config with model config and add storage_dir from voice_cloning config
             pipeline_config = {
                 **app_config.get('singing_conversion_pipeline', {}),
                 'model_config': app_config.get('singing_voice_converter', {}),
-                'mixer_config': app_config.get('audio_mixing', {})
+                'mixer_config': app_config.get('audio_mixing', {}),
+                'storage_dir': app_config.get('voice_cloning', {}).get('storage_dir', '~/.cache/autovoice/voice_profiles/')
             }
             singing_conversion_pipeline = SingingConversionPipeline(
                 config=pipeline_config,
                 device=gpu_manager.get_device() if hasattr(gpu_manager, 'get_device') else None,
-                gpu_manager=gpu_manager
+                gpu_manager=gpu_manager,
+                voice_cloner=voice_cloner  # Pass VoiceCloner instance
             )
 
             # Update metrics
@@ -232,6 +260,56 @@ def create_app(config_path=None, config=None):
 
     # Register API blueprint
     app.register_blueprint(api_bp)
+
+    # COMMENT 1 FIX: Add backward-compatible redirect routes from /api/* to /api/v1/*
+    # This maintains compatibility for existing consumers while supporting versioned API
+    @app.route('/api/synthesize', methods=['POST'])
+    def api_synthesize_redirect():
+        """Redirect /api/synthesize to /api/v1/synthesize for backward compatibility"""
+        from flask import redirect, url_for
+        return redirect(url_for('api.synthesize'), code=307)  # 307 preserves POST method
+
+    @app.route('/api/process_audio', methods=['POST'])
+    def api_process_audio_redirect():
+        """Redirect /api/process_audio to /api/v1/process_audio for backward compatibility"""
+        from flask import redirect, url_for
+        return redirect(url_for('api.process_audio'), code=307)
+
+    @app.route('/api/analyze', methods=['POST'])
+    def api_analyze_redirect():
+        """Redirect /api/analyze to /api/v1/analyze for backward compatibility"""
+        from flask import redirect, url_for
+        return redirect(url_for('api.analyze'), code=307)
+
+    @app.route('/api/speakers', methods=['GET'])
+    def api_speakers_redirect():
+        """Redirect /api/speakers to /api/v1/speakers for backward compatibility"""
+        from flask import redirect, url_for
+        return redirect(url_for('api.speakers'), code=307)
+
+    @app.route('/api/convert/song', methods=['POST'])
+    def api_convert_song_redirect():
+        """Redirect /api/convert/song to /api/v1/convert/song for backward compatibility"""
+        from flask import redirect, url_for
+        return redirect(url_for('api.convert_song'), code=307)
+
+    @app.route('/api/voice/clone', methods=['POST'])
+    def api_voice_clone_redirect():
+        """Redirect /api/voice/clone to /api/v1/voice/clone for backward compatibility"""
+        from flask import redirect, url_for
+        return redirect(url_for('api.voice_clone'), code=307)
+
+    @app.route('/api/voice/profiles', methods=['GET'])
+    def api_voice_profiles_redirect():
+        """Redirect /api/voice/profiles to /api/v1/voice/profiles for backward compatibility"""
+        from flask import redirect, url_for
+        return redirect(url_for('api.list_voice_profiles'), code=307)
+
+    @app.route('/api/gpu_status', methods=['GET'])
+    def api_gpu_status_redirect():
+        """Redirect /api/gpu_status to /api/v1/gpu_status for backward compatibility"""
+        from flask import redirect, url_for
+        return redirect(url_for('api.gpu_status'), code=307)
 
     # Initialize WebSocket handlers
     try:
@@ -306,6 +384,16 @@ def create_app(config_path=None, config=None):
                 'api': True
             }
         })
+
+    @app.route('/song-conversion')
+    def song_conversion():
+        """Render the song conversion page."""
+        return render_template('song_conversion.html')
+
+    @app.route('/profiles')
+    def profile_management():
+        """Render the profile management page."""
+        return render_template('profile_management.html')
 
     @app.route('/health')
     def health_check():

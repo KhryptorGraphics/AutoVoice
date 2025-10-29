@@ -4,6 +4,12 @@
 #include <cuda_runtime.h>
 #include <cufft.h>
 #include <cuComplex.h>
+#include "kernel_utils.cuh"  // Include for CUFFT_CHECK macro
+
+// Ensure PI is defined for device functions (guard against missing definition)
+#ifndef PI
+#define PI 3.141592653589793f
+#endif
 
 // FFT operation constants (general speech/audio)
 #define FFT_SIZE 2048
@@ -30,14 +36,17 @@
 #define A_WEIGHTING_737_9 737.9f
 #define A_WEIGHTING_12194_0 12194.0f
 
-// Kernel declarations for FFT operations (existing)
-__global__ void apply_window_kernel(float* signal, float* window, float* output, int window_size, int batch_size);
-__global__ void compute_magnitude_kernel(cufftComplex* complex_data, float* magnitude, int fft_size, int batch_size);
-__global__ void compute_phase_kernel(cufftComplex* complex_data, float* phase, int fft_size, int batch_size);
-__global__ void mel_filterbank_kernel(float* magnitude, float* mel_output, float* filterbank,
-                                     int fft_size, int mel_bins, int batch_size);
+// Updated kernel declarations to match actual implementations
+// Tensor layouts: audio[batch, n_frames, n_fft/2+1], stft[batch, n_frames, n_fft/2+1], mel[batch, n_frames, mel_bins]
+// CRITICAL: apply_window_kernel signature must match definition in fft_kernels.cu
+__global__ void apply_window_kernel(float* audio, float* window, float* windowed, int audio_length, int n_fft, int hop_length, int n_frames);
+__global__ void apply_mel_filterbank_kernel(cufftComplex* spectrum, float* mel_spectrum, int n_freqs, int n_mels, float* mel_basis);
+__global__ void apply_mel_magnitude_kernel(const float* magnitude, float* mel_spectrum, int n_freqs, int n_mels, float* mel_basis);
+__global__ void compute_magnitude_kernel(cufftComplex* spectrum, float* magnitude, int n_frames, int n_freqs);
+__global__ void log_magnitude_kernel(float* magnitude, float* log_mag, int n_bins);
 
 // New kernel declarations for singing voice conversion
+// Tensor layouts: audio[batch_size, audio_length], mel_output[batch_size, n_frames, mel_bins], stft[batch_size, n_frames, n_fft/2+1]
 __global__ void mel_spectrogram_singing_kernel(
     float* audio,                // Input audio [batch_size, audio_length]
     cufftComplex* fft_output,   // FFT workspace [batch_size, n_frames, n_fft/2+1]
@@ -48,8 +57,7 @@ __global__ void mel_spectrogram_singing_kernel(
     int n_fft,
     int hop_length,
     int mel_bins,
-    int batch_size,
-    bool apply_a_weighting      // Optional perceptual weighting
+    int batch_size
 );
 
 __global__ void optimized_stft_kernel(
@@ -129,11 +137,11 @@ __global__ void realtime_voice_conversion_kernel(
 
 // Helper functions for FFT operations
 inline __device__ float hann_window(int n, int N) {
-    return 0.5f * (1.0f - cosf(2.0f * M_PI * n / (N - 1)));
+    return 0.5f * (1.0f - cosf(2.0f * PI * n / (N - 1)));
 }
 
 inline __device__ float hamming_window(int n, int N) {
-    return 0.54f - 0.46f * cosf(2.0f * M_PI * n / (N - 1));
+    return 0.54f - 0.46f * cosf(2.0f * PI * n / (N - 1));
 }
 
 // Mel scale conversion functions (standard)
@@ -200,7 +208,8 @@ inline __device__ float window_normalization_factor(float* window, int n_fft, in
 #define MEL_SHARED_MEM_SIZE 2048
 
 // Updated shared memory configurations for singing voice kernels
-#define SINGING_MEL_SHARED_MEM_SIZE (SINGING_FFT_SIZE / 2 + SINGING_MEL_BINS)  // ~1152 floats
+// FIXED: Correct shared memory size for mel kernel: windowed frame (n_fft) + magnitude (n_fft/2+1)
+#define SINGING_MEL_SHARED_MEM_SIZE (SINGING_FFT_SIZE + (SINGING_FFT_SIZE / 2 + 1))  // 3073 floats
 #define OPTIMIZED_STFT_SHARED_MEM_SIZE SINGING_FFT_SIZE  // 2048 floats
 #define OPTIMIZED_ISTFT_SHARED_MEM_SIZE SINGING_FFT_SIZE  // 2048 floats
 #define OVERLAP_ADD_SHARED_MEM_SIZE (SINGING_FFT_SIZE + 512)  // 2560 floats for window sum
@@ -213,13 +222,6 @@ inline __device__ float window_normalization_factor(float* window, int n_fft, in
 #define MAX_OVERLAP_BUFFER_SIZE 4096
 #define MAX_FEATURE_BUFFER_SIZE 2048
 
-// Error checking macro for CUFFT
-#define CUFFT_CHECK(call) \
-    do { \
-        cufftResult result = call; \
-        if (result != CUFFT_SUCCESS) { \
-            printf("CUFFT error: %d at %s:%d\\n", result, __FILE__, __LINE__); \
-        } \
-    } while(0)
+// CUFFT_CHECK macro is defined in kernel_utils.cuh - included at top of file
 
 #endif // FFT_OPS_CUH

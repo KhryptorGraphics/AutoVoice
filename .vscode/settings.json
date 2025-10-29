@@ -1,0 +1,4 @@
+{
+    "traycer.alwaysAllowPayToRun": true,
+    "chatgpt.runCodexInWindowsSubsystemForLinux": true
+}

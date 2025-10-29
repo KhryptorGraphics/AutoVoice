@@ -34,72 +34,71 @@ CUDA_HOME = os.environ.get('CUDA_HOME', '/usr/local/cuda')
 cuda_available = _check_cuda_availability()
 if not cuda_available:
     # Option A: CPU-only install (set ext_modules to empty list)
-    # Option B: Raise SystemExit with clear message (uncomment below)
-    print("ERROR: CUDA is required for this package. CPU-only installs are not supported.")
-    print("Please install CUDA and PyTorch with CUDA support before installing this package.")
-    sys.exit(1)
+    print("WARNING: Installing in CPU-only mode. CUDA extensions will not be available.")
+    print("For full GPU acceleration, install CUDA and reinstall the package.")
+    cuda_kernels = None
+else:
+    # Get CUDA architectures from environment or use defaults
+    CUDA_ARCH_LIST = os.environ.get('TORCH_CUDA_ARCH_LIST', None)
+    if CUDA_ARCH_LIST is None:
+        # Try to get from torch
+        try:
+            if torch.cuda.is_available():
+                CUDA_ARCH_LIST = ';'.join([str(arch) for arch in torch.cuda.get_arch_list()])
+            else:
+                CUDA_ARCH_LIST = '70;75;80;86'  # Common architectures
+        except:
+            CUDA_ARCH_LIST = '70;75;80;86'  # Fallback to common architectures
 
-# Get CUDA architectures from environment or use defaults
-CUDA_ARCH_LIST = os.environ.get('TORCH_CUDA_ARCH_LIST', None)
-if CUDA_ARCH_LIST is None:
-    # Try to get from torch
-    try:
-        if torch.cuda.is_available():
-            CUDA_ARCH_LIST = ';'.join([str(arch) for arch in torch.cuda.get_arch_list()])
-        else:
-            CUDA_ARCH_LIST = '70;75;80;86'  # Common architectures
-    except:
-        CUDA_ARCH_LIST = '70;75;80;86'  # Fallback to common architectures
+    arch_flags = []
+    arch_list = []
+    for arch in CUDA_ARCH_LIST.split(';'):
+        # Remove compute_ and sm_ prefixes if present
+        arch_clean = arch.replace('compute_', '').replace('sm_', '')
+        # Normalize architecture string by removing dots (e.g., '8.6' -> '86')
+        arch_clean = arch_clean.replace('.', '')
+        if arch_clean.isdigit():  # Validate it's a number
+            arch_flags.extend(['-gencode', f'arch=compute_{arch_clean},code=sm_{arch_clean}'])
+            arch_list.append(arch_clean)
 
-arch_flags = []
-arch_list = []
-for arch in CUDA_ARCH_LIST.split(';'):
-    # Remove compute_ and sm_ prefixes if present
-    arch_clean = arch.replace('compute_', '').replace('sm_', '')
-    # Normalize architecture string by removing dots (e.g., '8.6' -> '86')
-    arch_clean = arch_clean.replace('.', '')
-    if arch_clean.isdigit():  # Validate it's a number
-        arch_flags.extend(['-gencode', f'arch=compute_{arch_clean},code=sm_{arch_clean}'])
-        arch_list.append(arch_clean)
+    # Add PTX fallback for forward compatibility
+    if arch_list:
+        highest_arch = max(arch_list, key=int)
+        arch_flags.extend(['-gencode', f'arch=compute_{highest_arch},code=compute_{highest_arch}'])
 
-# Add PTX fallback for forward compatibility
-if arch_list:
-    highest_arch = max(arch_list, key=int)
-    arch_flags.extend(['-gencode', f'arch=compute_{highest_arch},code=compute_{highest_arch}'])
-
-# Define CUDA extension for custom kernels
-cuda_kernels = CUDAExtension(
-    name='auto_voice.cuda_kernels',
-    sources=[
-        'src/cuda_kernels/audio_kernels.cu',
-        'src/cuda_kernels/fft_kernels.cu',
-        'src/cuda_kernels/training_kernels.cu',
-        'src/cuda_kernels/memory_kernels.cu',
-        'src/cuda_kernels/kernel_wrappers.cu',
-        'src/cuda_kernels/bindings.cpp',
-    ],
-    include_dirs=[
-        os.path.join(CUDA_HOME, 'include'),
-        'src/cuda_kernels',
-    ],
-    library_dirs=[
-        os.path.join(CUDA_HOME, 'lib64'),
-    ],
-    libraries=[
-        'cudart',
-        'cufft',
-    ],
-    extra_compile_args={
-        'cxx': ['-O3', '-std=c++17'],
-        'nvcc': [
-            '-O3',
-            '--use_fast_math',
-            '-std=c++17',
-            '--expt-relaxed-constexpr',
-            '--ptxas-options=-v',  # Verbose PTX assembly
-        ] + arch_flags
-    },
-)
+    # Define CUDA extension for custom kernels
+    cuda_kernels = CUDAExtension(
+        name='auto_voice.cuda_kernels',
+        sources=[
+            'src/cuda_kernels/audio_kernels.cu',
+            'src/cuda_kernels/fft_kernels.cu',
+            'src/cuda_kernels/training_kernels.cu',
+            'src/cuda_kernels/memory_kernels.cu',
+            'src/cuda_kernels/kernel_wrappers.cu',
+            'src/cuda_kernels/bindings.cpp',
+        ],
+        include_dirs=[
+            os.path.join(CUDA_HOME, 'include'),
+            'src/cuda_kernels',
+        ],
+        library_dirs=[
+            os.path.join(CUDA_HOME, 'lib64'),
+        ],
+        libraries=[
+            'cudart',
+            'cufft',
+        ],
+        extra_compile_args={
+            'cxx': ['-O3', '-std=c++17'],
+            'nvcc': [
+                '-O3',
+                '--use_fast_math',
+                '-std=c++17',
+                '--expt-relaxed-constexpr',
+                '--ptxas-options=-v',  # Verbose PTX assembly
+            ] + arch_flags
+        },
+    )
 
 # Build requirements for cuDNN, TensorRT
 build_requirements = [
@@ -118,13 +117,13 @@ setup(
     long_description_content_type='text/markdown',
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
-    ext_modules=[cuda_kernels],
-    cmdclass={'build_ext': BuildExtension},
+    ext_modules=[cuda_kernels] if cuda_available and cuda_kernels else [],
+    cmdclass={'build_ext': BuildExtension} if cuda_available else {},
     install_requires=[
         # Core ML/Deep Learning dependencies (required for GPU voice synthesis)
-        'torch>=2.0.0,<2.2.0',  # PyTorch is mandatory for this GPU-accelerated system
-        'torchaudio>=2.0.0,<2.2.0',
-        'torchvision>=0.15.0,<0.17.0',
+        'torch>=2.0.0',  # PyTorch is mandatory for this GPU-accelerated system
+        'torchaudio>=2.0.0',
+        'torchvision>=0.15.0',
 
         # Core numerical and audio processing
         'numpy>=1.24,<1.27',

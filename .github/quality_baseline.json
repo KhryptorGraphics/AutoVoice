@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "timestamp": "2025-10-28T00:00:00Z",
+  "branch": "main",
+  "commit": "baseline",
+  "description": "Initial baseline metrics for quality regression detection",
+  "metrics": {
+    "pitch_rmse_hz": 10.0,
+    "pitch_correlation": 0.80,
+    "speaker_similarity": 0.85,
+    "overall_quality_score": 0.75,
+    "processing_rtf_cpu": 20.0,
+    "processing_rtf_gpu": 5.0
+  },
+  "thresholds": {
+    "pitch_rmse_hz_max_increase": 2.0,
+    "pitch_correlation_min_decrease": 0.05,
+    "speaker_similarity_min_decrease": 0.05,
+    "overall_quality_min": 0.70,
+    "rtf_max_increase_percent": 20.0
+  },
+  "notes": [
+    "This baseline represents acceptable quality and performance targets.",
+    "Metrics are measured on synthetic test audio with 44.1kHz sample rate.",
+    "RTF (Real-Time Factor): ratio of processing time to audio duration.",
+    "Lower RTF and RMSE values indicate better performance/quality.",
+    "Higher correlation and similarity values indicate better quality.",
+    "Thresholds define maximum acceptable degradation from baseline."
+  ]
+}

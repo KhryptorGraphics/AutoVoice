@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import yaml
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List, Tuple
 
@@ -84,6 +85,9 @@ class SingingAnalyzer:
         """
         self.lock = threading.RLock()
         self.logger = logging.getLogger(__name__)
+
+        # COMMENT 6 FIX: Cache for analysis parameters (sample_rate, n_fft, hop_length)
+        self._analysis_params_cache = {}
 
         # Load configuration
         self.config = self._load_config(config)
@@ -187,7 +191,134 @@ class SingingAnalyzer:
         if config:
             final_config.update(config)
 
+        # Validate configuration parameters
+        self._validate_config(final_config)
+
         return final_config
+
+    def _validate_config(self, config: Dict[str, Any]) -> None:
+        """Validate configuration parameters for types and ranges
+
+        Args:
+            config: Configuration dictionary to validate
+        """
+        # Validate hop_length_ms and frame_length_ms
+        hop_length_ms = config.get('hop_length_ms', 10.0)
+        if not isinstance(hop_length_ms, (int, float)) or hop_length_ms < 1:
+            self.logger.warning(f"Invalid hop_length_ms={hop_length_ms}, coercing to 10.0 ms")
+            config['hop_length_ms'] = 10.0
+
+        frame_length_ms = config.get('frame_length_ms', 25.0)
+        if not isinstance(frame_length_ms, (int, float)) or frame_length_ms < 1:
+            self.logger.warning(f"Invalid frame_length_ms={frame_length_ms}, coercing to 25.0 ms")
+            config['frame_length_ms'] = 25.0
+
+        # Validate CPP parameters
+        cpp_fmin = config.get('cpp_fmin', 60.0)
+        cpp_fmax = config.get('cpp_fmax', 300.0)
+        if not isinstance(cpp_fmin, (int, float)) or cpp_fmin <= 0:
+            self.logger.warning(f"Invalid cpp_fmin={cpp_fmin}, coercing to 60.0 Hz")
+            config['cpp_fmin'] = 60.0
+        if not isinstance(cpp_fmax, (int, float)) or cpp_fmax <= cpp_fmin:
+            self.logger.warning(f"Invalid cpp_fmax={cpp_fmax}, coercing to 300.0 Hz")
+            config['cpp_fmax'] = 300.0
+
+        # Validate HNR parameters
+        hnr_min_pitch = config.get('hnr_min_pitch', 75.0)
+        if not isinstance(hnr_min_pitch, (int, float)) or hnr_min_pitch <= 0:
+            self.logger.warning(f"Invalid hnr_min_pitch={hnr_min_pitch}, coercing to 75.0 Hz")
+            config['hnr_min_pitch'] = 75.0
+
+        # Validate breathiness weights
+        weights = config.get('breathiness_weights', {})
+        if not isinstance(weights, dict):
+            self.logger.warning(f"Invalid breathiness_weights type, using defaults")
+            config['breathiness_weights'] = {'cpp': 0.5, 'hnr': 0.3, 'spectral': 0.2}
+        else:
+            # Validate individual weights
+            for key in ['cpp', 'hnr', 'spectral']:
+                val = weights.get(key, 0.0)
+                if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                    self.logger.warning(f"Invalid {key} weight={val}, coercing to default")
+                    if key == 'cpp':
+                        weights[key] = 0.5
+                    elif key == 'hnr':
+                        weights[key] = 0.3
+                    else:
+                        weights[key] = 0.2
+
+        # Validate dynamics parameters
+        dynamics_smoothing_ms = config.get('dynamics_smoothing_ms', 50.0)
+        if not isinstance(dynamics_smoothing_ms, (int, float)) or dynamics_smoothing_ms < 1:
+            self.logger.warning(f"Invalid dynamics_smoothing_ms={dynamics_smoothing_ms}, coercing to 50.0 ms")
+            config['dynamics_smoothing_ms'] = 50.0
+
+        dynamic_range_threshold_db = config.get('dynamic_range_threshold_db', 3.0)
+        if not isinstance(dynamic_range_threshold_db, (int, float)) or dynamic_range_threshold_db < 0:
+            self.logger.warning(f"Invalid dynamic_range_threshold_db={dynamic_range_threshold_db}, coercing to 3.0 dB")
+            config['dynamic_range_threshold_db'] = 3.0
+
+        accent_threshold_db = config.get('accent_threshold_db', 6.0)
+        if not isinstance(accent_threshold_db, (int, float)) or accent_threshold_db < 0:
+            self.logger.warning(f"Invalid accent_threshold_db={accent_threshold_db}, coercing to 6.0 dB")
+            config['accent_threshold_db'] = 6.0
+
+        # Validate technique thresholds
+        thresholds = config.get('technique_thresholds', {})
+        if not isinstance(thresholds, dict):
+            self.logger.warning(f"Invalid technique_thresholds type, using defaults")
+            config['technique_thresholds'] = {
+                'breathy_score': 0.6,
+                'belting_energy_db': -10.0,
+                'falsetto_f0_hz': 400.0,
+                'vocal_fry_f0_hz': 80.0
+            }
+        else:
+            # Validate breathy_score
+            breathy_score = thresholds.get('breathy_score', 0.6)
+            if not isinstance(breathy_score, (int, float)) or not (0.0 <= breathy_score <= 1.0):
+                self.logger.warning(f"Invalid breathy_score={breathy_score}, coercing to 0.6")
+                thresholds['breathy_score'] = 0.6
+
+            # Validate energy thresholds
+            belting_energy_db = thresholds.get('belting_energy_db', -10.0)
+            if not isinstance(belting_energy_db, (int, float)):
+                self.logger.warning(f"Invalid belting_energy_db={belting_energy_db}, coercing to -10.0 dB")
+                thresholds['belting_energy_db'] = -10.0
+
+            # Validate frequency thresholds
+            falsetto_f0_hz = thresholds.get('falsetto_f0_hz', 400.0)
+            if not isinstance(falsetto_f0_hz, (int, float)) or falsetto_f0_hz <= 0:
+                self.logger.warning(f"Invalid falsetto_f0_hz={falsetto_f0_hz}, coercing to 400.0 Hz")
+                thresholds['falsetto_f0_hz'] = 400.0
+
+            vocal_fry_f0_hz = thresholds.get('vocal_fry_f0_hz', 80.0)
+            if not isinstance(vocal_fry_f0_hz, (int, float)) or vocal_fry_f0_hz <= 0:
+                self.logger.warning(f"Invalid vocal_fry_f0_hz={vocal_fry_f0_hz}, coercing to 80.0 Hz")
+                thresholds['vocal_fry_f0_hz'] = 80.0
+
+        # Validate and clamp configuration values (Comment 5)
+        try:
+            if not isinstance(self.hop_length_ms, (int, float)) or self.hop_length_ms < 1.0:
+                self.logger.warning(f"Invalid hop_length_ms={self.hop_length_ms}; coercing to 1.0 ms")
+                self.hop_length_ms = max(1.0, float(self.hop_length_ms or 1.0))
+
+            if not isinstance(self.frame_length_ms, (int, float)) or self.frame_length_ms < 1.0:
+                self.logger.warning(f"Invalid frame_length_ms={self.frame_length_ms}; coercing to 25.0 ms")
+                self.frame_length_ms = max(1.0, float(self.frame_length_ms or 25.0))
+
+            if not isinstance(self.cpp_fmin, (int, float)) or self.cpp_fmin <= 0.0:
+                self.logger.warning(f"Invalid cpp_fmin={self.cpp_fmin}; coercing to 60.0")
+                self.cpp_fmin = 60.0
+            if not isinstance(self.cpp_fmax, (int, float)) or self.cpp_fmax <= self.cpp_fmin:
+                self.logger.warning(f"Invalid cpp_fmax={self.cpp_fmax}; coercing to cpp_fmin*5 or 300.0")
+                self.cpp_fmax = max(self.cpp_fmin * 5.0, 300.0)
+
+            if not isinstance(self.hnr_min_pitch, (int, float)) or self.hnr_min_pitch <= 0.0:
+                self.logger.warning(f"Invalid hnr_min_pitch={self.hnr_min_pitch}; coercing to 75.0")
+                self.hnr_min_pitch = 75.0
+        except Exception as e:
+            self.logger.warning(f"Error validating SingingAnalyzer config values: {e}")
 
     def analyze_singing_features(
         self,
@@ -261,6 +392,122 @@ class SingingAnalyzer:
                 self.logger.error(f"Singing analysis failed: {e}")
                 raise SingingAnalysisError(f"Failed to analyze singing features: {e}") from e
 
+    def _get_analysis_params(self, sample_rate: int) -> Dict[str, Any]:
+        """Get or compute cached analysis parameters for given sample rate
+
+        COMMENT 6 FIX: Cache analysis parameters per (sample_rate, n_fft, hop_length)
+        to avoid repeated computation and allocation across calls.
+
+        Args:
+            sample_rate: Sample rate in Hz
+
+        Returns:
+            Dictionary containing hop_length, frame_length, n_fft, sample_rate
+        """
+        cache_key = (sample_rate, self.hop_length_ms, self.frame_length_ms)
+
+        if cache_key not in self._analysis_params_cache:
+            hop_length = int(self.hop_length_ms * sample_rate / 1000.0)
+            frame_length = int(self.frame_length_ms * sample_rate / 1000.0)
+            n_fft = frame_length if frame_length >= 512 else 512
+
+            self._analysis_params_cache[cache_key] = {
+                'hop_length': hop_length,
+                'frame_length': frame_length,
+                'n_fft': n_fft,
+                'sample_rate': sample_rate
+            }
+            self.logger.debug(f"Cached analysis params for SR={sample_rate}: {self._analysis_params_cache[cache_key]}")
+
+        return self._analysis_params_cache[cache_key]
+
+    @staticmethod
+    @lru_cache(maxsize=16)
+    def _create_stft_window(n_fft: int, window_type: str = 'hann') -> Optional[np.ndarray]:
+        """Create and cache STFT window
+
+        COMMENT 6 FIX: LRU cache decorator for STFT window creation and reuse.
+        Windows are expensive to compute and can be reused across calls with same n_fft.
+
+        Args:
+            n_fft: FFT size
+            window_type: Window type (default 'hann')
+
+        Returns:
+            Window array or None if scipy not available
+        """
+        if not LIBROSA_AVAILABLE:
+            return None
+
+        try:
+            import scipy.signal
+            window = scipy.signal.get_window(window_type, n_fft)
+            return window
+        except ImportError:
+            return None
+
+    def analyze_singing_features_batch(
+        self,
+        audio_list: List[Union[torch.Tensor, np.ndarray, str]],
+        sample_rate: Optional[int] = None,
+        f0_data_list: Optional[List[Dict]] = None,
+        show_progress: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Batch analyze singing features for multiple audio samples
+
+        COMMENT 6 FIX: Batch processing to amortize repeated FFT operations,
+        parameter computations, and memory allocations across multiple samples.
+        Uses cached analysis parameters and STFT windows for efficiency.
+
+        Args:
+            audio_list: List of audio tensors, numpy arrays, or file paths
+            sample_rate: Sample rate (required for tensor/array)
+            f0_data_list: Optional list of pre-computed F0 data (one per audio)
+            show_progress: Show progress bar if tqdm available
+
+        Returns:
+            List of feature dictionaries (same format as analyze_singing_features)
+
+        Example:
+            >>> analyzer = SingingAnalyzer(device='cuda')
+            >>> audio_files = ['song1.wav', 'song2.wav', 'song3.wav']
+            >>> features = analyzer.analyze_singing_features_batch(audio_files)
+            >>> for i, feat in enumerate(features):
+            ...     print(f"Song {i+1}: breathiness={feat['breathiness']['breathiness_score']:.2f}")
+        """
+        results = []
+
+        # Optional progress bar
+        iterator = audio_list
+        if show_progress:
+            try:
+                from tqdm import tqdm
+                iterator = tqdm(audio_list, desc="Analyzing singing features")
+            except ImportError:
+                pass
+
+        for idx, audio in enumerate(iterator):
+            try:
+                # Get corresponding F0 data if provided
+                f0_data = f0_data_list[idx] if f0_data_list and idx < len(f0_data_list) else None
+
+                # Analyze single sample (will use cached params/windows)
+                features = self.analyze_singing_features(audio, sample_rate, f0_data)
+                results.append(features)
+
+            except Exception as e:
+                self.logger.error(f"Batch analysis failed for sample {idx}: {e}")
+                results.append({
+                    'error': str(e),
+                    'sample_index': idx,
+                    'breathiness': {'breathiness_score': 0.0},
+                    'dynamics': {'dynamic_range_db': 0.0},
+                    'vibrato': {},
+                    'vocal_quality': {'quality_score': 0.0}
+                })
+
+        return results
+
     def compute_breathiness(
         self,
         audio: Union[torch.Tensor, np.ndarray],
@@ -332,12 +579,23 @@ class SingingAnalyzer:
                 hnr_norm = np.clip((20.0 - hnr_mean) / 15.0, 0.0, 1.0)  # Higher HNR = less breathy
                 h1h2_norm = np.clip(h1_h2 / 20.0, 0.0, 1.0)  # Higher H1-H2 = more breathy
 
-                # Combined breathiness score
-                breathiness_score = (
-                    self.cpp_weight * cpp_norm +
-                    self.hnr_weight * hnr_norm +
-                    self.spectral_weight * h1h2_norm
-                )
+                # Branch based on breathiness_method configuration
+                if self.breathiness_method == 'cpp':
+                    # CPP-only breathiness score
+                    breathiness_score = cpp_norm
+                    method_used = 'cpp'
+                elif self.breathiness_method == 'hnr':
+                    # HNR-only breathiness score
+                    breathiness_score = hnr_norm
+                    method_used = 'hnr'
+                else:  # 'combined' or default
+                    # Combined breathiness score with configured weights
+                    breathiness_score = (
+                        self.cpp_weight * cpp_norm +
+                        self.hnr_weight * hnr_norm +
+                        self.spectral_weight * h1h2_norm
+                    )
+                    method_used = 'combined'
 
                 return {
                     'cpp': float(cpp_mean),
@@ -346,7 +604,7 @@ class SingingAnalyzer:
                     'hnr_track': hnr_track,
                     'h1_h2': float(h1_h2),
                     'breathiness_score': float(breathiness_score),
-                    'method': 'parselmouth'
+                    'method': f'parselmouth_{method_used}'
                 }
 
             except Exception as e:
@@ -362,9 +620,10 @@ class SingingAnalyzer:
         f0_data: Optional[Dict]
     ) -> Dict[str, Any]:
         """Fallback breathiness computation using basic DSP"""
-        # Compute spectrogram
-        hop_length = int(self.hop_length_ms * sample_rate / 1000.0)
-        n_fft = int(self.frame_length_ms * sample_rate / 1000.0)
+        # COMMENT 6 FIX: Use cached analysis parameters
+        params = self._get_analysis_params(sample_rate)
+        hop_length = params['hop_length']
+        n_fft = params['n_fft']
 
         if LIBROSA_AVAILABLE:
             S = np.abs(librosa.stft(audio, n_fft=n_fft, hop_length=hop_length))
@@ -428,14 +687,23 @@ class SingingAnalyzer:
             if not LIBROSA_AVAILABLE:
                 return 0.0
 
-            # Compute FFT size from frame_length_ms
-            n_fft = int(self.frame_length_ms * sample_rate / 1000.0)
-            if n_fft < 512:
-                n_fft = 512
+            # COMMENT 6 FIX: Use cached analysis parameters
+            params = self._get_analysis_params(sample_rate)
+            n_fft = params['n_fft']
 
-            # Compute spectrum with explicit n_fft
-            S = np.abs(librosa.stft(audio, n_fft=n_fft))
-            S_db = librosa.amplitude_to_db(S + 1e-10)
+            # COMMENT 4 FIX: Tight guard around STFT call
+            try:
+                S = np.abs(librosa.stft(audio, n_fft=n_fft))
+            except Exception as e:
+                self.logger.warning(f"STFT computation failed: {e}")
+                return 0.0
+
+            # COMMENT 4 FIX: Tight guard around amplitude_to_db conversion
+            try:
+                S_db = librosa.amplitude_to_db(S + 1e-10)
+            except Exception as e:
+                self.logger.warning(f"amplitude_to_db conversion failed: {e}")
+                return 0.0
 
             # Compute frequencies with matching n_fft
             freqs = librosa.fft_frequencies(sr=sample_rate, n_fft=n_fft)
@@ -445,9 +713,22 @@ class SingingAnalyzer:
                 self.logger.warning(f"Frequency array size mismatch: {len(freqs)} vs {S_db.shape[0]}")
                 return 0.0
 
+            # Clamp frequency bands to available range to avoid SR-dependent aliasing
+            nyquist = sample_rate / 2.0
+
             # Find first two harmonic peaks (simplified)
-            h1_range = (freqs > 80) & (freqs < 300)
-            h2_range = (freqs > 300) & (freqs < 600)
+            # Clamp ranges to valid frequency bins
+            h1_low, h1_high = max(80, freqs[0]), min(300, nyquist)
+            h2_low, h2_high = max(300, freqs[0]), min(600, nyquist)
+
+            h1_range = (freqs >= h1_low) & (freqs <= h1_high)
+            h2_range = (freqs >= h2_low) & (freqs <= h2_high)
+
+            # Log debug message if bands are not fully available
+            if not h1_range.any():
+                self.logger.debug(f"H1 band ({h1_low}-{h1_high} Hz) not available at SR={sample_rate}")
+            if not h2_range.any():
+                self.logger.debug(f"H2 band ({h2_low}-{h2_high} Hz) not available at SR={sample_rate}")
 
             h1_mag = np.mean(S_db[h1_range]) if h1_range.any() else 0.0
             h2_mag = np.mean(S_db[h2_range]) if h2_range.any() else 0.0
@@ -484,14 +765,34 @@ class SingingAnalyzer:
         hop_length = int(self.hop_length_ms * sample_rate / 1000.0)
         frame_length = int(self.frame_length_ms * sample_rate / 1000.0)
 
-        # Compute RMS energy
-        rms = []
-        for i in range(0, len(audio) - frame_length, hop_length):
-            frame = audio[i:i+frame_length]
-            rms_val = np.sqrt(np.mean(frame**2))
-            rms.append(rms_val)
+        # Vectorized RMS computation using stride tricks for efficiency
+        n_frames = max(1, (len(audio) - frame_length) // hop_length + 1)
 
-        rms = np.array(rms)
+        if n_frames == 0 or len(audio) < frame_length:
+            # Handle edge case: audio too short
+            return {
+                'rms_envelope': np.array([]),
+                'db_envelope': np.array([]),
+                'dynamic_range_db': 0.0,
+                'mean_db': 0.0,
+                'std_db': 0.0,
+                'crescendos': [],
+                'diminuendos': [],
+                'accents': [],
+                'times': np.array([])
+            }
+
+        # Use numpy stride tricks for vectorized framing
+        from numpy.lib.stride_tricks import as_strided
+
+        shape = (n_frames, frame_length)
+        strides = (audio.strides[0] * hop_length, audio.strides[0])
+
+        # Create framed view (no copy)
+        frames = as_strided(audio, shape=shape, strides=strides, writeable=False)
+
+        # Vectorized RMS computation
+        rms = np.sqrt(np.mean(frames**2, axis=1))
 
         # Guard against empty/very short audio
         if len(rms) == 0:

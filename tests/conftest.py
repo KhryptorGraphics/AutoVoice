@@ -16,6 +16,22 @@ import yaml
 # Pytest Configuration
 # ============================================================================
 
+def pytest_addoption(parser):
+    """Add custom command-line options for pytest."""
+    parser.addoption(
+        "--baseline-file",
+        action="store",
+        default=".github/quality_baseline.json",
+        help="Path to baseline metrics file for regression testing"
+    )
+    parser.addoption(
+        "--output-file",
+        action="store",
+        default=None,
+        help="Path to save regression test results JSON"
+    )
+
+
 def pytest_configure(config):
     """Configure pytest with custom settings."""
     config.addinivalue_line(
@@ -38,6 +54,9 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers", "audio: Audio processing tests"
+    )
+    config.addinivalue_line(
+        "markers", "quality: Quality evaluation tests"
     )
 
 
@@ -1329,3 +1348,157 @@ def stereo_mono_pairs(tmp_path: Path):
         'mono': mono_path,
         'stereo': stereo_path
     }
+
+
+# ============================================================================
+# Quality Validation Test Fixtures (Comment 4)
+# ============================================================================
+
+@pytest.fixture
+def quality_targets():
+    """Default quality targets for validation tests."""
+    try:
+        from src.auto_voice.evaluation.evaluator import QualityTargets
+        return QualityTargets()
+    except ImportError:
+        pytest.skip("QualityTargets not available")
+
+
+@pytest.fixture
+def voice_conversion_evaluator(cuda_available: bool):
+    """Create VoiceConversionEvaluator instance."""
+    try:
+        from src.auto_voice.evaluation.evaluator import VoiceConversionEvaluator
+        device = "cuda" if cuda_available else "cpu"
+        return VoiceConversionEvaluator(sample_rate=44100, device=device)
+    except ImportError:
+        pytest.skip("VoiceConversionEvaluator not available")
+
+
+@pytest.fixture
+def synthetic_evaluation_pair():
+    """Generate synthetic source and target audio pair with known quality."""
+    sample_rate = 44100
+    duration = 2.0
+    t = np.linspace(0, duration, int(sample_rate * duration))
+
+    # Source: A4 sine wave
+    source_freq = 440.0
+    source_audio = torch.tensor(
+        0.5 * np.sin(2 * np.pi * source_freq * t),
+        dtype=torch.float32
+    )
+
+    # Target: Very similar A4 sine wave (high quality match)
+    target_freq = 440.05  # Minimal pitch difference
+    target_audio = torch.tensor(
+        0.5 * np.sin(2 * np.pi * target_freq * t),
+        dtype=torch.float32
+    )
+
+    return source_audio, target_audio, {
+        'expected_pitch_rmse_hz': 0.0,  # Should be very low
+        'expected_correlation': 0.95,   # Should correlate highly
+        'sample_rate': sample_rate
+    }
+
+
+@pytest.fixture
+def poor_quality_evaluation_pair():
+    """Generate synthetic source and target audio pair with poor quality match."""
+    sample_rate = 44100
+    duration = 2.0
+    t = np.linspace(0, duration, int(sample_rate * duration))
+
+    # Source: A4 sine wave
+    source_freq = 440.0
+    source_audio = torch.tensor(
+        0.5 * np.sin(2 * np.pi * source_freq * t),
+        dtype=torch.float32
+    )
+
+    # Target: A5 octave above (poor quality match)
+    target_freq = 880.0
+    target_audio = torch.tensor(
+        0.5 * np.sin(2 * np.pi * target_freq * t),
+        dtype=torch.float32
+    )
+
+    return source_audio, target_audio, {
+        'expected_pitch_rmse_hz': 440.0,  # Large difference
+        'expected_correlation': 0.0,      # Should not correlate
+        'sample_rate': sample_rate
+    }
+
+
+@pytest.fixture
+def test_metadata_file(tmp_path: Path):
+    """Create test metadata JSON file for metadata-driven evaluation."""
+    try:
+        import soundfile as sf
+        import json
+    except ImportError:
+        pytest.skip("Required packages not available")
+
+    # Generate source audio
+    sample_rate = 44100
+    duration = 2.0
+    t = np.linspace(0, duration, int(sample_rate * duration))
+    source_audio = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+
+    # Save source file
+    source_path = tmp_path / 'test001_source.wav'
+    sf.write(str(source_path), source_audio, sample_rate)
+
+    # Create metadata
+    metadata = {
+        'test_cases': [{
+            'id': 'test001',
+            'source_audio': str(source_path),
+            'target_profile_id': 'mock-profile-001',
+            'conversion_params': {'pitch_shift': 0.0},
+            'reference_audio': str(source_path),  # Self-reference for test
+        }, {
+            'id': 'test002',
+            'source_audio': str(source_path),
+            'target_profile_id': 'mock-profile-002',
+            'conversion_params': {'pitch_shift': 1.0},
+            'reference_audio': str(source_path),
+        }]
+    }
+
+    # Save metadata
+    metadata_path = tmp_path / 'test_metadata.json'
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    return metadata_path
+
+
+@pytest.fixture
+def mock_conversion_pipeline(cuda_available: bool):
+    """Mock conversion pipeline that returns predictable results."""
+    device = "cuda" if cuda_available else "cpu"
+
+    class MockPipeline:
+        def __init__(self):
+            self.device = device
+
+        def convert_song(self, song_path, target_profile_id, pitch_shift=0.0):
+            """Mock conversion - just loads and returns input audio."""
+            try:
+                import soundfile as sf
+                audio, sr = sf.read(song_path)
+                # Simulate conversion delay
+                import time
+                time.sleep(0.1)
+                return {
+                    'mixed_audio': audio if audio.ndim == 1 else audio[:, 0],
+                    'sample_rate': sr,
+                    'duration': len(audio) / sr,
+                    'f0_contour': np.ones(int(sr * len(audio) / sr / 512)) * 440.0
+                }
+            except ImportError:
+                pytest.skip("soundfile not available for mock pipeline")
+
+    return MockPipeline()

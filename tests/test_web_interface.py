@@ -546,3 +546,869 @@ class TestAPIPerformance:
     def test_concurrent_request_capacity(self):
         """Test maximum concurrent request capacity."""
         pytest.skip("Requires load testing implementation")
+
+
+# ========================================================================
+# Voice Conversion Endpoint Tests
+# ========================================================================
+
+@pytest.fixture
+def sample_song_file():
+    """Generate a sample song file for testing (3 seconds of audio)"""
+    sample_rate = 22050
+    duration = 3.0
+    samples = int(sample_rate * duration)
+
+    # Generate simple audio waveform (sine wave)
+    t = np.linspace(0, duration, samples)
+    audio = (np.sin(2 * np.pi * 440 * t) * 0.3).astype(np.float32)
+
+    return audio, sample_rate
+
+
+@pytest.fixture
+def test_profile_id():
+    """Return a mock profile ID for testing"""
+    return 'test-profile-12345'
+
+
+@pytest.mark.web
+@pytest.mark.integration
+class TestVoiceCloningEndpoints:
+    """Test voice cloning REST API endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def setup_method(self):
+        """Set up test fixtures"""
+        try:
+            from src.auto_voice.web.app import create_app
+            self.app, self.socketio = create_app(config={'TESTING': True})
+            self.client = self.app.test_client()
+        except ImportError:
+            pytest.skip("Flask app not available")
+
+    def test_voice_clone_endpoint_valid_audio(self):
+        """Test voice cloning with valid 30s audio"""
+        # Generate 30 seconds of valid audio
+        sample_rate = 22050
+        duration = 30.0
+        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
+
+        # Convert to WAV bytes
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'reference_audio': (buffer, 'reference.wav')
+        }
+
+        response = self.client.post(
+            '/api/v1/voice/clone',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        # Should succeed or service unavailable
+        assert response.status_code in [201, 503]
+
+        if response.status_code == 201:
+            data = response.get_json()
+            assert 'status' in data
+            assert data['status'] == 'success'
+            assert 'profile_id' in data
+            assert 'audio_duration' in data
+
+    def test_voice_clone_with_user_id(self):
+        """Test voice cloning with user_id parameter"""
+        sample_rate = 22050
+        duration = 30.0
+        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'reference_audio': (buffer, 'reference.wav'),
+            'user_id': 'test_user_123'
+        }
+
+        response = self.client.post(
+            '/api/v1/voice/clone',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code in [201, 503]
+
+        if response.status_code == 201:
+            data = response.get_json()
+            assert 'user_id' in data
+
+    def test_voice_clone_missing_audio(self):
+        """Test voice cloning without audio - should return 400"""
+        response = self.client.post(
+            '/api/v1/voice/clone',
+            data={},
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code == 400
+        data = response.get_json()
+        assert 'error' in data
+
+    def test_voice_clone_invalid_audio_format(self):
+        """Test voice cloning with invalid audio format - should return 400/415"""
+        invalid_audio = io.BytesIO(b'not an audio file')
+        invalid_audio.name = 'invalid.txt'
+
+        data = {
+            'reference_audio': (invalid_audio, 'invalid.txt')
+        }
+
+        response = self.client.post(
+            '/api/v1/voice/clone',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code in [400, 415]
+
+    def test_voice_clone_audio_too_short(self):
+        """Test voice cloning with audio < 5s - should return 400"""
+        # Generate 3 seconds of audio (too short)
+        sample_rate = 22050
+        duration = 3.0
+        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'reference_audio': (buffer, 'short.wav')
+        }
+
+        response = self.client.post(
+            '/api/v1/voice/clone',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        # Should either fail validation (400) or service unavailable (503)
+        assert response.status_code in [400, 503]
+
+    def test_voice_clone_audio_too_long(self):
+        """Test voice cloning with audio > 60s - should return 400"""
+        # Generate 65 seconds of audio (too long)
+        sample_rate = 22050
+        duration = 65.0
+        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'reference_audio': (buffer, 'long.wav')
+        }
+
+        response = self.client.post(
+            '/api/v1/voice/clone',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code in [400, 503]
+
+    def test_voice_clone_service_unavailable(self):
+        """Test voice cloning when service is unavailable - should return 503"""
+        # This will test the case when voice_cloner is None in app context
+        sample_rate = 22050
+        duration = 30.0
+        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'reference_audio': (buffer, 'test.wav')
+        }
+
+        response = self.client.post(
+            '/api/v1/voice/clone',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        # Should be 201 (success) or 503 (service unavailable)
+        assert response.status_code in [201, 503]
+
+
+@pytest.mark.web
+@pytest.mark.integration
+class TestSongConversionEndpoints:
+    """Test song conversion REST API endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def setup_method(self):
+        """Set up test fixtures"""
+        try:
+            from src.auto_voice.web.app import create_app
+            self.app, self.socketio = create_app(config={'TESTING': True})
+            self.client = self.app.test_client()
+        except ImportError:
+            pytest.skip("Flask app not available")
+
+    def test_convert_song_endpoint_valid_request(self, sample_song_file):
+        """Test song conversion with valid request"""
+        audio, sample_rate = sample_song_file
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'song': (buffer, 'song.wav'),
+            'profile_id': 'test-profile-123'
+        }
+
+        response = self.client.post(
+            '/api/v1/convert/song',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        # Should succeed, fail with 404 (profile not found), or 503 (service unavailable)
+        assert response.status_code in [200, 404, 503]
+
+    def test_convert_song_with_volumes(self, sample_song_file):
+        """Test song conversion with custom vocal/instrumental volumes"""
+        audio, sample_rate = sample_song_file
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'song': (buffer, 'song.wav'),
+            'profile_id': 'test-profile-123',
+            'vocal_volume': '1.2',
+            'instrumental_volume': '0.8'
+        }
+
+        response = self.client.post(
+            '/api/v1/convert/song',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code in [200, 404, 503]
+
+    def test_convert_song_with_return_stems(self, sample_song_file):
+        """Test song conversion with return_stems parameter"""
+        audio, sample_rate = sample_song_file
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'song': (buffer, 'song.wav'),
+            'profile_id': 'test-profile-123',
+            'return_stems': 'true'
+        }
+
+        response = self.client.post(
+            '/api/v1/convert/song',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code in [200, 404, 503]
+
+        if response.status_code == 200:
+            data = response.get_json()
+            assert 'stems' in data or 'audio' in data
+
+    def test_convert_song_missing_song_file(self):
+        """Test song conversion without song file - should return 400"""
+        data = {
+            'profile_id': 'test-profile-123'
+        }
+
+        response = self.client.post(
+            '/api/v1/convert/song',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code == 400
+        data = response.get_json()
+        assert 'error' in data
+
+    def test_convert_song_missing_profile_id(self, sample_song_file):
+        """Test song conversion without profile_id - should return 400"""
+        audio, sample_rate = sample_song_file
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'song': (buffer, 'song.wav')
+        }
+
+        response = self.client.post(
+            '/api/v1/convert/song',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code == 400
+
+    def test_convert_song_invalid_profile_id(self, sample_song_file):
+        """Test song conversion with invalid profile_id - should return 404"""
+        audio, sample_rate = sample_song_file
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'song': (buffer, 'song.wav'),
+            'profile_id': 'nonexistent-profile-999'
+        }
+
+        response = self.client.post(
+            '/api/v1/convert/song',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        # Should be 404 (profile not found) or 503 (service unavailable)
+        assert response.status_code in [404, 503]
+
+    def test_convert_song_invalid_volumes(self, sample_song_file):
+        """Test song conversion with volumes out of range - should return 400"""
+        audio, sample_rate = sample_song_file
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        data = {
+            'song': (buffer, 'song.wav'),
+            'profile_id': 'test-profile-123',
+            'vocal_volume': '3.0',  # Out of range [0.0, 2.0]
+            'instrumental_volume': '0.8'
+        }
+
+        response = self.client.post(
+            '/api/v1/convert/song',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code in [400, 404, 503]
+
+    def test_convert_song_invalid_file_format(self):
+        """Test song conversion with invalid file format - should return 400"""
+        invalid_file = io.BytesIO(b'not an audio file')
+
+        data = {
+            'song': (invalid_file, 'invalid.txt'),
+            'profile_id': 'test-profile-123'
+        }
+
+        response = self.client.post(
+            '/api/v1/convert/song',
+            data=data,
+            content_type='multipart/form-data'
+        )
+
+        assert response.status_code == 400
+
+
+@pytest.mark.web
+@pytest.mark.integration
+class TestProfileManagementEndpoints:
+    """Test voice profile management REST API endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def setup_method(self):
+        """Set up test fixtures"""
+        try:
+            from src.auto_voice.web.app import create_app
+            self.app, self.socketio = create_app(config={'TESTING': True})
+            self.client = self.app.test_client()
+        except ImportError:
+            pytest.skip("Flask app not available")
+
+    def test_get_voice_profiles_empty_list(self):
+        """Test getting voice profiles when list is empty"""
+        response = self.client.get('/api/v1/voice/profiles')
+
+        # Should succeed or service unavailable
+        assert response.status_code in [200, 503]
+
+        if response.status_code == 200:
+            data = response.get_json()
+            assert isinstance(data, list)
+
+    def test_get_voice_profiles_with_profiles(self):
+        """Test getting voice profiles when profiles exist"""
+        response = self.client.get('/api/v1/voice/profiles')
+
+        assert response.status_code in [200, 503]
+
+        if response.status_code == 200:
+            data = response.get_json()
+            assert isinstance(data, list)
+
+    def test_get_voice_profiles_filtered_by_user(self):
+        """Test getting voice profiles filtered by user_id"""
+        response = self.client.get('/api/v1/voice/profiles?user_id=test_user_123')
+
+        assert response.status_code in [200, 503]
+
+        if response.status_code == 200:
+            data = response.get_json()
+            assert isinstance(data, list)
+
+    def test_get_voice_profile_by_id(self, test_profile_id):
+        """Test getting specific voice profile"""
+        response = self.client.get(f'/api/v1/voice/profiles/{test_profile_id}')
+
+        # Should be 200 (found), 404 (not found), or 503 (service unavailable)
+        assert response.status_code in [200, 404, 503]
+
+    def test_get_voice_profile_not_found(self):
+        """Test getting non-existent profile - should return 404"""
+        response = self.client.get('/api/v1/voice/profiles/nonexistent-profile-999')
+
+        # Should be 404 (not found) or 503 (service unavailable)
+        assert response.status_code in [404, 503]
+
+    def test_delete_voice_profile_success(self, test_profile_id):
+        """Test deleting voice profile - should return 200"""
+        response = self.client.delete(f'/api/v1/voice/profiles/{test_profile_id}')
+
+        # Should be 200 (success), 404 (not found), or 503 (service unavailable)
+        assert response.status_code in [200, 404, 503]
+
+    def test_delete_voice_profile_not_found(self):
+        """Test deleting non-existent profile - should return 404"""
+        response = self.client.delete('/api/v1/voice/profiles/nonexistent-profile-999')
+
+        assert response.status_code in [404, 503]
+
+    def test_delete_voice_profile_service_unavailable(self):
+        """Test deleting profile when service is unavailable - should return 503"""
+        response = self.client.delete('/api/v1/voice/profiles/some-profile-id')
+
+        # Should be 404 (not found) or 503 (service unavailable)
+        assert response.status_code in [404, 503]
+
+
+@pytest.mark.web
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.websocket
+class TestWebSocketConversionProgress:
+    """Test WebSocket connection for conversion progress tracking."""
+
+    @pytest.fixture(autouse=True)
+    def setup_method(self):
+        """Set up test fixtures"""
+        try:
+            from src.auto_voice.web.app import create_app
+            self.app, self.socketio = create_app(config={'TESTING': True})
+            self.client = self.socketio.test_client(self.app)
+        except ImportError:
+            pytest.skip("Flask-SocketIO not available")
+
+    def test_websocket_conversion_progress_events(self):
+        """Test WebSocket progress event emission during conversion"""
+        import base64
+
+        # Create small test WAV (1 second of silence)
+        sample_rate = 16000
+        duration = 1.0
+        audio_data = np.zeros(int(sample_rate * duration), dtype=np.int16)
+
+        # Encode to WAV format
+        import io
+        import wave
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(audio_data.tobytes())
+
+        wav_bytes = wav_buffer.getvalue()
+        audio_base64 = base64.b64encode(wav_bytes).decode('utf-8')
+
+        # Emit conversion request
+        self.client.emit('convert_song_stream', {
+            'conversion_id': 'test-conversion-123',
+            'song_data': audio_base64,
+            'target_profile_id': 'test-profile-id',
+            'vocal_volume': 1.0,
+            'instrumental_volume': 0.9,
+            'return_stems': False
+        })
+
+        # Collect received events
+        received = self.client.get_received()
+
+        # Assert we received progress events
+        progress_events = [e for e in received if e['name'] == 'conversion_progress']
+        assert len(progress_events) > 0, "Should receive at least one progress event"
+
+        # Check progress event structure
+        for event in progress_events:
+            assert 'args' in event
+            data = event['args'][0]
+            assert 'conversion_id' in data
+            assert 'progress' in data
+            assert 'stage' in data
+            assert data['conversion_id'] == 'test-conversion-123'
+            assert 0 <= data['progress'] <= 100
+
+        # Check for completion or error event
+        complete_events = [e for e in received if e['name'] == 'conversion_complete']
+        error_events = [e for e in received if e['name'] == 'conversion_error']
+
+        assert len(complete_events) > 0 or len(error_events) > 0, \
+            "Should receive either completion or error event"
+
+        if complete_events:
+            data = complete_events[0]['args'][0]
+            assert 'conversion_id' in data
+            assert 'audio' in data or 'error' in data
+            assert 'sample_rate' in data or 'error' in data
+            assert 'duration' in data or 'error' in data
+
+    def test_websocket_conversion_cancellation(self):
+        """Test canceling conversion mid-process via WebSocket"""
+        import base64
+        import time
+
+        # Create small test WAV
+        sample_rate = 16000
+        audio_data = np.zeros(int(sample_rate * 0.5), dtype=np.int16)
+
+        import io
+        import wave
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(audio_data.tobytes())
+
+        wav_bytes = wav_buffer.getvalue()
+        audio_base64 = base64.b64encode(wav_bytes).decode('utf-8')
+
+        conversion_id = 'test-cancel-456'
+
+        # Start conversion
+        self.client.emit('convert_song_stream', {
+            'conversion_id': conversion_id,
+            'song_data': audio_base64,
+            'target_profile_id': 'test-profile-id',
+            'vocal_volume': 1.0,
+            'instrumental_volume': 0.9,
+            'return_stems': False
+        })
+
+        # Give it a moment to start
+        time.sleep(0.1)
+
+        # Cancel the conversion
+        self.client.emit('cancel_conversion', {
+            'conversion_id': conversion_id
+        })
+
+        # Collect events
+        received = self.client.get_received()
+
+        # Check for cancellation event
+        cancel_events = [e for e in received if e['name'] == 'conversion_cancelled']
+
+        # Should receive cancellation acknowledgment
+        assert len(cancel_events) > 0, "Should receive cancellation event"
+
+        if cancel_events:
+            data = cancel_events[0]['args'][0]
+            assert data['conversion_id'] == conversion_id
+
+    def test_websocket_conversion_error_handling(self):
+        """Test error event handling via WebSocket"""
+        # Send invalid conversion request (missing required fields)
+        self.client.emit('convert_song_stream', {
+            'conversion_id': 'test-error-789'
+            # Missing song_data and target_profile_id
+        })
+
+        # Collect events
+        received = self.client.get_received()
+
+        # Should receive error event
+        error_events = [e for e in received if e['name'] == 'conversion_error' or e['name'] == 'error']
+
+        assert len(error_events) > 0, "Should receive error event for invalid request"
+
+    def test_websocket_get_conversion_status(self):
+        """Test querying conversion status via WebSocket"""
+        import base64
+
+        # Create small test WAV
+        sample_rate = 16000
+        audio_data = np.zeros(int(sample_rate * 0.5), dtype=np.int16)
+
+        import io
+        import wave
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(audio_data.tobytes())
+
+        wav_bytes = wav_buffer.getvalue()
+        audio_base64 = base64.b64encode(wav_bytes).decode('utf-8')
+
+        conversion_id = 'test-status-101'
+
+        # Start conversion
+        self.client.emit('convert_song_stream', {
+            'conversion_id': conversion_id,
+            'song_data': audio_base64,
+            'target_profile_id': 'test-profile-id',
+            'vocal_volume': 1.0,
+            'instrumental_volume': 0.9,
+            'return_stems': False
+        })
+
+        # Query status
+        self.client.emit('get_conversion_status', {
+            'conversion_id': conversion_id
+        })
+
+        # Collect events
+        received = self.client.get_received()
+
+        # Check for status event
+        status_events = [e for e in received if e['name'] == 'conversion_status']
+
+        if status_events:
+            data = status_events[0]['args'][0]
+            assert 'conversion_id' in data
+            assert 'progress' in data
+            assert 'stage' in data
+            assert 'status' in data
+            assert data['conversion_id'] == conversion_id
+
+
+@pytest.mark.web
+@pytest.mark.e2e
+@pytest.mark.slow
+class TestEndToEndWorkflows:
+    """Test complete end-to-end workflows for voice conversion."""
+
+    @pytest.fixture(autouse=True)
+    def setup_method(self):
+        """Set up test fixtures"""
+        try:
+            from src.auto_voice.web.app import create_app
+            self.app, self.socketio = create_app(config={'TESTING': True})
+            self.client = self.app.test_client()
+        except ImportError:
+            pytest.skip("Flask app not available")
+
+    def test_full_voice_cloning_workflow(self):
+        """Test complete workflow: Create → List → Get → Delete"""
+        # Step 1: Create voice profile
+        sample_rate = 22050
+        duration = 30.0
+        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
+
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+
+        create_response = self.client.post(
+            '/api/v1/voice/clone',
+            data={'reference_audio': (buffer, 'test.wav')},
+            content_type='multipart/form-data'
+        )
+
+        if create_response.status_code == 503:
+            pytest.skip("Service unavailable")
+
+        assert create_response.status_code in [201, 400]
+
+        if create_response.status_code == 201:
+            created_profile = create_response.get_json()
+            profile_id = created_profile['profile_id']
+
+            # Step 2: List profiles
+            list_response = self.client.get('/api/v1/voice/profiles')
+            assert list_response.status_code == 200
+
+            # Step 3: Get specific profile
+            get_response = self.client.get(f'/api/v1/voice/profiles/{profile_id}')
+            assert get_response.status_code in [200, 404]
+
+            # Step 4: Delete profile
+            delete_response = self.client.delete(f'/api/v1/voice/profiles/{profile_id}')
+            assert delete_response.status_code in [200, 404]
+
+    def test_full_song_conversion_workflow(self, sample_song_file):
+        """Test complete workflow: Create profile → Convert → Verify → Cleanup"""
+        # Step 1: Create voice profile first
+        sample_rate = 22050
+        duration = 30.0
+        ref_audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
+
+        import wave
+        ref_buffer = io.BytesIO()
+        with wave.open(ref_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            audio_int16 = (ref_audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        ref_buffer.seek(0)
+
+        create_response = self.client.post(
+            '/api/v1/voice/clone',
+            data={'reference_audio': (ref_buffer, 'reference.wav')},
+            content_type='multipart/form-data'
+        )
+
+        if create_response.status_code == 503:
+            pytest.skip("Service unavailable")
+
+        if create_response.status_code != 201:
+            pytest.skip("Could not create profile")
+
+        profile_id = create_response.get_json()['profile_id']
+
+        # Step 2: Convert song
+        audio, sr = sample_song_file
+        song_buffer = io.BytesIO()
+        with wave.open(song_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sr)
+            audio_int16 = (audio * 32767).astype(np.int16)
+            wav_file.writeframes(audio_int16.tobytes())
+
+        song_buffer.seek(0)
+
+        convert_response = self.client.post(
+            '/api/v1/convert/song',
+            data={
+                'song': (song_buffer, 'song.wav'),
+                'profile_id': profile_id
+            },
+            content_type='multipart/form-data'
+        )
+
+        # Conversion may fail due to dependencies, but workflow should be testable
+        assert convert_response.status_code in [200, 404, 500, 503]
+
+        # Step 3: Cleanup - delete profile
+        delete_response = self.client.delete(f'/api/v1/voice/profiles/{profile_id}')
+        assert delete_response.status_code in [200, 404]

@@ -516,6 +516,22 @@ def flatten_dict(d: Dict[str, Any], separator: str = '.') -> Dict[str, Any]:
     return dict(items)
 
 
+def save_json(data: Dict[str, Any], file_path: Union[str, Path], indent: int = 2) -> None:
+    """Save data as JSON to file."""
+    import json
+    file_path = Path(file_path)
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=indent, ensure_ascii=False)
+
+
+def load_json(file_path: Union[str, Path]) -> Dict[str, Any]:
+    """Load JSON data from file."""
+    import json
+    file_path = Path(file_path)
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
 # Export all classes and functions
 __all__ = [
     'StringUtils',
@@ -526,5 +542,7 @@ __all__ = [
     'ensure_dir',
     'safe_divide',
     'safe_log',
-    'flatten_dict'
+    'flatten_dict',
+    'save_json',
+    'load_json'
 ]

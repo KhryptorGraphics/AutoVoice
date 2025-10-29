@@ -12,18 +12,26 @@
 
 using namespace cooperative_groups;
 
-// Windowing kernel using provided window tensor
-__global__ void apply_window_kernel(float *audio, float *window, float *windowed, int n_samples, int n_fft, int hop_length) {
-    int frame_idx = blockIdx.x;
-    int tid = threadIdx.x;
+// Windowing kernel using provided window tensor (batched version)
+__global__ void apply_window_kernel(float *audio, float *window, float *windowed, int audio_length, int n_fft, int hop_length, int n_frames) {
+    int frame_idx = blockIdx.x;   // Frame index
+    int batch_idx = blockIdx.y;   // Batch index
+    int tid = threadIdx.x;        // Thread within frame (sample index within window)
 
+    if (frame_idx >= n_frames) return;
+
+    // Compute frame start position and audio offset for this batch
     int frame_start = frame_idx * hop_length;
+    int audio_offset = batch_idx * audio_length;
 
     if (tid < n_fft) {
         float w = window[tid];
-        int audio_idx = frame_start + tid;
-        float sample = (audio_idx < n_samples) ? audio[audio_idx] : 0.0f;
-        windowed[frame_idx * n_fft + tid] = sample * w;
+        int audio_idx = audio_offset + frame_start + tid;
+        float sample = (frame_start + tid < audio_length) ? audio[audio_idx] : 0.0f;
+
+        // Write to windowed output: [batch_size, n_frames, n_fft]
+        int windowed_idx = (batch_idx * n_frames + frame_idx) * n_fft + tid;
+        windowed[windowed_idx] = sample * w;
     }
 }
 
@@ -252,11 +260,21 @@ void launch_apply_window(torch::Tensor& input, torch::Tensor& window, torch::Ten
     int n_fft = window.size(0);
     int hop_length = 256;  // Default
 
-    int n_frames = (n_samples - n_fft) / hop_length + 1;
-    dim3 block(256);
-    dim3 grid(n_frames);
+    // Compute n_frames with proper bounds checking
+    int n_frames = (n_samples >= n_fft) ? ((n_samples - n_fft) / hop_length + 1) : 0;
 
-    apply_window_kernel<<<grid, block>>>(d_input, d_window, d_output, n_samples, n_fft, hop_length);
+    // Early return if no frames to process
+    if (n_frames == 0) {
+        output.zero_();
+        return;
+    }
+
+    // Use batched launch configuration: dim3(n_frames, batch_size)
+    dim3 grid(n_frames, 1);  // batch_size=1 for single audio
+    dim3 block(256);
+
+    // Call kernel with all 7 parameters (including n_frames)
+    apply_window_kernel<<<grid, block>>>(d_input, d_window, d_output, n_samples, n_fft, hop_length, n_frames);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -388,28 +406,33 @@ void launch_optimized_stft(
 
     int batch_size = audio.size(0);
     int audio_length = audio.size(1);
-    int n_frames = (audio_length - n_fft) / hop_length + 1;
+    int n_frames = std::max<int>(0, (audio_length - n_fft) / hop_length + 1);
+    if (n_frames == 0) {
+        // Zero-fill outputs and return
+        CUDA_CHECK(cudaMemset(d_stft_output, 0, stft_output.numel() * sizeof(cufftComplex)));
+        return;
+    }
 
     // Allocate global memory buffer for windowed frames [batch_size*n_frames, n_fft]
     float *d_windowed_frames;
     CUDA_CHECK(cudaMalloc(&d_windowed_frames, batch_size * n_frames * n_fft * sizeof(float)));
 
-    // Step 1: Launch windowing kernel to write windowed frames to global memory
-    dim3 block(STFT_BLOCK_SIZE);
-    dim3 grid(n_frames, batch_size);
+    // Step 1: Launch windowing kernel once with batched grid covering all frames and batches
+    dim3 window_block(256);
+    dim3 window_grid(n_frames, batch_size);
 
-    for (int b = 0; b < batch_size; b++) {
-        for (int f = 0; f < n_frames; f++) {
-            int frame_start = f * hop_length;
-            int audio_offset = b * audio_length;
-            int frame_offset = (b * n_frames + f) * n_fft;
-
-            apply_window_kernel<<<1, 256>>>(
-                d_audio + audio_offset, d_window, d_windowed_frames + frame_offset,
-                audio_length, n_fft, hop_length
-            );
-        }
-    }
+    // Single batched kernel launch for all frames and batches
+    // blockIdx.x = frame index, blockIdx.y = batch index
+    apply_window_kernel<<<window_grid, window_block>>>(
+        d_audio,
+        d_window,
+        d_windowed_frames,
+        audio_length,
+        n_fft,
+        hop_length,
+        n_frames
+    );
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Step 2: Execute batched FFT R2C using cached plan
@@ -521,8 +544,7 @@ __global__ void mel_spectrogram_singing_kernel(
     int n_fft,
     int hop_length,
     int mel_bins,
-    int batch_size,
-    bool apply_a_weighting      // Optional perceptual weighting
+    int batch_size
 ) {
     int frame_idx = blockIdx.x;
     int batch_idx = blockIdx.y;
@@ -568,21 +590,10 @@ __global__ void mel_spectrogram_singing_kernel(
             mel_sum += shared_magnitude[k] * filter_val;
         }
 
-        // Step 5: Apply perceptual weighting (A-weighting) if requested
-        if (apply_a_weighting) {
-            // Compute mel bin center frequency
-            float mel_min = hz_to_mel_singing(SINGING_FMIN);
-            float mel_max = hz_to_mel_singing(SINGING_FMAX);
-            float mel_freq = mel_to_hz_singing(mel_min + (mel_max - mel_min) * tid / (float)mel_bins);
+        // Step 5: Perceptual weighting moved to apply_perceptual_weighting_kernel
 
-            // Apply A-weighting
-            float a_weight_db = a_weighting_db(mel_freq);
-            float a_weight_linear = powf(10.0f, a_weight_db / 20.0f);
-            mel_sum *= a_weight_linear;
-        }
-
-        // Step 6: Log compression
-        float log_mel = logf(safe_divide(mel_sum, EPSILON));
+        // Step 6: Log compression with safe epsilon addition
+        float log_mel = logf(mel_sum + EPSILON);
 
         // Write to global memory
         int mel_idx = (batch_idx * ((audio_length - n_fft) / hop_length + 1) + frame_idx) * mel_bins + tid;
@@ -626,7 +637,7 @@ __global__ void apply_perceptual_weighting_kernel(
         float mel_val = mel_spectrogram[mel_idx];
         float linear_mel = expf(mel_val);  // Convert from log to linear
         linear_mel *= a_weight_linear;
-        mel_spectrogram[mel_idx] = logf(safe_divide(linear_mel, EPSILON));
+        mel_spectrogram[mel_idx] = logf(linear_mel + EPSILON);
     }
 }
 
@@ -684,16 +695,20 @@ __global__ void compute_log_mel_kernel(
 
 // Real-time voice conversion kernel with chunk-based processing
 __global__ void realtime_voice_conversion_kernel(
-    float* audio_chunk,         // Input audio chunk [chunk_size]
-    float* overlap_buffer,      // Overlap buffer state [overlap_size]
-    cufftComplex* fft_workspace, // FFT workspace [n_fft/2+1]
-    float* features_output,     // Output features [feature_dim]
-    float* window,              // Window function [n_fft]
+    float* audio_chunk,          // Input audio chunk [chunk_size]
+    float* overlap_buffer,       // Overlap buffer state [overlap_size]
+    cufftComplex* fft_workspace,  // FFT workspace [n_fft/2+1]
+    float* features_output,      // Output converted audio or features [chunk_size or feature_dim]
+    float* window,               // Window function [n_fft]
     int chunk_size,
     int overlap_size,
     int n_fft,
     int hop_length,
-    int feature_dim
+    int feature_dim,
+    float* speaker_embedding,    // Optional: speaker embedding [embedding_dim] (nullptr if not provided)
+    float* pitch_features,       // Optional: pitch features [feature_dim] (nullptr if not provided)
+    int embedding_dim,
+    bool perform_conversion      // If true, perform conversion; if false, extract features only
 ) {
     int tid = threadIdx.x;
 
@@ -732,7 +747,46 @@ __global__ void realtime_voice_conversion_kernel(
     __syncthreads();
 
     // Step 4: FFT would be performed externally on shared_combined
-    // Extract features from FFT output (mel-spectrogram, F0, etc.)
+    // If performing conversion, apply speaker embedding and pitch features
+    if (perform_conversion && speaker_embedding != nullptr && pitch_features != nullptr) {
+        // Simplified conversion: modulate features with speaker embedding
+        // In a real implementation, this would be a more complex neural network operation
+        if (tid < feature_dim) {
+            // Compute content features (spectral envelope)
+            float content_feature = 0.0f;
+            for (int i = 0; i < n_fft && i < combined_size; i++) {
+                content_feature += shared_combined[i];
+            }
+            content_feature /= (combined_size > 0) ? combined_size : 1.0f;
+
+            // Load speaker embedding (using simple weighted combination)
+            float speaker_weight = (tid < embedding_dim) ? speaker_embedding[tid] : 1.0f;
+
+            // Load pitch feature
+            float pitch_weight = pitch_features[tid];
+
+            // Apply conversion: content * speaker_embedding * pitch_features
+            features_output[tid] = content_feature * speaker_weight * pitch_weight;
+        }
+    } else {
+        // Feature extraction only mode (original behavior)
+        // Extract features from FFT output (mel-spectrogram, F0, etc.)
+        // Write simple features to output (e.g., windowed frame energy, RMS)
+        if (tid < feature_dim) {
+            // Compute frame energy as a basic feature
+            float energy = 0.0f;
+            for (int i = 0; i < n_fft && i < combined_size; i++) {
+                float val = shared_combined[i];
+                energy += val * val;
+            }
+            // Guard combined_size > 0 and use combined_size as divisor instead of n_fft
+            energy = (combined_size > 0) ? sqrtf(energy / combined_size) : 0.0f;  // RMS energy
+
+            // Write to features output (tid maps to feature index)
+            features_output[tid] = energy;
+        }
+    }
+    __syncthreads();
 
     // Step 5: Update overlap buffer for next iteration
     // Copy last overlap_size samples from current chunk back to global overlap buffer
@@ -752,11 +806,17 @@ void launch_mel_spectrogram_singing(
     torch::Tensor& mel_output,
     int n_fft,
     int hop_length,
-    bool apply_a_weighting
+    bool apply_a_weighting,
+    c10::optional<torch::Tensor> mel_frequencies  // CHANGED: use c10::optional for safe null handling
 ) {
     // Validate inputs
     if (!audio.is_cuda() || !window.is_cuda() || !mel_filterbank.is_cuda() || !mel_output.is_cuda()) {
         throw std::runtime_error("All tensors must be on CUDA device");
+    }
+
+    // Validate mel_frequencies if A-weighting is requested
+    if (apply_a_weighting && (!mel_frequencies.has_value() || !mel_frequencies->is_cuda())) {
+        throw std::runtime_error("mel_frequencies tensor required for A-weighting and must be on CUDA device");
     }
 
     float *d_audio = audio.data_ptr<float>();
@@ -766,7 +826,12 @@ void launch_mel_spectrogram_singing(
 
     int batch_size = audio.size(0);
     int audio_length = audio.size(1);
-    int n_frames = (audio_length - n_fft) / hop_length + 1;
+    int n_frames = std::max<int>(0, (audio_length - n_fft) / hop_length + 1);
+    if (n_frames == 0) {
+        // Zero-fill outputs and return
+        CUDA_CHECK(cudaMemset(d_mel_output, 0, mel_output.numel() * sizeof(float)));
+        return;
+    }
     int mel_bins = mel_filterbank.size(0);
 
     // Allocate windowed frames buffer [batch_size * n_frames, n_fft]
@@ -777,24 +842,22 @@ void launch_mel_spectrogram_singing(
     cufftComplex *d_fft_output;
     CUDA_CHECK(cudaMalloc(&d_fft_output, batch_size * n_frames * (n_fft / 2 + 1) * sizeof(cufftComplex)));
 
-    // Step 1: Launch windowing kernel to prepare windowed frames in global memory
+    // Step 1: Launch windowing kernel once with batched grid covering all frames and batches
     dim3 window_block(256);
     dim3 window_grid(n_frames, batch_size);
 
-    // Use a dedicated windowing kernel that writes to global memory
-    for (int b = 0; b < batch_size; b++) {
-        for (int f = 0; f < n_frames; f++) {
-            int frame_start = f * hop_length;
-            int audio_offset = b * audio_length;
-            int frame_offset = (b * n_frames + f) * n_fft;
-
-            // Launch window application for this frame
-            apply_window_kernel<<<1, 256>>>(
-                d_audio + audio_offset, d_window, d_windowed_frames + frame_offset,
-                audio_length, n_fft, hop_length
-            );
-        }
-    }
+    // Single batched kernel launch for all frames and batches
+    // blockIdx.x = frame index, blockIdx.y = batch index
+    apply_window_kernel<<<window_grid, window_block>>>(
+        d_audio,
+        d_window,
+        d_windowed_frames,
+        audio_length,
+        n_fft,
+        hop_length,
+        n_frames
+    );
+    CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Step 2: Execute cuFFT R2C on windowed frames using cached plan
@@ -811,14 +874,19 @@ void launch_mel_spectrogram_singing(
     // Step 3: Launch mel kernel to compute mel-spectrogram from FFT output
     dim3 block(MEL_SPECTROGRAM_BLOCK_SIZE);
     dim3 grid(n_frames, batch_size);
-    size_t shared_mem = SINGING_MEL_SHARED_MEM_SIZE * sizeof(float);
-
+    size_t shared_mem = (n_fft + (n_fft / 2 + 1)) * sizeof(float);
     mel_spectrogram_singing_kernel<<<grid, block, shared_mem>>>(
         d_audio, d_fft_output, d_mel_output, d_filterbank, d_window,
-        audio_length, n_fft, hop_length, mel_bins, batch_size, apply_a_weighting
+        audio_length, n_fft, hop_length, mel_bins, batch_size
     );
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Step 4: Apply A-weighting if requested
+    if (apply_a_weighting && mel_frequencies.has_value()) {
+        apply_perceptual_weighting(mel_output, mel_frequencies.value(), n_frames, mel_bins, batch_size);
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
 
     // Free temporary buffers
     CUDA_CHECK(cudaFree(d_windowed_frames));
@@ -832,11 +900,21 @@ void launch_realtime_voice_conversion(
     torch::Tensor& features_output,
     torch::Tensor& window,
     int n_fft,
-    int hop_length
+    int hop_length,
+    c10::optional<torch::Tensor> speaker_embedding,
+    c10::optional<torch::Tensor> pitch_features
 ) {
     // Validate inputs
     if (!audio_chunk.is_cuda() || !overlap_buffer.is_cuda() || !features_output.is_cuda() || !window.is_cuda()) {
         throw std::runtime_error("All tensors must be on CUDA device");
+    }
+
+    // Validate optional tensors if provided
+    bool perform_conversion = speaker_embedding.has_value() && pitch_features.has_value();
+    if (perform_conversion) {
+        if (!speaker_embedding->is_cuda() || !pitch_features->is_cuda()) {
+            throw std::runtime_error("speaker_embedding and pitch_features must be on CUDA device when provided");
+        }
     }
 
     float *d_chunk = audio_chunk.data_ptr<float>();
@@ -848,18 +926,32 @@ void launch_realtime_voice_conversion(
     int overlap_size = overlap_buffer.size(0);
     int feature_dim = features_output.size(0);
 
+    // Get optional tensor pointers
+    float *d_speaker_embedding = nullptr;
+    float *d_pitch_features = nullptr;
+    int embedding_dim = 0;
+
+    if (perform_conversion) {
+        d_speaker_embedding = speaker_embedding->data_ptr<float>();
+        d_pitch_features = pitch_features->data_ptr<float>();
+        embedding_dim = speaker_embedding->size(0);
+    }
+
     // Allocate FFT workspace
     cufftComplex *d_fft_workspace;
     CUDA_CHECK(cudaMalloc(&d_fft_workspace, (n_fft / 2 + 1) * sizeof(cufftComplex)));
 
+    // Compute shared memory dynamically based on runtime sizes
+    size_t shared_mem = (chunk_size + overlap_size) * sizeof(float);
+
     // Launch kernel with single block (low-latency processing)
     dim3 block(REALTIME_CONVERSION_BLOCK_SIZE);
     dim3 grid(1);
-    size_t shared_mem = REALTIME_CONVERSION_SHARED_MEM_SIZE * sizeof(float);
 
     realtime_voice_conversion_kernel<<<grid, block, shared_mem>>>(
         d_chunk, d_overlap, d_fft_workspace, d_features, d_window,
-        chunk_size, overlap_size, n_fft, hop_length, feature_dim
+        chunk_size, overlap_size, n_fft, hop_length, feature_dim,
+        d_speaker_embedding, d_pitch_features, embedding_dim, perform_conversion
     );
     CUDA_CHECK(cudaGetLastError());
 

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .engine import VoiceInferenceEngine
     from .tensorrt_engine import TensorRTEngine, TensorRTEngineBuilder
+    from .tensorrt_converter import TensorRTConverter
     from .synthesizer import VoiceSynthesizer
     from .realtime_processor import RealtimeProcessor, AsyncRealtimeProcessor
     from .cuda_graphs import CUDAGraphManager, GraphOptimizedModel
@@ -19,6 +20,7 @@ __all__ = [
     'VoiceInferenceEngine',
     'TensorRTEngine',
     'TensorRTEngineBuilder',
+    'TensorRTConverter',
     'VoiceSynthesizer',
     'RealtimeProcessor',
     'AsyncRealtimeProcessor',
@@ -67,7 +69,12 @@ def __getattr__(name):
             from .tensorrt_engine import TensorRTEngineBuilder
             _module_cache[name] = TensorRTEngineBuilder
             return TensorRTEngineBuilder
-            
+
+        elif name == 'TensorRTConverter':
+            from .tensorrt_converter import TensorRTConverter
+            _module_cache[name] = TensorRTConverter
+            return TensorRTConverter
+
         elif name == 'VoiceSynthesizer':
             from .synthesizer import VoiceSynthesizer
             _module_cache[name] = VoiceSynthesizer

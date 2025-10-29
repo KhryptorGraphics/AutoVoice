@@ -273,7 +273,8 @@ __device__ void compute_autocorrelation(
     }
 }
 
-// Find roots of LPC polynomial using Laguerre's method
+// Find roots of LPC polynomial using Durand-Kerner method
+// Constructs polynomial P(z) = z^order + Σ_{k=1..order} a[k] z^{order-k}
 __device__ void find_polynomial_roots(
     float *lpc_coeffs,    // Input: LPC coefficients [order]
     float *roots_real,    // Output: real parts of roots [order]
@@ -294,18 +295,25 @@ __device__ void find_polynomial_roots(
         float max_change = 0.0f;
 
         for (int i = 0; i < order; i++) {
-            // Evaluate polynomial at current root estimate
-            float p_real = 1.0f, p_imag = 0.0f;
+            // Evaluate polynomial P(z) = z^order + Σ_{k=1..order} a[k] z^{order-k} at z_i
+            // Using Horner's method for numerical stability
             float z_real = roots_real[i], z_imag = roots_imag[i];
 
-            for (int j = 0; j < order; j++) {
-                float temp_real = p_real * z_real - p_imag * z_imag - lpc_coeffs[j];
+            // Start with z^order (implicitly coefficient 1.0)
+            float p_real = 1.0f, p_imag = 0.0f;
+
+            // Horner evaluation: P(z) = (((...((1)*z + a[0])*z + a[1])*z + ...)*z + a[order-1])
+            for (int k = 0; k < order; k++) {
+                // Multiply by z: (p_real + i*p_imag) * (z_real + i*z_imag)
+                float temp_real = p_real * z_real - p_imag * z_imag;
                 float temp_imag = p_real * z_imag + p_imag * z_real;
-                p_real = temp_real;
+
+                // Add coefficient a[k]
+                p_real = temp_real + lpc_coeffs[k];
                 p_imag = temp_imag;
             }
 
-            // Compute product of differences with other roots
+            // Compute product of differences with other roots: Π_{j≠i}(z_i - z_j)
             float prod_real = 1.0f, prod_imag = 0.0f;
             for (int j = 0; j < order; j++) {
                 if (j != i) {
@@ -318,7 +326,7 @@ __device__ void find_polynomial_roots(
                 }
             }
 
-            // Update root estimate
+            // Durand-Kerner update: z_i := z_i - P(z_i) / Π_{j≠i}(z_i - z_j)
             float denom = prod_real * prod_real + prod_imag * prod_imag;
             if (denom > EPSILON) {
                 float update_real = (p_real * prod_real + p_imag * prod_imag) / denom;

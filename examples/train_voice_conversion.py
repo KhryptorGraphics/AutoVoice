@@ -17,6 +17,19 @@ Usage:
     # Override specific parameters
     python examples/train_voice_conversion.py --epochs 200 --batch-size 16 --lr 1e-4
 
+Adversarial Training:
+    The trainer implements two-step GAN training for improved voice quality:
+    - STEP A: Discriminator update with real/fake audio pairs
+    - STEP B: Generator update with all losses (mel, pitch, speaker, adversarial, etc.)
+
+    Adversarial training is enabled by default with a small weight (0.1). To disable:
+    - Set 'adversarial': 0 in config YAML under 'losses' section
+    - Or modify the default config below
+
+    The discriminator uses multi-scale architecture and hinge loss for stability.
+    Feature matching loss is automatically added during adversarial training
+    for improved convergence.
+
 Data Format:
     Metadata JSON should contain paired audio files:
     {
@@ -125,7 +138,7 @@ def get_default_config() -> Dict[str, Any]:
             'warmup_steps': 1000,
             'log_interval': 100,
             'save_interval': 1000,
-            'validate_interval': 500
+            'validate_interval': 5  # Validate every 5 epochs
         },
         'losses': {
             'mel_reconstruction': 45.0,
@@ -133,7 +146,8 @@ def get_default_config() -> Dict[str, Any]:
             'pitch_consistency': 10.0,
             'speaker_similarity': 5.0,
             'flow_likelihood': 1.0,
-            'stft': 2.5
+            'stft': 2.5,
+            'adversarial': 0.1  # GAN adversarial loss (set to 0 to disable)
         },
         'checkpoint': {
             'checkpoint_dir': 'checkpoints/voice_conversion',
@@ -146,7 +160,8 @@ def get_default_config() -> Dict[str, Any]:
             'pitch_preserving_time_stretch': True,
             'formant_shift': True,
             'noise_injection': True,
-            'augmentation_prob': 0.5
+            'augmentation_prob': 0.5,
+            'pitch_preserving_time_stretch_strict': False
         }
     }
 
@@ -385,6 +400,9 @@ def main(args):
     if config.get('augmentation', {}).get('noise_injection', True):
         train_transforms.append(SingingAugmentation.noise_injection_snr)
 
+    # Get VTLP configuration
+    vtlp_enabled = config.get('augmentation', {}).get('vtlp', {}).get('enabled', False)
+
     # Create datasets
     try:
         # Check if we should use synthetic data
@@ -408,7 +426,9 @@ def main(args):
             extract_f0=config['training'].get('extract_f0', True),
             extract_speaker_emb=config['training'].get('extract_speaker_emb', True),
             device=gpu_manager.device if gpu_manager else None,
-            gpu_manager=gpu_manager
+            gpu_manager=gpu_manager,
+            pitch_time_stretch_strict=config.get('augmentation', {}).get('pitch_preserving_time_stretch_strict', False),
+            enable_vtlp=vtlp_enabled
         )
 
         logger.info(f"Training dataset size: {len(train_dataset)}")
@@ -515,9 +535,9 @@ def main(args):
             train_losses = trainer.train_epoch(train_dataloader, epoch)
             logger.info(f"Training losses: {train_losses}")
 
-            # Validate with safe interval calculation
-            validate_interval = max(1, training_config.validate_interval // max(1, len(train_dataloader)))
-            if (epoch + 1) % validate_interval == 0:
+            # Validate at specified epoch intervals
+            # validate_interval is interpreted as number of epochs between validations
+            if (epoch + 1) % training_config.validate_interval == 0:
                 val_losses = trainer.validate(val_dataloader)
                 logger.info(f"Validation losses: {val_losses}")
 

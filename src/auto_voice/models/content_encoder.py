@@ -53,7 +53,8 @@ class ContentEncoder(nn.Module):
         output_dim: int = 256,
         device: Optional[str] = None,
         use_torch_hub: bool = True,
-        cnn_mel_config: Optional[dict] = None
+        cnn_mel_config: Optional[dict] = None,
+        gpu_resampling_enabled: bool = False
     ):
         super().__init__()
 
@@ -65,6 +66,10 @@ class ContentEncoder(nn.Module):
 
         # Store CNN mel configuration
         self.cnn_mel_config = cnn_mel_config or {}
+
+        # GPU resampling support (disabled by default for compatibility)
+        # When enabled, tries to use GPU for resampling if torchaudio build supports CUDA
+        self.gpu_resampling_enabled = gpu_resampling_enabled
 
         # Initialize encoder
         self.hubert = None
@@ -147,54 +152,72 @@ class ContentEncoder(nn.Module):
             ContentEncodingError: If encoding fails
         """
         try:
-            with self.lock:
-                # Handle different input dimensions
-                if audio.dim() == 3:
-                    # [B, C, T] - average across channels to get mono
-                    audio = audio.mean(dim=1)  # [B, T]
-                elif audio.dim() == 2:
-                    # Treat as [B, T] batch by default
-                    pass
-                elif audio.dim() == 1:
-                    # [T] - add batch dimension
-                    audio = audio.unsqueeze(0)
+            # Handle different input dimensions (no lock needed)
+            if audio.dim() == 3:
+                # [B, C, T] - average across channels to get mono
+                audio = audio.mean(dim=1)  # [B, T]
+            elif audio.dim() == 2:
+                # Treat as [B, T] batch by default
+                pass
+            elif audio.dim() == 1:
+                # [T] - add batch dimension
+                audio = audio.unsqueeze(0)
 
-                # Move to device
-                audio = audio.to(self.device)
+            # Move to device
+            audio = audio.to(self.device)
 
-                # Resample to 16kHz if needed (with cached resampler)
-                if sample_rate != self.sample_rate:
-                    cache_key = (sample_rate, self.sample_rate, str(self.device))
-                    if cache_key not in self._resampler_cache:
-                        self._resampler_cache[cache_key] = torchaudio.transforms.Resample(
-                            orig_freq=sample_rate,
-                            new_freq=self.sample_rate
-                        ).to(self.device)
-                    resampler = self._resampler_cache[cache_key]
-                    audio = resampler(audio)
+            # Resample to 16kHz if needed
+            # GPU resampling is optional: many torchaudio builds don't support CUDA resampling
+            if sample_rate != self.sample_rate:
+                cache_key = (sample_rate, self.sample_rate)  # Device-independent cache key
+                if cache_key not in self._resampler_cache:
+                    self._resampler_cache[cache_key] = torchaudio.transforms.Resample(
+                        orig_freq=sample_rate,
+                        new_freq=self.sample_rate
+                    )
+                resampler = self._resampler_cache[cache_key]
 
-                # Normalize to [-1, 1] per sample
-                max_vals = audio.abs().amax(dim=-1, keepdim=True)
-                max_vals = torch.clamp(max_vals, min=1e-8)
-                audio = audio / max_vals
-
-                # Extract content features
-                if self.hubert is not None:
-                    # Use HuBERT-Soft
-                    with torch.no_grad():
-                        content = self.hubert.units(audio)  # [B, T_frames, 256]
+                # Try GPU resampling if enabled, otherwise fall back to CPU
+                if self.gpu_resampling_enabled and self.device == 'cuda':
+                    try:
+                        # Attempt GPU resampling
+                        resampler = resampler.to(self.device)
+                        audio = resampler(audio)
+                    except Exception as e:
+                        # Fall back to CPU resampling if GPU fails
+                        logger.debug(f"GPU resampling failed: {e}. Falling back to CPU.")
+                        resampler = resampler.cpu()
+                        audio_cpu = audio.cpu()
+                        audio = resampler(audio_cpu).to(self.device)
                 else:
-                    # Use CNN fallback
-                    with torch.no_grad():
-                        # Compute mel-spectrogram
-                        mel = self.mel_transform(audio)  # [B, 80, T_frames]
-                        mel = torch.log(mel + 1e-8)  # Log scale
+                    # Default behavior: CPU resampling for compatibility
+                    resampler = resampler.cpu()
+                    audio_cpu = audio.cpu()
+                    audio = resampler(audio_cpu).to(self.device)
 
-                        # Pass through CNN encoder
-                        content = self.cnn_encoder(mel)  # [B, output_dim, T_frames]
-                        content = content.transpose(1, 2)  # [B, T_frames, output_dim]
+            # Normalize to [-1, 1] per sample
+            max_vals = audio.abs().amax(dim=-1, keepdim=True)
+            max_vals = torch.clamp(max_vals, min=1e-8)
+            audio = audio / max_vals
 
-                return content
+            # Extract content features
+            if self.hubert is not None:
+                # Use HuBERT-Soft (lock only HuBERT inference for thread safety)
+                with torch.no_grad():
+                    with self.lock:
+                        content = self.hubert.units(audio)  # [B, T_frames, 256]
+            else:
+                # Use CNN fallback (no lock needed for pure PyTorch modules)
+                with torch.no_grad():
+                    # Compute mel-spectrogram
+                    mel = self.mel_transform(audio)  # [B, 80, T_frames]
+                    mel = torch.log(mel + 1e-8)  # Log scale
+
+                    # Pass through CNN encoder
+                    content = self.cnn_encoder(mel)  # [B, output_dim, T_frames]
+                    content = content.transpose(1, 2)  # [B, T_frames, output_dim]
+
+            return content
 
         except Exception as e:
             raise ContentEncodingError(f"Content encoding failed: {str(e)}")
@@ -247,3 +270,124 @@ class ContentEncoder(nn.Module):
         else:
             # HuBERT-Soft uses 320 samples per frame at 16kHz = 50Hz
             return 50.0
+
+    def prepare_for_export(self):
+        """
+        Prepare model for ONNX export.
+
+        Sets eval mode and handles HuBERT rejection.
+        """
+        self.eval()
+        if self.hubert is not None:
+            raise RuntimeError(
+                "Cannot export HuBERT-based ContentEncoder to ONNX. "
+                "HuBERT models contain operations not supported in ONNX export. "
+                "Please use CNN fallback: initialize ContentEncoder with encoder_type='cnn_fallback' "
+                "or force_cnn_fallback=True during export."
+            )
+        logger.info("ContentEncoder prepared for ONNX export (CNN fallback mode)")
+
+    def export_to_onnx(
+        self,
+        onnx_path: str,
+        opset_version: int = 17,
+        input_sample: Optional[torch.Tensor] = None
+    ) -> str:
+        """
+        Export ContentEncoder to ONNX format.
+
+        Only supports CNN fallback encoder. HuBERT export will raise an error.
+        Input must already be at self.sample_rate (16kHz). No runtime resampling in exported model.
+
+        Args:
+            onnx_path: Output path for ONNX model
+            opset_version: ONNX opset version
+            input_sample: Sample input tensor [1, T] at self.sample_rate (if None, uses default 1s audio at 16kHz)
+
+        Returns:
+            Path to exported ONNX model
+
+        Raises:
+            RuntimeError: If HuBERT encoder is active (not CNN fallback)
+
+        Example:
+            >>> encoder = ContentEncoder(encoder_type='cnn_fallback')
+            >>> encoder.export_to_onnx('content_encoder.onnx')
+        """
+        # Ensure we can export (no HuBERT)
+        self.prepare_for_export()
+
+        # Create default input if not provided (1 second at self.sample_rate)
+        if input_sample is None:
+            input_sample = torch.randn(1, self.sample_rate)
+
+        # Ensure input is 2D [B, T]
+        if input_sample.dim() == 1:
+            input_sample = input_sample.unsqueeze(0)
+
+        device = next(self.parameters()).device
+        input_sample = input_sample.to(device)
+
+        # Define dynamic axes for variable-length audio and time frames
+        dynamic_axes = {
+            'input_audio': {0: 'batch_size', 1: 'audio_length'},
+            'content_features': {0: 'batch_size', 1: 'time_frames'}
+        }
+
+        logger.info(f"Exporting ContentEncoder to ONNX: {onnx_path}")
+        logger.info(f"Expected input sample rate: {self.sample_rate} Hz (no runtime resampling in exported model)")
+
+        # Create wrapper to skip resampling during export
+        class ContentEncoderExportWrapper(nn.Module):
+            def __init__(self, encoder):
+                super().__init__()
+                self.encoder = encoder
+
+            def forward(self, audio):
+                """Forward assuming audio is already at correct sample rate."""
+                # Skip resampling logic - assume input is already at self.sample_rate
+                with self.encoder.lock:
+                    # Handle different input dimensions
+                    if audio.dim() == 3:
+                        audio = audio.mean(dim=1)
+                    elif audio.dim() == 1:
+                        audio = audio.unsqueeze(0)
+
+                    # Move to device
+                    audio = audio.to(self.encoder.device)
+
+                    # Normalize to [-1, 1] per sample
+                    max_vals = audio.abs().amax(dim=-1, keepdim=True)
+                    max_vals = torch.clamp(max_vals, min=1e-8)
+                    audio = audio / max_vals
+
+                    # Extract content features (CNN only, no HuBERT)
+                    with torch.no_grad():
+                        mel = self.encoder.mel_transform(audio)
+                        mel = torch.log(mel + 1e-8)
+                        content = self.encoder.cnn_encoder(mel)
+                        content = content.transpose(1, 2)
+
+                    return content
+
+        wrapper = ContentEncoderExportWrapper(self)
+        wrapper.eval()
+
+        try:
+            torch.onnx.export(
+                wrapper,
+                input_sample,
+                onnx_path,
+                export_params=True,
+                verbose=False,
+                opset_version=opset_version,
+                do_constant_folding=True,
+                input_names=['input_audio'],
+                output_names=['content_features'],
+                dynamic_axes=dynamic_axes
+            )
+            logger.info(f"ContentEncoder exported successfully to {onnx_path}")
+            return onnx_path
+        except Exception as e:
+            logger.error(f"ContentEncoder ONNX export failed: {e}")
+            raise

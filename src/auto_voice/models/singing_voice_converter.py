@@ -129,6 +129,19 @@ class SingingVoiceConverter(nn.Module):
             cnn_mel_config=cnn_fallback_cfg
         )
 
+        # Add projection layer if HuBERT-Soft content features (256) don't match content_dim
+        # HuBERT-Soft always outputs 256-dim features, need to project if content_dim != 256
+        encoder_type = content_cfg.get('type', svc_config.get('content_encoder_type', 'hubert_soft'))
+        if encoder_type == 'hubert_soft':
+            hubert_output_dim = 256  # HuBERT-Soft fixed output dimension
+            if self.content_dim != hubert_output_dim:
+                logger.info(f"Adding content projection layer: {hubert_output_dim} -> {self.content_dim}")
+                self.content_projection = nn.Conv1d(hubert_output_dim, self.content_dim, 1)
+            else:
+                self.content_projection = None
+        else:
+            self.content_projection = None
+
         # Initialize pitch encoder
         self.pitch_encoder = PitchEncoder(
             pitch_dim=self.pitch_dim,
@@ -203,6 +216,13 @@ class SingingVoiceConverter(nn.Module):
         self.preserve_dynamics = False
         self.vibrato_transfer = False
 
+        
+        # TensorRT configuration
+        self.use_tensorrt = svc_config.get('use_tensorrt', False)
+        self.tensorrt_precision = svc_config.get('tensorrt_precision', 'fp16')
+        self.tensorrt_models = {}
+        self.fallback_to_pytorch = svc_config.get('fallback_to_pytorch', True)
+
         logger.info(f"SingingVoiceConverter initialized: latent_dim={self.latent_dim}, "
                    f"content_dim={self.content_dim}, pitch_dim={self.pitch_dim}, "
                    f"vocoder_sample_rate={self.vocoder_sample_rate}, temperature={self.temperature}, "
@@ -213,10 +233,11 @@ class SingingVoiceConverter(nn.Module):
         source_audio: torch.Tensor,
         target_mel: torch.Tensor,
         source_f0: torch.Tensor,
-        target_speaker_emb: torch.Tensor,
+        target_speaker_emb: Optional[torch.Tensor] = None,
         source_sample_rate: int = 16000,
         x_mask: Optional[torch.Tensor] = None,
-        source_voiced: Optional[torch.Tensor] = None
+        source_voiced: Optional[torch.Tensor] = None,
+        use_vocoder: bool = True
     ) -> Dict[str, torch.Tensor]:
         """
         Training forward pass with ground-truth target.
@@ -229,9 +250,11 @@ class SingingVoiceConverter(nn.Module):
             source_sample_rate: Sample rate of source audio
             x_mask: Optional mask for variable lengths [B, 1, T]
             source_voiced: Optional voiced mask for F0 [B, T_f0]
+            use_vocoder: If True, generate pred_audio for perceptual losses (default: True)
 
         Returns:
             Dict with 'pred_mel', 'z_mean', 'z_logvar', 'z', 'u', 'logdet', 'cond'
+            If use_vocoder=True, also includes 'pred_audio' for pitch/speaker losses
         """
         B, _, T = target_mel.shape
 
@@ -246,8 +269,13 @@ class SingingVoiceConverter(nn.Module):
             x_mask = torch.ones(B, 1, T, device=device)
 
         # Extract content from source
-        content = self.content_encoder(source_audio, source_sample_rate)  # [B, T_content, 256]
+        content = self.content_encoder(source_audio, source_sample_rate)  # [B, T_content, encoder_output_dim]
         content = content.to(device)
+
+        # Apply content projection if needed (HuBERT 256 -> content_dim)
+        if self.content_projection is not None:
+            # content: [B, T, 256] -> transpose -> [B, 256, T] -> project -> [B, content_dim, T] -> transpose -> [B, T, content_dim]
+            content = self.content_projection(content.transpose(1, 2)).transpose(1, 2)
 
         # Move voiced mask to device if provided
         if source_voiced is not None:
@@ -261,10 +289,29 @@ class SingingVoiceConverter(nn.Module):
         content = self._interpolate_features(content, T)  # [B, T, content_dim]
         pitch_emb = self._interpolate_features(pitch_emb, T)  # [B, T, pitch_dim]
 
-        # Expand speaker embedding to sequence
-        speaker_emb = target_speaker_emb.to(device).unsqueeze(2).expand(-1, -1, T)  # [B, 256, T]
+        # Handle optional target_speaker_emb
+        if target_speaker_emb is None:
+            # Use default zero embedding when not provided
+            target_speaker_emb = torch.zeros(B, self.speaker_dim, device=device)
+            logger.debug(f"target_speaker_emb is None, using default zero embedding [B={B}, speaker_dim={self.speaker_dim}]")
+        else:
+            # Validate and expand speaker embedding to sequence
+            # Ensure target_speaker_emb has correct shape [B, speaker_dim]
+            target_speaker_emb = target_speaker_emb.to(device)
+            if target_speaker_emb.dim() != 2:
+                raise VoiceConversionError(
+                    f"target_speaker_emb must be 2D [B, {self.speaker_dim}], "
+                    f"got {target_speaker_emb.dim()}D with shape {list(target_speaker_emb.shape)}"
+                )
+            if target_speaker_emb.size(1) != self.speaker_dim:
+                raise VoiceConversionError(
+                    f"target_speaker_emb must have shape [B, {self.speaker_dim}], "
+                    f"got [B, {target_speaker_emb.size(1)}]"
+                )
 
-        # Concatenate conditioning: [B, 704, T]
+        speaker_emb = target_speaker_emb.unsqueeze(2).expand(-1, -1, T)  # [B, speaker_dim, T]
+
+        # Concatenate conditioning: [B, content_dim + pitch_dim + speaker_dim, T]
         cond = torch.cat([
             content.transpose(1, 2),
             pitch_emb.transpose(1, 2),
@@ -281,7 +328,16 @@ class SingingVoiceConverter(nn.Module):
         # Reconstruction
         pred_mel = self.latent_to_mel(z * x_mask)
 
-        return {
+        # Ensure mel domain consistency with vocoder training
+        # Apply mel normalization if configured
+        audio_cfg = self.config.get('singing_voice_converter', {}).get('audio', {})
+        mel_scale = audio_cfg.get('mel_scale', 'log')
+        if mel_scale == 'log':
+            # Convert to log-mel domain for training consistency
+            pred_mel = torch.log(torch.clamp(pred_mel, min=1e-10))
+
+        # Prepare output dictionary
+        outputs = {
             'pred_mel': pred_mel,
             'z_mean': z_mean,
             'z_logvar': z_logvar,
@@ -291,241 +347,36 @@ class SingingVoiceConverter(nn.Module):
             'cond': cond
         }
 
-    def set_temperature(self, temperature: float) -> None:
-        """
-        Set the sampling temperature for flow decoder during inference.
-
-        Higher temperature increases randomness/expressiveness, lower temperature
-        makes output more deterministic and stable.
-
-        Args:
-            temperature: Sampling temperature (valid range: 0.1 to 2.0)
-                        - 0.1-0.5: Very stable, less expressive
-                        - 0.8-1.0: Balanced (recommended)
-                        - 1.0-1.5: More expressive/varied
-                        - 1.5-2.0: Highly expressive but potentially unstable
-
-        Raises:
-            ValueError: If temperature is outside valid range
-
-        Example:
-            >>> model.set_temperature(1.2)  # Slightly more expressive
-            >>> audio = model.convert(source, target_emb)
-        """
-        if not 0.1 <= temperature <= 2.0:
-            raise ValueError(f"Temperature must be in range [0.1, 2.0], got {temperature}")
-
-        self.temperature = temperature
-        logger.info(f"Temperature set to {temperature}")
-
-    def auto_tune_temperature(
-        self,
-        source_audio: Union[torch.Tensor, np.ndarray],
-        target_embedding: Union[torch.Tensor, np.ndarray],
-        sample_rate: int = 16000
-    ) -> float:
-        """
-        Automatically tune temperature based on source audio characteristics.
-
-        Analyzes the source audio's dynamic range, pitch variance, and energy
-        to determine an optimal temperature setting.
-
-        Args:
-            source_audio: Source audio for analysis (tensor or array)
-            target_embedding: Target speaker embedding
-            sample_rate: Sample rate of source audio
-
-        Returns:
-            Optimal temperature value
-
-        Example:
-            >>> optimal_temp = model.auto_tune_temperature(source, target_emb, 16000)
-            >>> print(f"Optimal temperature: {optimal_temp}")
-            >>> model.set_temperature(optimal_temp)
-        """
-        try:
-            with torch.no_grad():
-                # Convert to tensor if needed
-                if isinstance(source_audio, np.ndarray):
-                    audio_tensor = torch.from_numpy(source_audio).float()
+        # Generate pred_audio if vocoder is available and requested
+        if use_vocoder and self.vocoder is not None:
+            try:
+                # Convert mel to audio using vocoder
+                # Vocoder expects linear-scale mel
+                if mel_scale == 'log':
+                    # Convert log-mel back to linear for vocoder
+                    pred_mel_linear = torch.exp(pred_mel)
                 else:
-                    audio_tensor = source_audio.clone()
+                    pred_mel_linear = pred_mel
 
-                if audio_tensor.dim() == 1:
-                    audio_tensor = audio_tensor.unsqueeze(0)
+                # Generate audio waveform
+                pred_audio = self.vocoder(pred_mel_linear)  # [B, 1, T_audio]
 
-                device = next(self.parameters()).device
-                audio_tensor = audio_tensor.to(device)
+                # Squeeze channel dimension if present
+                if pred_audio.dim() == 3 and pred_audio.size(1) == 1:
+                    pred_audio = pred_audio.squeeze(1)  # [B, T_audio]
 
-                # Extract F0 for pitch variance analysis
-                from ..audio.pitch_extractor import SingingPitchExtractor
-                extractor = SingingPitchExtractor(device=str(device))
-                f0_data = extractor.extract_f0_contour(
-                    audio_tensor.cpu().numpy().squeeze(),
-                    sample_rate
-                )
-
-                # Calculate audio characteristics
-                # 1. Dynamic range (dB)
-                eps = 1e-10
-                rms = torch.sqrt(torch.mean(audio_tensor ** 2))
-                peak = torch.max(torch.abs(audio_tensor))
-                dynamic_range = 20 * torch.log10(peak / (rms + eps))
-
-                # 2. Pitch variance (coefficient of variation)
-                f0_values = f0_data['f0']
-                voiced_f0 = f0_values[f0_values > 0]
-                if len(voiced_f0) > 0:
-                    pitch_std = np.std(voiced_f0)
-                    pitch_mean = np.mean(voiced_f0)
-                    pitch_cv = pitch_std / (pitch_mean + eps)
-                else:
-                    pitch_cv = 0.0
-
-                # 3. Energy variance
-                frame_energy = torch.mean(audio_tensor.reshape(-1, 512) ** 2, dim=1)
-                energy_std = torch.std(frame_energy)
-                energy_mean = torch.mean(frame_energy)
-                energy_cv = energy_std / (energy_mean + eps)
-
-                # Compute temperature based on characteristics
-                # Base temperature
-                base_temp = 1.0
-
-                # Adjust for dynamic range (wider range -> higher temp)
-                dr_factor = torch.clamp(dynamic_range / 30.0, 0.0, 0.3).item()
-
-                # Adjust for pitch variance (more variance -> higher temp)
-                pitch_factor = min(pitch_cv * 2.0, 0.3)
-
-                # Adjust for energy variance (more variance -> slightly higher temp)
-                energy_factor = torch.clamp(energy_cv * 0.5, 0.0, 0.2).item()
-
-                # Combine factors
-                optimal_temp = base_temp + dr_factor + pitch_factor + energy_factor
-
-                # Clamp to valid range
-                optimal_temp = max(0.5, min(1.5, optimal_temp))
-
-                logger.info(
-                    f"Auto-tuned temperature: {optimal_temp:.3f} "
-                    f"(DR={dynamic_range:.2f}dB, pitch_cv={pitch_cv:.3f}, "
-                    f"energy_cv={energy_cv:.3f})"
-                )
-
-                # Apply the temperature
-                self.temperature = optimal_temp
-                return optimal_temp
-
-        except Exception as e:
-            logger.warning(f"Temperature auto-tuning failed: {e}. Using default 1.0")
-            self.temperature = 1.0
-            return 1.0
-
-    def set_quality_preset(
-        self,
-        preset_name: Literal['draft', 'fast', 'balanced', 'high', 'studio']
-    ) -> None:
-        """
-        Set quality preset for voice conversion.
-
-        Args:
-            preset_name: Quality preset name
-                - 'draft': Fast conversion with lower quality (4x speed)
-                - 'fast': Balanced quality and speed for real-time (2x speed)
-                - 'balanced': Standard quality preset (default)
-                - 'high': High quality with moderate speed (0.5x speed)
-                - 'studio': Maximum quality for studio production (0.25x speed)
-
-        Raises:
-            ValueError: If preset_name is not valid
-
-        Example:
-            >>> model.set_quality_preset('high')
-            >>> audio = model.convert(source, target_emb)
-        """
-        if preset_name not in QUALITY_PRESETS:
-            valid_presets = ', '.join(QUALITY_PRESETS.keys())
-            raise ValueError(
-                f"Invalid preset '{preset_name}'. Valid presets: {valid_presets}"
+                outputs['pred_audio'] = pred_audio
+                logger.debug(f"Generated pred_audio: shape={pred_audio.shape}")
+            except Exception as e:
+                logger.warning(f"Failed to generate pred_audio with vocoder: {e}")
+                # Don't raise error, just skip pred_audio generation
+        elif use_vocoder and self.vocoder is None:
+            logger.warning(
+                "use_vocoder=True but vocoder is not available. "
+                "Pitch and speaker losses will fall back to mel-based computation."
             )
 
-        self.quality_preset = preset_name
-        preset = QUALITY_PRESETS[preset_name]
-        self.decoder_steps = preset['decoder_steps']
-
-        logger.info(
-            f"Quality preset set to '{preset_name}': {preset['description']}"
-        )
-
-    def get_quality_preset_info(
-        self,
-        preset_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Get information about quality preset(s).
-
-        Args:
-            preset_name: Specific preset to query (None = current preset)
-
-        Returns:
-            Dictionary with preset details including description, settings,
-            relative quality, and relative speed
-
-        Example:
-            >>> info = model.get_quality_preset_info('high')
-            >>> print(info['description'])
-            >>> print(f"Relative speed: {info['relative_speed']}x")
-        """
-        if preset_name is None:
-            preset_name = self.quality_preset
-
-        if preset_name not in QUALITY_PRESETS:
-            valid_presets = ', '.join(QUALITY_PRESETS.keys())
-            raise ValueError(
-                f"Invalid preset '{preset_name}'. Valid presets: {valid_presets}"
-            )
-
-        preset = QUALITY_PRESETS[preset_name].copy()
-        preset['current'] = (preset_name == self.quality_preset)
-        return preset
-
-    def estimate_conversion_time(
-        self,
-        audio_duration: float,
-        preset: Optional[str] = None
-    ) -> float:
-        """
-        Estimate conversion time for given audio duration and quality preset.
-
-        Args:
-            audio_duration: Duration of source audio in seconds
-            preset: Quality preset name (None = current preset)
-
-        Returns:
-            Estimated conversion time in seconds
-
-        Example:
-            >>> estimated_time = model.estimate_conversion_time(30.0, 'high')
-            >>> print(f"Estimated: {estimated_time:.2f} seconds for 30s audio")
-        """
-        if preset is None:
-            preset = self.quality_preset
-
-        if preset not in QUALITY_PRESETS:
-            raise ValueError(f"Invalid preset '{preset}'")
-
-        # Base conversion time factor (seconds processing per second of audio)
-        # This is a rough estimate and may vary based on hardware
-        base_factor = 0.5  # On average GPU, balanced preset takes ~0.5s per 1s audio
-
-        preset_info = QUALITY_PRESETS[preset]
-        relative_speed = preset_info['relative_speed']
-
-        # Estimated time = audio_duration * base_factor / relative_speed
-        estimated_time = audio_duration * base_factor / relative_speed
-
-        return estimated_time
+        return outputs
 
     def _apply_pitch_shift(
         self,
@@ -675,7 +526,9 @@ class SingingVoiceConverter(nn.Module):
                 vibrato_data = None
                 if source_f0 is None:
                     from ..audio.pitch_extractor import SingingPitchExtractor
-                    extractor = SingingPitchExtractor(device=str(device))
+                    # Use canonical device string (cuda or cpu without index)
+                    dev_str = 'cuda' if device.type == 'cuda' else 'cpu'
+                    extractor = SingingPitchExtractor(device=dev_str)
                     f0_data = extractor.extract_f0_contour(
                         source_audio.cpu().numpy().squeeze(),
                         source_sample_rate
@@ -713,6 +566,10 @@ class SingingVoiceConverter(nn.Module):
                 # Extract content
                 content = self.content_encoder(source_audio, source_sample_rate)
                 content = content.to(device)
+
+                # Apply content projection if needed (HuBERT 256 -> content_dim)
+                if self.content_projection is not None:
+                    content = self.content_projection(content.transpose(1, 2)).transpose(1, 2)
 
                 # Encode pitch with voiced mask
                 pitch_emb = self.pitch_encoder(source_f0, source_voiced)
@@ -804,15 +661,32 @@ class SingingVoiceConverter(nn.Module):
                 z = self.flow_decoder(u, x_mask, cond=cond, inverse=True)
 
                 # Generate mel
-                pred_mel = self.latent_to_mel(z * x_mask)
+                pred_mel_raw = self.latent_to_mel(z * x_mask)
+
+                # Normalize mel to match vocoder training domain
+                audio_cfg = self.config.get('singing_voice_converter', {}).get('audio', {})
+                mel_scale = audio_cfg.get('mel_scale', 'log')
 
                 # Vocoder synthesis
                 if self.vocoder is not None:
+                    # HiFi-GAN typically expects linear-scale mel or specific normalization
+                    # If we use log-mel internally, convert to linear for vocoder
+                    if mel_scale == 'log':
+                        # Convert log-mel to linear for vocoder
+                        pred_mel = torch.exp(pred_mel_raw)
+                    else:
+                        pred_mel = pred_mel_raw
                     waveform = self.vocoder(pred_mel)
                     waveform = waveform.squeeze()
                 else:
                     # Fallback to Griffin-Lim
-                    waveform_np = self._mel_to_audio_griffin_lim(pred_mel.squeeze().cpu().numpy())
+                    # Ensure mel is in linear magnitude domain for Griffin-Lim
+                    pred_mel_np = pred_mel_raw.squeeze().cpu().numpy()
+                    if mel_scale == 'log':
+                        # Convert log-mel to linear: exp(log_mel) with floor to prevent underflow
+                        pred_mel_np = np.exp(pred_mel_np)
+                        pred_mel_np = np.maximum(pred_mel_np, 1e-10)
+                    waveform_np = self._mel_to_audio_griffin_lim(pred_mel_np)
                     waveform = torch.from_numpy(waveform_np).to(device)
 
                 # Optional: preserve dynamics from source
@@ -860,12 +734,25 @@ class SingingVoiceConverter(nn.Module):
         """
         Fallback mel-to-audio conversion using Griffin-Lim with config-sourced STFT parameters.
 
+        IMPORTANT: librosa.feature.inverse.mel_to_audio expects mel-spectrogram in LINEAR POWER scale.
+        If your mel is in magnitude or log scale, it must be converted to power before passing.
+
+        The conversion follows this logic:
+        - Log-mel domain: mel_power = exp(mel_log)
+        - Magnitude domain: mel_power = mel_mag ** 2
+        - Power domain: no conversion needed
+
         Args:
-            mel: Mel-spectrogram [mel_channels, T]
-            n_iter: Number of iterations
+            mel: Mel-spectrogram [mel_channels, T] - MUST be in LINEAR POWER scale
+            n_iter: Number of Griffin-Lim iterations
 
         Returns:
             Audio waveform
+
+        Note:
+            Set config key 'mel_is_power' to control conversion:
+            - True: Input is power mel (no conversion)
+            - False: Input is magnitude mel (will square before Griffin-Lim)
         """
         try:
             import librosa
@@ -880,12 +767,23 @@ class SingingVoiceConverter(nn.Module):
             mel_fmin = audio_cfg.get('mel_fmin', dataset_cfg.get('mel_fmin', 0.0))
             mel_fmax = audio_cfg.get('mel_fmax', dataset_cfg.get('mel_fmax', 8000.0))
 
-            # Log Griffin-Lim parameters for traceability
-            logger.info(f"Griffin-Lim synthesis: n_fft={n_fft}, hop_length={hop_length}, "
-                       f"win_length={win_length}, sr={self.vocoder_sample_rate}, "
-                       f"fmin={mel_fmin}, fmax={mel_fmax}, n_iter={n_iter}")
+            # Check mel domain assumption
+            mel_is_power = audio_cfg.get('mel_is_power', True)
+            if not mel_is_power:
+                # Convert magnitude to power: P = M^2
+                logger.debug("Converting magnitude mel to power mel for Griffin-Lim")
+                mel = mel ** 2
 
-            # Use librosa's built-in inverse mel function
+            # Ensure non-negative values for power mel
+            mel = np.maximum(mel, 1e-10)
+
+            # Log Griffin-Lim parameters for traceability
+            logger.debug(f"Griffin-Lim synthesis: n_fft={n_fft}, hop_length={hop_length}, "
+                        f"win_length={win_length}, sr={self.vocoder_sample_rate}, "
+                        f"fmin={mel_fmin}, fmax={mel_fmax}, n_iter={n_iter}, "
+                        f"mel_is_power={mel_is_power}")
+
+            # Use librosa's built-in inverse mel function (expects power mel)
             audio = librosa.feature.inverse.mel_to_audio(
                 mel,
                 sr=self.vocoder_sample_rate,
@@ -1175,6 +1073,22 @@ class SingingVoiceConverter(nn.Module):
             )
             exported_models['mel_projection'] = str(onnx_path)
 
+            # Export Vocoder (if available)
+            if hasattr(self, 'vocoder') and self.vocoder is not None:
+                try:
+                    vocoder_onnx_path = converter.export_vocoder(
+                        self.vocoder,
+                        model_name="vocoder",
+                        opset_version=opset_version,
+                        mel_channels=self.mel_channels
+                    )
+                    exported_models['vocoder'] = str(vocoder_onnx_path)
+                    logger.info("Vocoder exported to ONNX successfully")
+                except Exception as e:
+                    logger.warning(f"Vocoder export failed (will fall back to PyTorch): {e}")
+            else:
+                logger.info("No vocoder attached to SVC model, skipping vocoder export")
+
             logger.info(f"Successfully exported {len(exported_models)} components to ONNX")
             return exported_models
 
@@ -1189,7 +1103,8 @@ class SingingVoiceConverter(nn.Module):
         fp16: bool = True,
         int8: bool = False,
         workspace_size: int = 2 << 30,
-        dynamic_shapes: Optional[Dict] = None
+        dynamic_shapes: Optional[Dict] = None,
+        calibration_npz: Optional[str] = None
     ) -> Dict[str, str]:
         """
         Create TensorRT engines from exported ONNX models.
@@ -1221,8 +1136,8 @@ class SingingVoiceConverter(nn.Module):
             converter = TensorRTConverter(export_dir=engine_dir, device='cpu')
             engines = {}
 
-            # Component order for engine creation
-            components = ['content_encoder', 'pitch_encoder', 'flow_decoder', 'mel_projection']
+            # Component order for engine creation (vocoder added for full TRT acceleration)
+            components = ['content_encoder', 'pitch_encoder', 'flow_decoder', 'mel_projection', 'vocoder']
 
             for component in components:
                 onnx_path = onnx_dir / f"{component}.onnx"
@@ -1241,7 +1156,9 @@ class SingingVoiceConverter(nn.Module):
                             fp16=fp16,
                             int8=int8,
                             workspace_size=workspace_size,
-                            dynamic_shapes=comp_dynamic_shapes
+                            dynamic_shapes=comp_dynamic_shapes,
+                            component_name=component,
+                            calibration_npz=calibration_npz
                         )
                         engines[component] = str(engine_path)
                         logger.info(f"Created TensorRT engine for {component}")
@@ -1288,8 +1205,8 @@ class SingingVoiceConverter(nn.Module):
 
             self.tensorrt_models = {}
 
-            # Load engines for each component
-            components = ['content_encoder', 'pitch_encoder', 'flow_decoder', 'mel_projection']
+            # Load engines for each component (including vocoder for full TRT acceleration)
+            components = ['content_encoder', 'pitch_encoder', 'flow_decoder', 'mel_projection', 'vocoder']
 
             for component in components:
                 engine_path = engine_dir / f"{component}.engine"
@@ -1403,26 +1320,39 @@ class SingingVoiceConverter(nn.Module):
 
         # Extract content using TensorRT
         content_start = time.time()
-        content_input = {'input_audio': source_audio, 'sample_rate': torch.tensor([source_sample_rate])}
+        content_input = {
+            'input_audio': source_audio,
+            'sample_rate': np.array([source_sample_rate], dtype=np.int32)  # FIX: Convert to NumPy int32
+        }
         content_features = self.tensorrt_models['content_encoder'].infer_torch(content_input)
-        content = content_features['content_output'] if isinstance(content_features, dict) else content_features
+        content = content_features['content_features'] if isinstance(content_features, dict) else content_features  # FIX: Use 'content_features'
         timing_info['content_extraction'] = time.time() - content_start
 
         # Encode pitch using TensorRT
         pitch_start = time.time()
         if source_f0 is not None:
-            pitch_input = {'f0_input': source_f0}
+            # Ensure voiced mask is boolean tensor
+            voiced_mask = (source_f0 > 0)
+            pitch_input = {
+                'f0_input': source_f0,
+                'voiced_mask': voiced_mask
+            }
             pitch_emb = self.tensorrt_models['pitch_encoder'].infer_torch(pitch_input)
-            pitch_emb = pitch_emb['pitch_output'] if isinstance(pitch_emb, dict) else pitch_emb
+            pitch_emb = pitch_emb['pitch_features'] if isinstance(pitch_emb, dict) else pitch_emb  # FIX: Use 'pitch_features'
         else:
             # Need to extract F0 first - fallback to PyTorch for this step
             from ..audio.pitch_extractor import SingingPitchExtractor
+            # TensorRT mode runs on CPU, so use 'cpu' device
             extractor = SingingPitchExtractor(device='cpu')
             f0_data = extractor.extract_f0_contour(source_audio.squeeze().numpy(), source_sample_rate)
             f0_tensor = torch.from_numpy(f0_data['f0']).unsqueeze(0).to(device)
-            pitch_input = {'f0_input': f0_tensor}
+            voiced_mask = (f0_tensor > 0)
+            pitch_input = {
+                'f0_input': f0_tensor,
+                'voiced_mask': voiced_mask
+            }
             pitch_emb = self.tensorrt_models['pitch_encoder'].infer_torch(pitch_input)
-            pitch_emb = pitch_emb['pitch_output'] if isinstance(pitch_emb, dict) else pitch_emb
+            pitch_emb = pitch_emb['pitch_features'] if isinstance(pitch_emb, dict) else pitch_emb  # FIX: Use 'pitch_features'
         timing_info['pitch_encoding'] = time.time() - pitch_start
 
         # Compute sequence length and prepare conditioning
@@ -1460,7 +1390,7 @@ class SingingVoiceConverter(nn.Module):
             'inverse': torch.tensor([True])
         }
         latent_output = self.tensorrt_models['flow_decoder'].infer_torch(flow_input)
-        z = latent_output['latent_output'] if isinstance(latent_output, dict) else latent_output
+        z = latent_output['output_latent'] if isinstance(latent_output, dict) else latent_output  # FIX: Use 'output_latent'
         timing_info['flow_decoding'] = time.time() - flow_start
 
         # Mel projection using TensorRT
@@ -1503,3 +1433,239 @@ class SingingVoiceConverter(nn.Module):
 
         # Return audio and timing info
         return waveform, timing_info
+
+    def set_temperature(self, temperature: float) -> None:
+        """Set sampling temperature for flow decoder
+
+        Args:
+            temperature: Sampling temperature (0.1 to 2.0)
+                - Lower values (0.5-0.8): More stable, less expressive
+                - Default (1.0): Balanced
+                - Higher values (1.2-2.0): More expressive, potentially less stable
+
+        Raises:
+            ValueError: If temperature is out of valid range
+
+        Example:
+            >>> model.set_temperature(0.8)  # More stable conversion
+            >>> model.set_temperature(1.5)  # More expressive conversion
+        """
+        if not 0.1 <= temperature <= 2.0:
+            raise ValueError(f"Temperature must be between 0.1 and 2.0, got {temperature}")
+
+        self.temperature = float(temperature)
+        logger.info(f"Temperature set to {self.temperature}")
+
+    def auto_tune_temperature(
+        self,
+        source_audio: Union[torch.Tensor, np.ndarray],
+        target_embedding: Union[torch.Tensor, np.ndarray],
+        sample_rate: int = 16000,
+        num_trials: int = 3
+    ) -> float:
+        """Automatically tune temperature for optimal conversion quality
+
+        Runs multiple conversions with different temperature values and selects
+        the one that produces the most stable output (lowest variance in energy).
+
+        Args:
+            source_audio: Source audio for testing
+            target_embedding: Target speaker embedding
+            sample_rate: Sample rate of source audio
+            num_trials: Number of temperature values to try (default: 3)
+
+        Returns:
+            Optimal temperature value
+
+        Example:
+            >>> optimal_temp = model.auto_tune_temperature(audio, embedding, 22050)
+            >>> print(f"Optimal temperature: {optimal_temp}")
+        """
+        logger.info("Auto-tuning temperature...")
+
+        # Try temperature values in a sensible range
+        temperatures = np.linspace(0.7, 1.3, num_trials)
+        best_temp = 1.0
+        best_score = float('inf')
+
+        original_temp = self.temperature
+
+        try:
+            for temp in temperatures:
+                self.set_temperature(temp)
+
+                # Convert audio
+                try:
+                    converted = self.convert(
+                        source_audio=source_audio,
+                        target_speaker_embedding=target_embedding,
+                        source_sample_rate=sample_rate,
+                        output_sample_rate=sample_rate
+                    )
+
+                    # Compute stability score (lower is better)
+                    # Use frame-wise energy variance as stability metric
+                    frame_energy = np.array([
+                        np.mean(converted[i:i+512]**2)
+                        for i in range(0, len(converted)-512, 512)
+                    ])
+                    stability_score = np.var(frame_energy)
+
+                    if stability_score < best_score:
+                        best_score = stability_score
+                        best_temp = temp
+
+                except Exception as e:
+                    logger.warning(f"Conversion failed at temperature {temp}: {e}")
+                    continue
+        finally:
+            # Restore original temperature if tuning fails
+            if best_temp == 1.0 and original_temp != 1.0:
+                self.temperature = original_temp
+            else:
+                self.set_temperature(best_temp)
+
+        logger.info(f"Auto-tuned temperature to {best_temp:.2f}")
+        return best_temp
+
+    def set_quality_preset(self, preset_name: str) -> None:
+        """Set quality preset for conversion
+
+        Args:
+            preset_name: Preset name ('draft', 'fast', 'balanced', 'high', 'studio')
+
+        Raises:
+            ValueError: If preset name is not recognized
+
+        Example:
+            >>> model.set_quality_preset('high')  # High quality conversion
+            >>> model.set_quality_preset('fast')  # Fast conversion
+        """
+        if preset_name not in QUALITY_PRESETS:
+            valid_presets = ', '.join(QUALITY_PRESETS.keys())
+            raise ValueError(
+                f"Unknown preset '{preset_name}'. "
+                f"Valid presets: {valid_presets}"
+            )
+
+        self.quality_preset = preset_name
+        preset = QUALITY_PRESETS[preset_name]
+        self.decoder_steps = preset['decoder_steps']
+
+        logger.info(f"Quality preset set to '{preset_name}': {preset['description']}")
+
+    def get_quality_preset_info(self, preset_name: Optional[str] = None) -> Dict[str, Any]:
+        """Get information about a quality preset
+
+        Args:
+            preset_name: Preset name (if None, returns current preset info)
+
+        Returns:
+            Dictionary with preset information:
+                - name: Preset name
+                - description: Preset description
+                - decoder_steps: Number of flow decoder steps
+                - vocoder_speed: Vocoder speed setting
+                - relative_quality: Quality relative to balanced preset
+                - relative_speed: Speed relative to balanced preset
+
+        Example:
+            >>> info = model.get_quality_preset_info('high')
+            >>> print(f"Quality: {info['relative_quality']}x, Speed: {info['relative_speed']}x")
+        """
+        if preset_name is None:
+            preset_name = self.quality_preset
+
+        if preset_name not in QUALITY_PRESETS:
+            valid_presets = ', '.join(QUALITY_PRESETS.keys())
+            raise ValueError(
+                f"Unknown preset '{preset_name}'. "
+                f"Valid presets: {valid_presets}"
+            )
+
+        preset = QUALITY_PRESETS[preset_name].copy()
+        preset['name'] = preset_name
+        return preset
+
+
+    @property
+    def trt_enabled(self) -> bool:
+        """Check if TensorRT is enabled and engines are loaded.
+        
+        Returns:
+            True if TensorRT is active with loaded engines
+        """
+        return self.use_tensorrt and len(self.tensorrt_models) > 0
+
+    def estimate_conversion_time(
+        self,
+        audio_duration: float,
+        preset: Optional[str] = None,
+        device: str = 'cuda'
+    ) -> Dict[str, float]:
+        """Estimate conversion time for given audio duration
+
+        Args:
+            audio_duration: Audio duration in seconds
+            preset: Quality preset (if None, uses current preset)
+            device: Device type ('cuda' or 'cpu')
+
+        Returns:
+            Dictionary with time estimates:
+                - estimated_time: Estimated total time in seconds
+                - real_time_factor: Speed relative to audio duration
+                - breakdown: Time breakdown by component
+
+        Example:
+            >>> estimates = model.estimate_conversion_time(30.0, 'high', 'cuda')
+            >>> print(f"Estimated time: {estimates['estimated_time']:.1f}s")
+            >>> print(f"RTF: {estimates['real_time_factor']:.2f}x")
+        """
+        if preset is None:
+            preset = self.quality_preset
+
+        if preset not in QUALITY_PRESETS:
+            raise ValueError(f"Unknown preset '{preset}'")
+
+        preset_info = QUALITY_PRESETS[preset]
+
+        # Base processing times (seconds per second of audio)
+        # These are approximate values based on typical hardware
+        if device == 'cuda':
+            # GPU times (RTX 3080 baseline)
+            base_times = {
+                'content_extraction': 0.05,  # HuBERT-Soft
+                'pitch_extraction': 0.03,    # CREPE
+                'flow_decoding': 0.02 * preset_info['decoder_steps'],
+                'vocoder': 0.04,
+                'preprocessing': 0.01
+            }
+        else:
+            # CPU times (approximately 5-10x slower)
+            base_times = {
+                'content_extraction': 0.4,
+                'pitch_extraction': 0.2,
+                'flow_decoding': 0.15 * preset_info['decoder_steps'],
+                'vocoder': 0.3,
+                'preprocessing': 0.05
+            }
+
+        # Scale by relative speed from preset
+        speed_factor = preset_info['relative_speed']
+
+        breakdown = {}
+        total_time = 0.0
+        for component, base_time in base_times.items():
+            component_time = (base_time / speed_factor) * audio_duration
+            breakdown[component] = component_time
+            total_time += component_time
+
+        rtf = total_time / audio_duration if audio_duration > 0 else 0.0
+
+        return {
+            'estimated_time': total_time,
+            'real_time_factor': rtf,
+            'breakdown': breakdown,
+            'preset': preset,
+            'device': device
+        }

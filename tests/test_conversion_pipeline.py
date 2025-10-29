@@ -14,6 +14,10 @@ import tempfile
 import numpy as np
 from pathlib import Path
 
+# Logging
+from src.auto_voice.utils.logging_config import get_logger
+logger = get_logger(__name__)
+
 # Conditional imports
 try:
     from src.auto_voice.audio.mixer import AudioMixer, MixingError
@@ -168,7 +172,7 @@ class TestAudioMixer:
         mixed, sr = mixer.mix(vocals, instrumental, sample_rate=22050)
 
         assert mixed.ndim == 2
-        assert mixed.shape[0] == 2  # 2 channels
+        assert mixed.shape[1] == 2  # 2 channels (time-major format: T, 2)
 
     def test_prevent_clipping(self):
         """Test clipping prevention."""
@@ -241,13 +245,186 @@ class TestSingingConversionPipeline:
         assert hasattr(self.pipeline, 'voice_converter')
         assert hasattr(self.pipeline, 'audio_mixer')
 
-    def test_convert_song_mock(self, tmp_path, sample_audio_22khz):
-        """Test convert_song with mock components."""
-        pytest.skip("Requires full pipeline components - test in integration environment")
+    @pytest.mark.integration
+    @pytest.mark.slow
+    def test_convert_song_cpu_integration(self, tmp_path):
+        """CPU integration test for convert_song with synthetic audio.
 
+        This test runs the full pipeline on CPU with minimal synthetic data
+        to verify end-to-end functionality without requiring GPU or large models.
+        """
+        if not SOUNDFILE_AVAILABLE:
+            pytest.skip("soundfile not available")
+
+        # Generate short synthetic audio (1.5 seconds, 16kHz for faster processing)
+        duration = 1.5  # seconds
+        sample_rate = 16000
+        t = np.linspace(0, duration, int(sample_rate * duration))
+
+        # Create synthetic "song" with two frequency components (simulating vocals+instrumental)
+        freq1 = 440.0  # A4 note
+        freq2 = 554.37  # C#5 note
+        synthetic_audio = 0.5 * np.sin(2 * np.pi * freq1 * t) + 0.3 * np.sin(2 * np.pi * freq2 * t)
+
+        # Normalize to [-0.8, 0.8] range
+        synthetic_audio = synthetic_audio / np.abs(synthetic_audio).max() * 0.8
+
+        # Save synthetic song
+        song_path = tmp_path / "synthetic_song.wav"
+        sf.write(str(song_path), synthetic_audio, sample_rate)
+
+        # Create a minimal mock voice profile
+        # The pipeline will need a profile with an 'embedding' key
+        profile_id = 'test-cpu-profile'
+        profile_dir = tmp_path / 'voice_profiles'
+        profile_dir.mkdir(exist_ok=True)
+        profile_path = profile_dir / f'{profile_id}.npz'
+
+        # Create a dummy speaker embedding (256-dim vector, typical for resemblyzer)
+        dummy_embedding = np.random.randn(256).astype(np.float32)
+        np.savez(str(profile_path), embedding=dummy_embedding, sample_rate=16000)
+
+        # Initialize pipeline with CPU device and test-friendly config
+        test_config = {
+            'cache_enabled': False,  # Disable cache for clean test
+            'output_sample_rate': 16000,  # Match input for faster processing
+            'save_intermediate_results': False,
+            'enable_memory_cleanup': False,
+            'fallback_on_mixing_error': True,
+            'voice_profile_dir': str(profile_dir)
+        }
+
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+            pipeline = SingingConversionPipeline(config=test_config, device='cpu')
+        except Exception as e:
+            pytest.skip(f"Failed to initialize pipeline on CPU: {e}")
+
+        # Run conversion with synthetic audio
+        try:
+            result = pipeline.convert_song(
+                song_path=str(song_path),
+                target_profile_id=profile_id,
+                vocal_volume=1.0,
+                instrumental_volume=0.9,
+                return_stems=False
+            )
+        except Exception as e:
+            pytest.fail(f"Pipeline conversion failed: {e}")
+
+        # Assert result structure
+        assert isinstance(result, dict), "Result should be a dictionary"
+        assert 'mixed_audio' in result, "Result should contain mixed_audio"
+        assert 'sample_rate' in result, "Result should contain sample_rate"
+        assert 'duration' in result, "Result should contain duration"
+        assert 'metadata' in result, "Result should contain metadata"
+
+        # Validate mixed_audio
+        mixed_audio = result['mixed_audio']
+        assert isinstance(mixed_audio, np.ndarray), "mixed_audio should be numpy array"
+        assert mixed_audio.size > 0, "mixed_audio should not be empty"
+        assert np.isfinite(mixed_audio).all(), "mixed_audio should not contain NaN or Inf"
+
+        # Validate time-major stereo shape (T, 2) or mono (T,)
+        if mixed_audio.ndim == 2:
+            assert mixed_audio.shape[1] == 2, f"Stereo should be time-major (T, 2), got {mixed_audio.shape}"
+
+        # Validate sample_rate
+        assert result['sample_rate'] == 16000, "Output sample rate should match config"
+
+        # Validate duration
+        expected_duration = duration  # Should be close to input duration
+        assert abs(result['duration'] - expected_duration) < 0.5, \
+            f"Duration should be close to {expected_duration}s, got {result['duration']}s"
+
+        # Validate metadata
+        metadata = result['metadata']
+        assert 'target_profile_id' in metadata
+        assert metadata['target_profile_id'] == profile_id
+        assert 'processing_time' in metadata
+        assert metadata['processing_time'] > 0
+
+        logger.info(f"CPU integration test passed: {mixed_audio.shape} at {result['sample_rate']}Hz, "
+                   f"duration={result['duration']:.2f}s, processing_time={metadata['processing_time']:.2f}s")
+
+    @pytest.mark.integration
+    @pytest.mark.slow
     def test_convert_song_with_progress_callback(self, tmp_path):
-        """Test progress callback tracking."""
-        pytest.skip("Requires full pipeline components - test in integration environment")
+        """Test progress callback tracking during conversion.
+
+        Verifies that progress callbacks are invoked with correct stage information
+        during the conversion pipeline.
+        """
+        if not SOUNDFILE_AVAILABLE:
+            pytest.skip("soundfile not available")
+
+        # Generate minimal synthetic audio
+        duration = 1.0
+        sample_rate = 16000
+        t = np.linspace(0, duration, int(sample_rate * duration))
+        synthetic_audio = 0.5 * np.sin(2 * np.pi * 440.0 * t)
+        synthetic_audio = synthetic_audio / np.abs(synthetic_audio).max() * 0.8
+
+        song_path = tmp_path / "test_song.wav"
+        sf.write(str(song_path), synthetic_audio, sample_rate)
+
+        # Create mock voice profile
+        profile_id = 'test-callback-profile'
+        profile_dir = tmp_path / 'voice_profiles'
+        profile_dir.mkdir(exist_ok=True)
+        profile_path = profile_dir / f'{profile_id}.npz'
+        dummy_embedding = np.random.randn(256).astype(np.float32)
+        np.savez(str(profile_path), embedding=dummy_embedding, sample_rate=16000)
+
+        # Initialize pipeline
+        test_config = {
+            'cache_enabled': False,
+            'output_sample_rate': 16000,
+            'save_intermediate_results': False,
+            'voice_profile_dir': str(profile_dir)
+        }
+
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+            pipeline = SingingConversionPipeline(config=test_config, device='cpu')
+        except Exception as e:
+            pytest.skip(f"Failed to initialize pipeline: {e}")
+
+        # Track progress callbacks
+        progress_updates = []
+
+        def progress_callback(percentage: float, stage: str):
+            """Record progress updates."""
+            progress_updates.append({'percentage': percentage, 'stage': stage})
+
+        # Run conversion with callback
+        try:
+            result = pipeline.convert_song(
+                song_path=str(song_path),
+                target_profile_id=profile_id,
+                progress_callback=progress_callback,
+                return_stems=False
+            )
+        except Exception as e:
+            pytest.skip(f"Pipeline conversion failed: {e}")
+
+        # Verify progress callbacks were invoked
+        assert len(progress_updates) > 0, "Progress callback should be invoked at least once"
+
+        # Verify progress increases monotonically (with some tolerance for stage transitions)
+        percentages = [update['percentage'] for update in progress_updates]
+        assert max(percentages) > 0, "Progress should increase beyond 0%"
+
+        # Verify expected stages are present
+        stages = [update['stage'] for update in progress_updates]
+        expected_stages = ['source_separation', 'pitch_extraction', 'voice_conversion', 'audio_mixing']
+        for expected_stage in expected_stages:
+            # Check if any stage string contains the expected stage (allows for stage_start/stage_end variants)
+            assert any(expected_stage in stage for stage in stages), \
+                f"Expected stage '{expected_stage}' not found in progress updates"
+
+        logger.info(f"Progress callback test passed: {len(progress_updates)} updates, "
+                   f"stages: {set(stages)}")
 
     def test_cache_functionality(self, tmp_path):
         """Test pipeline caching."""

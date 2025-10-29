@@ -50,6 +50,42 @@ class InvalidAudioError(VoiceCloningError):
         self.details = details or {}
 
 
+class InsufficientQualityError(VoiceCloningError):
+    """Exception raised when audio quality is below acceptable threshold
+
+    Raised when audio fails quality checks such as:
+    - SNR below minimum threshold
+    - Excessive clipping
+    - Poor dynamic range
+
+    Attributes:
+        error_code (str): Machine-readable error code
+        details (dict): Quality metrics and thresholds
+    """
+    def __init__(self, message: str, error_code: str = 'insufficient_quality', details: Optional[Dict] = None):
+        super().__init__(message)
+        self.error_code = error_code
+        self.details = details or {}
+
+
+class InconsistentSamplesError(VoiceCloningError):
+    """Exception raised when multiple audio samples are inconsistent
+
+    Raised when creating voice profiles from multiple samples and:
+    - Speaker embeddings have low similarity
+    - Vocal ranges are incompatible
+    - Samples appear to be from different speakers
+
+    Attributes:
+        error_code (str): Machine-readable error code
+        details (dict): Similarity metrics and thresholds
+    """
+    def __init__(self, message: str, error_code: str = 'inconsistent_samples', details: Optional[Dict] = None):
+        super().__init__(message)
+        self.error_code = error_code
+        self.details = details or {}
+
+
 class VoiceCloner:
     """High-level interface for voice cloning - extract speaker embeddings and create voice profiles
 
@@ -96,7 +132,8 @@ class VoiceCloner:
         self,
         config: Optional[Dict[str, Any]] = None,
         device: Optional[str] = None,
-        gpu_manager: Optional[Any] = None
+        gpu_manager: Optional[Any] = None,
+        audio_processor: Optional[Any] = None
     ):
         """Initialize VoiceCloner with configuration and components
 
@@ -104,6 +141,7 @@ class VoiceCloner:
             config: Optional configuration dictionary with voice cloning parameters
             device: Optional device string ('cuda', 'cpu', 'cuda:0', etc.)
             gpu_manager: Optional GPUManager instance for GPU acceleration
+            audio_processor: Optional AudioProcessor instance (COMMENT 3 FIX: share from app.py)
         """
         # Check numpy availability
         if not NUMPY_AVAILABLE:
@@ -112,6 +150,9 @@ class VoiceCloner:
         self.lock = threading.RLock()
         self.logger = logging.getLogger(__name__)
         self.gpu_manager = gpu_manager
+
+        # COMMENT 3 FIX: Store optional audio_processor from app.py to avoid config drift
+        self.audio_processor = audio_processor
 
         # Load configuration
         self.config = self._load_config(config)
@@ -173,20 +214,45 @@ class VoiceCloner:
             'schema_version': '1.0.0'  # Profile schema version
         }
 
-        # Load from YAML if available - resolve path relative to package root
-        # Go up 3 levels from this file: voice_cloner.py -> inference -> auto_voice -> src -> repo root
-        config_path = Path(__file__).resolve().parents[3] / 'config' / 'audio_config.yaml'
-        yaml_config = None
-        if config_path.exists():
-            try:
-                with open(config_path, 'r') as f:
-                    yaml_config = yaml.safe_load(f)
-                    if yaml_config and 'voice_cloning' in yaml_config:
-                        final_config.update(yaml_config['voice_cloning'])
-            except Exception as e:
-                self.logger.warning(f"Failed to load YAML config: {e}")
+        # Check if constructor config already includes audio_config (provided by app.py)
+        if config and 'audio_config' in config:
+            # Use the audio_config directly without loading YAML
+            final_config['audio_config'] = config['audio_config']
+            # Override with other constructor config
+            final_config.update(config)
         else:
-            self.logger.debug(f"Config file not found at {config_path}, using defaults")
+            # Fallback: Load from YAML using importlib.resources for package-local resolution
+            # This two-tier approach ensures robust config loading: first try importlib.resources
+            # (preferred for installed packages), then fall back to file path for development setups
+            yaml_config = None
+            try:
+                # Use importlib.resources for robust package-relative path resolution
+                try:
+                    from importlib.resources import files
+                    config_file = files('auto_voice.config').joinpath('audio_config.yaml')
+                    with config_file.open('r') as f:
+                        yaml_config = yaml.safe_load(f)
+                        if yaml_config and 'voice_cloning' in yaml_config:
+                            final_config.update(yaml_config['voice_cloning'])
+                        # Auto-populate audio_config from YAML if available
+                        if yaml_config and 'audio' in yaml_config and 'audio_config' not in final_config:
+                            final_config['audio_config'] = yaml_config['audio']
+                except (ImportError, FileNotFoundError, AttributeError) as e:
+                    self.logger.debug(f"Could not load config via importlib.resources: {e}")
+                    # Fallback to parents[3] logic for backward compatibility with development setups
+                    config_path = Path(__file__).resolve().parents[3] / 'config' / 'audio_config.yaml'
+                    if config_path.exists():
+                        with open(config_path, 'r') as f:
+                            yaml_config = yaml.safe_load(f)
+                            if yaml_config and 'voice_cloning' in yaml_config:
+                                final_config.update(yaml_config['voice_cloning'])
+                            # Auto-populate audio_config from YAML if available
+                            if yaml_config and 'audio' in yaml_config and 'audio_config' not in final_config:
+                                final_config['audio_config'] = yaml_config['audio']
+                    else:
+                        self.logger.debug(f"Config file not found at {config_path}, using defaults")
+            except Exception as e:
+                self.logger.warning(f"Failed to load YAML config: {e}, using defaults")
 
         # Override with environment variables
         env_mapping = {
@@ -207,13 +273,9 @@ class VoiceCloner:
                 except ValueError:
                     self.logger.warning(f"Invalid value for {env_var}: {os.environ[env_var]}")
 
-        # Override with constructor config (highest priority)
+        # Override with constructor config (highest priority) if not already done
         if config:
             final_config.update(config)
-
-        # Auto-populate audio_config from YAML if not already set
-        if yaml_config and 'audio' in yaml_config and 'audio_config' not in final_config:
-            final_config['audio_config'] = yaml_config['audio']
 
         return final_config
 
@@ -232,19 +294,23 @@ class VoiceCloner:
             self.logger.error(f"Failed to initialize SpeakerEncoder: {e}")
             raise VoiceCloningError(f"SpeakerEncoder initialization failed: {e}")
 
-        try:
-            # Initialize AudioProcessor with config from app
-            from ..audio.processor import AudioProcessor
-            audio_config = self.config.get('audio_config', {'sample_rate': 22050})
-            self.audio_processor = AudioProcessor(
-                config=audio_config,
-                device=self.device
-            )
-            self.logger.info("AudioProcessor initialized")
+        # COMMENT 3 FIX: Only create AudioProcessor if not provided by app.py
+        if self.audio_processor is None:
+            try:
+                # Initialize AudioProcessor with config from app
+                from ..audio.processor import AudioProcessor
+                audio_config = self.config.get('audio_config', {'sample_rate': 22050})
+                self.audio_processor = AudioProcessor(
+                    config=audio_config,
+                    device=self.device
+                )
+                self.logger.info("AudioProcessor initialized")
 
-        except Exception as e:
-            self.logger.error(f"Failed to initialize AudioProcessor: {e}")
-            raise VoiceCloningError(f"AudioProcessor initialization failed: {e}")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize AudioProcessor: {e}")
+                raise VoiceCloningError(f"AudioProcessor initialization failed: {e}")
+        else:
+            self.logger.info("AudioProcessor shared from app.py (COMMENT 3 FIX)")
 
         # Initialize SingingPitchExtractor (optional)
         if self.config.get('extract_vocal_range', True):
@@ -369,7 +435,7 @@ class VoiceCloner:
 
                 # Extract speaker embedding
                 embedding = self.speaker_encoder.extract_embedding(audio, sample_rate)
-                embedding_stats = self.speaker_encoder.get_embedding_stats(embedding)
+                embedding_stats = self.speaker_encoder.get_embedding_stats(embedding, pre_normalization=True)
 
                 # Extract vocal range (optional)
                 vocal_range = {}
@@ -623,10 +689,23 @@ class VoiceCloner:
             if min_snr_db is not None:
                 snr_db = self._compute_snr(audio)
                 if snr_db is not None and snr_db < min_snr_db:
-                    return False, f"Audio SNR too low: {snr_db:.1f} dB (minimum: {min_snr_db} dB)", 'snr_too_low'
+                    # Raise InsufficientQualityError for SNR issues
+                    raise InsufficientQualityError(
+                        f"Audio SNR too low: {snr_db:.1f} dB (minimum: {min_snr_db} dB)",
+                        error_code='snr_too_low',
+                        details={
+                            'snr_db': snr_db,
+                            'min_snr_db': min_snr_db,
+                            'duration': duration,
+                            'sample_rate': sample_rate
+                        }
+                    )
 
             return True, None, None
 
+        except InsufficientQualityError:
+            # Re-raise quality errors
+            raise
         except Exception as e:
             return False, f"Audio validation error: {str(e)}", 'validation_error'
 
@@ -772,6 +851,13 @@ class VoiceCloner:
                     'code': error_code
                 })
 
+            # Compute quality assessment categorical rating
+            # Based on SNR, dynamic range, and clipping
+            quality_assessment = self._compute_quality_assessment(snr_db, dynamic_range_db, peak)
+
+            # Compute normalized quality score (0-1)
+            quality_score = self._compute_quality_score(snr_db, dynamic_range_db, peak)
+
             return {
                 'duration': float(duration),
                 'sample_rate': int(sample_rate),
@@ -779,6 +865,8 @@ class VoiceCloner:
                 'peak': float(peak),
                 'snr_db': snr_db,
                 'dynamic_range_db': float(dynamic_range_db),
+                'quality_assessment': quality_assessment,
+                'quality_score': float(quality_score),
                 'is_valid': is_valid,
                 'validation_errors': validation_errors
             }
@@ -786,6 +874,68 @@ class VoiceCloner:
         except Exception as e:
             self.logger.error(f"Failed to generate quality report: {e}")
             raise VoiceCloningError(f"Quality report generation failed: {e}")
+
+    def _compute_quality_assessment(self, snr_db: float, dynamic_range_db: float, peak: float) -> str:
+        """Compute categorical quality assessment.
+
+        Args:
+            snr_db: Signal-to-noise ratio in dB
+            dynamic_range_db: Dynamic range in dB
+            peak: Peak amplitude (0-1)
+
+        Returns:
+            Quality category: 'excellent', 'good', 'fair', 'poor', or 'unacceptable'
+        """
+        # Check for clipping (peak >= 0.99)
+        has_clipping = peak >= 0.99
+
+        # Excellent: SNR > 30dB, dynamic range > 40dB, no clipping
+        if snr_db > 30.0 and dynamic_range_db > 40.0 and not has_clipping:
+            return 'excellent'
+
+        # Good: SNR > 20dB, dynamic range > 30dB, minimal clipping
+        if snr_db > 20.0 and dynamic_range_db > 30.0 and peak < 1.0:
+            return 'good'
+
+        # Fair: SNR > 15dB, dynamic range > 20dB
+        if snr_db > 15.0 and dynamic_range_db > 20.0:
+            return 'fair'
+
+        # Poor: SNR > 10dB
+        if snr_db > 10.0:
+            return 'poor'
+
+        # Unacceptable: SNR <= 10dB or severe issues
+        return 'unacceptable'
+
+    def _compute_quality_score(self, snr_db: float, dynamic_range_db: float, peak: float) -> float:
+        """Compute normalized quality score (0-1).
+
+        Args:
+            snr_db: Signal-to-noise ratio in dB
+            dynamic_range_db: Dynamic range in dB
+            peak: Peak amplitude (0-1)
+
+        Returns:
+            Quality score from 0.0 (worst) to 1.0 (best)
+        """
+        # Normalize SNR (0dB = 0.0, 40dB = 1.0)
+        snr_score = np.clip(snr_db / 40.0, 0.0, 1.0)
+
+        # Normalize dynamic range (0dB = 0.0, 60dB = 1.0)
+        dr_score = np.clip(dynamic_range_db / 60.0, 0.0, 1.0)
+
+        # Penalize clipping (peak >= 0.99)
+        clipping_penalty = 0.0
+        if peak >= 0.99:
+            clipping_penalty = 0.3
+        elif peak >= 0.95:
+            clipping_penalty = 0.1
+
+        # Weighted average: SNR (50%), dynamic range (40%), clipping penalty (10%)
+        score = (0.5 * snr_score + 0.4 * dr_score) * (1.0 - clipping_penalty)
+
+        return float(np.clip(score, 0.0, 1.0))
 
     def create_voice_profile_from_multiple_samples(
         self,
@@ -919,6 +1069,44 @@ class VoiceCloner:
                     except Exception as e:
                         raise VoiceCloningError(f"Failed to process sample {i}: {e}")
 
+                # Check embedding consistency (similarity between samples)
+                min_similarity = self.config.get('multi_sample_min_similarity', 0.7)
+                if len(embeddings) > 1 and min_similarity > 0:
+                    # Compute pairwise cosine similarities
+                    similarities = []
+                    for i in range(len(embeddings)):
+                        for j in range(i + 1, len(embeddings)):
+                            # Cosine similarity
+                            sim = np.dot(embeddings[i], embeddings[j]) / (
+                                np.linalg.norm(embeddings[i]) * np.linalg.norm(embeddings[j]) + 1e-10
+                            )
+                            similarities.append(sim)
+
+                    avg_similarity = np.mean(similarities)
+                    min_pairwise_similarity = np.min(similarities)
+
+                    if min_pairwise_similarity < min_similarity:
+                        # Log warning or raise error based on config
+                        if self.config.get('multi_sample_strict_consistency', False):
+                            raise InconsistentSamplesError(
+                                f"Audio samples appear to be from different speakers. "
+                                f"Minimum pairwise similarity: {min_pairwise_similarity:.3f} "
+                                f"(threshold: {min_similarity:.3f})",
+                                error_code='low_embedding_similarity',
+                                details={
+                                    'min_similarity': float(min_pairwise_similarity),
+                                    'avg_similarity': float(avg_similarity),
+                                    'threshold': min_similarity,
+                                    'num_samples': len(embeddings)
+                                }
+                            )
+                        else:
+                            self.logger.warning(
+                                f"Low embedding similarity detected: min={min_pairwise_similarity:.3f}, "
+                                f"avg={avg_similarity:.3f} (threshold: {min_similarity:.3f}). "
+                                f"Samples may be from different speakers."
+                            )
+
                 # Average embeddings (optionally quality-weighted)
                 if self.config.get('multi_sample_quality_weighting', True) and any(s > 0 for s in snr_scores):
                     # Compute weights from SNR (softmax-like normalization)
@@ -956,7 +1144,7 @@ class VoiceCloner:
                         )
 
                 # Compute embedding stats
-                embedding_stats = self.speaker_encoder.get_embedding_stats(averaged_embedding)
+                embedding_stats = self.speaker_encoder.get_embedding_stats(averaged_embedding, pre_normalization=True)
 
                 # Generate profile ID
                 profile_id = str(uuid.uuid4())
@@ -1000,7 +1188,8 @@ class VoiceCloner:
                 response_profile = {k: v for k, v in profile.items() if k != 'embedding'}
                 return response_profile
 
-            except InvalidAudioError:
+            except (InvalidAudioError, InsufficientQualityError, InconsistentSamplesError):
+                # Re-raise specific voice cloning errors
                 raise
             except Exception as e:
                 self.logger.error(f"Failed to create multi-sample profile: {e}")
@@ -1146,7 +1335,7 @@ class VoiceCloner:
 
                 # Update embedding and stats
                 profile['embedding'] = averaged_embedding
-                profile['embedding_stats'] = self.speaker_encoder.get_embedding_stats(averaged_embedding)
+                profile['embedding_stats'] = self.speaker_encoder.get_embedding_stats(averaged_embedding, pre_normalization=True)
 
                 # Update multi-sample info
                 if 'multi_sample_info' not in profile:
@@ -1311,25 +1500,22 @@ class VoiceCloner:
                 }
             else:
                 # Fallback: estimate from linear-frequency STFT magnitude
-                # Only use torch if available; otherwise work with numpy directly
-                if TORCH_AVAILABLE:
-                    if not isinstance(audio, torch.Tensor):
-                        audio_tensor = torch.from_numpy(audio_np).float()
-                    else:
-                        audio_tensor = audio
-                    # Compute linear-frequency STFT
-                    stft_mag = self.audio_processor.compute_spectrogram(audio_tensor)
-                    if isinstance(stft_mag, torch.Tensor):
-                        stft_mag_np = stft_mag.detach().cpu().numpy()
-                    else:
-                        stft_mag_np = stft_mag
+                # Ensure torch is available before calling audio_processor.compute_spectrogram
+                if not TORCH_AVAILABLE:
+                    self.logger.warning("torch unavailable, skipping timbre feature extraction")
+                    return {}
+
+                # Use torch-based processing
+                if not isinstance(audio, torch.Tensor):
+                    audio_tensor = torch.from_numpy(audio_np).float()
                 else:
-                    # Pure numpy fallback - compute STFT manually or use AudioProcessor
-                    stft_mag = self.audio_processor.compute_spectrogram(audio_np)
-                    if hasattr(stft_mag, 'numpy'):
-                        stft_mag_np = stft_mag.numpy()
-                    else:
-                        stft_mag_np = stft_mag
+                    audio_tensor = audio
+                # Compute linear-frequency STFT
+                stft_mag = self.audio_processor.compute_spectrogram(audio_tensor)
+                if isinstance(stft_mag, torch.Tensor):
+                    stft_mag_np = stft_mag.detach().cpu().numpy()
+                else:
+                    stft_mag_np = stft_mag
 
                 # Guard-rails for empty or zero-energy frames
                 if stft_mag_np.size == 0 or stft_mag_np.shape[1] == 0:

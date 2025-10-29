@@ -1,0 +1,565 @@
+{% extends "base.html" %}
+
+{% block title %}Profile Management - AutoVoice{% endblock %}
+
+{% block extra_head %}
+<style>
+    .profile-container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 2rem;
+    }
+
+    .profile-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+        padding-bottom: 1rem;
+        border-bottom: 2px solid #dee2e6;
+    }
+
+    .profile-header h1 {
+        margin: 0;
+        color: #212529;
+    }
+
+    .profile-stats {
+        display: flex;
+        gap: 2rem;
+        align-items: center;
+    }
+
+    .stat-item {
+        text-align: center;
+    }
+
+    .stat-item .stat-value {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #007bff;
+    }
+
+    .stat-item .stat-label {
+        font-size: 0.875rem;
+        color: #6c757d;
+        text-transform: uppercase;
+    }
+
+    .toolbar {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 2rem;
+        padding: 1rem;
+        background: #f8f9fa;
+        border-radius: 8px;
+    }
+
+    .search-bar {
+        flex: 1;
+        position: relative;
+    }
+
+    .search-bar input {
+        width: 100%;
+        padding: 0.75rem 1rem 0.75rem 2.5rem;
+        border: 1px solid #ced4da;
+        border-radius: 6px;
+        font-size: 1rem;
+    }
+
+    .search-bar i {
+        position: absolute;
+        left: 1rem;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #6c757d;
+    }
+
+    .toolbar .btn {
+        padding: 0.75rem 1.5rem;
+        border: none;
+        border-radius: 6px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        white-space: nowrap;
+    }
+
+    .btn-primary {
+        background: #007bff;
+        color: white;
+    }
+
+    .btn-primary:hover {
+        background: #0056b3;
+    }
+
+    .btn-secondary {
+        background: #6c757d;
+        color: white;
+    }
+
+    .btn-secondary:hover {
+        background: #545b62;
+    }
+
+    .btn-success {
+        background: #28a745;
+        color: white;
+    }
+
+    .btn-success:hover {
+        background: #218838;
+    }
+
+    .btn-danger {
+        background: #dc3545;
+        color: white;
+    }
+
+    .btn-danger:hover {
+        background: #c82333;
+    }
+
+    .btn-sm {
+        padding: 0.5rem 1rem;
+        font-size: 0.875rem;
+    }
+
+    .profile-table {
+        width: 100%;
+        background: white;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .profile-table table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .profile-table thead {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+    }
+
+    .profile-table th {
+        padding: 1rem;
+        text-align: left;
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 0.875rem;
+    }
+
+    .profile-table td {
+        padding: 1rem;
+        border-bottom: 1px solid #dee2e6;
+    }
+
+    .profile-table tbody tr {
+        transition: background 0.2s ease;
+    }
+
+    .profile-table tbody tr:hover {
+        background: #f8f9fa;
+    }
+
+    .profile-id {
+        font-family: monospace;
+        color: #007bff;
+        font-weight: 600;
+    }
+
+    .profile-date {
+        color: #6c757d;
+    }
+
+    .profile-duration {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .profile-range {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.25rem 0.75rem;
+        background: #e7f3ff;
+        border-radius: 12px;
+        color: #0056b3;
+        font-weight: 600;
+    }
+
+    .action-buttons {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 4rem 2rem;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .empty-state i {
+        font-size: 4rem;
+        color: #dee2e6;
+        margin-bottom: 1rem;
+    }
+
+    .empty-state h3 {
+        color: #6c757d;
+        margin-bottom: 1rem;
+    }
+
+    .empty-state p {
+        color: #adb5bd;
+        margin-bottom: 2rem;
+    }
+
+    /* Modal Styles */
+    .modal-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.7);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .modal-overlay.visible {
+        display: flex;
+    }
+
+    .modal-content {
+        background: white;
+        border-radius: 12px;
+        max-width: 700px;
+        width: 90%;
+        max-height: 90vh;
+        overflow-y: auto;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        animation: modalSlideIn 0.3s ease;
+    }
+
+    @keyframes modalSlideIn {
+        from {
+            transform: translateY(-50px);
+            opacity: 0;
+        }
+        to {
+            transform: translateY(0);
+            opacity: 1;
+        }
+    }
+
+    .modal-header {
+        padding: 1.5rem;
+        border-bottom: 2px solid #dee2e6;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 12px 12px 0 0;
+    }
+
+    .modal-header h2 {
+        margin: 0;
+        font-size: 1.5rem;
+    }
+
+    .modal-close {
+        background: none;
+        border: none;
+        color: white;
+        font-size: 1.5rem;
+        cursor: pointer;
+        padding: 0;
+        width: 2rem;
+        height: 2rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: background 0.2s ease;
+    }
+
+    .modal-close:hover {
+        background: rgba(255, 255, 255, 0.2);
+    }
+
+    .modal-body {
+        padding: 2rem;
+    }
+
+    .detail-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.5rem;
+    }
+
+    .detail-item {
+        padding: 1rem;
+        background: #f8f9fa;
+        border-radius: 8px;
+        border-left: 4px solid #007bff;
+    }
+
+    .detail-label {
+        font-size: 0.875rem;
+        color: #6c757d;
+        text-transform: uppercase;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+    }
+
+    .detail-value {
+        font-size: 1.125rem;
+        color: #212529;
+        font-weight: 600;
+    }
+
+    .detail-item.full-width {
+        grid-column: 1 / -1;
+    }
+
+    .waveform-preview {
+        width: 100%;
+        height: 100px;
+        background: #e9ecef;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #6c757d;
+    }
+
+    .modal-footer {
+        padding: 1.5rem;
+        border-top: 1px solid #dee2e6;
+        display: flex;
+        gap: 1rem;
+        justify-content: flex-end;
+    }
+
+    .loading {
+        display: inline-block;
+        width: 1rem;
+        height: 1rem;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #007bff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="profile-container">
+    <!-- Header -->
+    <div class="profile-header">
+        <div>
+            <h1><i class="fas fa-users"></i> Voice Profile Management</h1>
+            <p style="color: #6c757d; margin-top: 0.5rem;">Manage your voice profiles for song conversion</p>
+        </div>
+        <div class="profile-stats">
+            <div class="stat-item">
+                <div class="stat-value" id="profile-count">0</div>
+                <div class="stat-label">Profiles</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+        <div class="search-bar">
+            <i class="fas fa-search"></i>
+            <input type="text" id="search-input" placeholder="Search profiles by ID or date...">
+        </div>
+        <button type="button" class="btn btn-secondary" id="refresh-btn">
+            <i class="fas fa-sync-alt"></i> Refresh
+        </button>
+        <button type="button" class="btn btn-primary" onclick="window.location.href='{{ url_for('index') }}#clone'">
+            <i class="fas fa-plus"></i> Create New Profile
+        </button>
+    </div>
+
+    <!-- Profile Table -->
+    <div class="profile-table" id="profile-table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Profile ID</th>
+                    <th>Created</th>
+                    <th>Duration</th>
+                    <th>Vocal Range</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="profile-table-body">
+                <!-- Profiles will be inserted here -->
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Empty State -->
+    <div class="empty-state" id="empty-state" style="display: none;">
+        <i class="fas fa-inbox"></i>
+        <h3>No Voice Profiles Yet</h3>
+        <p>Create your first voice profile to start converting songs</p>
+        <button type="button" class="btn btn-primary" onclick="window.location.href='{{ url_for('index') }}#clone'">
+            <i class="fas fa-plus"></i> Create Your First Profile
+        </button>
+    </div>
+</div>
+
+<!-- Profile Details Modal -->
+<div class="modal-overlay" id="details-modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2><i class="fas fa-info-circle"></i> Profile Details</h2>
+            <button type="button" class="modal-close" onclick="closeDetailsModal()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="detail-grid">
+                <div class="detail-item full-width">
+                    <div class="detail-label">Profile ID</div>
+                    <div class="detail-value" id="detail-profile-id">--</div>
+                </div>
+
+                <div class="detail-item">
+                    <div class="detail-label">Created</div>
+                    <div class="detail-value" id="detail-created">--</div>
+                </div>
+
+                <div class="detail-item">
+                    <div class="detail-label">Duration</div>
+                    <div class="detail-value" id="detail-duration">--</div>
+                </div>
+
+                <div class="detail-item">
+                    <div class="detail-label">Sample Rate</div>
+                    <div class="detail-value" id="detail-samplerate">--</div>
+                </div>
+
+                <div class="detail-item">
+                    <div class="detail-label">Channels</div>
+                    <div class="detail-value" id="detail-channels">--</div>
+                </div>
+
+                <div class="detail-item full-width">
+                    <div class="detail-label">Vocal Range</div>
+                    <div class="detail-value" id="detail-vocal-range">--</div>
+                </div>
+
+                <div class="detail-item full-width">
+                    <div class="detail-label">Mean Pitch</div>
+                    <div class="detail-value" id="detail-mean-pitch">--</div>
+                </div>
+
+                <div class="detail-item full-width">
+                    <div class="detail-label">Embedding Dimensions</div>
+                    <div class="detail-value" id="detail-embedding-dims">--</div>
+                </div>
+
+                <div class="detail-item full-width">
+                    <div class="detail-label">Audio Preview</div>
+                    <audio id="detail-audio" controls style="width: 100%; margin-top: 0.5rem;"></audio>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-success" id="modal-select-btn">
+                <i class="fas fa-check"></i> Use for Conversion
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="closeDetailsModal()">
+                <i class="fas fa-times"></i> Close
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script type="module" src="{{ url_for('static', filename='js/audio_utils.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/profile_manager.js') }}"></script>
+<!-- COMMENT 4 FIX: Add global closeDetailsModal function -->
+<script>
+    function closeDetailsModal() {
+        const modal = document.getElementById('details-modal');
+        if (modal) {
+            modal.style.display = 'none';
+        }
+    }
+    window.closeDetailsModal = closeDetailsModal;
+</script>
+<!-- Initialize profile management page -->
+<script type="module">
+    import { refreshProfiles, searchProfiles } from '{{ url_for('static', filename='js/profile_manager.js') }}';
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        // Load and display profiles
+        const profiles = await refreshProfiles('profile-table-body');
+
+        // Update profile count
+        const profileCount = document.getElementById('profile-count');
+        if (profileCount) {
+            profileCount.textContent = profiles.length || 0;
+        }
+
+        // Show/hide empty state
+        const emptyState = document.getElementById('empty-state');
+        const tableContainer = document.getElementById('profile-table-container');
+        if (profiles.length === 0) {
+            if (tableContainer) tableContainer.style.display = 'none';
+            if (emptyState) emptyState.style.display = 'block';
+        } else {
+            if (tableContainer) tableContainer.style.display = 'block';
+            if (emptyState) emptyState.style.display = 'none';
+        }
+
+        // Wire search input
+        const searchInput = document.getElementById('search-input');
+        if (searchInput) {
+            let searchTimeout;
+            searchInput.addEventListener('input', (e) => {
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(() => {
+                    searchProfiles(e.target.value, 'profile-table-body');
+                }, 300);
+            });
+        }
+
+        // Wire refresh button
+        const refreshBtn = document.getElementById('refresh-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', async () => {
+                const profiles = await refreshProfiles('profile-table-body');
+                if (profileCount) {
+                    profileCount.textContent = profiles.length || 0;
+                }
+            });
+        }
+    });
+</script>
+{% endblock %}

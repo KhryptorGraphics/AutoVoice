@@ -277,3 +277,16 @@ def log_execution_time(operation_name: str):
 
         return wrapper
     return decorator
+
+
+def get_logger(name: str) -> logging.Logger:
+    """
+    Get a logger instance with the specified name.
+
+    Args:
+        name: Logger name (usually __name__)
+
+    Returns:
+        Logger instance
+    """
+    return logging.getLogger(name)

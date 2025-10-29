@@ -42,15 +42,31 @@ resemblyzer>=0.1.1  # Pre-trained speaker encoder for voice cloning (Apache-2.0 
 noisereduce>=3.0.0  # Noise reduction
 demucs>=4.0.0,<5.0.0  # State-of-the-art music source separation (Meta/Facebook)
 
+# Objective quality evaluation metrics
+pystoi>=0.3.3  # Short-Time Objective Intelligibility measure
+pesq>=0.0.4  # Perceptual Evaluation of Speech Quality
+seaborn>=0.12,<0.13  # Statistical data visualization (for quality plots)
+pyloudnorm>=0.1.0  # LUFS loudness normalization (ITU-R BS.1770-4)
+
+# ===========================================================================================
+# OPTIONAL: Spleeter Backend (NOT REQUIRED - Demucs is the primary backend)
+# ===========================================================================================
 # Spleeter: Fast music separation fallback (Deezer)
-# NOTE: Spleeter pulls heavy TensorFlow dependencies which may conflict with PyTorch CUDA setup
+# NOTE: Spleeter and TensorFlow are OPTIONAL dependencies for an alternative separation backend.
+#       The primary backend is Demucs (installed above). Only install if you need Spleeter.
+#
+# Installation:
+#   pip install spleeter>=2.4.0,<3.0.0 tensorflow-cpu~=2.12.0  # CPU-only
+#   pip install spleeter>=2.4.0,<3.0.0 tensorflow~=2.12.0      # GPU (requires matching CUDA/cuDNN)
+#
+# WARNING: TensorFlow adds ~500MB+ to install size and may conflict with PyTorch CUDA versions
 # TensorFlow compatibility: 2.5.x - 2.13.x (2.14+ may have breaking changes)
-# WARNING: TensorFlow can significantly increase install size (~500MB+) and install time
-# TensorFlow GPU support requires compatible CUDA/cuDNN versions - see docs for your environment
-# For CPU-only environments, TensorFlow will auto-install tensorflow-cpu variant
-# To use GPU acceleration with Spleeter, ensure your CUDA/cuDNN versions match TensorFlow requirements
-spleeter>=2.4.0,<3.0.0
-tensorflow>=2.12.0,<2.14.0  # Pinned for stability; use tensorflow-cpu==2.12.* for CPU-only if needed
+# TensorFlow GPU support requires compatible CUDA/cuDNN - see TensorFlow docs for version matrix
+#
+# Uncomment the lines below ONLY if you want to use Spleeter as a fallback backend:
+# spleeter>=2.4.0,<3.0.0
+# tensorflow-cpu>=2.12.0,<2.14.0  # Use tensorflow-cpu for CPU-only (recommended to avoid conflicts)
+# ===========================================================================================
 
 # Development and testing
 pytest>=7.4,<8.0

@@ -41,6 +41,32 @@ from .metrics import (
     reset_global_metrics
 )
 
+# Quality evaluation utilities
+from .quality_metrics import (
+    QualityMetricsAggregator,
+    PitchAccuracyMetrics,
+    SpeakerSimilarityMetrics,
+    NaturalnessMetrics,
+    IntelligibilityMetrics,
+    AudioAligner,
+    AudioNormalizer,
+    QualityMetricsResult,
+    PitchAccuracyResult,
+    SpeakerSimilarityResult,
+    NaturalnessResult,
+    IntelligibilityResult
+)
+
+# Visualization utilities
+from .visualization import (
+    PitchContourVisualizer,
+    SpectrogramVisualizer,
+    QualityMetricsVisualizer,
+    PitchContourData,
+    encode_plot_as_base64,
+    create_embedded_markdown_image
+)
+
 # General helper utilities
 from .helpers import (
     StringUtils,
@@ -87,7 +113,29 @@ __all__ = [
     'MetricsAggregator',
     'get_global_metrics',
     'reset_global_metrics',
-    
+
+    # Quality evaluation utilities
+    'QualityMetricsAggregator',
+    'PitchAccuracyMetrics',
+    'SpeakerSimilarityMetrics',
+    'NaturalnessMetrics',
+    'IntelligibilityMetrics',
+    'AudioAligner',
+    'AudioNormalizer',
+    'QualityMetricsResult',
+    'PitchAccuracyResult',
+    'SpeakerSimilarityResult',
+    'NaturalnessResult',
+    'IntelligibilityResult',
+
+    # Visualization utilities
+    'PitchContourVisualizer',
+    'SpectrogramVisualizer',
+    'QualityMetricsVisualizer',
+    'PitchContourData',
+    'encode_plot_as_base64',
+    'create_embedded_markdown_image',
+
     # Helper utilities
     'StringUtils',
     'MathUtils',

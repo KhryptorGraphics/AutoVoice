@@ -523,6 +523,9 @@ class VoiceProfileStorage:
 
         Returns:
             Converted object
+
+        Raises:
+            ProfileValidationError: If metadata contains large ndarrays (>1024 elements)
         """
         if isinstance(obj, dict):
             return {k: self._convert_numpy_types(v) for k, v in obj.items()}
@@ -533,6 +536,12 @@ class VoiceProfileStorage:
         elif isinstance(obj, np.floating):
             return float(obj)
         elif isinstance(obj, np.ndarray):
+            # Prevent large arrays in metadata (embeddings should be stored separately)
+            if obj.size > 1024:
+                raise ProfileValidationError(
+                    f"Metadata contains large ndarray ({obj.size} elements). "
+                    "Large arrays should be stored as separate files, not in JSON metadata."
+                )
             return obj.tolist()
         else:
             return obj

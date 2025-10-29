@@ -93,6 +93,9 @@ class SpeakerEncoder:
         self.logger = logging.getLogger(__name__)
         self.gpu_manager = gpu_manager
 
+        # Store last raw norm for diagnostics (before normalization)
+        self._last_raw_norm = None
+
         # Set device
         if device is not None:
             self.device = device
@@ -151,6 +154,9 @@ class SpeakerEncoder:
                     wav = preprocess_wav(audio)
                     embedding = self.encoder.embed_utterance(wav)
 
+                    # Store raw norm for diagnostics (Resemblyzer returns normalized embeddings)
+                    self._last_raw_norm = float(np.linalg.norm(embedding))
+
                 # Handle torch tensor input
                 elif TORCH_AVAILABLE and isinstance(audio, torch.Tensor):
                     # Convert to numpy
@@ -192,6 +198,9 @@ class SpeakerEncoder:
                     # Extract embedding
                     embedding = self.encoder.embed_utterance(preprocessed_wav)
 
+                    # Store raw norm for diagnostics (Resemblyzer returns normalized embeddings)
+                    self._last_raw_norm = float(np.linalg.norm(embedding))
+
                 # Handle numpy array input
                 elif isinstance(audio, np.ndarray):
                     # Ensure mono
@@ -225,25 +234,38 @@ class SpeakerEncoder:
                     # Extract embedding
                     embedding = self.encoder.embed_utterance(preprocessed_wav)
 
+                    # Store raw norm for diagnostics (Resemblyzer returns normalized embeddings)
+                    self._last_raw_norm = float(np.linalg.norm(embedding))
+
                 else:
                     raise SpeakerEncodingError(
                         f"Unsupported audio type: {type(audio)}. "
                         "Expected str, np.ndarray, or torch.Tensor"
                     )
 
-                # Validate embedding
-                if embedding.shape != (256,):
+                # Validate embedding size (flexible shape handling)
+                if embedding.size != 256:
                     raise SpeakerEncodingError(
-                        f"Invalid embedding shape: {embedding.shape}. Expected (256,)"
+                        f"Invalid embedding size: {embedding.size}. Expected 256 elements"
                     )
+
+                # Ensure 1D shape
+                embedding = embedding.reshape(-1)
 
                 if np.isnan(embedding).any() or np.isinf(embedding).any():
                     raise SpeakerEncodingError("Embedding contains NaN or Inf values")
 
+                # Store pre-normalization norm for diagnostics
+                # Note: Resemblyzer embeddings are already normalized by embed_utterance,
+                # but we ensure normalization here for consistency
+                pre_norm = np.linalg.norm(embedding)
+
                 # Ensure embedding is normalized (L2 norm = 1)
-                norm = np.linalg.norm(embedding)
-                if norm > 0:
-                    embedding = embedding / norm
+                if pre_norm > 0:
+                    embedding = embedding / pre_norm
+
+                # COMMENT 4 FIX: Ensure float32 dtype without unnecessary view/copy
+                embedding = embedding.astype(np.float32, copy=False)
 
                 return embedding
 
@@ -257,7 +279,7 @@ class SpeakerEncoder:
         self,
         audio_list: List[Union[np.ndarray, str]],
         sample_rate: Optional[int] = None,
-        on_error: str = 'zero'
+        on_error: str = 'none'
     ) -> List[Optional[np.ndarray]]:
         """Extract speaker embeddings from multiple audio files/arrays
 
@@ -265,12 +287,16 @@ class SpeakerEncoder:
             audio_list: List of audio arrays or file paths
             sample_rate: Sample rate for array inputs
             on_error: Error handling strategy:
-                      - 'zero': Return zero vector (default, backward compatible)
-                      - 'none': Return None
+                      - 'none': Return None (default, recommended)
+                      - 'zero': Return zero vector (backward compatible, not recommended)
                       - 'raise': Raise exception
 
         Returns:
             List of 256-dimensional embeddings (or None if on_error='none')
+
+        Warning:
+            Using on_error='zero' may propagate silent failures. Consider using
+            on_error='none' and filtering None values explicitly.
 
         Example:
             >>> embeddings = encoder.extract_embeddings_batch([
@@ -278,7 +304,8 @@ class SpeakerEncoder:
             ...     'voice2.wav',
             ...     'voice3.wav'
             ... ], on_error='none')
-            >>> print(len([e for e in embeddings if e is not None]))  # 3
+            >>> valid_embeddings = [e for e in embeddings if e is not None]
+            >>> print(f"Successfully extracted {len(valid_embeddings)}/{len(embeddings)} embeddings")
         """
         embeddings = []
 
@@ -291,10 +318,15 @@ class SpeakerEncoder:
 
                 if on_error == 'raise':
                     raise
-                elif on_error == 'none':
-                    embeddings.append(None)
-                else:  # 'zero' (default)
+                elif on_error == 'zero':
+                    # Log warning about zero-vector fallback
+                    self.logger.warning(
+                        f"Appending zero vector for item {i} due to extraction failure. "
+                        "Consider using on_error='none' to handle failures explicitly."
+                    )
                     embeddings.append(np.zeros(256, dtype=np.float32))
+                else:  # 'none' (default)
+                    embeddings.append(None)
 
         if len(audio_list) > 5:
             successful = len([e for e in embeddings if e is not None and not np.allclose(e, 0)])
@@ -316,14 +348,14 @@ class SpeakerEncoder:
         - <0.5: Different speakers
 
         Args:
-            embedding1: First speaker embedding (256,)
-            embedding2: Second speaker embedding (256,)
+            embedding1: First speaker embedding (256 elements, any 1D shape)
+            embedding2: Second speaker embedding (256 elements, any 1D shape)
 
         Returns:
             Cosine similarity score (float in [-1, 1])
 
         Raises:
-            SpeakerEncodingError: If embeddings have invalid shape
+            SpeakerEncodingError: If embeddings have invalid size
 
         Example:
             >>> emb1 = encoder.extract_embedding('voice1.wav')
@@ -331,15 +363,19 @@ class SpeakerEncoder:
             >>> similarity = encoder.compute_similarity(emb1, emb2)
             >>> print(f"Similarity: {similarity:.3f}")
         """
-        # Validate shapes
-        if embedding1.shape != (256,):
+        # Validate sizes and ensure 1D
+        if embedding1.size != 256:
             raise SpeakerEncodingError(
-                f"Invalid embedding1 shape: {embedding1.shape}. Expected (256,)"
+                f"Invalid embedding1 size: {embedding1.size}. Expected 256 elements"
             )
-        if embedding2.shape != (256,):
+        if embedding2.size != 256:
             raise SpeakerEncodingError(
-                f"Invalid embedding2 shape: {embedding2.shape}. Expected (256,)"
+                f"Invalid embedding2 size: {embedding2.size}. Expected 256 elements"
             )
+
+        # Ensure both are 1D
+        embedding1 = embedding1.reshape(-1)
+        embedding2 = embedding2.reshape(-1)
 
         # Compute cosine similarity
         dot_product = np.dot(embedding1, embedding2)
@@ -391,13 +427,21 @@ class SpeakerEncoder:
         )
         return similarity >= threshold
 
-    def get_embedding_stats(self, embedding: np.ndarray) -> Dict[str, float]:
+    def get_embedding_stats(self, embedding: np.ndarray, pre_normalization: bool = False) -> Dict[str, float]:
         """Compute statistics for embedding vector
 
         Useful for debugging and validation.
 
+        Note: Resemblyzer's VoiceEncoder.embed_utterance() returns normalized embeddings,
+        so the 'norm' field will typically be ~1.0. When pre_normalization=True and a raw
+        norm was captured during extract_embedding(), the 'raw_norm' field will be included
+        in the returned statistics.
+
         Args:
-            embedding: Speaker embedding (256,)
+            embedding: Speaker embedding (256 elements, any 1D shape)
+            pre_normalization: If True and raw norm is available, include 'raw_norm' field
+                             with the L2 norm captured before normalization.
+                             If False (default), only compute stats on provided embedding.
 
         Returns:
             Dictionary with statistics:
@@ -405,22 +449,38 @@ class SpeakerEncoder:
                 - std: Standard deviation
                 - min: Minimum value
                 - max: Maximum value
-                - norm: L2 norm
+                - norm: L2 norm of provided embedding (typically ~1.0 for normalized embeddings)
+                - raw_norm: (only if pre_normalization=True and available) L2 norm before normalization
 
         Example:
             >>> embedding = encoder.extract_embedding('voice.wav')
-            >>> stats = encoder.get_embedding_stats(embedding)
+            >>> stats = encoder.get_embedding_stats(embedding, pre_normalization=True)
             >>> print(f"Norm: {stats['norm']:.3f}")
+            >>> if 'raw_norm' in stats:
+            ...     print(f"Raw norm: {stats['raw_norm']:.3f}")
         """
-        if embedding.shape != (256,):
+        if embedding.size != 256:
             raise SpeakerEncodingError(
-                f"Invalid embedding shape: {embedding.shape}. Expected (256,)"
+                f"Invalid embedding size: {embedding.size}. Expected 256 elements"
             )
 
-        return {
+        # Ensure 1D for stats computation
+        embedding = embedding.reshape(-1)
+
+        # Compute norm of the provided embedding (typically ~1.0 for normalized embeddings)
+        norm_value = float(np.linalg.norm(embedding))
+
+        # Build base stats
+        stats = {
             'mean': float(np.mean(embedding)),
             'std': float(np.std(embedding)),
             'min': float(np.min(embedding)),
             'max': float(np.max(embedding)),
-            'norm': float(np.linalg.norm(embedding))
+            'norm': norm_value
         }
+
+        # If pre_normalization requested and raw norm is available, include it
+        if pre_normalization and self._last_raw_norm is not None:
+            stats['raw_norm'] = self._last_raw_norm
+
+        return stats

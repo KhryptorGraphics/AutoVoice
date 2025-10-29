@@ -1,0 +1,146 @@
+# Voice Conversion Quality Evaluation Configuration
+# This file contains configuration settings for quality evaluation of singing voice conversion systems
+
+# Audio Processing Settings
+audio:
+  sample_rate: 44100  # Target sample rate for all audio processing
+  normalize_audio: true  # RMS normalize to -12dBFS before evaluation
+  target_rms_db: -12.0  # Target RMS level for normalization
+
+# Audio Alignment Settings
+alignment:
+  align_audio: true  # Align source and target audio using cross-correlation
+  max_delay_sec: 0.2  # Maximum delay to consider for alignment (seconds)
+  enable_progress_tracking: true  # Show progress during batch evaluation
+
+# Quality Metrics Configuration
+metrics:
+  # Pitch accuracy settings
+  pitch_accuracy:
+    enabled: true
+    correlation_threshold: 0.8  # Good pitch correlation threshold
+    rmse_hz_threshold: 10.0  # Acceptable pitch RMSE threshold in Hz
+    rmse_threshold: 0.1  # Acceptable pitch RMSE threshold (in log semitones, backwards compatibility)
+
+  # Speaker similarity settings
+  speaker_similarity:
+    enabled: true
+    cosine_similarity_threshold: 0.75  # Good speaker similarity threshold
+    embedding_dimensions: 256  # Speaker embedding dimensions
+
+  # Naturalness settings
+  naturalness:
+    enabled: true
+    spectral_distortion_threshold: 10.0  # Acceptable spectral distortion (dB)
+    n_fft: 2048  # FFT size for spectrogram analysis
+    hop_length: 512  # Hop length for STFT
+    mos_method: 'heuristic'  # MOS calculation method: 'heuristic', 'nisqa', or 'both'
+
+  # Intelligibility settings
+  intelligibility:
+    enabled: true
+    stoi_mode: 'extended'  # Use extended STOI for better accuracy
+    pesq_mode: 'wb'  # Wideband PESQ mode
+    stoi_threshold: 0.7  # Good intelligibility threshold
+    pesq_threshold: 2.0  # Acceptable voice quality threshold
+
+# Evaluation Targets for Automated Validation
+quality_targets:
+  min_pitch_accuracy_correlation: 0.8
+  max_pitch_accuracy_rmse_hz: 10.0  # Maximum pitch RMSE in Hz (< 10 Hz target)
+  max_pitch_accuracy_rmse: 0.1  # Maximum pitch RMSE in log2 semitones (backwards compatibility)
+  min_speaker_similarity: 0.85  # Minimum speaker similarity (updated to 0.85)
+  max_spectral_distortion: 10.0
+  min_stoi_score: 0.9  # Updated to 0.9 to align with quality plan
+  min_pesq_score: 2.0
+  min_mos_estimate: 4.0  # Minimum MOS estimation target
+  min_overall_quality_score: 0.75
+
+# Reporting Configuration
+reports:
+  include_raw_metrics: true  # Include detailed metric values in reports
+  include_summary_stats: true  # Include statistical summaries
+  include_visualizations: true  # Include plots and charts
+  output_formats: ['markdown', 'json', 'html']  # Output formats to generate
+  save_intermediate_results: false  # Save detailed results for debugging
+
+# Visualization Settings
+visualization:
+  pitch_contours: true  # Generate pitch contour plots
+  spectrograms: false  # Generate spectrogram comparisons (resource intensive)
+  quality_dashboard: true  # Generate comprehensive quality dashboard
+  publish_quality_plots: true  # Create publication-quality plots
+
+  # Plot styling
+  plot_style: 'seaborn-whitegrid'
+  figure_size: [12, 8]
+  dpi: 300
+  font_size: 10
+  color_palette: 'husl'
+
+# Performance and Resource Settings
+performance:
+  batch_size: 4  # Number of audio pairs to process simultaneously
+  max_workers: null  # Maximum worker threads (null = auto)
+  enable_gpu_acceleration: true  # Use GPU for computations when available
+  memory_limit_gb: 8.0  # Memory limit for large evaluations
+
+# Logging and Debugging
+logging:
+  log_level: 'INFO'  # Logging level (DEBUG, INFO, WARNING, ERROR)
+  log_metrics: true  # Log individual metric computations
+  log_progress: true  # Log evaluation progress
+  log_errors: true  # Log errors and warnings
+
+# Custom Evaluation Extensions
+extensions:
+  custom_metrics: []  # List of custom metric classes to include
+  custom_visualizations: []  # Custom visualization classes
+  custom_validators: []  # Custom validation functions
+
+# Dataset-Specific Settings (can be overridden per evaluation)
+datasets:
+  # Default settings for all datasets
+  default:
+    expected_sample_rate: 44100  # Expected input sample rate
+    stereo_to_mono: true  # Convert stereo to mono
+    trim_silence: false  # Trim leading/trailing silence
+    volume_normalization: 'rms'  # 'rms', 'peak', or 'none'
+
+  # Dataset-specific overrides
+  m4singer:  # Singing voice dataset
+    expected_sample_rate: 44100
+    volume_normalization: 'peak'
+
+  nsd:  # Noisy singing dataset
+    expected_sample_rate: 48000
+    trim_silence: true
+    stereo_to_mono: true
+
+# Baseline Comparison Settings
+baseline_comparison:
+  enabled: false  # Enable baseline model comparison
+  baseline_model_path: null  # Path to baseline model outputs
+  baseline_metrics_file: null  # Pre-computed baseline metrics
+  comparison_threshold: 0.05  # Minimum improvement threshold
+
+# Automated Testing Integration
+ci_integration:
+  enabled: false  # Enable CI/CD integration features
+  fail_on_regression: false  # Fail CI if quality regresses
+  max_regression_threshold: 0.1  # Maximum allowed quality regression
+  baseline_update_strategy: 'manual'  # 'manual', 'automatic', 'rolling_average'
+
+# Synthetic Test Data Generation
+synthetic_data:
+  enabled: false  # Enable synthetic test data generation
+  generation_script: null  # Path to data generation script
+  num_synthetic_samples: 100  # Number of synthetic samples to generate
+  seed: 42  # Random seed for reproducibility
+
+# Export and Compatibility Settings
+export:
+  json_format_version: '1.0'  # Export format version
+  include_timestamps: true  # Include evaluation timestamps
+  include_system_info: false  # Include system/hardware information
+  compress_outputs: false  # Compress large output files

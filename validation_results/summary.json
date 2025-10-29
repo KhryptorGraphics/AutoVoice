@@ -1,0 +1,14 @@
+{
+  "code_quality": {
+    "error": "File not found"
+  },
+  "integration": {
+    "error": "File not found"
+  },
+  "documentation": {
+    "error": "File not found"
+  },
+  "test_results": {
+    "error": "File not found"
+  }
+}
