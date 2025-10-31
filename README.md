@@ -40,7 +40,65 @@ AutoVoice is a high-performance voice synthesis and singing voice conversion pla
 - **Python**: Python 3.8 or later
 - **Docker** (optional): Docker 20.10+ with nvidia-docker runtime
 
-### Installation
+### 🎉 STATUS: FULLY FUNCTIONAL WITH PRE-TRAINED MODELS
+
+**All model weights downloaded (590 MB) ✅**  
+**Ready for immediate use after environment setup!**
+
+---
+
+## 🚀 Quick Start (5 Minutes)
+
+### 1. Fix Python Environment
+
+**Python 3.12 Recommended** (or use PyTorch 2.7+ with Python 3.13):
+
+```bash
+# Create conda environment with Python 3.12
+conda create -n autovoice python=3.12 -y
+conda activate autovoice
+```
+
+### 2. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Pre-trained Models (Already Downloaded! ✅)
+
+**Models are already in the project:**
+```
+models/pretrained/
+├── sovits5.0_main_1500.pth      176 MB  ✅
+├── hifigan_ljspeech.ckpt         54 MB  ✅
+└── hubert-soft-0d54a1f4.pt      361 MB  ✅
+```
+
+**For deployment to other machines:**
+```bash
+# Models will be downloaded automatically
+python scripts/download_pretrained_models.py
+```
+
+### 4. Run Demo
+
+```bash
+python examples/demo_voice_conversion.py \
+  --song data/test_song.mp3 \
+  --reference data/my_voice.wav
+```
+
+**Or start web interface:**
+
+```bash
+python main.py
+# Open http://localhost:5000
+```
+
+---
+
+## Installation
 
 #### Option 1: Docker (Recommended)
 

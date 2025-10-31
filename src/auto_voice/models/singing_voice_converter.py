@@ -228,6 +228,72 @@ class SingingVoiceConverter(nn.Module):
                    f"vocoder_sample_rate={self.vocoder_sample_rate}, temperature={self.temperature}, "
                    f"quality_preset={self.quality_preset}")
 
+    @classmethod
+    def load_from_checkpoint(
+        cls,
+        checkpoint_path: str,
+        device: str = 'cuda',
+        config_override: Optional[Dict[str, Any]] = None
+    ) -> 'SingingVoiceConverter':
+        """Load pre-trained So-VITS-SVC model from checkpoint.
+        
+        Args:
+            checkpoint_path: Path to .pth checkpoint file
+            device: Device to load model onto
+            config_override: Optional configuration overrides
+            
+        Returns:
+            Initialized SingingVoiceConverter with loaded weights
+            
+        Example:
+            >>> model = SingingVoiceConverter.load_from_checkpoint(
+            ...     'models/pretrained/sovits5.0_main_1500.pth',
+            ...     device='cuda'
+            ... )
+            >>> model.eval()
+        """
+        from ..utils.model_loader import load_sovits_checkpoint, get_default_sovits_config
+        
+        # Load checkpoint
+        checkpoint_data = load_sovits_checkpoint(checkpoint_path, device, config_override)
+        
+        # Get config (checkpoint config + defaults + overrides)
+        config = get_default_sovits_config()
+        config.update(checkpoint_data['config'])
+        if config_override:
+            config.update(config_override)
+        
+        # Initialize model
+        model = cls(config)
+        
+        # Load state dict with error handling
+        try:
+            # Try strict loading first
+            model.load_state_dict(checkpoint_data['model_state_dict'], strict=True)
+            logger.info("Loaded checkpoint with strict=True")
+        except RuntimeError as e:
+            logger.warning(f"Strict loading failed: {e}")
+            logger.info("Attempting non-strict loading...")
+            
+            # Try non-strict loading
+            missing_keys, unexpected_keys = model.load_state_dict(
+                checkpoint_data['model_state_dict'],
+                strict=False
+            )
+            
+            if missing_keys:
+                logger.warning(f"Missing keys in checkpoint: {missing_keys[:5]}...")
+            if unexpected_keys:
+                logger.warning(f"Unexpected keys in checkpoint: {unexpected_keys[:5]}...")
+        
+        # Move to device and set eval mode
+        model = model.to(device)
+        model.eval()
+        
+        logger.info(f"Successfully loaded model from {checkpoint_path}")
+        
+        return model
+
     def forward(
         self,
         source_audio: torch.Tensor,

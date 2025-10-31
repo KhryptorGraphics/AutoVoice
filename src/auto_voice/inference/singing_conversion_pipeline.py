@@ -142,7 +142,19 @@ class SingingConversionPipeline:
         # Merge voice_converter preset config into model_config
         if voice_converter_config:
             model_config = {**model_config, **voice_converter_config}
-        self.voice_converter = SingingVoiceConverter(model_config)
+        
+        # Try to load from pretrained checkpoint if specified in config
+        checkpoint_path = config.get('model_path') if config else None
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            logger.info(f"Loading pre-trained model from: {checkpoint_path}")
+            self.voice_converter = SingingVoiceConverter.load_from_checkpoint(
+                checkpoint_path,
+                device=device or 'cuda',
+                config_override=model_config
+            )
+        else:
+            # Initialize from scratch (for training)
+            self.voice_converter = SingingVoiceConverter(model_config)
         # Guard model API calls with hasattr checks
         if device and hasattr(self.voice_converter, 'to'):
             converted_model = self.voice_converter.to(device)

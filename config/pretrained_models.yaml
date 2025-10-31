@@ -1,0 +1,134 @@
+# Pre-trained Model Configuration for AutoVoice
+#
+# This file specifies paths to pre-trained model weights for singing voice conversion.
+# Download models using: python scripts/download_pretrained_models.py
+
+# Model directory (relative to project root)
+model_dir: models/pretrained
+
+# So-VITS-SVC Model Weights
+sovits:
+  # Primary model (5.0)
+  version: "5.0"
+  checkpoint_path: "${model_dir}/sovits5.0_main_1500.pth"
+  
+  # Fallback model (4.0)
+  fallback:
+    generator_path: "${model_dir}/G_0.pth"
+    discriminator_path: "${model_dir}/D_0.pth"
+  
+  # Model configuration
+  config:
+    latent_dim: 192
+    mel_channels: 80
+    content_dim: 256
+    pitch_dim: 192
+    speaker_dim: 256
+    hidden_channels: 192
+    num_flows: 4
+    use_only_mean: false
+    sample_rate: 22050
+    hop_length: 512
+    n_fft: 2048
+    win_length: 2048
+
+# HiFi-GAN Vocoder
+vocoder:
+  checkpoint_path: "${model_dir}/hifigan_ljspeech.ckpt"
+  type: "hifigan"
+  config:
+    mel_channels: 80
+    sample_rate: 22050
+    hop_length: 256
+    n_fft: 1024
+    upsample_rates: [8, 8, 2, 2]
+    upsample_kernel_sizes: [16, 16, 4, 4]
+    resblock_kernel_sizes: [3, 7, 11]
+    resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+
+# Content Encoder (HuBERT-Soft)
+content_encoder:
+  type: "hubert_soft"
+  checkpoint_path: "${model_dir}/hubert-soft-0d54a1f4.pt"
+  output_dim: 256
+  use_torch_hub: false
+  
+  # CNN fallback if HuBERT unavailable
+  cnn_fallback:
+    n_fft: 1024
+    hop_length: 320
+    n_mels: 80
+    sample_rate: 16000
+
+# Speaker Encoder (Resemblyzer)
+speaker_encoder:
+  type: "resemblyzer"
+  embedding_dim: 256
+  # Uses default Resemblyzer weights (auto-downloaded)
+
+# Pitch Extractor (TorchCrepe)
+pitch_extractor:
+  model: "full"  # or "tiny" for faster extraction
+  fmin: 80.0
+  fmax: 1000.0
+  hop_length_ms: 10.0
+  confidence_threshold: 0.21
+
+# Vocal Separator (Demucs)
+vocal_separator:
+  model: "htdemucs"  # or "mdx_extra" for higher quality
+  device: "cuda"  # or "cpu"
+
+# Quality Presets
+presets:
+  draft:
+    description: "Fast conversion for testing"
+    vocal_separator:
+      model: "htdemucs_ft"
+      shifts: 1
+    pitch_extractor:
+      model: "tiny"
+    decoder_steps: 2
+    
+  fast:
+    description: "Real-time conversion"
+    vocal_separator:
+      model: "htdemucs"
+      shifts: 1
+    pitch_extractor:
+      model: "full"
+    decoder_steps: 4
+    
+  balanced:
+    description: "Default quality"
+    vocal_separator:
+      model: "htdemucs"
+      shifts: 2
+    pitch_extractor:
+      model: "full"
+    decoder_steps: 4
+    
+  high:
+    description: "High quality"
+    vocal_separator:
+      model: "htdemucs_ft"
+      shifts: 3
+    pitch_extractor:
+      model: "full"
+    decoder_steps: 8
+    
+  studio:
+    description: "Maximum quality"
+    vocal_separator:
+      model: "mdx_extra"
+      shifts: 5
+    pitch_extractor:
+      model: "full"
+    decoder_steps: 16
+
+# Cache settings
+cache:
+  enabled: true
+  directory: "~/.cache/autovoice/converted/"
+  size_limit_gb: 5.0
+  ttl_days: 7

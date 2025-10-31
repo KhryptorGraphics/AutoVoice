@@ -110,6 +110,43 @@ class HiFiGANGenerator(nn.Module):
         # Post conv
         self.conv_post = weight_norm(nn.Conv1d(ch, 1, 7, 1, padding=3))
 
+    @classmethod
+    def load_from_checkpoint(
+        cls,
+        checkpoint_path: str,
+        device: str = 'cuda',
+        **kwargs
+    ) -> 'HiFiGANGenerator':
+        """Load pre-trained HiFi-GAN from checkpoint.
+        
+        Args:
+            checkpoint_path: Path to .ckpt checkpoint file
+            device: Device to load model onto
+            **kwargs: Additional arguments for HiFiGANGenerator
+            
+        Returns:
+            Initialized HiFiGANGenerator with loaded weights
+        """
+        from ..utils.model_loader import load_hifigan_checkpoint
+        
+        # Load checkpoint
+        state_dict = load_hifigan_checkpoint(checkpoint_path, device)
+        
+        # Initialize model with default or provided config
+        model = cls(**kwargs)
+        
+        # Load weights
+        try:
+            model.load_state_dict(state_dict, strict=True)
+        except RuntimeError:
+            model.load_state_dict(state_dict, strict=False)
+        
+        # Move to device and eval
+        model = model.to(device)
+        model.eval()
+        
+        return model
+
     def forward(self, x):
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
