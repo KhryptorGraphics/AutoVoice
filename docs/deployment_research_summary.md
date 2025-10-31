@@ -187,10 +187,10 @@ Recommendation: Add optional GPU workflow for full validation
 **Security Analysis**:
 ```dockerfile
 # Stage 1: Builder
-FROM nvidia/cuda:12.9.0-devel-ubuntu22.04  ✅
+FROM nvidia/cuda:12.1.0-devel-ubuntu22.04  ✅
 
 # Stage 2: Runtime
-FROM nvidia/cuda:12.9.0-runtime-ubuntu22.04  ✅
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04  ✅
 USER autovoice  ✅ Non-root
 HEALTHCHECK  ✅ Container health monitoring
 ```
@@ -234,7 +234,7 @@ Based on web search results and official PyTorch documentation:
 torch>=2.0.0,<2.2.0  ✅ Correct range
 
 # Dockerfile:15
-CUDA 12.9.0  ⚠️ Newer than PyTorch 2.1 supports
+CUDA 12.1.0  ✅ Compatible with PyTorch 2.5.1+cu121
 
 # Recommendation:
 Use CUDA 12.1 for best compatibility with PyTorch 2.1.x
@@ -257,14 +257,14 @@ torch was compiled with 11.1"
 
 **AutoVoice Impact**:
 ```bash
-# Current Dockerfile
-FROM nvidia/cuda:12.9.0-devel  # CUDA 12.9
+# Fixed Dockerfile
+FROM nvidia/cuda:12.1.0-devel  # CUDA 12.1
 
 # PyTorch installation
-pip install torch>=2.0.0,<2.2.0  # Likely compiled with 11.8 or 12.1
+pip install torch>=2.0.0,<2.2.0  # Compatible with CUDA 12.1
 
-# Potential Mismatch: ⚠️
-Dockerfile CUDA 12.9 might not match PyTorch's compiled CUDA version
+# Resolution: ✅
+Dockerfile CUDA 12.1 now matches PyTorch's compiled CUDA version
 ```
 
 **Recommendation**:

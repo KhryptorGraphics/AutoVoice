@@ -69,6 +69,7 @@ jobs:
             org.opencontainers.image.vendor=AutoVoice
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -83,10 +84,25 @@ jobs:
             VCS_REF=${{ github.sha }}
             VERSION=${{ steps.meta.outputs.version }}
 
+      - name: Determine Trivy image reference
+        id: trivy-ref
+        run: |
+          # Prefer digest for unambiguous scanning
+          if [ -n "${{ steps.build.outputs.digest }}" ]; then
+            echo "image-ref=${{ env.REGISTRY_GHCR }}/${{ github.repository }}@${{ steps.build.outputs.digest }}" >> $GITHUB_OUTPUT
+          # Fallback: use latest tag on default branch
+          elif [ "${{ github.ref }}" == "refs/heads/${{ github.event.repository.default_branch }}" ]; then
+            echo "image-ref=${{ env.REGISTRY_GHCR }}/${{ github.repository }}:latest" >> $GITHUB_OUTPUT
+          # Fallback: use SHA tag on non-default branches
+          else
+            BRANCH_NAME=$(echo "${{ github.ref }}" | sed 's|refs/heads/||')
+            echo "image-ref=${{ env.REGISTRY_GHCR }}/${{ github.repository }}:${BRANCH_NAME}-${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY_GHCR }}/${{ github.repository }}:${{ steps.meta.outputs.version }}
+          image-ref: ${{ steps.trivy-ref.outputs.image-ref }}
           format: 'sarif'
           output: 'trivy-results.sarif'
 

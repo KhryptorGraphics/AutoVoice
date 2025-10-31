@@ -1,0 +1,36 @@
+# ===========================================================================================
+# PyTorch with CUDA 12.1 Support - Curated Installation File
+# ===========================================================================================
+# This file provides pinned PyTorch versions for CUDA 12.1 environments.
+# Use this for reproducible installations with GPU acceleration.
+#
+# INSTALLATION:
+#   pip install -r requirements-cu121.txt --index-url https://download.pytorch.org/whl/cu121
+#
+# ALTERNATIVE (using setup.py extra):
+#   pip install -e .[pytorch-cu121] --index-url https://download.pytorch.org/whl/cu121
+#
+# VERIFIED CONFIGURATION:
+#   - Python 3.12.12
+#   - CUDA 12.1
+#   - PyTorch 2.5.1+cu121
+#   - Tested on Ubuntu 22.04 with NVIDIA drivers 535+
+#
+# For other CUDA versions:
+#   - CUDA 11.8: Use --index-url https://download.pytorch.org/whl/cu118
+#   - CPU only:  Use --index-url https://download.pytorch.org/whl/cpu
+#
+# See also: PYTORCH_ENVIRONMENT_FIX_REPORT.md
+# ===========================================================================================
+
+# PyTorch with CUDA 12.1 support (pinned versions for stability)
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+
+# ===========================================================================================
+# After installing PyTorch, install the rest of the dependencies:
+#   pip install -r requirements.txt
+#   pip install -e .
+# ===========================================================================================
+

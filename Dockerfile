@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for AutoVoice
 # Stage 1: Builder - Compile CUDA extensions and create wheel
-FROM nvidia/cuda:12.9.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.1.0-devel-ubuntu22.04 AS builder
 
 # Build arguments for metadata
 ARG BUILD_DATE
@@ -47,7 +47,7 @@ RUN python setup.py build_ext --inplace && \
     python setup.py bdist_wheel
 
 # Stage 2: Runtime - Smaller image with only runtime dependencies
-FROM nvidia/cuda:12.9.0-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 AS runtime
 
 # Build arguments for metadata
 ARG BUILD_DATE

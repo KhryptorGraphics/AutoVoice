@@ -1,0 +1,284 @@
+[1m============================= test session starts ==============================[0m
+platform linux -- Python 3.13.5, pytest-8.3.4, pluggy-1.5.0 -- /home/kp/anaconda3/bin/python
+cachedir: .pytest_cache
+rootdir: /home/kp/autovoice
+configfile: pytest.ini
+plugins: cov-7.0.0, anyio-4.7.0
+[1mcollecting ... [0mcollected 777 items / 9 errors / 2 skipped
+
+==================================== ERRORS ====================================
+[31m[1m______________ ERROR collecting tests/test_conversion_pipeline.py ______________[0m
+[31mImportError while importing test module '/home/kp/autovoice/tests/test_conversion_pipeline.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../anaconda3/lib/python3.13/site-packages/_pytest/python.py:493: in importtestmodule
+    mod = import_path(
+../anaconda3/lib/python3.13/site-packages/_pytest/pathlib.py:587: in import_path
+    importlib.import_module(module_name)
+../anaconda3/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+<frozen importlib._bootstrap>:1387: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1331: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:935: in _load_unlocked
+    ???
+../anaconda3/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:184: in exec_module
+    exec(co, module.__dict__)
+tests/test_conversion_pipeline.py:18: in <module>
+    from src.auto_voice.utils.logging_config import get_logger
+src/__init__.py:13: in <module>
+    from .web import *
+src/web/__init__.py:4: in <module>
+    from .api import VoiceAPI
+src/web/api.py:3: in <module>
+    from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+E   ModuleNotFoundError: No module named 'fastapi'[0m
+[31m[1m_______________ ERROR collecting tests/test_core_integration.py ________________[0m
+[31mImportError while importing test module '/home/kp/autovoice/tests/test_core_integration.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../anaconda3/lib/python3.13/site-packages/_pytest/python.py:493: in importtestmodule
+    mod = import_path(
+../anaconda3/lib/python3.13/site-packages/_pytest/pathlib.py:587: in import_path
+    importlib.import_module(module_name)
+../anaconda3/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+<frozen importlib._bootstrap>:1387: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1331: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:935: in _load_unlocked
+    ???
+../anaconda3/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:184: in exec_module
+    exec(co, module.__dict__)
+tests/test_core_integration.py:43: in <module>
+    from src.auto_voice.audio.source_separator import VocalSeparator, SeparationError
+src/__init__.py:13: in <module>
+    from .web import *
+src/web/__init__.py:4: in <module>
+    from .api import VoiceAPI
+src/web/api.py:3: in <module>
+    from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+E   ModuleNotFoundError: No module named 'fastapi'[0m
+[31m[1m__________ ERROR collecting tests/test_dataset_verification_fixes.py ___________[0m
+[31mImportError while importing test module '/home/kp/autovoice/tests/test_dataset_verification_fixes.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../anaconda3/lib/python3.13/site-packages/_pytest/python.py:493: in importtestmodule
+    mod = import_path(
+../anaconda3/lib/python3.13/site-packages/_pytest/pathlib.py:587: in import_path
+    importlib.import_module(module_name)
+../anaconda3/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+<frozen importlib._bootstrap>:1387: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1331: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:935: in _load_unlocked
+    ???
+../anaconda3/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:184: in exec_module
+    exec(co, module.__dict__)
+tests/test_dataset_verification_fixes.py:26: in <module>
+    from src.auto_voice.training.dataset import (
+src/__init__.py:13: in <module>
+    from .web import *
+src/web/__init__.py:4: in <module>
+    from .api import VoiceAPI
+src/web/api.py:3: in <module>
+    from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+E   ModuleNotFoundError: No module named 'fastapi'[0m
+[31m[1m________ ERROR collecting tests/test_singing_converter_enhancements.py _________[0m
+[31mImportError while importing test module '/home/kp/autovoice/tests/test_singing_converter_enhancements.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../anaconda3/lib/python3.13/site-packages/_pytest/python.py:493: in importtestmodule
+    mod = import_path(
+../anaconda3/lib/python3.13/site-packages/_pytest/pathlib.py:587: in import_path
+    importlib.import_module(module_name)
+../anaconda3/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+<frozen importlib._bootstrap>:1387: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1331: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:935: in _load_unlocked
+    ???
+../anaconda3/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:184: in exec_module
+    exec(co, module.__dict__)
+tests/test_singing_converter_enhancements.py:15: in <module>
+    from src.auto_voice.models.singing_voice_converter import (
+src/__init__.py:13: in <module>
+    from .web import *
+src/web/__init__.py:4: in <module>
+    from .api import VoiceAPI
+src/web/api.py:3: in <module>
+    from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+E   ModuleNotFoundError: No module named 'fastapi'[0m
+[31m[1m______________ ERROR collecting tests/test_trainer_local_rank.py _______________[0m
+[31mImportError while importing test module '/home/kp/autovoice/tests/test_trainer_local_rank.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../anaconda3/lib/python3.13/site-packages/_pytest/python.py:493: in importtestmodule
+    mod = import_path(
+../anaconda3/lib/python3.13/site-packages/_pytest/pathlib.py:587: in import_path
+    importlib.import_module(module_name)
+../anaconda3/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+<frozen importlib._bootstrap>:1387: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1331: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:935: in _load_unlocked
+    ???
+../anaconda3/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:184: in exec_module
+    exec(co, module.__dict__)
+tests/test_trainer_local_rank.py:14: in <module>
+    from src.auto_voice.training.trainer import (
+src/__init__.py:13: in <module>
+    from .web import *
+src/web/__init__.py:4: in <module>
+    from .api import VoiceAPI
+src/web/api.py:3: in <module>
+    from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+E   ModuleNotFoundError: No module named 'fastapi'[0m
+[31m[1m___________ ERROR collecting tests/test_training_voice_conversion.py ___________[0m
+[31mImportError while importing test module '/home/kp/autovoice/tests/test_training_voice_conversion.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../anaconda3/lib/python3.13/site-packages/_pytest/python.py:493: in importtestmodule
+    mod = import_path(
+../anaconda3/lib/python3.13/site-packages/_pytest/pathlib.py:587: in import_path
+    importlib.import_module(module_name)
+../anaconda3/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+<frozen importlib._bootstrap>:1387: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1331: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:935: in _load_unlocked
+    ???
+../anaconda3/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:184: in exec_module
+    exec(co, module.__dict__)
+tests/test_training_voice_conversion.py:22: in <module>
+    from src.auto_voice.training import (
+src/__init__.py:13: in <module>
+    from .web import *
+src/web/__init__.py:4: in <module>
+    from .api import VoiceAPI
+src/web/api.py:3: in <module>
+    from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+E   ModuleNotFoundError: No module named 'fastapi'[0m
+[31m[1m_____________________ ERROR collecting tests/test_utils.py _____________________[0m
+[31mImportError while importing test module '/home/kp/autovoice/tests/test_utils.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../anaconda3/lib/python3.13/site-packages/_pytest/python.py:493: in importtestmodule
+    mod = import_path(
+../anaconda3/lib/python3.13/site-packages/_pytest/pathlib.py:587: in import_path
+    importlib.import_module(module_name)
+../anaconda3/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+<frozen importlib._bootstrap>:1387: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1331: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:935: in _load_unlocked
+    ???
+../anaconda3/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:184: in exec_module
+    exec(co, module.__dict__)
+tests/test_utils.py:14: in <module>
+    from src.auto_voice.utils import (
+src/__init__.py:13: in <module>
+    from .web import *
+src/web/__init__.py:4: in <module>
+    from .api import VoiceAPI
+src/web/api.py:3: in <module>
+    from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+E   ModuleNotFoundError: No module named 'fastapi'[0m
+[31m[1m_______________ ERROR collecting tests/test_voice_conversion.py ________________[0m
+[31mImportError while importing test module '/home/kp/autovoice/tests/test_voice_conversion.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../anaconda3/lib/python3.13/site-packages/_pytest/python.py:493: in importtestmodule
+    mod = import_path(
+../anaconda3/lib/python3.13/site-packages/_pytest/pathlib.py:587: in import_path
+    importlib.import_module(module_name)
+../anaconda3/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+<frozen importlib._bootstrap>:1387: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1331: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:935: in _load_unlocked
+    ???
+../anaconda3/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:184: in exec_module
+    exec(co, module.__dict__)
+tests/test_voice_conversion.py:13: in <module>
+    from src.auto_voice.models.content_encoder import ContentEncoder, ContentEncodingError
+src/__init__.py:13: in <module>
+    from .web import *
+src/web/__init__.py:4: in <module>
+    from .api import VoiceAPI
+src/web/api.py:3: in <module>
+    from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+E   ModuleNotFoundError: No module named 'fastapi'[0m
+[31m[1m_______________ ERROR collecting tests/test_vtlp_augmentation.py _______________[0m
+[31mImportError while importing test module '/home/kp/autovoice/tests/test_vtlp_augmentation.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+../anaconda3/lib/python3.13/site-packages/_pytest/python.py:493: in importtestmodule
+    mod = import_path(
+../anaconda3/lib/python3.13/site-packages/_pytest/pathlib.py:587: in import_path
+    importlib.import_module(module_name)
+../anaconda3/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+<frozen importlib._bootstrap>:1387: in _gcd_import
+    ???
+<frozen importlib._bootstrap>:1360: in _find_and_load
+    ???
+<frozen importlib._bootstrap>:1331: in _find_and_load_unlocked
+    ???
+<frozen importlib._bootstrap>:935: in _load_unlocked
+    ???
+../anaconda3/lib/python3.13/site-packages/_pytest/assertion/rewrite.py:184: in exec_module
+    exec(co, module.__dict__)
+tests/test_vtlp_augmentation.py:14: in <module>
+    from src.auto_voice.training.dataset import SingingAugmentation
+src/__init__.py:13: in <module>
+    from .web import *
+src/web/__init__.py:4: in <module>
+    from .api import VoiceAPI
+src/web/api.py:3: in <module>
+    from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+E   ModuleNotFoundError: No module named 'fastapi'[0m
+[36m[1m=========================== short test summary info ============================[0m
+[33mSKIPPED[0m [1] tests/test_int8_calibration.py:18: TensorRT not available
+[33mSKIPPED[0m [1] tests/test_voice_cloner_extensions.py:10: VoiceCloner not available
+[31mERROR[0m tests/test_conversion_pipeline.py
+[31mERROR[0m tests/test_core_integration.py
+[31mERROR[0m tests/test_dataset_verification_fixes.py
+[31mERROR[0m tests/test_singing_converter_enhancements.py
+[31mERROR[0m tests/test_trainer_local_rank.py
+[31mERROR[0m tests/test_training_voice_conversion.py
+[31mERROR[0m tests/test_utils.py
+[31mERROR[0m tests/test_voice_conversion.py
+[31mERROR[0m tests/test_vtlp_augmentation.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 9 errors during collection !!!!!!!!!!!!!!!!!!!!
+[31m======================== [33m2 skipped[0m, [31m[1m9 errors[0m[31m in 15.55s[0m[31m =========================[0m

@@ -4,6 +4,9 @@
 
 set -e
 
+# Compute project root dynamically for portability
+PROJECT_ROOT=$(cd "$(dirname "$0")"/.. && pwd)
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -180,10 +183,22 @@ case $choice in
         fi
 
         print_step "Removing existing PyTorch"
-        pip uninstall torch torchvision torchaudio -y 2>/dev/null || true
+        pip uninstall torch torchvision torchaudio functorch -y 2>/dev/null || true
 
-        if [ -d "/home/kp/anaconda3/lib/python${PYTHON_MAJOR}.${PYTHON_MINOR}/site-packages/torch" ]; then
-            rm -rf "/home/kp/anaconda3/lib/python${PYTHON_MAJOR}.${PYTHON_MINOR}/site-packages/torch"* 2>/dev/null || true
+        # Use torch-aware path discovery for targeted cleanup
+        # Only remove specific torch packages, not all torch* (to preserve torchmetrics, torchtext, etc.)
+        TORCH_PARENT=$(python -c "import torch, pathlib; print(pathlib.Path(torch.__file__).parent.parent)" 2>/dev/null || echo "")
+        if [ -n "$TORCH_PARENT" ] && [ -d "$TORCH_PARENT" ]; then
+            print_status "Removing torch packages from: ${TORCH_PARENT}"
+            # Remove only core PyTorch packages explicitly
+            rm -rf "${TORCH_PARENT}/torch" 2>/dev/null || true
+            rm -rf "${TORCH_PARENT}/torch-"* 2>/dev/null || true
+            rm -rf "${TORCH_PARENT}/torchvision" 2>/dev/null || true
+            rm -rf "${TORCH_PARENT}/torchvision-"* 2>/dev/null || true
+            rm -rf "${TORCH_PARENT}/torchaudio" 2>/dev/null || true
+            rm -rf "${TORCH_PARENT}/torchaudio-"* 2>/dev/null || true
+            rm -rf "${TORCH_PARENT}/functorch" 2>/dev/null || true
+            rm -rf "${TORCH_PARENT}/functorch-"* 2>/dev/null || true
         fi
 
         print_step "Clearing pip cache"
@@ -221,12 +236,42 @@ case $choice in
     2)
         print_step "Option 2: Python 3.12 Environment Setup"
         echo ""
+
+        # Check if conda is available
+        if ! command -v conda &> /dev/null; then
+            print_error "Conda is not installed or not in PATH"
+            echo ""
+            echo "Option 2 requires conda for environment management."
+            echo ""
+            echo "ALTERNATIVES:"
+            echo ""
+            echo "1. Install Miniconda (recommended):"
+            echo "   wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+            echo "   bash Miniconda3-latest-Linux-x86_64.sh"
+            echo "   source ~/.bashrc"
+            echo "   # Then re-run this script"
+            echo ""
+            echo "2. Use pip + venv fallback (manual setup):"
+            echo "   python3.12 -m venv ${PROJECT_ROOT}_py312_venv"
+            echo "   source ${PROJECT_ROOT}_py312_venv/bin/activate"
+            echo "   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \\"
+            echo "     --index-url https://download.pytorch.org/whl/cu121"
+            echo "   pip install -r ${PROJECT_ROOT}/requirements.txt"
+            echo "   pip install -e ${PROJECT_ROOT}"
+            echo ""
+            echo "For more information, see:"
+            echo "  - https://docs.conda.io/en/latest/miniconda.html"
+            echo "  - PYTORCH_ENVIRONMENT_FIX_REPORT.md"
+            echo ""
+            exit 1
+        fi
+
         echo "This will guide you through creating a new Python 3.12 environment."
         echo ""
         echo "MANUAL STEPS REQUIRED:"
         echo ""
         echo "1. Backup current environment:"
-        echo "   conda env export > /home/kp/autovoice/environment_backup_py${PYTHON_MAJOR}${PYTHON_MINOR}.yml"
+        echo "   conda env export > ${PROJECT_ROOT}/environment_backup_py${PYTHON_MAJOR}${PYTHON_MINOR}.yml"
         echo ""
         echo "2. Create new Python 3.12 environment:"
         echo "   conda create -n autovoice_py312 python=3.12 -y"
@@ -234,15 +279,21 @@ case $choice in
         echo "3. Activate new environment:"
         echo "   conda activate autovoice_py312"
         echo ""
-        echo "4. Install stable PyTorch:"
+        echo "4. Install stable PyTorch (RECOMMENDED - pip method for reliability):"
         if [ "$CUDA_AVAILABLE" = true ]; then
-            echo "   conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -y"
+            echo "   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121"
+            echo ""
+            echo "   Alternative (conda):"
+            echo "   conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.1 -c pytorch -c nvidia -y"
         else
-            echo "   conda install pytorch torchvision torchaudio cpuonly -c pytorch -y"
+            echo "   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
+            echo ""
+            echo "   Alternative (conda):"
+            echo "   conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 cpuonly -c pytorch -y"
         fi
         echo ""
         echo "5. Install project dependencies:"
-        echo "   cd /home/kp/autovoice"
+        echo "   cd ${PROJECT_ROOT}"
         echo "   pip install -r requirements.txt"
         echo ""
         echo "6. Build CUDA extensions:"
@@ -256,31 +307,134 @@ case $choice in
         read -p "Create a helper script for these steps? (Y/n): " create_script
 
         if [ "$create_script" != "n" ] && [ "$create_script" != "N" ]; then
-            HELPER_SCRIPT="/home/kp/autovoice/scripts/setup_python312_helper.sh"
-            cat > "$HELPER_SCRIPT" << 'EOFHELPER'
+            HELPER_SCRIPT="${PROJECT_ROOT}/scripts/setup_python312_helper.sh"
+
+            # Determine CUDA installation method based on availability
+            if [ "$CUDA_AVAILABLE" = true ]; then
+                PYTORCH_INSTALL_CMD="conda run -n autovoice_py312 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121"
+                PYTORCH_INSTALL_ALT="# Alternative (conda): conda run -n autovoice_py312 conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.1 -c pytorch -c nvidia -y"
+            else
+                PYTORCH_INSTALL_CMD="conda run -n autovoice_py312 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
+                PYTORCH_INSTALL_ALT="# Alternative (conda): conda run -n autovoice_py312 conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 cpuonly -c pytorch -y"
+            fi
+
+            cat > "$HELPER_SCRIPT" << EOFHELPER
 #!/bin/bash
-# Helper script for Python 3.12 environment setup
+# Helper script for Python 3.12 environment setup with automated PyTorch installation
+# Generated by setup_pytorch_env.sh
 
 set -e
 
-echo "Backing up current environment..."
-conda env export > /home/kp/autovoice/environment_backup_$(python --version | awk '{print $2}' | tr -d .).yml
+# Compute project root dynamically for portability
+PROJECT_ROOT=\$(cd "\$(dirname "\$0")"/.. && pwd)
 
-echo "Creating Python 3.12 environment..."
-conda create -n autovoice_py312 python=3.12 -y
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
+# Unicode symbols
+CHECK="✓"
+CROSS="✗"
+INFO="ℹ"
+
+# Function to print status messages
+print_status() {
+    echo -e "\${BLUE}[\${INFO}]\${NC} \$1"
+}
+
+print_success() {
+    echo -e "\${GREEN}[\${CHECK}]\${NC} \$1"
+}
+
+print_error() {
+    echo -e "\${RED}[\${CROSS}]\${NC} \$1"
+}
+
+print_warning() {
+    echo -e "\${YELLOW}[!]\${NC} \$1"
+}
+
+echo -e "\${BLUE}╔════════════════════════════════════════════════════════╗\${NC}"
+echo -e "\${BLUE}║  AutoVoice Python 3.12 Environment Setup Helper       ║\${NC}"
+echo -e "\${BLUE}╚════════════════════════════════════════════════════════╝\${NC}"
 echo ""
-echo "Environment created! Now run:"
+
+# Step 1: Backup current environment
+print_status "[1/6] Backing up current environment..."
+conda env export > \${PROJECT_ROOT}/environment_backup_\$(python --version 2>&1 | awk '{print \$2}' | tr -d .).yml 2>/dev/null || true
+print_success "Backup saved"
+
+# Step 2: Create or verify Python 3.12 environment
 echo ""
-echo "  conda activate autovoice_py312"
-echo "  cd /home/kp/autovoice"
-echo "  ./scripts/setup_pytorch_env.sh"
+print_status "[2/6] Checking for autovoice_py312 environment..."
+if conda env list | grep -q "^autovoice_py312 "; then
+    print_warning "Environment autovoice_py312 already exists, skipping creation"
+else
+    print_status "Creating Python 3.12 environment..."
+    conda create -n autovoice_py312 python=3.12 -y
+    print_success "Environment created"
+fi
+
+# Step 3: Install PyTorch with CUDA support
+echo ""
+print_status "[3/6] Installing PyTorch 2.5.1 with CUDA 12.1 support..."
+echo ""
+print_status "Running: ${PYTORCH_INSTALL_CMD}"
+${PYTORCH_INSTALL_CMD}
+print_success "PyTorch installed successfully"
+echo ""
+print_status "Alternative installation method (if needed):"
+echo "  ${PYTORCH_INSTALL_ALT}"
+
+# Step 4: Install project dependencies
+echo ""
+print_status "[4/6] Installing project dependencies from requirements.txt..."
+conda run -n autovoice_py312 pip install -r \${PROJECT_ROOT}/requirements.txt
+print_success "Dependencies installed successfully"
+
+# Step 5: Verify PyTorch installation and check for libtorch_global_deps.so
+echo ""
+print_status "[5/6] Verifying PyTorch installation..."
+echo ""
+conda run -n autovoice_py312 python -c "import torch, os, importlib.util as iu; p=os.path.join(os.path.dirname(torch.__file__),'lib','libtorch_global_deps.so'); print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('libtorch_global_deps.so exists:', os.path.exists(p)); print('Library path:', p if os.path.exists(p) else 'NOT FOUND')"
+echo ""
+print_success "Verification complete"
+
+# Step 6: Print next steps
+echo ""
+print_status "[6/6] Setup complete! Next steps:"
+echo ""
+echo -e "\${BLUE}════════════════════════════════════════════════════════\${NC}"
+echo -e "\${GREEN}  Environment Setup Complete!\${NC}"
+echo -e "\${BLUE}════════════════════════════════════════════════════════\${NC}"
+echo ""
+echo "To use the new environment:"
+echo "  1. Activate the environment:"
+echo "     conda activate autovoice_py312"
+echo ""
+echo "  2. (Optional) Build CUDA extensions after installing CUDA toolkit:"
+echo "     cd \${PROJECT_ROOT}"
+echo "     pip install -e ."
+echo ""
+echo "  3. Run tests to verify everything works:"
+echo "     pytest tests/"
+echo ""
+echo -e "\${BLUE}════════════════════════════════════════════════════════\${NC}"
+echo ""
+echo "For detailed instructions, see:"
+echo "  - docs/pytorch_library_issue.md"
+echo "  - PYTORCH_ENVIRONMENT_FIX_REPORT.md"
+echo ""
+print_success "All automated steps completed successfully!"
 echo ""
 EOFHELPER
             chmod +x "$HELPER_SCRIPT"
             print_success "Helper script created: ${HELPER_SCRIPT}"
             echo ""
-            echo "Run the helper script to start:"
+            echo "Run the helper script to start automated setup:"
             echo "  ./scripts/setup_python312_helper.sh"
         fi
         ;;

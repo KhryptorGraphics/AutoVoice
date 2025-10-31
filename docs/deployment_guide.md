@@ -241,7 +241,7 @@ print(f'AudioProcessor created on device: {processor.device}')
 docker --version
 
 # Check NVIDIA Container Toolkit
-docker run --rm --gpus all nvidia/cuda:12.9.0-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 ```
 
 If nvidia-docker is not installed:
@@ -749,7 +749,7 @@ TORCH_CUDA_ARCH_LIST="80" python setup.py build_ext --inplace
 
 ```bash
 # 1. Test nvidia-docker installation
-docker run --rm --gpus all nvidia/cuda:12.9.0-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 
 # 2. Reinstall NVIDIA Container Toolkit
 sudo apt-get purge -y nvidia-container-toolkit
@@ -760,7 +760,7 @@ sudo systemctl restart docker
 docker info | grep -i runtime
 
 # 4. Use explicit runtime flag
-docker run --runtime=nvidia --rm nvidia/cuda:12.9.0-base-ubuntu22.04 nvidia-smi
+docker run --runtime=nvidia --rm nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 
 # 5. Verify docker-compose GPU configuration
 docker-compose config

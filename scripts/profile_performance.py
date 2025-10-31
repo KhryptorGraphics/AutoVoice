@@ -215,6 +215,13 @@ class PerformanceProfiler:
         # Build performance breakdown
         performance_data = {
             'device': device,
+            'gpu_info': {
+                'name': torch.cuda.get_device_name(0) if device == 'cuda' else None,
+                'compute_capability': '.'.join(map(str, torch.cuda.get_device_capability(0))) if device == 'cuda' else None,
+                'total_memory_gb': torch.cuda.get_device_properties(0).total_memory / 1e9 if device == 'cuda' else None
+            },
+            'pytorch_version': torch.__version__,
+            'cuda_version': torch.version.cuda if device == 'cuda' else None,
             'total_time_ms': elapsed_time * 1000,
             'stage_breakdown_ms': total_stage_time * 1000,
             'average_gpu_utilization': avg_gpu_util if device == 'cuda' else 0.0,
@@ -272,6 +279,17 @@ class PerformanceProfiler:
 
 def main() -> int:
     """Main entry point."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Profile voice conversion pipeline performance')
+    parser.add_argument('--output-dir', type=str, default='validation_results',
+                       help='Output directory for results')
+    parser.add_argument('--audio-file', type=str, default=None,
+                       help='Audio file to profile (default: auto-detect from test data)')
+    parser.add_argument('--profile-id', type=str, default=None,
+                       help='Voice profile ID to use (default: auto-detect from test data)')
+    args = parser.parse_args()
+
     print("=== Voice Conversion Performance Profiling ===\n")
 
     # Check GPU monitoring availability
@@ -281,21 +299,58 @@ def main() -> int:
         print("⚠️  GPU monitoring not available (pynvml not installed or no GPU)")
 
     # Get test audio file
-    test_audio = Path(__file__).parent.parent / "tests" / "data" / "test_song.wav"
+    if args.audio_file:
+        test_audio = Path(args.audio_file)
+    else:
+        # Try benchmark test data first
+        test_audio = Path(__file__).parent.parent / "tests" / "data" / "benchmark" / "audio_30s_22050hz.wav"
+
+        if not test_audio.exists():
+            # Fallback to old test data location
+            test_audio = Path(__file__).parent.parent / "tests" / "data" / "test_song.wav"
 
     if not test_audio.exists():
         print(f"\nError: Test audio file not found: {test_audio}")
-        print("Please create test data first using scripts/generate_test_data.py")
+        print("Please generate test data first using scripts/generate_benchmark_test_data.py")
         return 1
 
-    # Create profiler
-    profiler = PerformanceProfiler()
+    # Get profile ID
+    if args.profile_id:
+        profile_id = args.profile_id
+    else:
+        # Try to load from metadata
+        metadata_file = Path(__file__).parent.parent / "tests" / "data" / "benchmark" / "metadata.json"
+        if metadata_file.exists():
+            try:
+                import json
+                with open(metadata_file) as f:
+                    metadata = json.load(f)
+                    profile_id = metadata['profiles'][0]['profile_id'] if metadata.get('profiles') else "test_profile"
+            except Exception:
+                profile_id = "test_profile"
+        else:
+            profile_id = "test_profile"
+
+    # Create profiler with custom output directory
+    profiler = PerformanceProfiler(output_dir=args.output_dir)
 
     # Profile pipeline
-    performance_data = profiler.profile_pipeline(
-        audio_file=str(test_audio),
-        profile_id="test_profile"
-    )
+    try:
+        performance_data = profiler.profile_pipeline(
+            audio_file=str(test_audio),
+            profile_id=profile_id
+        )
+    except ImportError as e:
+        print(f"\nError: Required modules not available: {e}")
+        print("Please ensure SingingConversionPipeline is installed and CUDA extensions are built.")
+        return 1
+    except RuntimeError as e:
+        if 'CUDA' in str(e):
+            print(f"\nError: CUDA error during profiling: {e}")
+            print("Please check GPU availability and CUDA installation.")
+        else:
+            print(f"\nError: Runtime error during profiling: {e}")
+        return 1
 
     # Save results
     if 'error' not in performance_data:

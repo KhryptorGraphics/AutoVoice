@@ -9,6 +9,10 @@ services:
     container_name: auto_voice_app
     restart: unless-stopped
 
+    # GPU configuration for docker-compose (non-Swarm)
+    # Use 'gpus: all' for Compose v2 or 'runtime: nvidia' for older versions
+    runtime: nvidia
+
     ports:
       - "5000:5000"
       - "8080:8080"
@@ -20,6 +24,9 @@ services:
       - METRICS_PORT=5000
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - FLASK_ENV=production
+      # GPU environment variables for non-Swarm docker-compose
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
     volumes:
       - ./data:/app/data
@@ -30,6 +37,7 @@ services:
     networks:
       - auto-voice-net
 
+    # Deploy block for Swarm mode (kept for compatibility)
     deploy:
       resources:
         limits:
