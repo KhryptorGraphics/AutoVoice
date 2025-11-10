@@ -67,3 +67,9 @@ firebase-debug.log
 
 # Backup files
 *.bak
+
+# Model files (too large for GitHub)
+*.pt
+*.pth
+*.ckpt
+models/pretrained/
