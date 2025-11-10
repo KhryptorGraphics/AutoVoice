@@ -1,0 +1,55 @@
+# Model Configuration for Auto Voice Cloning
+# This file defines neural model configurations for downloading and loading
+
+models:
+  # HuBERT model for speech representation learning
+  hubert_base:
+    name: hubert_base
+    model_type: hubert
+    version: 1.0.0
+    url: https://huggingface.co/facebook/hubert-base-ls960/resolve/main/pytorch_model.bin
+    config_url: https://huggingface.co/facebook/hubert-base-ls960/resolve/main/config.json
+    requires_gpu: false
+    min_memory_gb: 4.0
+    metadata:
+      description: HuBERT base model for speech representation
+      sample_rate: 16000
+      hidden_size: 768
+      model_size_mb: 377
+
+  # HiFi-GAN universal vocoder for audio synthesis
+  hifigan_universal:
+    name: hifigan_universal
+    model_type: hifigan
+    version: 1.0.0
+    url: https://huggingface.co/nvidia/hifigan/resolve/main/generator_v3
+    config_url: https://huggingface.co/nvidia/hifigan/resolve/main/config.json
+    requires_gpu: true
+    min_memory_gb: 2.0
+    metadata:
+      description: HiFi-GAN universal vocoder
+      sample_rate: 22050
+      hop_size: 256
+      model_size_mb: 55
+
+  # ECAPA-TDNN speaker encoder for speaker verification
+  speaker_encoder:
+    name: speaker_encoder
+    model_type: speaker_encoder
+    version: 1.0.0
+    url: https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb/resolve/main/embedding_model.ckpt
+    requires_gpu: false
+    min_memory_gb: 2.0
+    metadata:
+      description: ECAPA-TDNN speaker encoder
+      embedding_dim: 192
+      sample_rate: 16000
+      model_size_mb: 43
+
+# Environment variables for model directories
+# These can be overridden by setting environment variables
+env:
+  MODEL_DIR: models/  # Default model directory
+  CACHE_DIR: ~/.cache/auto_voice/  # Cache directory for downloads
+  USE_GPU: auto  # auto, true, or false
+  DOWNLOAD_TIMEOUT: 3600  # Download timeout in seconds

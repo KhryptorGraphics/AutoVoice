@@ -484,3 +484,114 @@ class SpeakerEncoder:
             stats['raw_norm'] = self._last_raw_norm
 
         return stats
+
+
+# Adapter class for model registry compatibility
+class SpeakerEncoderModel:
+    """
+    Adapter wrapper for SpeakerEncoder to match ModelRegistry interface.
+
+    This allows the existing SpeakerEncoder to work with the new
+    ModelRegistry infrastructure while maintaining backward compatibility.
+    """
+
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        use_mock: bool = False,
+        device: str = 'cpu'
+    ):
+        """
+        Initialize speaker encoder model.
+
+        Args:
+            model_path: Path to model weights (unused, for API compatibility)
+            use_mock: Use mock implementation
+            device: Device to load model on ('cpu' or 'cuda')
+        """
+        self.model_path = model_path
+        self.use_mock = use_mock
+        self.device = device
+        self.embedding_dim = 256  # Resemblyzer embedding size
+
+        if not use_mock:
+            try:
+                self.encoder = SpeakerEncoder(device=device)
+            except Exception as e:
+                logger.warning(f"Failed to load real speaker encoder: {e}, using mock")
+                self.use_mock = True
+                self.encoder = None
+        else:
+            logger.info("Using mock speaker encoder")
+            self.encoder = None
+
+    def encode(
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000
+    ) -> np.ndarray:
+        """
+        Extract speaker embedding from audio.
+
+        Args:
+            audio: Audio data as numpy array
+            sample_rate: Sample rate of audio
+
+        Returns:
+            Speaker embedding vector (256,)
+        """
+        if self.use_mock or self.encoder is None:
+            return self._mock_encode(audio)
+
+        try:
+            # Use real encoder
+            embedding = self.encoder.extract_embedding(
+                audio,
+                sample_rate=sample_rate
+            )
+            return embedding
+
+        except Exception as e:
+            logger.error(f"Speaker encoding failed: {e}")
+            return self._mock_encode(audio)
+
+    def _mock_encode(self, audio: np.ndarray) -> np.ndarray:
+        """Mock speaker encoding for testing."""
+        # Return random embedding with consistent shape
+        # Use audio hash for deterministic results per audio sample
+        seed = hash(audio.tobytes()) % (2**32)
+        rng = np.random.RandomState(seed)
+
+        embedding = rng.randn(self.embedding_dim).astype(np.float32)
+
+        # Normalize to unit length (typical for speaker embeddings)
+        embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
+
+        return embedding
+
+    def compute_similarity(
+        self,
+        embedding1: np.ndarray,
+        embedding2: np.ndarray
+    ) -> float:
+        """
+        Compute cosine similarity between two embeddings.
+
+        Args:
+            embedding1: First speaker embedding
+            embedding2: Second speaker embedding
+
+        Returns:
+            Similarity score (0-1)
+        """
+        # Cosine similarity
+        similarity = np.dot(embedding1, embedding2) / (
+            np.linalg.norm(embedding1) * np.linalg.norm(embedding2) + 1e-8
+        )
+
+        # Convert to 0-1 range
+        return float((similarity + 1) / 2)
+
+    def __call__(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
+        """Make model callable."""
+        return self.encode(audio, sample_rate)

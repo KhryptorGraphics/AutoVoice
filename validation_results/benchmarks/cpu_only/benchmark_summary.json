@@ -1,0 +1,33 @@
+{
+  "environment": {
+    "timestamp": "2025-11-10T00:00:53.057608",
+    "python_version": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:09:02) [GCC 11.2.0]",
+    "pytorch_available": true,
+    "cuda_available": false,
+    "gpu_info": null,
+    "pytorch_version": "2.9.0+cu128"
+  },
+  "metrics": {
+    "pytest": {
+      "total_tests": 30,
+      "passed": 2,
+      "failed": 22,
+      "duration": 30.477932691574097
+    },
+    "tts": {
+      "tts_latency_ms": 11.075899999923422,
+      "tts_throughput": 90.28611670445868,
+      "tts_memory_peak_mb": 0.0
+    },
+    "quality": {
+      "pitch_accuracy_hz": 0.0,
+      "speaker_similarity": 0.89,
+      "naturalness_score": 4.3
+    }
+  },
+  "files": {
+    "pytest": "validation_results/benchmarks/cpu_only/pytest_results.json",
+    "tts": "validation_results/benchmarks/cpu_only/tts_profile.json",
+    "quality": "validation_results/benchmarks/cpu_only/quality_metrics.json"
+  }
+}

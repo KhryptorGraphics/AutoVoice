@@ -1,0 +1,15 @@
+{
+  "tts_latency_ms": 11.075899999923422,
+  "tts_throughput": 90.28611670445868,
+  "tts_memory_peak_mb": 0.0,
+  "device": "cpu",
+  "gpu_info": null,
+  "text_input": "Hello, this is a test of the text to speech system.",
+  "num_iterations": 5,
+  "latencies_ms": {
+    "mean": 11.075899999923422,
+    "std": 0.037942851812043724,
+    "min": 11.01089999974647,
+    "max": 11.119599999801721
+  }
+}

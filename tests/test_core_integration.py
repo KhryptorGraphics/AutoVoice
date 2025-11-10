@@ -507,7 +507,7 @@ class TestVoiceClonerConverterIntegration:
 
         try:
             # Instantiate SingingVoiceConverter
-            converter = SingingVoiceConverter(device=device)
+            converter = SingingVoiceConverter(config={'device': device})
         except Exception as e:
             pytest.skip(f"SingingVoiceConverter not available: {e}")
 
@@ -958,7 +958,7 @@ class TestPerformance:
 
         # Instantiate converter
         try:
-            converter = SingingVoiceConverter(device='cuda')
+            converter = SingingVoiceConverter(config={'device': 'cuda'})
         except Exception as e:
             pytest.skip(f"SingingVoiceConverter not available: {e}")
 

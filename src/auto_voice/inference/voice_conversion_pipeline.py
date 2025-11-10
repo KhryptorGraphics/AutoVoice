@@ -23,6 +23,11 @@ from ..gpu.cuda_kernels import (
     CUDAKernelError
 )
 
+try:
+    from ..models import ModelRegistry
+except ImportError:
+    ModelRegistry = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +67,11 @@ class PipelineConfig:
     cache_enabled: bool = True
     cache_dir: Optional[str] = None
 
+    # Model integration
+    use_mock_models: bool = True  # Use mock models by default for development
+    model_dir: str = 'models/'
+    enable_model_warmup: bool = False  # Warmup models during initialization
+
 
 class VoiceConversionError(Exception):
     """Exception raised when voice conversion fails."""
@@ -99,11 +109,17 @@ class VoiceConversionPipeline:
         ... )
     """
 
-    def __init__(self, config: Optional[PipelineConfig] = None):
+    def __init__(
+        self,
+        config: Optional[PipelineConfig] = None,
+        model_registry: Optional['ModelRegistry'] = None
+    ):
         """Initialize voice conversion pipeline.
 
         Args:
             config: Pipeline configuration
+            model_registry: Optional pre-initialized ModelRegistry.
+                          If not provided, will create one based on config.
         """
         self.config = config or PipelineConfig()
 
@@ -112,6 +128,25 @@ class VoiceConversionPipeline:
             'cuda' if torch.cuda.is_available() and self.config.use_cuda else 'cpu'
         )
         logger.info(f"Initializing pipeline on device: {self.device}")
+
+        # Initialize model registry
+        self.model_registry = model_registry
+        if self.model_registry is None and ModelRegistry is not None:
+            logger.info(f"Initializing ModelRegistry (mock={self.config.use_mock_models})")
+            self.model_registry = ModelRegistry(
+                model_dir=self.config.model_dir,
+                use_mock=self.config.use_mock_models
+            )
+
+            # Warmup models if requested
+            if self.config.enable_model_warmup and not self.config.use_mock_models:
+                logger.info("Warming up models...")
+                self.model_registry.warmup_models()
+
+        # Models are loaded lazily when needed
+        self._hubert_model = None
+        self._hifigan_model = None
+        self._speaker_encoder = None
 
         # Initialize CUDA kernels
         kernel_config = KernelConfig(
@@ -135,6 +170,30 @@ class VoiceConversionPipeline:
         }
 
         logger.info("Voice conversion pipeline initialized successfully")
+
+    @property
+    def hubert_model(self):
+        """Lazy-load HuBERT model."""
+        if self._hubert_model is None and self.model_registry is not None:
+            logger.info("Loading HuBERT model...")
+            self._hubert_model = self.model_registry.load_hubert()
+        return self._hubert_model
+
+    @property
+    def hifigan_model(self):
+        """Lazy-load HiFi-GAN model."""
+        if self._hifigan_model is None and self.model_registry is not None:
+            logger.info("Loading HiFi-GAN model...")
+            self._hifigan_model = self.model_registry.load_hifigan()
+        return self._hifigan_model
+
+    @property
+    def speaker_encoder(self):
+        """Lazy-load speaker encoder model."""
+        if self._speaker_encoder is None and self.model_registry is not None:
+            logger.info("Loading speaker encoder model...")
+            self._speaker_encoder = self.model_registry.load_speaker_encoder()
+        return self._speaker_encoder
 
     def convert(
         self,
@@ -238,8 +297,21 @@ class VoiceConversionPipeline:
 
         Returns:
             Preprocessed audio tensor
+
+        Raises:
+            VoiceConversionError: If sample rate is invalid
         """
         try:
+            # Validate sample rate
+            if sample_rate is None or sample_rate <= 0:
+                raise VoiceConversionError(
+                    f"Invalid sample rate: {sample_rate}. Must be positive."
+                )
+            if sample_rate > 192000:  # Sanity check for extremely high sample rates
+                raise VoiceConversionError(
+                    f"Sample rate {sample_rate} Hz is unreasonably high. Maximum: 192kHz."
+                )
+
             # Convert to tensor
             audio_tensor = torch.from_numpy(audio).float()
 

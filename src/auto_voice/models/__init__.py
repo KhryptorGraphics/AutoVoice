@@ -5,6 +5,13 @@
 
 from typing import TYPE_CHECKING
 
+# Direct imports for model registry (lightweight)
+from .model_registry import ModelRegistry, ModelConfig, ModelType
+from .model_loader import ModelLoader, ModelDownloader
+from .hubert_model import HuBERTModel
+from .hifigan_model import HiFiGANModel
+from .speaker_encoder import SpeakerEncoderModel
+
 if TYPE_CHECKING:
     from .transformer import VoiceTransformer
     from .hifigan import HiFiGANGenerator
@@ -32,7 +39,16 @@ __all__ = [
     'PitchEncoder',
     'PosteriorEncoder',
     'FlowDecoder',
-    'SingingVoiceConverter'
+    'SingingVoiceConverter',
+    # Model registry exports
+    'ModelRegistry',
+    'ModelConfig',
+    'ModelType',
+    'ModelLoader',
+    'ModelDownloader',
+    'HuBERTModel',
+    'HiFiGANModel',
+    'SpeakerEncoderModel',
 ]
 
 # Module-level cache for lazy-loaded classes

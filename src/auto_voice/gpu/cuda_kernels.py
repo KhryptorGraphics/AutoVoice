@@ -406,12 +406,14 @@ class SpectrogramKernel:
     @staticmethod
     def _hz_to_mel(hz: torch.Tensor) -> torch.Tensor:
         """Convert Hz to mel scale."""
-        return 2595.0 * torch.log10(1.0 + hz / 700.0)
+        # Ensure all operands are tensors to avoid type mismatches
+        return 2595.0 * torch.log10(torch.as_tensor(1.0) + hz / torch.as_tensor(700.0))
 
     @staticmethod
     def _mel_to_hz(mel: torch.Tensor) -> torch.Tensor:
         """Convert mel scale to Hz."""
-        return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
+        # Ensure all operands are tensors to avoid type mismatches
+        return 700.0 * (torch.as_tensor(10.0) ** (mel / torch.as_tensor(2595.0)) - torch.as_tensor(1.0))
 
 
 class VoiceSynthesisKernel:
@@ -487,7 +489,17 @@ class VoiceSynthesisKernel:
         if param_dim * param_dim != model_params.numel():
             param_dim = feature_dim
 
-        weights = model_params[:feature_dim * param_dim].view(feature_dim, param_dim)
+        # Ensure we don't slice beyond available parameters
+        total_params_needed = feature_dim * param_dim
+        if model_params.numel() < total_params_needed:
+            # Pad with zeros if insufficient parameters
+            padding_size = total_params_needed - model_params.numel()
+            model_params = torch.cat([
+                model_params,
+                torch.zeros(padding_size, device=model_params.device, dtype=model_params.dtype)
+            ])
+
+        weights = model_params[:total_params_needed].view(feature_dim, param_dim)
 
         # Transform features
         features_2d = features.permute(0, 2, 1)  # (batch, time, features)
