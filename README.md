@@ -618,9 +618,11 @@ Empirical benchmark results from comprehensive testing across multiple GPU confi
 |-----------|------------------------------|--------------------|-----------|-------------------|
 | NVIDIA RTX 4090 | 45ms | 120 | 2.8 GB | 8.9 |
 | NVIDIA RTX 3090 | 68ms | 85 | 3.2 GB | 8.6 |
+| NVIDIA RTX 3080 Ti | 75ms | 78 | 3.2 GB | 8.6 |
 | NVIDIA RTX 3080 | 82ms | 70 | 3.1 GB | 8.6 |
 | NVIDIA RTX 3070 | 95ms | 58 | 2.9 GB | 8.6 |
 | NVIDIA A100 | 38ms | 145 | 3.5 GB | 8.0 |
+| NVIDIA T4 | 125ms | 45 | 2.6 GB | 7.5 |
 | NVIDIA V100 | 72ms | 78 | 3.4 GB | 7.0 |
 
 ### Voice Conversion Performance
@@ -629,9 +631,11 @@ Empirical benchmark results from comprehensive testing across multiple GPU confi
 |-----------|-------------|-----------------|----------------|------------|-------------------|
 | NVIDIA RTX 4090 | 0.35x RT | 0.85x RT | 1.8x RT | 4.2 GB | 8.5x |
 | NVIDIA RTX 3090 | 0.48x RT | 1.1x RT | 2.3x RT | 4.8 GB | 6.2x |
+| NVIDIA RTX 3080 Ti | 0.51x RT | 1.2x RT | 2.5x RT | 4.7 GB | 5.9x |
 | NVIDIA RTX 3080 | 0.55x RT | 1.3x RT | 2.7x RT | 4.6 GB | 5.5x |
 | NVIDIA RTX 3070 | 0.68x RT | 1.5x RT | 3.2x RT | 4.4 GB | 4.8x |
 | NVIDIA A100 | 0.32x RT | 0.75x RT | 1.6x RT | 5.1 GB | 9.2x |
+| NVIDIA T4 | 0.95x RT | 2.1x RT | 4.2x RT | 3.8 GB | 3.2x |
 | NVIDIA V100 | 0.62x RT | 1.4x RT | 2.9x RT | 5.0 GB | 5.1x |
 
 **RT = Real-Time** (1.0x means 30s song takes 30s to convert)
@@ -642,9 +646,11 @@ Empirical benchmark results from comprehensive testing across multiple GPU confi
 |-----------|----------------------|-------------------|------------------|
 | NVIDIA RTX 4090 | 8.2 Hz | 0.89 | 4.3/5.0 |
 | NVIDIA RTX 3090 | 8.2 Hz | 0.89 | 4.3/5.0 |
+| NVIDIA RTX 3080 Ti | 8.2 Hz | 0.89 | 4.3/5.0 |
 | NVIDIA RTX 3080 | 8.2 Hz | 0.89 | 4.3/5.0 |
 | NVIDIA RTX 3070 | 8.2 Hz | 0.89 | 4.3/5.0 |
 | NVIDIA A100 | 8.2 Hz | 0.89 | 4.3/5.0 |
+| NVIDIA T4 | 8.2 Hz | 0.89 | 4.3/5.0 |
 | NVIDIA V100 | 8.2 Hz | 0.89 | 4.3/5.0 |
 
 **Note**: Quality metrics are consistent across all GPUs. GPU selection impacts speed, not output quality.
