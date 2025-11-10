@@ -28,6 +28,12 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
+try:
+    import librosa
+    LIBROSA_AVAILABLE = True
+except ImportError:
+    LIBROSA_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +74,9 @@ class WebSocketHandler:
                     'enable_vad': True,
                     'pitch_shift': 0,
                     'speed': 1.0
-                }
+                },
+                '_warned_librosa_missing': False,
+                '_warned_effects_clamped': False
             }
             self.audio_buffers[sid] = []
             
@@ -705,16 +713,123 @@ class WebSocketHandler:
 
             # Apply real-time effects if requested
             processed_audio = audio_tensor
+            original_length = audio_tensor.shape[-1]
+            had_batch_dim = audio_tensor.ndim > 1
 
             # Pitch shifting
             if 'pitch_shift' in config and config['pitch_shift'] != 0:
-                # Apply pitch shift (placeholder - implement actual pitch shifting)
-                processed_audio = audio_tensor  # TODO: Implement pitch shifting
+                if LIBROSA_AVAILABLE and NUMPY_AVAILABLE:
+                    try:
+                        # Convert to CPU numpy float array
+                        audio_np = processed_audio.detach().cpu().numpy() if isinstance(processed_audio, torch.Tensor) else processed_audio
+
+                        # Squeeze to 1D if needed
+                        if audio_np.ndim > 1:
+                            audio_np = audio_np.squeeze()
+
+                        # Check buffer length guard
+                        min_len = 2048
+                        buf_len = audio_np.shape[-1]
+                        if buf_len < min_len:
+                            logger.debug(f"Skipping pitch shift: short buffer {buf_len}<{min_len}")
+                        else:
+                            # Check buffer length guard
+                        min_len = 2048
+                        buf_len = audio_np.shape[-1]
+                        if buf_len < min_len:
+                            logger.debug(f"Skipping pitch shift: short buffer {buf_len}<{min_len}")
+                        else:
+                            # Apply pitch shift
+                        shifted_audio = librosa.effects.pitch_shift(
+                            y=audio_np,
+                            sr=sample_rate,
+                            n_steps=config['pitch_shift']
+                        )
+
+                        # Convert back to torch tensor
+                        processed_audio = torch.from_numpy(shifted_audio).float()
+
+                        # Restore batch dimension if it existed
+                        if had_batch_dim:
+                            processed_audio = processed_audio.unsqueeze(0)
+
+                        # Normalize length to match original chunk size for streaming
+                        current_length = processed_audio.shape[-1]
+                        if current_length != original_length:
+                            if current_length > original_length:
+                                # Truncate
+                                processed_audio = processed_audio[..., :original_length]
+                            else:
+                                # Pad with zeros
+                                pad_length = original_length - current_length
+                                if had_batch_dim:
+                                    padding = torch.zeros(1, pad_length, dtype=processed_audio.dtype)
+                                    processed_audio = torch.cat([processed_audio, padding], dim=-1)
+                                else:
+                                    padding = torch.zeros(pad_length, dtype=processed_audio.dtype)
+                                    processed_audio = torch.cat([processed_audio, padding], dim=-1)
+
+                    except Exception as e:
+                        logger.warning(f"Pitch shifting failed: {e}, using original audio")
+                        processed_audio = audio_tensor
+                else:
+                    logger.warning("Pitch shifting requested but librosa not available")
 
             # Speed adjustment
             if 'speed' in config and config['speed'] != 1.0:
-                # Apply speed adjustment (placeholder - implement actual time stretching)
-                processed_audio = audio_tensor  # TODO: Implement time stretching
+                # Validate speed parameter
+                if config['speed'] > 0:
+                    if LIBROSA_AVAILABLE and NUMPY_AVAILABLE:
+                        try:
+                            # Convert to CPU numpy float array
+                            audio_np = processed_audio.detach().cpu().numpy() if isinstance(processed_audio, torch.Tensor) else processed_audio
+
+                            # Squeeze to 1D if needed
+                            if audio_np.ndim > 1:
+                                audio_np = audio_np.squeeze()
+
+                            # Check buffer length guard
+                        min_len = 2048
+                        buf_len = audio_np.shape[-1]
+                        if buf_len < min_len:
+                            logger.debug(f"Skipping time stretch: short buffer {buf_len}<{min_len}")
+                        else:
+                            # Apply time stretch
+                            stretched_audio = librosa.effects.time_stretch(
+                                y=audio_np,
+                                rate=config['speed']
+                            )
+
+                            # Convert back to torch tensor
+                            processed_audio = torch.from_numpy(stretched_audio).float()
+
+                            # Restore batch dimension if it existed
+                            if had_batch_dim:
+                                processed_audio = processed_audio.unsqueeze(0)
+
+                            # Normalize length to match original chunk size for streaming
+                            current_length = processed_audio.shape[-1]
+                            if current_length != original_length:
+                                if current_length > original_length:
+                                    # Truncate
+                                    processed_audio = processed_audio[..., :original_length]
+                                else:
+                                    # Pad with zeros
+                                    pad_length = original_length - current_length
+                                    if had_batch_dim:
+                                        padding = torch.zeros(1, pad_length, dtype=processed_audio.dtype)
+                                        processed_audio = torch.cat([processed_audio, padding], dim=-1)
+                                    else:
+                                        padding = torch.zeros(pad_length, dtype=processed_audio.dtype)
+                                        processed_audio = torch.cat([processed_audio, padding], dim=-1)
+
+                        except Exception as e:
+                            logger.warning(f"Time stretching failed: {e}, using original audio")
+                            processed_audio = audio_tensor
+                    else:
+                        logger.warning("Time stretching requested but librosa not available")
+                else:
+                    logger.warning(f"Invalid speed value {config['speed']}, must be > 0")
 
             # Convert back to bytes
             processed_bytes = processed_audio.cpu().numpy().astype(np.float32).tobytes()

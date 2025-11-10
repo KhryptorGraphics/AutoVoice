@@ -103,13 +103,14 @@ def check_test_data(test_data_dir: Path) -> bool:
         return False
 
 
-def run_pytest_benchmarks(output_dir: Path, quick: bool = False) -> Optional[Path]:
+def run_pytest_benchmarks(output_dir: Path, quick: bool = False, continue_on_failure: bool = False, gpu_id: int = 0) -> Optional[Path]:
     """
     Run pytest performance tests.
 
     Args:
         output_dir: Output directory
         quick: Run quick benchmarks only
+        gpu_id: GPU device ID to use
 
     Returns:
         Path to results file or None if failed
@@ -134,22 +135,40 @@ def run_pytest_benchmarks(output_dir: Path, quick: bool = False) -> Optional[Pat
         cmd.extend(['-k', 'not slow'])
 
     try:
+        import os
+        env = os.environ.copy()
+        env['PYTEST_JSON_OUTPUT'] = str(output_dir / 'pytest_metrics.json')
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)  # Set GPU device for subprocess
+        
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=1800  # 30 minutes
+            timeout=1800,  # 30 minutes
+            env=env
         )
 
         print(result.stdout)
 
-        if result.returncode in [0, 1]:  # 0 = all passed, 1 = some failed
+        # Only accept return code 0 for success
+        if result.returncode == 0:
             print(f"✓ Pytest results saved to: {output_file}")
             return output_file
+        elif result.returncode == 1:
+            print("⚠ Some tests failed")
+            if continue_on_failure:
+                print("  Continuing as requested")
+                return output_file
+            else:
+                print("  Execution aborted - use --continue-on-failure to proceed")
+                return None
         else:
             print(f"✗ Pytest execution failed with code {result.returncode}")
-            print(result.stderr)
-            return None
+            if continue_on_failure:
+                print("  Continuing despite fatal failure")
+                return output_file
+            else:
+                return None
     except subprocess.TimeoutExpired:
         print("✗ Pytest execution timed out")
         return None
@@ -158,12 +177,14 @@ def run_pytest_benchmarks(output_dir: Path, quick: bool = False) -> Optional[Pat
         return None
 
 
-def run_pipeline_profiling(output_dir: Path) -> Optional[Path]:
+def run_pipeline_profiling(output_dir: Path, quick: bool = False, full: bool = False, gpu_id: int = 0) -> Optional[Path]:
     """
     Run pipeline profiling.
 
     Args:
         output_dir: Output directory
+        quick: Use quick mode (5s audio)
+        full: Use full mode (60s audio)
 
     Returns:
         Path to results file or None if failed
@@ -175,37 +196,136 @@ def run_pipeline_profiling(output_dir: Path) -> Optional[Path]:
     output_file = output_dir / 'pipeline_profile.json'
     script_path = Path(__file__).parent / 'profile_performance.py'
 
+    # Determine audio file based on mode
+    test_data_dir = Path('tests/data/benchmark')
+    if quick:
+        audio_file = test_data_dir / 'audio_5s_22050hz.wav'
+        print("  Mode: Quick (5s audio)")
+    elif full:
+        audio_file = test_data_dir / 'audio_60s_22050hz.wav'
+        print("  Mode: Full (60s audio)")
+    else:
+        audio_file = test_data_dir / 'audio_30s_22050hz.wav'
+        print("  Mode: Balanced (30s audio)")
+
+    cmd = [sys.executable, str(script_path), '--output-dir', str(output_dir), '--gpu-id', str(gpu_id)]
+
+    # Add audio file if it exists
+    if audio_file.exists():
+        cmd.extend(['--audio-file', str(audio_file)])
+
     try:
+        import os
+        env = os.environ.copy()
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)  # Set GPU device for subprocess
+
         result = subprocess.run(
-            [sys.executable, str(script_path), '--output-dir', str(output_dir)],
+            cmd,
             capture_output=True,
             text=True,
-            timeout=600  # 10 minutes
+            timeout=600,  # 10 minutes
+            env=env
         )
 
         print(result.stdout)
 
+        # Define source file path (profiler writes to performance_breakdown.json)
+        source = output_dir / 'performance_breakdown.json'
+
+        # Check if results JSON was created, even if subprocess had exit code issues
         if result.returncode == 0:
-            # Move performance_breakdown.json to pipeline_profile.json
-            source = output_dir / 'performance_breakdown.json'
-            if source.exists():
-                source.rename(output_file)
-            print(f"✓ Pipeline profiling results saved to: {output_file}")
-            return output_file
+            # Success - check if we need to rename the file
+            if source.exists() and source != output_file:
+                import shutil
+                shutil.copy2(source, output_file)
+                print(f"✓ Pipeline profiling results saved to: {output_file}")
+                return output_file
+            elif output_file.exists():
+                print(f"✓ Pipeline profiling results saved to: {output_file}")
+                return output_file
+            else:
+                print(f"⚠️  Pipeline profiling succeeded but output file not found")
+                return None
         else:
-            print(f"✗ Pipeline profiling failed: {result.stderr}")
-            return None
+            # Non-zero exit - check if JSON file was still written
+            if source.exists():
+                import shutil
+                shutil.copy2(source, output_file)
+                print(f"⚠️  Pipeline profiling completed with warnings - results saved to: {output_file}")
+                return output_file
+            elif output_file.exists():
+                print(f"⚠️  Pipeline profiling completed with warnings - results saved to: {output_file}")
+                return output_file
+            else:
+                print(f"✗ Pipeline profiling failed: {result.stderr}")
+                return None
     except Exception as e:
         print(f"✗ Pipeline profiling error: {e}")
         return None
 
 
-def run_cuda_kernel_profiling(output_dir: Path) -> Optional[Path]:
+def run_tts_benchmark(output_dir: Path, quick: bool = False, gpu_id: int = 0) -> Optional[Path]:
+    """
+    Run TTS synthesis benchmarking.
+
+    Args:
+        output_dir: Output directory
+        quick: Use quick mode (fewer iterations)
+        gpu_id: GPU device index
+
+    Returns:
+        Path to results file or None if failed
+    """
+    print("\n" + "="*60)
+    print("Running TTS synthesis benchmarking...")
+    print("="*60)
+
+    output_file = output_dir / 'tts_profile.json'
+    script_path = Path(__file__).parent / 'profile_tts.py'
+
+    # Build command
+    cmd = [sys.executable, str(script_path), '--output-dir', str(output_dir), '--gpu-id', str(gpu_id)]
+
+    if quick:
+        cmd.append('--quick')
+        print("  Mode: Quick (2 warmups, 5 iterations)")
+    else:
+        print("  Mode: Balanced (3 warmups, 10 iterations)")
+
+    try:
+        import os
+        env = os.environ.copy()
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)  # Set GPU device for subprocess
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minutes
+            env=env
+        )
+
+        print(result.stdout)
+
+        if result.returncode == 0 and output_file.exists():
+            print(f"✓ TTS benchmarking results saved to: {output_file}")
+            return output_file
+        else:
+            print(f"✗ TTS benchmarking failed: {result.stderr}")
+            return None
+    except Exception as e:
+        print(f"✗ TTS benchmarking error: {e}")
+        return None
+
+
+def run_cuda_kernel_profiling(output_dir: Path, quick: bool = False, full: bool = False, gpu_id: int = 0) -> Optional[Path]:
     """
     Run CUDA kernel profiling.
 
     Args:
         output_dir: Output directory
+        quick: Use quick mode (30 iterations)
+        full: Use full mode (200 iterations)
 
     Returns:
         Path to results file or None if failed
@@ -217,17 +337,34 @@ def run_cuda_kernel_profiling(output_dir: Path) -> Optional[Path]:
     output_file = output_dir / 'cuda_kernels_profile.json'
     script_path = Path(__file__).parent / 'profile_cuda_kernels.py'
 
+    # Determine iterations based on mode
+    if quick:
+        iterations = '30'
+        print("  Mode: Quick (30 iterations)")
+    elif full:
+        iterations = '200'
+        print("  Mode: Full (200 iterations)")
+    else:
+        iterations = '100'
+        print("  Mode: Balanced (100 iterations)")
+
     try:
+        import os
+        env = os.environ.copy()
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)  # Set GPU device for subprocess
+        
         result = subprocess.run(
             [
                 sys.executable, str(script_path),
                 '--kernel', 'all',
-                '--iterations', '100',
-                '--output', str(output_file)
+                '--iterations', iterations,
+                '--output', str(output_file),
+                '--gpu-id', str(gpu_id)
             ],
             capture_output=True,
             text=True,
-            timeout=600  # 10 minutes
+            timeout=600,  # 10 minutes
+            env=env
         )
 
         print(result.stdout)
@@ -266,11 +403,64 @@ def aggregate_results(output_dir: Path, env_info: Dict[str, Any]) -> Dict[str, A
 
     # Load pytest results
     pytest_file = output_dir / 'pytest_results.json'
+    pytest_metrics_file = output_dir / 'pytest_metrics.json'
+
     if pytest_file.exists():
         with open(pytest_file) as f:
+            pytest_data = json.load(f)
             summary['files']['pytest'] = str(pytest_file)
-            # Extract key metrics from pytest results
-            # (actual extraction depends on pytest-json-report format)
+
+            # Extract key metrics from pytest-json-report format
+            pytest_metrics = {}
+
+            # Get summary statistics
+            if 'summary' in pytest_data:
+                pytest_summary = pytest_data['summary']
+                pytest_metrics['total_tests'] = pytest_summary.get('total', 0)
+                pytest_metrics['passed'] = pytest_summary.get('passed', 0)
+                pytest_metrics['failed'] = pytest_summary.get('failed', 0)
+                pytest_metrics['duration'] = pytest_data.get('duration', 0)
+
+            # Try to load explicit metrics from pytest_metrics.json (preferred)
+            if pytest_metrics_file.exists():
+                print(f"  ✓ Loading pytest metrics from {pytest_metrics_file}")
+                with open(pytest_metrics_file) as f:
+                    explicit_metrics = json.load(f)
+                    if 'metrics' in explicit_metrics:
+                        # Merge explicit metrics (these take precedence)
+                        for metric_name, values in explicit_metrics['metrics'].items():
+                            if isinstance(values, dict) and 'mean' in values:
+                                pytest_metrics[metric_name] = values['mean']
+                            elif isinstance(values, list) and values:
+                                pytest_metrics[metric_name] = values[-1]  # Use most recent
+                        summary['files']['pytest_metrics'] = str(pytest_metrics_file)
+            else:
+                # Fallback: Extract performance metrics from test results (legacy)
+                if 'tests' in pytest_data:
+                    # Look for CPU vs GPU speedup tests
+                    for test in pytest_data['tests']:
+                        test_name = test.get('nodeid', '')
+
+                        # Extract CPU vs GPU speedup
+                        if 'cpu_vs_gpu_speed_advantage' in test_name:
+                            # Try to extract from test output or metadata
+                            if 'call' in test and 'longrepr' in test['call']:
+                                output = str(test['call']['longrepr'])
+                                # Parse speedup from output (e.g., "GPU speedup: 3.5x")
+                                import re
+                                match = re.search(r'GPU speedup:\s*([\d.]+)x', output)
+                                if match:
+                                    pytest_metrics['cpu_gpu_speedup'] = float(match.group(1))
+
+                        # Extract cache speedup
+                        if 'cache_effectiveness' in test_name or 'cold_vs_warm' in test_name:
+                            if 'call' in test and 'longrepr' in test['call']:
+                                output = str(test['call']['longrepr'])
+                                match = re.search(r'Speedup:\s*([\d.]+)x', output)
+                                if match:
+                                    pytest_metrics['cache_speedup'] = float(match.group(1))
+
+            summary['metrics']['pytest'] = pytest_metrics
 
     # Load pipeline profiling results
     pipeline_file = output_dir / 'pipeline_profile.json'
@@ -287,6 +477,19 @@ def aggregate_results(output_dir: Path, env_info: Dict[str, Any]) -> Dict[str, A
             cuda_data = json.load(f)
             summary['files']['cuda_kernels'] = str(cuda_file)
             summary['metrics']['cuda_kernels'] = cuda_data
+
+    # Load TTS profiling results
+    tts_file = output_dir / 'tts_profile.json'
+    if tts_file.exists():
+        with open(tts_file) as f:
+            tts_data = json.load(f)
+            summary['files']['tts'] = str(tts_file)
+            # Extract TTS metrics
+            summary['metrics']['tts'] = {
+                'tts_latency_ms': tts_data.get('tts_latency_ms'),
+                'tts_throughput': tts_data.get('tts_throughput'),
+                'tts_memory_peak_mb': tts_data.get('tts_memory_peak_mb')
+            }
 
     # Save summary
     summary_file = output_dir / 'benchmark_summary.json'
@@ -349,6 +552,24 @@ def generate_report(summary: Dict[str, Any], output_dir: Path):
     print(f"✓ Benchmark report saved to: {report_file}")
 
 
+def sanitize_gpu_name(gpu_name: str) -> str:
+    """
+    Sanitize GPU name for use as directory name.
+
+    Args:
+        gpu_name: GPU name from CUDA
+
+    Returns:
+        Sanitized directory name
+    """
+    import re
+    # Convert to lowercase and replace non-alphanumeric with underscore
+    sanitized = re.sub(r'[^a-z0-9]+', '_', gpu_name.lower())
+    # Remove leading/trailing underscores
+    sanitized = sanitized.strip('_')
+    return sanitized
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Run comprehensive performance benchmarks'
@@ -381,6 +602,11 @@ def main():
         help='Skip CUDA kernel profiling'
     )
     parser.add_argument(
+        '--skip-tts',
+        action='store_true',
+        help='Skip TTS synthesis benchmarking'
+    )
+    parser.add_argument(
         '--quick',
         action='store_true',
         help='Run quick benchmarks only (1s, 5s audio)'
@@ -390,11 +616,13 @@ def main():
         action='store_true',
         help='Run full benchmarks including 60s audio'
     )
+    parser.add_argument(
+        '--continue-on-failure',
+        action='store_true',
+        help='Continue benchmark execution even if pytest tests fail'
+    )
 
     args = parser.parse_args()
-
-    # Create output directory
-    args.output_dir.mkdir(parents=True, exist_ok=True)
 
     print("="*60)
     print("AutoVoice Comprehensive Benchmark Suite")
@@ -413,8 +641,19 @@ def main():
     else:
         print(f"✓ GPU: {env_info['gpu_info']['name']}")
 
-    # Save GPU info
-    gpu_info_file = args.output_dir / 'gpu_info.json'
+    # Create GPU-specific subdirectory
+    if env_info.get('gpu_info'):
+        gpu_name = env_info['gpu_info']['name']
+        gpu_subdir_name = sanitize_gpu_name(gpu_name)
+        gpu_output_dir = args.output_dir / gpu_subdir_name
+    else:
+        gpu_output_dir = args.output_dir / 'cpu_only'
+
+    gpu_output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\nOutput directory: {gpu_output_dir}")
+
+    # Save GPU info to GPU-specific directory
+    gpu_info_file = gpu_output_dir / 'gpu_info.json'
     with open(gpu_info_file, 'w') as f:
         json.dump(env_info, f, indent=2)
 
@@ -424,40 +663,44 @@ def main():
         print("✗ Test data preparation failed")
         return 1
 
-    # Run benchmarks
+    # Run benchmarks (using GPU-specific output directory)
     results = {}
 
     if not args.skip_pytest:
-        pytest_result = run_pytest_benchmarks(args.output_dir, args.quick)
+        pytest_result = run_pytest_benchmarks(gpu_output_dir, args.quick, args.continue_on_failure, args.gpu_id)
         results['pytest'] = pytest_result is not None
 
     if not args.skip_profiling:
-        pipeline_result = run_pipeline_profiling(args.output_dir)
+        pipeline_result = run_pipeline_profiling(gpu_output_dir, args.quick, args.full, args.gpu_id)
         results['pipeline'] = pipeline_result is not None
 
     if not args.skip_cuda_kernels and env_info['cuda_available']:
-        cuda_result = run_cuda_kernel_profiling(args.output_dir)
+        cuda_result = run_cuda_kernel_profiling(gpu_output_dir, args.quick, args.full, args.gpu_id)
         results['cuda_kernels'] = cuda_result is not None
 
+    if not args.skip_tts:
+        tts_result = run_tts_benchmark(gpu_output_dir, args.quick, args.gpu_id)
+        results['tts'] = tts_result is not None
+
     # Aggregate results
-    summary = aggregate_results(args.output_dir, env_info)
+    summary = aggregate_results(gpu_output_dir, env_info)
 
     # Generate report
-    generate_report(summary, args.output_dir)
+    generate_report(summary, gpu_output_dir)
 
     # Print summary
     print("\n" + "="*60)
     print("Benchmark Summary")
     print("="*60)
-    print(f"Output directory: {args.output_dir}")
+    print(f"Output directory: {gpu_output_dir}")
     print(f"Results:")
     for name, success in results.items():
         status = "✓" if success else "✗"
         print(f"  {status} {name}")
 
     print("\nFor detailed results, see:")
-    print(f"  {args.output_dir / 'benchmark_report.md'}")
-    print(f"  {args.output_dir / 'benchmark_summary.json'}")
+    print(f"  {gpu_output_dir / 'benchmark_report.md'}")
+    print(f"  {gpu_output_dir / 'benchmark_summary.json'}")
 
     return 0
 

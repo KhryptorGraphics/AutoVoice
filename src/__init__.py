@@ -20,7 +20,20 @@ except ImportError:
     pass  # Extensions built during setup
 
 # Main entry points
-# from .main import initialize_system, run_app  # TODO: Implement main.py
+# Note: main.py is at project root, not in src/
+# Import from parent directory
+import sys
+import os
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
+try:
+    from main import initialize_system, run_app
+except ImportError:
+    # Fallback if main.py not accessible
+    initialize_system = None
+    run_app = None
 
 # Constants
 SAMPLE_RATE = 22050

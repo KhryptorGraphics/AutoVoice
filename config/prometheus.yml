@@ -14,20 +14,22 @@ scrape_configs:
     metrics_path: '/metrics'
     scheme: http
 
-  # Node exporter for system metrics (optional)
-  - job_name: 'node'
-    static_configs:
-      - targets: ['node-exporter:9100']
+  # Node exporter for system metrics (optional - uncomment and add service to docker-compose.yml)
+  # - job_name: 'node'
+  #   static_configs:
+  #     - targets: ['node-exporter:9100']
 
-  # cAdvisor for container metrics (optional)
-  - job_name: 'cadvisor'
-    static_configs:
-      - targets: ['cadvisor:8080']
+  # cAdvisor for container metrics (optional - uncomment and add service to docker-compose.yml)
+  # - job_name: 'cadvisor'
+  #   static_configs:
+  #     - targets: ['cadvisor:8080']
 
-  # Prometheus self-monitoring
-  - job_name: 'prometheus'
+  # NVIDIA GPU Exporter for detailed GPU metrics (uncomment when using nvidia-exporter)
+  - job_name: 'nvidia-gpu'
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ['nvidia-exporter:9400']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
 
 # Alerting configuration
 alerting:
@@ -48,9 +50,5 @@ rule_files:
 #       max_shards: 200
 #       capacity: 2500
 
-# Storage configuration
-storage:
-  tsdb:
-    retention:
-      time: 30d
-      size: 10GB
+# Storage configuration (retention must be set via command-line flags in docker-compose.yml)
+# See docker-compose.yml prometheus service for --storage.tsdb.retention.time and --storage.tsdb.retention.size

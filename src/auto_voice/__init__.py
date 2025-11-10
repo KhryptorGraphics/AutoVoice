@@ -28,7 +28,9 @@ __all__ = [
     'HiFiGANGenerator',
     'VoiceTrainer',
     'VoiceInferenceEngine',
-    'VoiceSynthesizer'
+    'VoiceSynthesizer',
+    'initialize_system',
+    'run_app'
 ]
 
 # Module-level cache for lazy-loaded components
@@ -95,6 +97,26 @@ def __getattr__(name):
             from .inference.synthesizer import VoiceSynthesizer
             _module_cache[name] = VoiceSynthesizer
             return VoiceSynthesizer
+        elif name == 'initialize_system':
+            # Import from main.py at project root
+            import sys
+            import os
+            _parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if _parent_dir not in sys.path:
+                sys.path.insert(0, _parent_dir)
+            from main import initialize_system
+            _module_cache[name] = initialize_system
+            return initialize_system
+        elif name == 'run_app':
+            # Import from main.py at project root
+            import sys
+            import os
+            _parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            if _parent_dir not in sys.path:
+                sys.path.insert(0, _parent_dir)
+            from main import run_app
+            _module_cache[name] = run_app
+            return run_app
     except ImportError as e:
         # If import fails (e.g., torch/dependencies not available), set to None and cache
         import logging

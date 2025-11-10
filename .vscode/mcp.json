@@ -1,0 +1,87 @@
+{
+  "mcpServers": {
+    "claude-flow": {
+      "command": "npx",
+      "args": [
+        "claude-flow@alpha",
+        "mcp",
+        "start"
+      ],
+      "env": {
+        "CLAUDE_FLOW_AUTO_COMMIT": "false",
+        "CLAUDE_FLOW_AUTO_PUSH": "false",
+        "CLAUDE_FLOW_HOOKS_ENABLED": "true",
+        "CLAUDE_FLOW_TELEMETRY_ENABLED": "true",
+        "CLAUDE_FLOW_REMOTE_EXECUTION": "true",
+        "CLAUDE_FLOW_CHECKPOINTS_ENABLED": "true"
+      },
+      "description": "Claude Flow MCP server for SPARC methodology, agent orchestration, and swarm coordination"
+    },
+    "ruv-swarm": {
+      "command": "npx",
+      "args": [
+        "ruv-swarm",
+        "mcp",
+        "start"
+      ],
+      "description": "Enhanced swarm coordination with 54+ agents for complex multi-agent workflows"
+    },
+    "flow-nexus": {
+      "command": "npx",
+      "args": [
+        "flow-nexus@latest",
+        "mcp",
+        "start"
+      ],
+      "description": "Cloud-based orchestration with 70+ tools for sandboxes, templates, and real-time execution (requires authentication)"
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "description": "GitHub integration for repository management, PRs, and issues"
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/home/kp/autovoice"
+      ],
+      "description": "Local filesystem access for the autovoice project"
+    },
+    "git": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-git",
+        "--repository",
+        "/home/kp/autovoice"
+      ],
+      "description": "Git operations for version control"
+    },
+    "python": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-python"
+      ],
+      "description": "Python code execution and analysis"
+    },
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://localhost/autovoice"
+      ],
+      "description": "PostgreSQL database access (if applicable)"
+    }
+  }
+}
+

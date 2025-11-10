@@ -142,8 +142,8 @@ sudo systemctl status autovoice
 
 **Docker Deployment**:
 ```dockerfile
-# Dockerfile
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+# Simplified Dockerfile example (see root Dockerfile for full multi-stage build)
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -169,6 +169,8 @@ EXPOSE 5000
 # Run application
 CMD ["python", "-m", "auto_voice.web.app"]
 ```
+
+**Note**: This is a simplified example. For production deployment, use the multi-stage Dockerfile in the repository root which includes CUDA 12.1.0 development stage for building extensions and a smaller runtime stage. See `Dockerfile` for the complete implementation.
 
 **Docker Compose**:
 ```yaml
@@ -486,6 +488,158 @@ cat /var/log/autovoice/app.log | jq -r 'select(.processing_time != null) | .proc
 ```
 
 ## 4. Troubleshooting
+
+### 4.0 PyTorch and CUDA Environment Issues
+
+#### Issue: Python 3.13 Import Segfaults
+
+**Symptoms**:
+```
+Segmentation fault (core dumped)
+Fatal Python error: Segmentation fault
+```
+
+**Diagnosis**:
+```bash
+# Check Python version
+python --version
+
+# Check PyTorch version
+python -c "import torch; print(torch.__version__)"
+```
+
+**Resolution**:
+```bash
+# Solution 1: Use Python 3.12 or earlier (recommended)
+conda create -n autovoice python=3.12 -y
+conda activate autovoice
+
+# Solution 2: Use PyTorch 2.7+ with Python 3.13 (experimental)
+pip install torch>=2.7.0 --index-url https://download.pytorch.org/whl/cu121
+```
+
+#### Issue: libtorch_global_deps.so Errors
+
+**Symptoms**:
+```
+ImportError: libtorch_global_deps.so: cannot open shared object file
+OSError: libcudart.so.12: cannot open shared object file
+```
+
+**Diagnosis**:
+```bash
+# Check library paths
+echo $LD_LIBRARY_PATH
+
+# Find PyTorch libraries
+find $(python -c "import torch; print(torch.__path__[0])") -name "*.so"
+```
+
+**Resolution**:
+```bash
+# Add PyTorch lib directory to LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$(python -c "import torch; print(torch.__path__[0])")/lib:$LD_LIBRARY_PATH
+
+# Make permanent by adding to ~/.bashrc
+echo 'export LD_LIBRARY_PATH=$(python -c "import torch; print(torch.__path__[0])" 2>/dev/null)/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
+```
+
+#### Issue: PyTorch CUDA Version Mismatch
+
+**Symptoms**:
+```
+RuntimeError: CUDA version mismatch: PyTorch was compiled with CUDA 11.8 but system has CUDA 12.1
+The detected CUDA version (12.1) mismatches the version that was used to compile PyTorch (11.8)
+```
+
+**Diagnosis**:
+```bash
+# Check system CUDA version
+nvcc --version
+
+# Check PyTorch CUDA version
+python -c "import torch; print(torch.version.cuda)"
+
+# Check if CUDA is available
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+**Resolution**:
+```bash
+# Reinstall PyTorch with matching CUDA version
+
+# For CUDA 12.1 (recommended)
+pip uninstall torch torchvision torchaudio -y
+pip install torch==2.5.1 torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/cu121
+
+# For CUDA 11.8
+pip uninstall torch torchvision torchaudio -y
+pip install torch==2.5.1 torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/cu118
+
+# Verify installation
+python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
+```
+
+#### Issue: CUDA Extension Build Header Errors
+
+**Symptoms**:
+```
+fatal error: cuda_runtime.h: No such file or directory
+error: command 'nvcc' failed with exit status 1
+```
+
+**Diagnosis**:
+```bash
+# Check if CUDA toolkit is installed
+which nvcc
+
+# Check CUDA_HOME
+echo $CUDA_HOME
+
+# Check for CUDA headers
+ls /usr/local/cuda/include/cuda_runtime.h
+```
+
+**Resolution**:
+```bash
+# Install CUDA toolkit (if missing)
+./scripts/install_cuda_toolkit.sh
+
+# Or manually set CUDA_HOME
+export CUDA_HOME=/usr/local/cuda
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+# Rebuild extensions
+python setup.py clean --all
+python setup.py build_ext --inplace
+```
+
+#### Automated Environment Setup
+
+**Use provided scripts for automated fixes**:
+
+```bash
+# Complete environment setup (Python 3.12 + PyTorch + CUDA)
+./scripts/setup_pytorch_env.sh
+
+# Build and test everything
+./scripts/build_and_test.sh
+
+# Quick verification
+./scripts/verify_bindings.py
+
+# Install CUDA toolkit if needed
+./scripts/install_cuda_toolkit.sh
+```
+
+**Script locations**:
+- `scripts/setup_pytorch_env.sh` - Automated PyTorch environment setup
+- `scripts/build_and_test.sh` - Build CUDA extensions and run tests
+- `scripts/verify_bindings.py` - Verify Python bindings and CUDA availability
+- `scripts/install_cuda_toolkit.sh` - Install system CUDA toolkit
 
 ### 4.1 Common Issues
 

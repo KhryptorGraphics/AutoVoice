@@ -53,28 +53,34 @@ def test_import():
     cuda_kernels = None
     import_variant = None
 
-    # First try direct import
+    # Try namespaced import first (correct for packaged module)
     try:
-        import cuda_kernels as ck
+        from auto_voice import cuda_kernels as ck
         cuda_kernels = ck
-        import_variant = "import cuda_kernels"
+        import_variant = "from auto_voice import cuda_kernels"
         print_success(f"Module imported via: {import_variant}")
-    except ImportError as e:
-        print_error(f"Failed to import cuda_kernels: {e}")
-        print_info("Trying fallback: from auto_voice import cuda_kernels")
-
-        # Retry with qualified import
+    except ImportError:
+        # Fallback to direct import (for development/testing)
         try:
-            from auto_voice import cuda_kernels as ck
+            import cuda_kernels as ck
             cuda_kernels = ck
-            import_variant = "from auto_voice import cuda_kernels"
-            print_success(f"Module imported via: {import_variant} (fallback)")
-        except ImportError as e2:
-            print_error(f"Failed to import auto_voice.cuda_kernels: {e2}")
-            print_info("Module may not be built yet. Run: pip install -e .")
+            import_variant = "import cuda_kernels"
+            print_success(f"Module imported via: {import_variant} (direct import)")
+        except ImportError:
+            print_error("CUDA extension module not found - likely not built yet")
+            print_info("")
+            print_info("Possible causes:")
+            print_info("  1. CUDA extensions not built: Run 'pip install -e .'")
+            print_info("  2. Build failed: Check 'build.log' for errors")
+            print_info("  3. Missing CUDA headers: Run './scripts/check_cuda_toolkit.sh'")
+            print_info("")
+            print_info("If build failed with 'nv/target' error:")
+            print_info("  - Install system CUDA toolkit: './scripts/install_cuda_toolkit.sh'")
             return False, None
     except Exception as e:
         print_error(f"Unexpected error importing cuda_kernels: {e}")
+        print_info("This may indicate a build or linking issue")
+        print_info("Check 'build.log' for compilation errors")
         return False, None
 
     # Verify module file path and that it's a compiled extension
@@ -83,6 +89,15 @@ def test_import():
             module_file = cuda_kernels.__file__
             print_info(f"Module path: {module_file}")
 
+            # Check file size
+            if os.path.exists(module_file):
+                file_size = os.path.getsize(module_file)
+                print_info(f"Module size: {file_size:,} bytes")
+
+                if file_size < 1000:
+                    print_warning(f"Module file is very small ({file_size} bytes)")
+                    print_warning("This may be a stub file, not a compiled extension")
+
             # Validate extension type
             _, ext = os.path.splitext(module_file)
             if ext in {'.so', '.pyd'}:
@@ -90,6 +105,7 @@ def test_import():
             else:
                 print_warning(f"Module file extension unexpected: {ext} (expected .so or .pyd)")
                 print_warning("This may be a Python stub, not the compiled CUDA extension")
+                print_info("Rebuild with: pip install -e . --force-reinstall --no-cache-dir")
         except AttributeError:
             print_warning("Module has no __file__ attribute")
 
@@ -239,7 +255,8 @@ def test_function_callable(cuda_kernels, has_cuda):
             # Warm-up call
             cuda_kernels.launch_pitch_detection(
                 audio, output_pitch, output_confidence, output_vibrato,
-                16000.0, 2048, 2048
+                16000.0, 2048, 2048,
+                50.0, 2000.0, 0.1  # fmin, fmax, threshold
             )
             torch.cuda.synchronize()
 
@@ -247,7 +264,8 @@ def test_function_callable(cuda_kernels, has_cuda):
             start_time = time.perf_counter()
             cuda_kernels.launch_pitch_detection(
                 audio, output_pitch, output_confidence, output_vibrato,
-                16000.0, 2048, 2048
+                16000.0, 2048, 2048,
+                50.0, 2000.0, 0.1  # fmin, fmax, threshold
             )
             torch.cuda.synchronize()
             end_time = time.perf_counter()
@@ -285,7 +303,8 @@ def test_function_callable(cuda_kernels, has_cuda):
             for i in range(10):
                 cuda_kernels.launch_pitch_detection(
                     audio, output_pitch, output_confidence, output_vibrato,
-                    16000.0, 2048, 256
+                    16000.0, 2048, 256,
+                    50.0, 2000.0, 0.1  # fmin, fmax, threshold
                 )
 
             torch.cuda.synchronize()
@@ -304,7 +323,35 @@ def test_function_callable(cuda_kernels, has_cuda):
         except Exception as e:
             print_error(f"Memory stability test failed: {e}")
 
-        # Test 2: Test kernel memory operations if available
+        # Test 3: Minimal callable test for launch_vibrato_analysis
+        print_info("Testing launch_vibrato_analysis callable...")
+        total_tests += 1
+
+        try:
+            # Create minimal test tensors for vibrato analysis
+            num_frames = 100
+            pitch_contour = torch.randn(num_frames, device='cuda') * 100 + 200  # Pitch values around 200 Hz
+            vibrato_rate = torch.zeros(num_frames, device='cuda')
+            vibrato_depth = torch.zeros(num_frames, device='cuda')
+
+            # Call vibrato analysis
+            cuda_kernels.launch_vibrato_analysis(
+                pitch_contour, vibrato_rate, vibrato_depth,
+                256, 16000.0  # hop_length, sample_rate
+            )
+            torch.cuda.synchronize()
+
+            print_success("launch_vibrato_analysis callable test passed")
+            success_count += 1
+
+        except TypeError as e:
+            print_error(f"Signature mismatch for launch_vibrato_analysis: {e}")
+        except RuntimeError as e:
+            print_error(f"Runtime error in launch_vibrato_analysis: {e}")
+        except Exception as e:
+            print_error(f"launch_vibrato_analysis test failed: {e}")
+
+        # Test 4: Test kernel memory operations if available
         total_tests += 1
         if hasattr(cuda_kernels, 'launch_memory_test'):
             print_info("Testing CUDA memory operations...")
@@ -326,7 +373,7 @@ def test_function_callable(cuda_kernels, has_cuda):
                 print_warning(f"CUDA memory test failed: {e}")
                 # Don't fail the test for memory issues
 
-        # Test 3: Test FFT operations if available
+        # Test 5: Test FFT operations if available
         total_tests += 1
         if hasattr(cuda_kernels, 'launch_fft_test'):
             print_info("Testing CUDA FFT operations...")
@@ -368,7 +415,7 @@ def test_function_callable(cuda_kernels, has_cuda):
             return success_count >= max(1, total_tests // 2)  # At least half successful
         else:
             print_warning("No CUDA kernel tests were successful")
-            return True  # Don't fail validation for missing advanced tests
+            return False  # Fail validation when no CUDA tests pass (strict by default now)
 
     except Exception as e:
         print_error(f"Function call test suite failed: {e}")
@@ -377,6 +424,12 @@ def test_function_callable(cuda_kernels, has_cuda):
 def main():
     """Main verification function"""
     print_header()
+
+    # Parse command line arguments
+    import argparse
+    parser = argparse.ArgumentParser(description='Verify CUDA bindings')
+    parser.add_argument('--strict', action='store_true', help='Require at least one CUDA runtime test to pass when CUDA is available')
+    args = parser.parse_args()
 
     # Track overall success
     all_tests_passed = True
@@ -417,6 +470,9 @@ def main():
     if has_cuda:
         callable_success = test_function_callable(cuda_kernels, has_cuda)
         if not callable_success:
+            all_tests_passed = False
+        # In strict mode, also require at least one CUDA runtime test passed
+        if args.strict and cuda_kernels and not callable_success:
             all_tests_passed = False
         print()
 

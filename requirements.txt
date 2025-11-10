@@ -53,7 +53,7 @@ python-socketio>=5.10,<6.0
 pyyaml>=6.0,<7.0
 psutil>=5.9,<6.0
 pynvml>=11.5,<12.0
-websockets>=12.0,<13.0
+websockets>=13.0,<14.0
 aiohttp>=3.9,<4.0
 
 # Audio processing and ML utilities
@@ -64,6 +64,7 @@ praat-parselmouth>=0.4.0  # Advanced audio analysis
 pyrubberband>=0.3.0  # Pitch-preserving time stretch for singing voice augmentation
 resemblyzer>=0.1.1  # Pre-trained speaker encoder for voice cloning (Apache-2.0 license)
 noisereduce>=3.0.0  # Noise reduction
+# NOTE: Install PyTorch with CUDA first; if PyTorch is already installed, run: pip install --no-deps demucs
 demucs>=4.0.0,<5.0.0  # State-of-the-art music source separation (Meta/Facebook)
 
 # Objective quality evaluation metrics

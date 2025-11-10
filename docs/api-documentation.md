@@ -6,12 +6,13 @@ Complete API reference for AutoVoice voice synthesis (TTS) and singing voice con
 
 1. [Introduction](#1-introduction)
 2. [TTS Endpoints](#2-tts-endpoints)
-3. [Voice Conversion Endpoints](#3-voice-conversion-endpoints)
-4. [WebSocket API](#4-websocket-api)
-5. [Error Codes](#5-error-codes)
-6. [Python SDK](#6-python-sdk)
-7. [JavaScript SDK](#7-javascript-sdk)
-8. [Best Practices](#8-best-practices)
+3. [System Information Endpoints](#3-system-information-endpoints)
+4. [Voice Conversion Endpoints](#4-voice-conversion-endpoints)
+5. [WebSocket/Socket.IO API](#5-websocketsocketio-api)
+6. [Error Codes](#6-error-codes)
+7. [Python SDK](#7-python-sdk)
+8. [JavaScript SDK](#8-javascript-sdk)
+9. [Best Practices](#9-best-practices)
 
 ## 1. Introduction
 
@@ -26,6 +27,31 @@ AutoVoice provides a unified REST API for both text-to-speech synthesis and sing
 **Rate Limiting**: None (recommended for production deployment)
 
 **Response Format**: JSON
+
+### API Reference Summary
+
+| Endpoint | Method | Purpose | Auth Required |
+|----------|--------|---------|---------------|
+| `/health` | GET | General health status | No |
+| `/health/live` | GET | Liveness probe | No |
+| `/health/ready` | GET | Readiness probe | No |
+| `/metrics` | GET | Prometheus metrics | No |
+| `/api/v1/health` | GET | API-specific health check | No |
+| `/api/v1/synthesize` | POST | Text-to-speech synthesis | No |
+| `/api/v1/analyze` | POST | Quick audio analysis | No |
+| `/api/v1/models/info` | GET | Get model information | No |
+| `/api/v1/config` | GET | Get API configuration | No |
+| `/api/v1/config` | POST | Update runtime config | No |
+| `/api/v1/speakers` | GET | List available speakers | No |
+| `/api/v1/gpu_status` | GET | Get GPU status | No |
+| `/api/v1/process_audio` | POST | Process audio file | No |
+| `/api/v1/voice/clone` | POST | Create voice profile | No |
+| `/api/v1/voice/profiles` | GET | List voice profiles | No |
+| `/api/v1/voice/profiles/{id}` | GET | Get voice profile details | No |
+| `/api/v1/voice/profiles/{id}` | DELETE | Delete voice profile | No |
+| `/api/v1/convert/song` | POST | Convert song to target voice | No |
+| `/api/v1/convert/status/{conversion_id}` | GET | Get conversion status | No |
+| `/api/v1/convert/download/{conversion_id}/converted.wav` | GET | Download converted audio file | No |
 
 ### Quick Start
 
@@ -43,12 +69,21 @@ curl -X POST http://localhost:5000/api/v1/voice/clone \
 # Song conversion
 curl -X POST http://localhost:5000/api/v1/convert/song \
   -F "song=@song.mp3" \
-  -F "target_profile_id=profile-uuid"
+  -F "profile_id=profile-uuid"
 ```
 
 ### API Versions
 
 - **v1** (current): Initial release with TTS and voice conversion
+
+### Backward Compatibility
+
+For backward compatibility, legacy `/api/*` routes automatically redirect (HTTP 307) to their `/api/v1/*` equivalents. For example:
+- `/api/synthesize` → `/api/v1/synthesize`
+- `/api/voice/clone` → `/api/v1/voice/clone`
+- `/api/convert/song` → `/api/v1/convert/song`
+
+**Recommendation**: Update your clients to use the versioned `/api/v1/*` paths directly to avoid redirect overhead and ensure forward compatibility.
 
 ### System Requirements
 
@@ -60,13 +95,247 @@ curl -X POST http://localhost:5000/api/v1/convert/song \
 
 ## 2. TTS Endpoints
 
-### GET /health
+### Health and Metrics
 
-System health check endpoint.
+#### GET /health
+
+General system health check endpoint.
+
+**Endpoint**: `GET /health`
+
+**Response**:
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "status": "healthy",
+  "components": {
+    "gpu_available": true,
+    "model_loaded": true,
+    "api": true,
+    "synthesizer": true,
+    "voice_cloner": true,
+    "singing_conversion_pipeline": true
+  },
+  "system": {
+    "memory_percent": 45.2,
+    "cpu_percent": 12.5,
+    "gpu": {
+      "available": true,
+      "device_count": 1
+    }
+  }
+}
+```
+
+**Fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Always `"healthy"` for this endpoint |
+| `components` | object | Component availability status |
+| `components.gpu_available` | boolean | Whether GPU is available |
+| `components.model_loaded` | boolean | Whether voice model is loaded |
+| `components.api` | boolean | Whether API is operational (always `true`) |
+| `components.synthesizer` | boolean | Whether synthesizer is initialized |
+| `components.voice_cloner` | boolean | Whether voice cloner is initialized |
+| `components.singing_conversion_pipeline` | boolean | Whether singing conversion pipeline is initialized |
+| `system` | object | System metrics (optional fields) |
+| `system.memory_percent` | number | Memory usage percentage (if psutil available) |
+| `system.cpu_percent` | number | CPU usage percentage (if psutil available) |
+| `system.gpu` | object | GPU status details (if GPU manager available) |
+| `system.gpu.available` | boolean | Whether CUDA is available |
+| `system.gpu.device_count` | number | Number of GPU devices |
+
+**Note**: The `system` object and its fields are optional and only included when the respective monitoring libraries (psutil, GPU manager) are available.
+
+**Example**:
+
+```bash
+curl http://localhost:5000/health
+```
+
+---
+
+#### GET /health/live
+
+Liveness probe - checks if the application is running.
+
+**Endpoint**: `GET /health/live`
+
+**Response**:
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "status": "alive"
+}
+```
+
+**Example**:
+
+```bash
+curl http://localhost:5000/health/live
+```
+
+---
+
+#### GET /health/ready
+
+Readiness probe - checks if the application is ready to serve traffic.
+
+**Endpoint**: `GET /health/ready`
+
+**Response (Ready)**:
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "status": "ready",
+  "components": {
+    "model": "ready",
+    "gpu": "available",
+    "synthesizer": "ready",
+    "voice_cloner": "ready",
+    "singing_conversion_pipeline": "ready"
+  }
+}
+```
+
+**Response (Not Ready)**:
+
+**Status**: `503 Service Unavailable`
+
+**Body**:
+```json
+{
+  "status": "not_ready",
+  "components": {
+    "model": "not_initialized",
+    "gpu": "unavailable",
+    "synthesizer": "not_initialized",
+    "voice_cloner": "not_initialized",
+    "singing_conversion_pipeline": "not_initialized"
+  }
+}
+```
+
+**Component Status Values**:
+
+| Component | Possible Values | Critical for Readiness |
+|-----------|----------------|------------------------|
+| `model` | `"ready"`, `"not_ready"`, `"not_initialized"` | ✅ Yes |
+| `gpu` | `"available"`, `"unavailable"` | ❌ No (optional) |
+| `synthesizer` | `"ready"`, `"not_initialized"` | ✅ Yes |
+| `voice_cloner` | `"ready"`, `"not_initialized"` | ❌ No (optional) |
+| `singing_conversion_pipeline` | `"ready"`, `"not_initialized"` | ❌ No (optional) |
+
+**Readiness Logic**:
+- Returns `200 OK` with `status: "ready"` only when **all critical components** (`model`, `synthesizer`) are ready.
+- Returns `503 Service Unavailable` with `status: "not_ready"` if any critical component is not ready.
+- Optional components (`gpu`, `voice_cloner`, `singing_conversion_pipeline`) do not affect readiness status.
+
+**Example**:
+
+```bash
+curl http://localhost:5000/health/ready
+```
+
+---
+
+#### GET /metrics
+
+Prometheus metrics endpoint for monitoring and observability.
+
+**Endpoint**: `GET /metrics`
+
+**Response (Enabled)**:
+
+**Status**: `200 OK`
+
+**Content-Type**: `text/plain; version=0.0.4; charset=utf-8` (Prometheus text format)
+
+**Body**:
+```
+# HELP autovoice_requests_total Total number of requests
+# TYPE autovoice_requests_total counter
+autovoice_requests_total{endpoint="/api/v1/synthesize"} 1234
+
+# HELP autovoice_request_duration_seconds Request duration in seconds
+# TYPE autovoice_request_duration_seconds histogram
+autovoice_request_duration_seconds_bucket{le="0.1"} 100
+autovoice_request_duration_seconds_bucket{le="0.5"} 450
+autovoice_request_duration_seconds_bucket{le="1.0"} 800
+autovoice_request_duration_seconds_bucket{le="+Inf"} 1234
+autovoice_request_duration_seconds_sum 456.78
+autovoice_request_duration_seconds_count 1234
+
+# HELP autovoice_gpu_memory_allocated_bytes GPU memory allocated in bytes
+# TYPE autovoice_gpu_memory_allocated_bytes gauge
+autovoice_gpu_memory_allocated_bytes 4294967296
+```
+
+**Response (Disabled)**:
+
+**Status**: `503 Service Unavailable`
+
+**Content-Type**: `text/plain`
+
+**Body** (plain text):
+```
+Metrics not enabled
+```
+
+**Authentication**:
+- Authentication is **disabled by default** for the `/metrics` endpoint
+- For production deployments, it is **strongly recommended** to enforce authentication at the reverse proxy level (e.g., nginx, Apache, or cloud load balancer)
+- See the Prometheus scrape configuration example below for integration
+
+**Prometheus Scrape Configuration**:
+
+See `config/prometheus.yml` for a complete example. Basic configuration:
+
+```yaml
+scrape_configs:
+  - job_name: 'autovoice'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['auto-voice-app:5000']
+    metrics_path: '/metrics'
+    scheme: http
+    # For authenticated endpoints, add:
+    # basic_auth:
+    #   username: 'prometheus'
+    #   password: 'your-password'
+```
+
+**Example**:
+
+```bash
+# Fetch metrics
+curl http://localhost:5000/metrics
+
+# With authentication (if configured at reverse proxy)
+curl -u prometheus:password http://localhost:5000/metrics
+```
+
+**Note**: The Content-Type header for successful responses is determined by the metrics collector's `get_content_type()` method. The disabled response returns plain text.
+
+---
+
+### GET /api/v1/health
+
+API-specific health check endpoint with detailed service information.
 
 **Endpoint**: `GET /api/v1/health`
 
-#### Response
+**Response**:
 
 **Status**: `200 OK`
 
@@ -76,7 +345,7 @@ System health check endpoint.
   "status": "healthy",
   "gpu_available": true,
   "model_loaded": true,
-  "timestamp": "2024-01-15T10:30:00Z",
+  "timestamp": "2024-01-15T10:00:00.000000+00:00",
   "service": "AutoVoice API",
   "endpoints": {
     "synthesize": true,
@@ -91,39 +360,36 @@ System health check endpoint.
 }
 ```
 
-#### Status Values
+**Fields**:
 
-| Status | Description |
-|--------|-------------|
-| `healthy` | All systems operational |
-| `degraded` | Some services unavailable |
-| `unhealthy` | Critical services down |
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Overall API health status: `"healthy"` or `"degraded"` |
+| `gpu_available` | boolean | Whether GPU/CUDA is available |
+| `model_loaded` | boolean | Whether the voice model is loaded |
+| `timestamp` | string | ISO 8601 timestamp with timezone |
+| `service` | string | Service identifier (always `"AutoVoice API"`) |
+| `endpoints` | object | Availability of API endpoints |
+| `endpoints.synthesize` | boolean | Whether TTS synthesis is available |
+| `endpoints.process_audio` | boolean | Whether audio processing is available |
+| `endpoints.analyze` | boolean | Whether audio analysis is available |
+| `dependencies` | object | Status of required Python dependencies |
+| `dependencies.numpy` | boolean | Whether numpy is available |
+| `dependencies.torch` | boolean | Whether PyTorch is available |
+| `dependencies.torchaudio` | boolean | Whether torchaudio is available |
 
-#### Example
+**Status Values**:
+- `"healthy"`: All critical components (inference engine, audio processor) are operational
+- `"degraded"`: One or more critical components are unavailable
 
-**cURL**:
+**Comparison with `/health`**:
+- `/health` - General application health with system metrics (memory, CPU, GPU details)
+- `/api/v1/health` - API-specific health with endpoint capabilities and dependencies
+
+**Example**:
+
 ```bash
 curl http://localhost:5000/api/v1/health
-```
-
-**Python**:
-```python
-import requests
-
-response = requests.get("http://localhost:5000/api/v1/health")
-status = response.json()
-print(f"Status: {status['status']}")
-print(f"GPU Available: {status['gpu_available']}")
-```
-
-**JavaScript**:
-```javascript
-fetch('http://localhost:5000/api/v1/health')
-  .then(response => response.json())
-  .then(data => {
-    console.log('Status:', data.status);
-    console.log('GPU Available:', data.gpu_available);
-  });
 ```
 
 ---
@@ -412,7 +678,313 @@ result = response.json()
 
 ---
 
-## 3. Voice Conversion Endpoints
+## 3. System Information Endpoints
+
+### POST /api/v1/analyze
+
+Quick audio analysis without full processing.
+
+**Endpoint**: `POST /api/v1/analyze`
+
+**Content-Type**: `application/json`
+
+#### Request Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `audio_data` | string | Yes | Base64-encoded audio data |
+
+#### Response
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "status": "success",
+  "analysis": {
+    "duration": 3.5,
+    "sample_rate": 22050,
+    "channels": 1,
+    "samples": 77175,
+    "statistics": {
+      "mean": 0.0012,
+      "std": 0.145,
+      "min": -0.98,
+      "max": 0.97,
+      "rms": 0.145
+    },
+    "pitch": {
+      "mean_hz": 220.5,
+      "std_hz": 35.2,
+      "min_hz": 180.0,
+      "max_hz": 280.0
+    }
+  }
+}
+```
+
+#### Error Responses
+
+**No audio data**:
+```json
+{
+  "error": "No audio data provided"
+}
+```
+**Status**: `400 Bad Request`
+
+**Service unavailable**:
+```json
+{
+  "error": "Audio analysis service unavailable",
+  "message": "torchaudio not installed"
+}
+```
+**Status**: `503 Service Unavailable`
+
+**Example**:
+
+```bash
+# Encode audio to base64
+AUDIO_BASE64=$(base64 -w 0 audio.wav)
+
+curl -X POST http://localhost:5000/api/v1/analyze \
+  -H "Content-Type: application/json" \
+  -d "{\"audio_data\": \"$AUDIO_BASE64\"}"
+```
+
+---
+
+### GET /api/v1/models/info
+
+Get information about available models and their capabilities.
+
+**Endpoint**: `GET /api/v1/models/info`
+
+#### Response
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "status": "available",
+  "models": [
+    {
+      "name": "vits",
+      "version": "1.0",
+      "type": "tts",
+      "capabilities": {
+        "multi_speaker": true,
+        "num_speakers": 100,
+        "style_transfer": false,
+        "tensorrt": false,
+        "device": "cuda:0"
+      },
+      "parameters": {
+        "max_length": 1000,
+        "temperature_range": [0.1, 2.0],
+        "speed_range": [0.5, 2.0],
+        "pitch_range": [-12, 12]
+      }
+    }
+  ]
+}
+```
+
+**Example**:
+
+```bash
+curl http://localhost:5000/api/v1/models/info
+```
+
+---
+
+### GET /api/v1/config
+
+Get current API configuration (sanitized).
+
+**Endpoint**: `GET /api/v1/config`
+
+#### Response
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "audio": {
+    "sample_rate": 22050,
+    "channels": 1,
+    "formats": ["wav", "mp3", "flac", "ogg"]
+  },
+  "limits": {
+    "max_text_length": 1000,
+    "max_audio_duration": 600,
+    "max_file_size": 16777216
+  },
+  "processing": {
+    "vad_enabled": true,
+    "denoising_enabled": true,
+    "pitch_extraction_enabled": true
+  }
+}
+```
+
+**Example**:
+
+```bash
+curl http://localhost:5000/api/v1/config
+```
+
+---
+
+### POST /api/v1/config
+
+Update voice synthesis parameters (runtime only, not persistent).
+
+**Endpoint**: `POST /api/v1/config`
+
+**Content-Type**: `application/json`
+
+#### Request Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `temperature` | number | No | Synthesis temperature (0.1-2.0) |
+| `speed` | number | No | Speech speed multiplier (0.5-2.0) |
+| `pitch` | number | No | Pitch shift in semitones (-12 to 12) |
+| `speaker_id` | integer | No | Default speaker ID |
+
+**Note**: Only the parameters listed above can be updated. Changes are runtime-only and not persisted.
+
+#### Response
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "status": "success",
+  "message": "Configuration updated",
+  "updates": {
+    "temperature": 0.8,
+    "speed": 1.2
+  }
+}
+```
+
+#### Error Responses
+
+**No valid parameters**:
+```json
+{
+  "error": "No valid configuration parameters provided"
+}
+```
+**Status**: `400 Bad Request`
+
+**Example**:
+
+```bash
+curl -X POST http://localhost:5000/api/v1/config \
+  -H "Content-Type: application/json" \
+  -d '{"temperature": 0.8, "speed": 1.2}'
+```
+
+---
+
+### GET /api/v1/speakers
+
+Get list of available speakers.
+
+**Endpoint**: `GET /api/v1/speakers`
+
+#### Query Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `language` | string | No | Filter by language code (e.g., "en", "es") |
+
+#### Response
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+[
+  {
+    "id": 0,
+    "name": "Speaker 0",
+    "language": "en",
+    "gender": "neutral",
+    "description": "Generated speaker voice 0"
+  },
+  {
+    "id": 1,
+    "name": "Speaker 1",
+    "language": "en",
+    "gender": "neutral",
+    "description": "Generated speaker voice 1"
+  }
+]
+```
+
+**Example**:
+
+```bash
+# Get all speakers
+curl http://localhost:5000/api/v1/speakers
+
+# Filter by language
+curl "http://localhost:5000/api/v1/speakers?language=en"
+```
+
+---
+
+### GET /api/v1/gpu_status
+
+Get GPU status and utilization information.
+
+**Endpoint**: `GET /api/v1/gpu_status`
+
+#### Response
+
+**Status**: `200 OK`
+
+**Body (CUDA available)**:
+```json
+{
+  "cuda_available": true,
+  "device": "cuda",
+  "device_count": 1,
+  "device_name": "NVIDIA GeForce RTX 3090",
+  "memory_total": 25769803776,
+  "memory_allocated": 4294967296,
+  "memory_reserved": 5368709120,
+  "memory_free": 21474836480
+}
+```
+
+**Body (CUDA unavailable)**:
+```json
+{
+  "cuda_available": false,
+  "device": "cpu",
+  "device_count": 0
+}
+```
+
+**Example**:
+
+```bash
+curl http://localhost:5000/api/v1/gpu_status
+```
+
+---
+
+## 4. Voice Conversion Endpoints
 
 ### POST /voice/clone
 
@@ -825,7 +1397,7 @@ Convert a song to a target voice.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `song` | file | Yes | - | Audio file to convert (WAV, MP3, FLAC, OGG) |
-| `target_profile_id` | string | Yes | - | UUID of target voice profile |
+| `profile_id` | string | Yes | - | UUID of target voice profile |
 | `vocal_volume` | float | No | 1.0 | Volume of converted vocals (0.0-2.0) |
 | `instrumental_volume` | float | No | 0.9 | Volume of instrumental (0.0-2.0) |
 | `pitch_shift_semitones` | integer | No | 0 | Pitch shift in semitones (�12) |
@@ -833,7 +1405,7 @@ Convert a song to a target voice.
 | `quality_preset` | string | No | balanced | Quality preset: `fast`, `balanced`, `quality` |
 | `return_stems` | boolean | No | false | Return separated vocals/instrumental |
 
-> **Note**: For backward compatibility, the server also accepts `profile_id` (deprecated); prefer `target_profile_id`.
+> **Note**: The request parameter is `profile_id`. The response metadata includes `target_profile_id` for clarity.
 
 **Quality Presets**:
 
@@ -849,7 +1421,7 @@ Convert a song to a target voice.
 ```bash
 curl -X POST http://localhost:5000/api/v1/convert/song \
   -F "song=@song.mp3" \
-  -F "target_profile_id=550e8400-e29b-41d4-a716-446655440000" \
+  -F "profile_id=550e8400-e29b-41d4-a716-446655440000" \
   -F "vocal_volume=1.0" \
   -F "instrumental_volume=0.9" \
   -F "pitch_shift_semitones=0" \
@@ -865,7 +1437,7 @@ import requests
 url = "http://localhost:5000/api/v1/convert/song"
 files = {"song": open("song.mp3", "rb")}
 data = {
-    "target_profile_id": "550e8400-e29b-41d4-a716-446655440000",
+    "profile_id": "550e8400-e29b-41d4-a716-446655440000",
     "vocal_volume": 1.0,
     "instrumental_volume": 0.9,
     "pitch_shift_semitones": 0,
@@ -885,7 +1457,7 @@ print(f"Status: {result['status']}")
 ```javascript
 const formData = new FormData();
 formData.append('song', songFile);
-formData.append('target_profile_id', '550e8400-e29b-41d4-a716-446655440000');
+formData.append('profile_id', '550e8400-e29b-41d4-a716-446655440000');
 formData.append('vocal_volume', '1.0');
 formData.append('instrumental_volume', '0.9');
 formData.append('quality_preset', 'balanced');
@@ -914,6 +1486,64 @@ fetch('http://localhost:5000/api/v1/convert/song', {
   "estimated_time_seconds": 90,
   "status_url": "/api/v1/convert/status/conv-770e8400-e29b-41d4-a716-446655440002"
 }
+```
+
+**Response Fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `conversion_id` | string | UUID of the conversion job |
+| `status` | string | Initial status (always `queued` for async conversions) |
+| `message` | string | Human-readable status message |
+| `estimated_time_seconds` | integer | Estimated time to completion (seconds) |
+| `status_url` | string | URL to poll for conversion status, see [GET /api/v1/convert/status/{conversion_id}](#get-convertstatusconversion_id) |
+
+**Next Steps**:
+
+1. **Poll for Status**: Use the `status_url` to check conversion progress. Recommended: exponential backoff starting at 1s, max 30s between requests.
+   - See [GET /api/v1/convert/status/{conversion_id}](#get-convertstatusconversion_id) for detailed documentation
+
+2. **Download Result**: When status is `succeeded`, use the `download_url` from the status response to retrieve the converted audio.
+   - See [GET /api/v1/convert/download/{conversion_id}/converted.wav](#get-convertdownloadconversion_idconvertedwav) for detailed documentation
+
+**Example Async Workflow**:
+
+```python
+import requests
+import time
+
+# Step 1: Submit conversion
+response = requests.post(
+    "http://localhost:5000/api/v1/convert/song",
+    files={"song": open("song.mp3", "rb")},
+    data={"profile_id": "550e8400-e29b-41d4-a716-446655440000"}
+)
+result = response.json()
+conversion_id = result["conversion_id"]
+
+# Step 2: Poll for completion
+status_url = f"http://localhost:5000{result['status_url']}"
+wait_time = 1
+
+while True:
+    status_response = requests.get(status_url)
+    status_data = status_response.json()
+
+    if status_data["status"] == "succeeded":
+        download_url = status_data["download_url"]
+        break
+    elif status_data["status"] == "failed":
+        raise Exception(f"Conversion failed: {status_data['message']}")
+
+    time.sleep(wait_time)
+    wait_time = min(wait_time * 1.5, 30)  # Exponential backoff
+
+# Step 3: Download result
+download_response = requests.get(f"http://localhost:5000{download_url}")
+with open("converted.wav", "wb") as f:
+    f.write(download_response.content)
+
+print("Conversion complete!")
 ```
 
 #### Error Responses
@@ -945,7 +1575,7 @@ fetch('http://localhost:5000/api/v1/convert/song', {
 
 ### GET /convert/status/{conversion_id}
 
-Check the status of a song conversion.
+Get the current status of a song conversion job. Use this endpoint to poll for completion after submitting a conversion with `POST /api/v1/convert/song`.
 
 **Endpoint**: `GET /api/v1/convert/status/{conversion_id}`
 
@@ -953,9 +1583,96 @@ Check the status of a song conversion.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `conversion_id` | string | Conversion task ID |
+| `conversion_id` | string | UUID of the conversion job (returned by POST /api/v1/convert/song) |
 
-#### Request Example
+#### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `conversion_id` | string | UUID of the conversion job |
+| `status` | string | Current status: `queued`, `running`, `succeeded`, `failed` |
+| `progress` | integer | Completion percentage (0-100), only present when `status` is `running` |
+| `stage` | string | Current processing stage, only present when `status` is `running` |
+| `download_url` | string | URL to download converted audio, only present when `status` is `succeeded` |
+| `error` | string | Error code, only present when `status` is `failed` |
+| `message` | string | Human-readable error message, only present when `status` is `failed` |
+| `created_at` | string | ISO 8601 timestamp when conversion was created |
+| `updated_at` | string | ISO 8601 timestamp of last status update |
+| `estimated_time_seconds` | integer | Estimated time to completion (seconds), only present when `status` is `queued` or `running` |
+
+#### Response Examples
+
+**Queued State**:
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
+  "status": "queued",
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-01-15T10:00:00Z",
+  "estimated_time_seconds": 90
+}
+```
+
+**Running State**:
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
+  "status": "running",
+  "progress": 45,
+  "stage": "voice_conversion",
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-01-15T10:00:35Z",
+  "estimated_time_seconds": 50
+}
+```
+
+**Processing Stages**:
+- `vocal_separation` - Separating vocals from instrumental
+- `pitch_extraction` - Extracting pitch contour
+- `voice_conversion` - Converting voice characteristics
+- `audio_synthesis` - Synthesizing final audio
+- `mixing` - Mixing converted vocals with instrumental
+
+**Succeeded State**:
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
+  "status": "succeeded",
+  "download_url": "/api/v1/convert/download/conv-770e8400-e29b-41d4-a716-446655440002/converted.wav",
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-01-15T10:01:25Z"
+}
+```
+
+**Failed State**:
+
+**Status**: `200 OK`
+
+**Body**:
+```json
+{
+  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
+  "status": "failed",
+  "error": "separation_failed",
+  "message": "Vocal separation failed: audio quality insufficient",
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-01-15T10:00:45Z"
+}
+```
+
+#### Request Examples
 
 **cURL**:
 ```bash
@@ -970,167 +1687,135 @@ import time
 conversion_id = "conv-770e8400-e29b-41d4-a716-446655440002"
 url = f"http://localhost:5000/api/v1/convert/status/{conversion_id}"
 
+# Poll for completion with exponential backoff
+wait_time = 1
+max_wait = 30
+
 while True:
     response = requests.get(url)
-    status = response.json()
+    result = response.json()
 
-    print(f"Status: {status['status']} ({status['progress']}%)")
+    status = result['status']
+    print(f"Status: {status}")
 
-    if status['status'] in ['completed', 'failed']:
+    if status == 'running':
+        progress = result.get('progress', 0)
+        stage = result.get('stage', 'processing')
+        print(f"  Progress: {progress}% - {stage}")
+
+    if status == 'succeeded':
+        print(f"  Download URL: {result['download_url']}")
+        break
+    elif status == 'failed':
+        print(f"  Error: {result['error']} - {result['message']}")
         break
 
-    time.sleep(2)
-
-if status['status'] == 'completed':
-    print(f"Download URL: {status['result']['converted_audio_url']}")
+    # Exponential backoff
+    time.sleep(wait_time)
+    wait_time = min(wait_time * 1.5, max_wait)
 ```
 
 **JavaScript**:
 ```javascript
-async function checkStatus(conversionId) {
-  const url = `http://localhost:5000/api/v1/convert/status/${conversionId}`;
+const conversionId = 'conv-770e8400-e29b-41d4-a716-446655440002';
+const url = `http://localhost:5000/api/v1/convert/status/${conversionId}`;
+
+// Poll for completion with exponential backoff
+async function pollStatus() {
+  let waitTime = 1000; // Start with 1 second
+  const maxWait = 30000; // Max 30 seconds
 
   while (true) {
     const response = await fetch(url);
-    const status = await response.json();
+    const result = await response.json();
 
-    console.log(`Status: ${status.status} (${status.progress}%)`);
+    console.log(`Status: ${result.status}`);
 
-    if (status.status === 'completed' || status.status === 'failed') {
-      return status;
+    if (result.status === 'running') {
+      console.log(`  Progress: ${result.progress}% - ${result.stage}`);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    if (result.status === 'succeeded') {
+      console.log(`  Download URL: ${result.download_url}`);
+      return result.download_url;
+    } else if (result.status === 'failed') {
+      console.error(`  Error: ${result.error} - ${result.message}`);
+      throw new Error(result.message);
+    }
+
+    // Exponential backoff
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+    waitTime = Math.min(waitTime * 1.5, maxWait);
   }
 }
 
-const result = await checkStatus('conv-770e8400-...');
-console.log('Download URL:', result.result.converted_audio_url);
+pollStatus().then(downloadUrl => {
+  console.log('Conversion complete:', downloadUrl);
+}).catch(error => {
+  console.error('Conversion failed:', error);
+});
 ```
 
-#### Response (Processing)
+#### Error Responses
 
-**Status**: `200 OK`
-
-**Body**:
+**Conversion not found**:
 ```json
 {
-  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
-  "status": "processing",
-  "progress": 65,
-  "current_stage": "voice_conversion",
-  "stage_details": {
-    "stage": 3,
-    "total_stages": 4,
-    "stage_name": "Voice Conversion",
-    "stage_progress": 62.5
-  },
-  "created_at": "2024-01-15T11:00:00Z",
-  "estimated_time_remaining_seconds": 15
+  "error": "conversion_not_found",
+  "message": "Conversion job not found",
+  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002"
 }
 ```
+**Status**: `404 Not Found`
 
-#### Response (Completed)
-
-**Status**: `200 OK`
-
-**Body**:
+**Invalid conversion ID format**:
 ```json
 {
-  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
-  "status": "completed",
-  "progress": 100,
-  "created_at": "2024-01-15T11:00:00Z",
-  "completed_at": "2024-01-15T11:01:30Z",
-  "processing_time_seconds": 90,
-  "result": {
-    "converted_audio_url": "/api/v1/convert/download/conv-770e8400-e29b-41d4-a716-446655440002/converted.wav",
-    "stems": {
-      "vocals_url": "/api/v1/convert/download/conv-770e8400-e29b-41d4-a716-446655440002/vocals.wav",
-      "instrumental_url": "/api/v1/convert/download/conv-770e8400-e29b-41d4-a716-446655440002/instrumental.wav"
-    },
-    "metadata": {
-      "original_duration_seconds": 180.5,
-      "converted_duration_seconds": 180.5,
-      "sample_rate": 44100,
-      "format": "wav"
-    },
-    "quality_metrics": {
-      "pitch_accuracy": {
-        "rmse_hz": 8.2,
-        "rmse_log2": 0.15,
-        "correlation": 0.94
-      },
-      "speaker_similarity": {
-        "cosine_similarity": 0.88,
-        "embedding_distance": 0.24
-      },
-      "f0_statistics": {
-        "mean_hz": 261.6,
-        "std_hz": 45.3,
-        "min_hz": 196.0,
-        "max_hz": 392.0,
-        "min_note": "G3",
-        "max_note": "G4"
-      }
-    }
-  }
+  "error": "invalid_id",
+  "message": "Invalid conversion ID format",
+  "conversion_id": "invalid-id"
 }
 ```
-
-#### Response (Failed)
-
-**Status**: `200 OK`
-
-**Body**:
-```json
-{
-  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
-  "status": "failed",
-  "progress": 45,
-  "created_at": "2024-01-15T11:00:00Z",
-  "failed_at": "2024-01-15T11:00:45Z",
-  "error": {
-    "code": "pitch_extraction_failed",
-    "message": "Failed to extract pitch contour from vocals",
-    "details": {
-      "reason": "Insufficient vocal clarity",
-      "suggestions": [
-        "Use higher quality source audio",
-        "Try different separation model",
-        "Ensure vocals are prominent in mix"
-      ]
-    }
-  }
-}
-```
+**Status**: `400 Bad Request`
 
 ---
 
-### GET /convert/download/{conversion_id}/{file_type}
+### GET /convert/download/{conversion_id}/converted.wav
 
-Download converted audio or stems.
+Download the converted audio file for a completed conversion. Only available when the conversion status is `succeeded`.
 
-**Endpoint**: `GET /api/v1/convert/download/{conversion_id}/{file_type}`
+**Endpoint**: `GET /api/v1/convert/download/{conversion_id}/converted.wav`
 
 #### Path Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `conversion_id` | string | Conversion task ID |
-| `file_type` | string | File type: `converted.wav`, `vocals.wav`, `instrumental.wav` |
+| `conversion_id` | string | UUID of the conversion job |
 
-#### Request Example
+#### Response
+
+**Status**: `200 OK`
+
+**Headers**:
+```
+Content-Type: audio/wav
+Content-Disposition: attachment; filename="converted.wav"
+Content-Length: <file-size-bytes>
+```
+
+**Body**: Binary audio data (WAV format)
+
+#### Request Examples
 
 **cURL**:
 ```bash
-# Download converted audio
+# Download and save to file
 curl http://localhost:5000/api/v1/convert/download/conv-770e8400-e29b-41d4-a716-446655440002/converted.wav \
   -o converted.wav
 
-# Download stems
-curl http://localhost:5000/api/v1/convert/download/conv-770e8400-e29b-41d4-a716-446655440002/vocals.wav \
-  -o vocals.wav
+# Download with progress indicator
+curl -# http://localhost:5000/api/v1/convert/download/conv-770e8400-e29b-41d4-a716-446655440002/converted.wav \
+  -o converted.wav
 ```
 
 **Python**:
@@ -1138,217 +1823,529 @@ curl http://localhost:5000/api/v1/convert/download/conv-770e8400-e29b-41d4-a716-
 import requests
 
 conversion_id = "conv-770e8400-e29b-41d4-a716-446655440002"
-base_url = f"http://localhost:5000/api/v1/convert/download/{conversion_id}"
+url = f"http://localhost:5000/api/v1/convert/download/{conversion_id}/converted.wav"
 
-# Download converted audio
-response = requests.get(f"{base_url}/converted.wav")
-with open("converted.wav", "wb") as f:
-    f.write(response.content)
+# Download with streaming to handle large files
+response = requests.get(url, stream=True)
+response.raise_for_status()
 
-# Download stems
-response = requests.get(f"{base_url}/vocals.wav")
-with open("vocals.wav", "wb") as f:
-    f.write(response.content)
+# Save to file with progress
+total_size = int(response.headers.get('content-length', 0))
+downloaded = 0
 
-response = requests.get(f"{base_url}/instrumental.wav")
-with open("instrumental.wav", "wb") as f:
-    f.write(response.content)
+with open('converted.wav', 'wb') as f:
+    for chunk in response.iter_content(chunk_size=8192):
+        if chunk:
+            f.write(chunk)
+            downloaded += len(chunk)
+            if total_size > 0:
+                progress = (downloaded / total_size) * 100
+                print(f"Download progress: {progress:.1f}%", end='\r')
+
+print("\nDownload complete!")
 ```
 
-**JavaScript**:
+**JavaScript (Node.js)**:
+```javascript
+const fs = require('fs');
+const https = require('https');
+
+const conversionId = 'conv-770e8400-e29b-41d4-a716-446655440002';
+const url = `http://localhost:5000/api/v1/convert/download/${conversionId}/converted.wav`;
+
+// Download with progress
+const file = fs.createWriteStream('converted.wav');
+https.get(url, (response) => {
+  const totalSize = parseInt(response.headers['content-length'], 10);
+  let downloaded = 0;
+
+  response.on('data', (chunk) => {
+    downloaded += chunk.length;
+    file.write(chunk);
+
+    const progress = (downloaded / totalSize) * 100;
+    process.stdout.write(`Download progress: ${progress.toFixed(1)}%\r`);
+  });
+
+  response.on('end', () => {
+    file.end();
+    console.log('\nDownload complete!');
+  });
+}).on('error', (error) => {
+  console.error('Download failed:', error);
+});
+```
+
+**JavaScript (Browser)**:
 ```javascript
 const conversionId = 'conv-770e8400-e29b-41d4-a716-446655440002';
-const baseUrl = `http://localhost:5000/api/v1/convert/download/${conversionId}`;
+const url = `http://localhost:5000/api/v1/convert/download/${conversionId}/converted.wav`;
 
-// Download converted audio
-fetch(`${baseUrl}/converted.wav`)
-  .then(response => response.blob())
+// Download and trigger browser download
+fetch(url)
+  .then(response => {
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    return response.blob();
+  })
   .then(blob => {
-    const url = URL.createObjectURL(blob);
+    // Create download link
+    const downloadUrl = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
+    a.href = downloadUrl;
     a.download = 'converted.wav';
+    document.body.appendChild(a);
     a.click();
+
+    // Cleanup
+    window.URL.revokeObjectURL(downloadUrl);
+    document.body.removeChild(a);
+
+    console.log('Download complete!');
+  })
+  .catch(error => {
+    console.error('Download failed:', error);
   });
 ```
 
-#### Response
-
-**Status**: `200 OK`
-
-**Content-Type**: `audio/wav`
-
-**Body**: Binary audio data
-
 #### Error Responses
 
-**File not found**:
+**Conversion not found**:
 ```json
 {
-  "error": "file_not_found",
-  "message": "Requested file not found",
-  "conversion_id": "conv-770e8400-...",
-  "file_type": "converted.wav"
+  "error": "conversion_not_found",
+  "message": "Conversion job not found",
+  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002"
 }
 ```
 **Status**: `404 Not Found`
 
-**Conversion not complete**:
+**Conversion not ready**:
 ```json
 {
-  "error": "conversion_incomplete",
-  "message": "Conversion not yet completed",
-  "conversion_id": "conv-770e8400-...",
-  "current_status": "processing"
+  "error": "not_ready",
+  "message": "Conversion is not complete. Current status: running",
+  "status": "running",
+  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002"
+}
+```
+**Status**: `409 Conflict`
+
+**Conversion failed**:
+```json
+{
+  "error": "conversion_failed",
+  "message": "Conversion failed and no output is available",
+  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002"
 }
 ```
 **Status**: `409 Conflict`
 
 ---
 
-## 4. WebSocket API
+> **Asynchronous Workflow**: The `/api/v1/convert/song` endpoint supports asynchronous conversion with status polling and separate download. After submitting a conversion, use the `status_url` to poll for completion (recommended: exponential backoff starting at 1s, max 30s). When status is `succeeded`, use the `download_url` to retrieve the converted audio. See [GET /api/v1/convert/status/{conversion_id}](#get-convertstatusconversion_id) and [GET /api/v1/convert/download/{conversion_id}/converted.wav](#get-convertdownloadconversion_idconvertedwav) for details.
 
-Real-time progress updates for song conversion.
+---
 
-### Connection
+## 5. WebSocket/Socket.IO API
 
-**Endpoint**: `ws://localhost:5000/ws/conversion/{conversion_id}`
+Real-time communication using Socket.IO for streaming audio, synthesis, and conversion progress updates.
 
-#### Connection Example
+**Connection**: Socket.IO connects to the same port as the HTTP API (default: 5000)
 
-**JavaScript**:
+**Endpoint**: `ws://<host>:<port>/socket.io/` (or use Socket.IO client library)
+
+**Note**: AutoVoice uses Flask-SocketIO, not raw WebSocket. Use a Socket.IO client library for proper connection handling.
+
+### Connection Examples
+
+**JavaScript (using socket.io-client)**:
 ```javascript
-const conversionId = 'conv-770e8400-e29b-41d4-a716-446655440002';
-const ws = new WebSocket(`ws://localhost:5000/ws/conversion/${conversionId}`);
+// Install: npm install socket.io-client
+import io from 'socket.io-client';
 
-ws.onopen = () => {
-  console.log('WebSocket connected');
-};
+const socket = io('http://localhost:5000');
 
-ws.onmessage = (event) => {
-  const update = JSON.parse(event.data);
-  console.log(`Progress: ${update.progress}% - ${update.current_stage}`);
+socket.on('connect', () => {
+  console.log('Connected to AutoVoice Socket.IO');
+  console.log('Socket ID:', socket.id);
+});
 
-  if (update.status === 'completed') {
-    console.log('Conversion completed!');
-    console.log('Download URL:', update.result.converted_audio_url);
-    ws.close();
-  } else if (update.status === 'failed') {
-    console.error('Conversion failed:', update.error.message);
-    ws.close();
-  }
-};
+socket.on('disconnect', () => {
+  console.log('Disconnected from server');
+});
 
-ws.onerror = (error) => {
-  console.error('WebSocket error:', error);
-};
-
-ws.onclose = () => {
-  console.log('WebSocket disconnected');
-};
+socket.on('error', (error) => {
+  console.error('Socket error:', error);
+});
 ```
 
-**Python**:
+**Python (using python-socketio)**:
 ```python
-import websocket
-import json
+# Install: pip install python-socketio[client]
+import socketio
 
-def on_message(ws, message):
-    update = json.loads(message)
-    print(f"Progress: {update['progress']}% - {update['current_stage']}")
+sio = socketio.Client()
 
-    if update['status'] == 'completed':
-        print('Conversion completed!')
-        print('Download URL:', update['result']['converted_audio_url'])
-        ws.close()
-    elif update['status'] == 'failed':
-        print('Conversion failed:', update['error']['message'])
-        ws.close()
+@sio.event
+def connect():
+    print('Connected to AutoVoice Socket.IO')
+    print('Session ID:', sio.sid)
 
-def on_error(ws, error):
-    print('WebSocket error:', error)
+@sio.event
+def disconnect():
+    print('Disconnected from server')
 
-def on_close(ws, close_status_code, close_msg):
-    print('WebSocket disconnected')
+@sio.event
+def error(data):
+    print('Socket error:', data)
 
-def on_open(ws):
-    print('WebSocket connected')
-
-conversion_id = 'conv-770e8400-e29b-41d4-a716-446655440002'
-ws_url = f"ws://localhost:5000/ws/conversion/{conversion_id}"
-
-ws = websocket.WebSocketApp(
-    ws_url,
-    on_message=on_message,
-    on_error=on_error,
-    on_close=on_close,
-    on_open=on_open
-)
-
-ws.run_forever()
+# Connect to server
+sio.connect('http://localhost:5000')
 ```
 
-### Message Format
+### Socket.IO Events
 
-#### Progress Update
+#### Client → Server Events
 
+##### `audio_stream`
+Stream audio data for real-time processing.
+
+**Payload**:
 ```json
 {
-  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
-  "status": "processing",
-  "progress": 65,
-  "current_stage": "voice_conversion",
-  "stage_details": {
-    "stage": 3,
-    "total_stages": 4,
-    "stage_name": "Voice Conversion",
-    "stage_progress": 62.5
-  },
-  "estimated_time_remaining_seconds": 15
+  "audio_data": "<base64-encoded-audio>",
+  "sample_rate": 44100,
+  "chunk_size": 1024
 }
 ```
 
-#### Completion
+**Response Event**: `audio_processed`
 
+**Example (JavaScript)**:
+```javascript
+const audioBase64 = btoa(String.fromCharCode(...audioBuffer));
+socket.emit('audio_stream', {
+  audio_data: audioBase64,
+  sample_rate: 44100,
+  chunk_size: 1024
+});
+
+socket.on('audio_processed', (data) => {
+  console.log('Audio processed:', data);
+});
+```
+
+---
+
+##### `synthesize_stream`
+Stream text-to-speech synthesis.
+
+**Payload**:
 ```json
 {
-  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
-  "status": "completed",
-  "progress": 100,
-  "completed_at": "2024-01-15T11:01:30Z",
-  "result": {
-    "converted_audio_url": "/api/v1/convert/download/conv-770e8400-e29b-41d4-a716-446655440002/converted.wav",
-    "quality_metrics": {
-      "pitch_accuracy": {
-        "rmse_hz": 8.2,
-        "correlation": 0.94
-      },
-      "speaker_similarity": {
-        "cosine_similarity": 0.88
-      }
-    }
-  }
+  "text": "Hello, world!",
+  "speaker_id": 0
 }
 ```
 
-#### Failure
+**Response Event**: `synthesis_complete`
 
+**Example (JavaScript)**:
+```javascript
+socket.emit('synthesize_stream', {
+  text: 'Hello, this is a streaming synthesis test.',
+  speaker_id: 0
+});
+
+socket.on('synthesis_complete', (data) => {
+  console.log('Synthesis complete');
+  // data.audio contains base64-encoded audio
+  const audioBlob = base64ToBlob(data.audio, 'audio/wav');
+  playAudio(audioBlob);
+});
+```
+
+**Example (Python)**:
+```python
+@sio.on('synthesis_complete')
+def on_synthesis_complete(data):
+    print('Synthesis complete')
+    audio_base64 = data['audio']
+    audio_bytes = base64.b64decode(audio_base64)
+    # Save or play audio_bytes
+
+sio.emit('synthesize_stream', {
+    'text': 'Hello, this is a streaming synthesis test.',
+    'speaker_id': 0
+})
+```
+
+---
+
+##### `convert_song_stream`
+Stream song conversion with real-time progress updates.
+
+**Payload**:
 ```json
 {
-  "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002",
-  "status": "failed",
-  "progress": 45,
-  "failed_at": "2024-01-15T11:00:45Z",
-  "error": {
-    "code": "pitch_extraction_failed",
-    "message": "Failed to extract pitch contour from vocals"
-  }
+  "conversion_id": "optional-custom-id",
+  "song_data": "<base64-encoded-audio>",
+  "song_mime": "audio/wav",
+  "song_filename": "song.wav",
+  "target_profile_id": "profile-uuid",
+  "vocal_volume": 1.0,
+  "instrumental_volume": 0.9,
+  "return_stems": false
+}
+```
+
+**Response Events**:
+- `conversion_progress` (multiple times during processing)
+- `conversion_complete` (on success)
+- `conversion_error` (on failure)
+
+**Example (JavaScript)**:
+```javascript
+const conversionId = 'my-conversion-' + Date.now();
+
+socket.emit('convert_song_stream', {
+  conversion_id: conversionId,
+  song_data: songBase64,
+  song_mime: 'audio/wav',
+  song_filename: 'song.wav',
+  target_profile_id: 'profile-abc123',
+  vocal_volume: 1.0,
+  instrumental_volume: 0.9,
+  return_stems: false
+});
+
+socket.on('conversion_progress', (data) => {
+  console.log(`Progress: ${data.progress}% - ${data.stage}`);
+  updateProgressBar(data.progress);
+});
+
+socket.on('conversion_complete', (data) => {
+  console.log('Conversion complete!');
+  console.log('Converted audio:', data.converted_audio_base64);
+});
+
+socket.on('conversion_error', (data) => {
+  console.error('Conversion failed:', data.error);
+});
+```
+
+**Example (Python)**:
+```python
+import base64
+
+@sio.on('conversion_progress')
+def on_progress(data):
+    print(f"Progress: {data['progress']}% - {data['stage']}")
+
+@sio.on('conversion_complete')
+def on_complete(data):
+    print('Conversion complete!')
+    audio_bytes = base64.b64decode(data['converted_audio_base64'])
+    with open('converted.wav', 'wb') as f:
+        f.write(audio_bytes)
+
+@sio.on('conversion_error')
+def on_error(data):
+    print(f"Conversion failed: {data['error']}")
+
+# Read and encode song
+with open('song.wav', 'rb') as f:
+    song_bytes = f.read()
+    song_base64 = base64.b64encode(song_bytes).decode('utf-8')
+
+sio.emit('convert_song_stream', {
+    'conversion_id': 'my-conversion-123',
+    'song_data': song_base64,
+    'song_mime': 'audio/wav',
+    'song_filename': 'song.wav',
+    'target_profile_id': 'profile-abc123',
+    'vocal_volume': 1.0,
+    'instrumental_volume': 0.9,
+    'return_stems': False
+})
+```
+
+---
+
+##### `audio_analysis`
+Analyze audio in real-time.
+
+**Payload**:
+```json
+{
+  "audio_data": "<base64-encoded-audio>",
+  "sample_rate": 44100
+}
+```
+
+**Response Event**: `analysis_complete`
+
+---
+
+##### `get_status`
+Get server status and capabilities.
+
+**Payload**: None
+
+**Response Event**: `status`
+
+**Example**:
+```javascript
+socket.emit('get_status');
+
+socket.on('status', (data) => {
+  console.log('Server capabilities:', data.capabilities);
+  console.log('Performance metrics:', data.metrics);
+});
+```
+
+---
+
+##### `join` / `leave`
+Join or leave a room for targeted event broadcasting.
+
+**Payload**:
+```json
+{
+  "room": "room-name"
+}
+```
+
+**Response Events**: `joined` / `left`
+
+---
+
+#### Server → Client Events
+
+##### `audio_processed`
+Audio stream processing result.
+
+**Payload**:
+```json
+{
+  "status": "success",
+  "results": { ... }
 }
 ```
 
 ---
 
-## 5. Error Codes
+##### `synthesis_complete`
+TTS synthesis completed.
+
+**Payload**:
+```json
+{
+  "audio": "<base64-encoded-audio>",
+  "text": "synthesized text",
+  "speaker_id": 0
+}
+```
+
+---
+
+##### `conversion_progress`
+Song conversion progress update.
+
+**Payload**:
+```json
+{
+  "conversion_id": "my-conversion-123",
+  "progress": 65,
+  "stage": "voice_conversion",
+  "timestamp": 1234567890.123
+}
+```
+
+---
+
+##### `conversion_complete`
+Song conversion completed successfully.
+
+**Payload**:
+```json
+{
+  "conversion_id": "my-conversion-123",
+  "converted_audio_base64": "<base64-audio>",
+  "vocals_base64": "<base64-audio>",
+  "instrumental_base64": "<base64-audio>",
+  "quality_metrics": { ... }
+}
+```
+
+---
+
+##### `conversion_error`
+Song conversion failed.
+
+**Payload**:
+```json
+{
+  "conversion_id": "my-conversion-123",
+  "error": "Error message",
+  "code": "ERROR_CODE"
+}
+```
+
+---
+
+##### `analysis_complete`
+Audio analysis completed.
+
+**Payload**:
+```json
+{
+  "analysis": {
+    "pitch": { ... },
+    "energy": { ... }
+  },
+  "sample_rate": 44100
+}
+```
+
+---
+
+##### `status`
+Server status and capabilities.
+
+**Payload**:
+```json
+{
+  "capabilities": {
+    "tts": true,
+    "voice_cloning": true,
+    "singing_conversion": true
+  },
+  "metrics": {
+    "active_connections": 5,
+    "gpu_utilization": 45.2
+  },
+  "timestamp": 1234567890.123
+}
+```
+
+---
+
+##### `error`
+General error event.
+
+**Payload**:
+```json
+{
+  "message": "Error description"
+}
+```
+
+---
+
+## 6. Error Codes
 
 ### General Error Codes
 
@@ -1402,7 +2399,7 @@ All errors follow this format:
 
 ---
 
-## 6. Python SDK
+## 7. Python SDK
 
 ### Installation
 
@@ -1565,7 +2562,7 @@ class VoiceConversion:
 
 ---
 
-## 7. JavaScript SDK
+## 8. JavaScript SDK
 
 ### Installation
 
@@ -1717,7 +2714,7 @@ class VoiceConversion {
 
 ---
 
-## 8. Best Practices
+## 9. Best Practices
 
 ### General Guidelines
 

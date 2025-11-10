@@ -58,10 +58,11 @@ class TestCPUvsGPUBenchmarks:
         # Store for comparison
         assert rtf > 0
 
-    def test_cpu_vs_gpu_speed_advantage(self, song_file, test_profile, performance_tracker):
+    def test_cpu_vs_gpu_speed_advantage(self, song_file, test_profile, performance_tracker, performance_thresholds):
         """Test that GPU provides significant speed advantage over CPU.
 
         Validates that GPU is at least 3x faster than CPU for voice conversion.
+        Uses GPU_SPEEDUP_THRESHOLD environment variable (default: 3.0).
         """
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available for GPU vs CPU comparison")
@@ -72,6 +73,9 @@ class TestCPUvsGPUBenchmarks:
             pytest.skip("SingingConversionPipeline not available")
 
         results = {}
+
+        # Get threshold from environment
+        min_speedup = performance_thresholds['gpu_speedup']
 
         # Run on CPU
         pipeline_cpu = SingingConversionPipeline(config={'device': 'cpu'})
@@ -118,26 +122,35 @@ class TestCPUvsGPUBenchmarks:
         print(f"  CPU RTF: {rtf_cpu:.3f}x")
         print(f"  GPU RTF: {rtf_gpu:.3f}x")
         print(f"  GPU speedup: {speedup:.2f}x")
+        print(f"  Threshold: {min_speedup:.1f}x")
 
-        # Assert GPU provides at least 3x speed advantage
-        assert speedup >= 3.0, \
-            f"GPU speedup insufficient: {speedup:.2f}x (expected >= 3.0x). " \
+        # Assert GPU provides sufficient speed advantage
+        assert speedup >= min_speedup, \
+            f"GPU speedup insufficient: {speedup:.2f}x (expected >= {min_speedup:.1f}x). " \
             f"CPU RTF: {rtf_cpu:.3f}x, GPU RTF: {rtf_gpu:.3f}x"
 
-        # Record for metrics
+        # Record for metrics (explicit emission for aggregation)
         performance_tracker.record('cpu_gpu_speedup', speedup)
+        performance_tracker.record('rtf_cpu', rtf_cpu)
+        performance_tracker.record('rtf_gpu', rtf_gpu)
 
 
 @pytest.mark.performance
 class TestColdStartVsWarmCache:
     """Compare cold start vs warm cache performance."""
 
-    def test_cold_vs_warm_comparison(self, song_file, test_profile, device, performance_tracker):
-        """Compare first run (cold) vs cached run (warm)."""
+    def test_cold_vs_warm_comparison(self, song_file, test_profile, device, performance_tracker, performance_thresholds):
+        """Compare first run (cold) vs cached run (warm).
+
+        Uses CACHE_SPEEDUP_THRESHOLD environment variable (default: 3.0).
+        """
         try:
             from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
         except ImportError:
             pytest.skip("SingingConversionPipeline not available")
+
+        # Get threshold from environment
+        min_speedup = performance_thresholds['cache_speedup']
 
         pipeline = SingingConversionPipeline(config={
             'device': device,
@@ -169,9 +182,15 @@ class TestColdStartVsWarmCache:
         print(f"  Cold start: {time_cold:.3f}s")
         print(f"  Warm cache: {time_warm:.3f}s")
         print(f"  Speedup: {speedup:.2f}x")
+        print(f"  Threshold: {min_speedup:.1f}x")
 
-        # Cache should provide at least 3x speedup (isolated measurement)
-        assert speedup >= 3.0, f"Cache speedup too low: {speedup:.2f}x (expected >= 3.0x)"
+        # Cache should provide sufficient speedup
+        assert speedup >= min_speedup, f"Cache speedup too low: {speedup:.2f}x (expected >= {min_speedup:.1f}x)"
+
+        # Record for metrics (explicit emission for aggregation)
+        performance_tracker.record('cache_speedup', speedup)
+        performance_tracker.record('cold_start_time', time_cold)
+        performance_tracker.record('warm_cache_time', time_warm)
 
         # Results should be identical
         np.testing.assert_array_equal(result_cold['mixed_audio'], result_warm['mixed_audio'])
@@ -181,8 +200,11 @@ class TestColdStartVsWarmCache:
 class TestEndToEndLatency:
     """Measure end-to-end latency for 30s audio."""
 
-    def test_30s_audio_latency(self, tmp_path, test_profile, device, performance_tracker):
-        """Benchmark conversion of 30-second audio."""
+    def test_30s_audio_latency(self, tmp_path, test_profile, device, performance_tracker, performance_thresholds):
+        """Benchmark conversion of 30-second audio.
+
+        Uses MAX_RTF_CPU and MAX_RTF_GPU environment variables (defaults: 20.0, 5.0).
+        """
         try:
             from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
             import soundfile as sf
@@ -213,9 +235,14 @@ class TestEndToEndLatency:
         print(f"  Elapsed: {elapsed:.3f}s")
         print(f"  RTF: {rtf:.3f}x")
 
-        # Should complete in reasonable time
-        max_rtf = 20.0 if device == 'cpu' else 5.0
-        assert rtf < max_rtf, f"RTF too high: {rtf:.2f}x"
+        # Get threshold from environment
+        max_rtf = performance_thresholds['max_rtf_cpu'] if device == 'cpu' else performance_thresholds['max_rtf_gpu']
+        print(f"  Max RTF: {max_rtf:.1f}x")
+
+        assert rtf < max_rtf, f"RTF too high: {rtf:.2f}x (max: {max_rtf:.1f}x)"
+
+        # Record for metrics
+        performance_tracker.record(f'rtf_30s_{device}', rtf)
 
 
 @pytest.mark.performance
@@ -223,8 +250,11 @@ class TestEndToEndLatency:
 class TestPeakGPUMemoryUsage:
     """Track peak GPU memory usage during conversion."""
 
-    def test_peak_memory_tracking(self, song_file, test_profile, gpu_memory_monitor):
-        """Track peak GPU memory during conversion."""
+    def test_peak_memory_tracking(self, song_file, test_profile, gpu_memory_monitor, performance_thresholds, performance_tracker):
+        """Track peak GPU memory during conversion.
+
+        Uses MAX_GPU_MEMORY_GB environment variable (default: 8.0).
+        """
         try:
             from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
         except ImportError:
@@ -245,20 +275,32 @@ class TestPeakGPUMemoryUsage:
         print(f"  Final: {stats['final_mb']:.2f} MB")
         print(f"  Delta: {stats['delta_mb']:.2f} MB")
 
-        # Peak memory should be reasonable (< 8 GB for typical song)
-        assert stats['peak_mb'] < 8192, f"Peak memory too high: {stats['peak_mb']:.2f} MB"
+        # Get threshold from environment
+        max_memory_mb = performance_thresholds['max_gpu_memory_gb'] * 1024
+        print(f"  Max: {max_memory_mb:.0f} MB")
+
+        assert stats['peak_mb'] < max_memory_mb, f"Peak memory too high: {stats['peak_mb']:.2f} MB (max: {max_memory_mb:.0f} MB)"
+
+        # Record for metrics
+        performance_tracker.record('peak_gpu_memory_mb', stats['peak_mb'])
 
 
 @pytest.mark.performance
 class TestCacheHitRateSpeedup:
     """Measure cache hit rate and speedup."""
 
-    def test_cache_effectiveness(self, song_file, test_profile, device, performance_tracker):
-        """Test cache hit rate and speedup measurement."""
+    def test_cache_effectiveness(self, song_file, test_profile, device, performance_tracker, performance_thresholds):
+        """Test cache hit rate and speedup measurement.
+
+        Uses CACHE_SPEEDUP_THRESHOLD environment variable (default: 3.0).
+        """
         try:
             from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
         except ImportError:
             pytest.skip("SingingConversionPipeline not available")
+
+        # Get threshold from environment
+        min_speedup = performance_thresholds['cache_speedup']
 
         pipeline = SingingConversionPipeline(config={
             'device': device,
@@ -294,9 +336,13 @@ class TestCacheHitRateSpeedup:
         print(f"  First run (cold): {baseline:.3f}s")
         print(f"  Cached runs avg: {avg_cached:.3f}s")
         print(f"  Speedup: {speedup:.2f}x")
+        print(f"  Threshold: {min_speedup:.1f}x")
 
-        # Cached runs should be consistently faster (3x minimum for isolated cache hits)
-        assert speedup >= 3.0, f"Cache speedup insufficient: {speedup:.2f}x (expected >= 3.0x)"
+        # Cached runs should be consistently faster
+        assert speedup >= min_speedup, f"Cache speedup insufficient: {speedup:.2f}x (expected >= {min_speedup:.1f}x)"
+
+        # Record for metrics
+        performance_tracker.record('cache_hit_speedup', speedup)
 
 
 @pytest.mark.performance
@@ -602,6 +648,9 @@ class TestPresetPerformanceComparison:
             print(f"\nPreset '{preset}' Performance:")
             print(f"  Elapsed: {elapsed:.3f}s")
             print(f"  RTF: {rtf:.3f}x")
+
+            # Record preset-specific RTF metrics for aggregation
+            performance_tracker.record(f'rtf_{preset}', rtf)
 
         except (ValueError, KeyError):
             pytest.skip(f"Preset '{preset}' not supported")

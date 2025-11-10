@@ -152,7 +152,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("input"), py::arg("output_pitch"), py::arg("output_confidence"),
           py::arg("output_vibrato"), py::arg("sample_rate"),
           py::arg("frame_length"), py::arg("hop_length"),
-          py::arg("fmin"), py::arg("fmax"), py::arg("threshold"),
+          py::arg("fmin") = 80.0f, py::arg("fmax") = 800.0f, py::arg("threshold") = 0.1f,
           py::arg("use_harmonic_weighting") = true, py::arg("vibrato_method") = 0);
 
     m.def("launch_vibrato_analysis", &launch_vibrato_analysis,

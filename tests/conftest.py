@@ -1182,15 +1182,36 @@ def memory_leak_detector(cuda_available: bool):
 
 
 @pytest.fixture
+def performance_thresholds():
+    """Get performance thresholds from environment variables.
+
+    Returns:
+        Dictionary of threshold values
+    """
+    return {
+        'gpu_speedup': float(os.environ.get('GPU_SPEEDUP_THRESHOLD', '3.0')),
+        'cache_speedup': float(os.environ.get('CACHE_SPEEDUP_THRESHOLD', '3.0')),
+        'max_rtf_cpu': float(os.environ.get('MAX_RTF_CPU', '20.0')),
+        'max_rtf_gpu': float(os.environ.get('MAX_RTF_GPU', '5.0')),
+        'max_gpu_memory_gb': float(os.environ.get('MAX_GPU_MEMORY_GB', '8.0')),
+    }
+
+
+@pytest.fixture
 def performance_tracker():
     """Performance metrics tracking fixture.
 
     Tracks timing, memory, and throughput metrics during tests.
+    Supports JSON output when PYTEST_JSON_OUTPUT environment variable is set.
     """
+    import json
+    import time
+
     class PerformanceTracker:
         def __init__(self):
             self.metrics = {}
             self.timings = []
+            self.json_output_path = os.environ.get('PYTEST_JSON_OUTPUT')
 
         def start(self, label: str = "default"):
             """Start timing measurement."""
@@ -1212,6 +1233,10 @@ def performance_tracker():
                 self.metrics[metric_name] = []
             self.metrics[metric_name].append(value)
 
+            # Write to JSON if output path is set
+            if self.json_output_path:
+                self._write_json()
+
         def get_summary(self):
             """Get summary statistics."""
             summary = {}
@@ -1225,6 +1250,30 @@ def performance_tracker():
                         'count': len(values)
                     }
             return summary
+
+        def _write_json(self):
+            """Write metrics to JSON file."""
+            if not self.json_output_path:
+                return
+
+            try:
+                # Load existing data if file exists
+                output_path = Path(self.json_output_path)
+                if output_path.exists():
+                    with open(output_path) as f:
+                        data = json.load(f)
+                else:
+                    data = {'metrics': {}}
+
+                # Update with current metrics
+                data['metrics'].update(self.get_summary())
+
+                # Write back
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(output_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Failed to write JSON metrics: {e}")
 
     return PerformanceTracker()
 

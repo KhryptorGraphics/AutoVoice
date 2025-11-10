@@ -611,6 +611,7 @@ def main():
                        help="Use Nsight Compute (ncu) instead of Nsight Systems for profiling")
     parser.add_argument("--compare-reference", action="store_true",
                        help="Compare against reference implementations")
+    parser.add_argument("--gpu-id", type=int, default=0, help="CUDA device index")
 
     args = parser.parse_args()
 
@@ -618,15 +619,20 @@ def main():
         print("CUDA not available. Exiting.")
         sys.exit(1)
 
-    # Initialize profiler and benchmarker
-    profiler = CUDAKernelProfiler()
+    # Initialize profiler and benchmarker with specified GPU
+    profiler = CUDAKernelProfiler(device=args.gpu_id)
     benchmarker = KernelBenchmarker(profiler, args.audio_file)
+
+    # Get GPU info for metadata
+    gpu_name = torch.cuda.get_device_name(args.gpu_id) if CUDA_AVAILABLE else "N/A"
 
     results = {
         'metadata': {
             'kernels_tested': args.kernel,
             'iterations': args.iterations,
             'cuda_device': profiler.device,
+            'gpu_index': args.gpu_id,
+            'gpu_name': gpu_name,
             'reference_available': {
                 'librosa': LIBROSA_AVAILABLE,
                 'torchcrepe': TORCHCREPE_AVAILABLE,

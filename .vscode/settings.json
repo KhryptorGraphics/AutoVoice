@@ -1,4 +1,38 @@
 {
     "traycer.alwaysAllowPayToRun": true,
-    "chatgpt.runCodexInWindowsSubsystemForLinux": true
+    "chatgpt.runCodexInWindowsSubsystemForLinux": true,
+
+    // Augment MCP Configuration
+    "augment.mcp.servers": {
+        "claude-flow": {
+            "command": "npx",
+            "args": ["claude-flow@alpha", "mcp", "start"],
+            "description": "Claude Flow MCP server for SPARC methodology and agent orchestration"
+        },
+        "ruv-swarm": {
+            "command": "npx",
+            "args": ["ruv-swarm", "mcp", "start"],
+            "description": "Enhanced swarm coordination and multi-agent orchestration"
+        }
+    },
+
+    // Augment Agent Settings
+    "augment.agent.enabled": true,
+    "augment.agent.autoIndex": true,
+    "augment.agent.contextWindow": 200000,
+
+    // Augment Chat Settings
+    "augment.chat.enabled": true,
+    "augment.chat.model": "claude-sonnet-4.5",
+
+    // Augment Completions
+    "augment.completions.enabled": true,
+    "augment.completions.triggerDelay": 100,
+    "traycer.additionalAgents": [
+        "Cline",
+        "Kilo Code",
+        "Augment",
+        "Roo Code",
+        "Claude Code"
+    ]
 }

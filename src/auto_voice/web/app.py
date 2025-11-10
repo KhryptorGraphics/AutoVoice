@@ -267,7 +267,7 @@ def create_app(config_path=None, config=None):
     def api_synthesize_redirect():
         """Redirect /api/synthesize to /api/v1/synthesize for backward compatibility"""
         from flask import redirect, url_for
-        return redirect(url_for('api.synthesize'), code=307)  # 307 preserves POST method
+        return redirect(url_for('api.synthesize_voice'), code=307)  # 307 preserves POST method
 
     @app.route('/api/process_audio', methods=['POST'])
     def api_process_audio_redirect():
@@ -279,13 +279,13 @@ def create_app(config_path=None, config=None):
     def api_analyze_redirect():
         """Redirect /api/analyze to /api/v1/analyze for backward compatibility"""
         from flask import redirect, url_for
-        return redirect(url_for('api.analyze'), code=307)
+        return redirect(url_for('api.analyze_audio'), code=307)
 
     @app.route('/api/speakers', methods=['GET'])
     def api_speakers_redirect():
         """Redirect /api/speakers to /api/v1/speakers for backward compatibility"""
         from flask import redirect, url_for
-        return redirect(url_for('api.speakers'), code=307)
+        return redirect(url_for('api.get_speakers'), code=307)
 
     @app.route('/api/convert/song', methods=['POST'])
     def api_convert_song_redirect():
@@ -297,19 +297,19 @@ def create_app(config_path=None, config=None):
     def api_voice_clone_redirect():
         """Redirect /api/voice/clone to /api/v1/voice/clone for backward compatibility"""
         from flask import redirect, url_for
-        return redirect(url_for('api.voice_clone'), code=307)
+        return redirect(url_for('api.clone_voice'), code=307)
 
     @app.route('/api/voice/profiles', methods=['GET'])
     def api_voice_profiles_redirect():
         """Redirect /api/voice/profiles to /api/v1/voice/profiles for backward compatibility"""
         from flask import redirect, url_for
-        return redirect(url_for('api.list_voice_profiles'), code=307)
+        return redirect(url_for('api.get_voice_profiles'), code=307)
 
     @app.route('/api/gpu_status', methods=['GET'])
     def api_gpu_status_redirect():
         """Redirect /api/gpu_status to /api/v1/gpu_status for backward compatibility"""
         from flask import redirect, url_for
-        return redirect(url_for('api.gpu_status'), code=307)
+        return redirect(url_for('api.get_gpu_status'), code=307)
 
     # Initialize WebSocket handlers
     try:

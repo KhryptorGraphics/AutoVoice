@@ -12,7 +12,7 @@ def _get_long_description():
                     return f.read()
             except Exception:
                 continue
-    return 'GPU-accelerated voice synthesis system with CUDA 12.9'
+    return 'GPU-accelerated voice synthesis system with CUDA acceleration'
 
 def _wants_cuda_build(argv):
     """
@@ -58,8 +58,15 @@ def _validate_cuda_environment():
     errors = []
     warnings = []
 
-    # Check for system CUDA toolkit, respecting CONDA_PREFIX for conda environments
-    cuda_home = os.environ.get('CUDA_HOME') or os.environ.get('CONDA_PREFIX') or '/usr/local/cuda'
+    # Check if CUFFT is disabled for CPU-only builds
+    disable_cufft = os.environ.get('DISABLE_CUFFT') == '1'
+    if disable_cufft:
+        print("CUDA environment validation: CUFFT disabled (CPU-only mode)")
+        return True, [], ["CUFFT disabled - only CPU-based operations will be available"]
+
+    # Check for system CUDA toolkit - avoid using CONDA_PREFIX as fallback
+    # Allow explicit override via AUTO_VOICE_CUDA_HOME
+    cuda_home = os.environ.get('AUTO_VOICE_CUDA_HOME') or os.environ.get('CUDA_HOME') or '/usr/local/cuda'
 
     # Check nvcc availability
     try:
@@ -71,14 +78,20 @@ def _validate_cuda_environment():
             nvcc_output = nvcc_result.stdout
             if "release" in nvcc_output:
                 cuda_version_line = [line for line in nvcc_output.split('\n') if "release" in line][0]
-                cuda_version = cuda_version_line.split()[-1].rstrip(',')
-                cuda_major = int(cuda_version.split('.')[0])
-                cuda_minor = int(cuda_version.split('.')[1])
+                # Extract version from "release X.Y" format (handles both "release 12.8, V12.8.93" and "release 12.8")
+                release_parts = cuda_version_line.split("release")
+                if len(release_parts) > 1:
+                    version_part = release_parts[1].strip().split(',')[0].split()[0]  # Get first part before comma/space
+                    cuda_version = version_part
+                    cuda_major = int(cuda_version.split('.')[0])
+                    cuda_minor = int(cuda_version.split('.')[1])
 
-                if cuda_major < 11 or (cuda_major == 11 and cuda_minor < 8):
-                    errors.append(f"CUDA version {cuda_version} is too old (minimum: 11.8)")
+                    if cuda_major < 11 or (cuda_major == 11 and cuda_minor < 8):
+                        errors.append(f"CUDA version {cuda_version} is too old (minimum: 11.8)")
+                    else:
+                        print(f"  ✓ CUDA compiler version {cuda_version} detected")
                 else:
-                    print(f"  ✓ CUDA compiler version {cuda_version} detected")
+                    warnings.append("Could not parse CUDA version from nvcc output")
             else:
                 warnings.append("Could not parse CUDA version from nvcc output")
     except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
@@ -105,15 +118,37 @@ def _validate_cuda_environment():
     if not nv_target_found:
         errors.append(f"Critical header directory missing: nv/target (required for CUDA extensions). Checked: {nv_target_paths}")
 
-    # Check other critical headers
-    other_critical_headers = [
+        # Check if conda CUDA toolkit is installed
+        conda_prefix = os.environ.get('CONDA_PREFIX')
+        if conda_prefix and os.path.exists(os.path.join(conda_prefix, 'include', 'cuda.h')):
+            errors.append("Conda CUDA toolkit detected but incomplete (missing nv/target header)")
+            errors.append("Solution: Install system CUDA toolkit with complete headers")
+            errors.append("Run: ./scripts/install_cuda_toolkit.sh")
+        else:
+            errors.append("No CUDA toolkit found with required headers")
+            errors.append("Install system CUDA toolkit: ./scripts/install_cuda_toolkit.sh")
+
+    # Check other critical headers - cufft.h is build-blocking unless disabled
+    # Check cufft.h separately as it's required for CUDA extensions
+    cufft_header = os.path.join(cuda_home, 'include', 'cufft.h')
+    if os.environ.get('DISABLE_CUFFT') != '1' and not os.path.isfile(cufft_header):
+        errors.append(f"Critical header missing: cufft.h (required for CUDA FFT operations)")
+        errors.append(f"Checked: {cufft_header}")
+        errors.append("Solution: Install the full CUDA toolkit that includes cuFFT headers")
+        errors.append("Run: ./scripts/install_cuda_toolkit.sh")
+        errors.append("Or set DISABLE_CUFFT=1 for CPU-only operations")
+
+    # Check other important headers (warnings only)
+
+    # Check other important headers (warnings only)
+    other_headers = [
         os.path.join(cuda_home, 'include', 'cuda.h'),
-        os.path.join(cuda_home, 'include', 'cufft.h'),
         os.path.join(cuda_home, 'include', 'cuda_runtime.h'),
+        os.path.join(cuda_home, 'include', 'device_launch_parameters.h'),
     ]
 
     missing_headers = []
-    for header in other_critical_headers:
+    for header in other_headers:
         if not os.path.isfile(header):
             missing_headers.append(header)
 
@@ -141,20 +176,21 @@ def _validate_cuda_environment():
         # Fallback to ctypes.util.find_library
         cudart_found = find_library('cudart') is not None
 
-    # Check for libcufft (accept versioned libraries like libcufft.so.11)
+    # Check for libcufft (accept versioned libraries like libcufft.so.11) unless disabled
     cufft_found = False
-    for lib_path in lib_dirs:
-        if glob.glob(os.path.join(lib_path, 'libcufft.so*')):
-            cufft_found = True
-            break
-    if not cufft_found:
-        # Fallback to ctypes.util.find_library
-        cufft_found = find_library('cufft') is not None
+    if os.environ.get('DISABLE_CUFFT') != '1':
+        for lib_path in lib_dirs:
+            if glob.glob(os.path.join(lib_path, 'libcufft.so*')):
+                cufft_found = True
+                break
+        if not cufft_found:
+            # Fallback to ctypes.util.find_library
+            cufft_found = find_library('cufft') is not None
 
     missing_libs = []
     if not cudart_found:
         missing_libs.append('libcudart.so (or versioned variant)')
-    if not cufft_found:
+    if os.environ.get('DISABLE_CUFFT') != '1' and not cufft_found:
         missing_libs.append('libcufft.so (or versioned variant)')
 
     if missing_libs:
@@ -170,10 +206,30 @@ def _build_cuda_extensions():
     Performs comprehensive pre-build validation and provides detailed error messages.
     Returns (ext_modules, cmdclass) tuple.
     """
+    # Check if CUDA is required (fail fast instead of silent fallback)
+    require_cuda = os.environ.get('REQUIRE_CUDA') == '1'
+
     try:
         import torch
         from torch.utils.cpp_extension import BuildExtension, CUDAExtension
     except ImportError:
+        if require_cuda:
+            print("=" * 80)
+            print("ERROR: PyTorch with CUDA is required but not installed")
+            print("=" * 80)
+            print("")
+            print("REQUIRE_CUDA=1 is set, but PyTorch is not available.")
+            print("")
+            print("Install PyTorch with CUDA support:")
+            print("  pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \\")
+            print("    --index-url https://download.pytorch.org/whl/cu121")
+            print("")
+            print("Or use the provided script:")
+            print("  ./scripts/setup_pytorch_env.sh")
+            print("")
+            print("=" * 80)
+            raise SystemExit(1)
+
         print("=" * 80)
         print("WARNING: PyTorch is not installed - skipping CUDA extensions")
         print("=" * 80)
@@ -198,6 +254,27 @@ def _build_cuda_extensions():
 
     # Check PyTorch CUDA availability
     if not torch.cuda.is_available():
+        if require_cuda:
+            print("=" * 80)
+            print("ERROR: CUDA is required but not available in PyTorch")
+            print("=" * 80)
+            print("")
+            print("REQUIRE_CUDA=1 is set, but torch.cuda.is_available() returned False.")
+            print("")
+            print("This could be caused by:")
+            print("  1. Missing NVIDIA GPU")
+            print("  2. Incorrect PyTorch installation (CPU-only version installed)")
+            print("  3. Missing or incompatible NVIDIA drivers")
+            print("")
+            print("To fix:")
+            print("  1. Check GPU: nvidia-smi")
+            print("  2. Reinstall PyTorch with CUDA:")
+            print("     pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \\")
+            print("       --index-url https://download.pytorch.org/whl/cu121")
+            print("")
+            print("=" * 80)
+            raise SystemExit(1)
+
         print("=" * 80)
         print("WARNING: PyTorch CUDA support not available - skipping CUDA extensions")
         print("=" * 80)
@@ -240,6 +317,23 @@ def _build_cuda_extensions():
         print("")
 
     if not cuda_valid:
+        if require_cuda:
+            print("=" * 80)
+            print("ERROR: CUDA environment validation failed (REQUIRE_CUDA=1)")
+            print("=" * 80)
+            print("")
+            print("The following CUDA build requirements are not met:")
+            print("")
+            for error in cuda_errors:
+                print(f"  ✗ {error}")
+            print("")
+            print("To fix these issues:")
+            print("  1. Install CUDA toolkit: ./scripts/install_cuda_toolkit.sh")
+            print("  2. Verify installation: ./scripts/check_cuda_toolkit.sh")
+            print("")
+            print("=" * 80)
+            raise SystemExit(1)
+
         print("=" * 80)
         print("ERROR: CUDA Environment Validation Failed")
         print("=" * 80)
@@ -257,9 +351,13 @@ def _build_cuda_extensions():
             print("     OR visit: https://developer.nvidia.com/cuda-toolkit")
             print("")
         if any("header" in err.lower() for err in cuda_errors):
-            print("  2. Ensure system CUDA toolkit (not just conda):")
-            print("     ./scripts/install_cuda_toolkit.sh --force")
+            print("  2. Install system CUDA toolkit with complete headers:")
+            print("     ./scripts/install_cuda_toolkit.sh")
             print("")
+            if any("nv/target" in err for err in cuda_errors):
+                print("     NOTE: Conda CUDA toolkit is often incomplete")
+                print("     System CUDA toolkit installation required for building extensions")
+                print("")
         if any("library" in err.lower() for err in cuda_errors):
             print("  3. Check CUDA library paths:")
             print("     export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH")
@@ -273,10 +371,41 @@ def _build_cuda_extensions():
 
         return [], {}
 
-    # CUDA home directory (adjust if needed), respecting CONDA_PREFIX for conda environments
-    CUDA_HOME = os.environ.get('CUDA_HOME') or os.environ.get('CONDA_PREFIX') or '/usr/local/cuda'
+    # CUDA home directory - avoid using CONDA_PREFIX as fallback
+    # Allow explicit override via AUTO_VOICE_CUDA_HOME
+    CUDA_HOME = os.environ.get('AUTO_VOICE_CUDA_HOME') or os.environ.get('CUDA_HOME') or '/usr/local/cuda'
 
-    # Build library directories list (support both lib64 and lib for conda compatibility)
+    # Determine actual CUDA paths from where headers were found during validation
+    # This ensures we use the correct include/lib directories
+    import glob
+
+    # Find the base CUDA directory from nv/target location
+    cuda_base_dir = CUDA_HOME
+    nv_target_search_paths = [
+        os.path.join(CUDA_HOME, 'include', 'nv', 'target'),
+    ]
+    # Also check targets/*/include/nv/target for conda-style layouts
+    nv_target_search_paths.extend(glob.glob(os.path.join(CUDA_HOME, 'targets', '*', 'include', 'nv', 'target')))
+
+    # Find where nv/target actually exists
+    resolved_include_base = None
+    for nv_path in nv_target_search_paths:
+        if os.path.exists(nv_path):
+            # Extract the base include directory
+            # For standard: /usr/local/cuda/include/nv/target -> /usr/local/cuda/include
+            # For conda: /path/targets/x86_64-linux/include/nv/target -> /path/targets/x86_64-linux/include
+            resolved_include_base = os.path.dirname(os.path.dirname(nv_path))
+            print(f"  ✓ Using include directory: {resolved_include_base}")
+            break
+
+    # Build include directories from resolved path
+    if resolved_include_base:
+        cuda_include_dirs = [resolved_include_base, 'src/cuda_kernels']
+    else:
+        # Fallback to standard path
+        cuda_include_dirs = [os.path.join(CUDA_HOME, 'include'), 'src/cuda_kernels']
+
+    # Build library directories list (support both lib64 and lib)
     cuda_library_dirs = []
     lib64_path = os.path.join(CUDA_HOME, 'lib64')
     lib_path = os.path.join(CUDA_HOME, 'lib')
@@ -307,37 +436,36 @@ def _build_cuda_extensions():
     for arch in CUDA_ARCH_LIST.split(';'):
         # Remove compute_ and sm_ prefixes if present
         arch_clean = arch.replace('compute_', '').replace('sm_', '')
-        # Normalize architecture string by removing dots (e.g., '8.6' -> '86')
-        arch_clean = arch_clean.replace('.', '')
+        # Remove dots (e.g., '8.6' -> '86') and +PTX suffix
+        arch_clean = arch_clean.replace('.', '').replace('+PTX', '')
         if arch_clean.isdigit():  # Validate it's a number
             arch_flags.extend(['-gencode', f'arch=compute_{arch_clean},code=sm_{arch_clean}'])
             arch_list.append(arch_clean)
+
+    # If arch_list is empty after processing, use default architectures
+    if not arch_list:
+        arch_list = ['70', '75', '80', '86']
+        for arch in arch_list:
+            arch_flags.extend(['-gencode', f'arch=compute_{arch},code=sm_{arch}'])
 
     # Add PTX fallback for forward compatibility
     if arch_list:
         highest_arch = max(arch_list, key=int)
         arch_flags.extend(['-gencode', f'arch=compute_{highest_arch},code=compute_{highest_arch}'])
 
-    # Define CUDA extension for custom kernels
+        # Define CUDA extension for custom kernels
     cuda_kernels = CUDAExtension(
         name='auto_voice.cuda_kernels',
         sources=[
             'src/cuda_kernels/audio_kernels.cu',
-            'src/cuda_kernels/fft_kernels.cu',
             'src/cuda_kernels/training_kernels.cu',
             'src/cuda_kernels/memory_kernels.cu',
-            'src/cuda_kernels/kernel_wrappers.cu',
-            'src/cuda_kernels/bindings.cpp',
-        ],
-        include_dirs=[
-            os.path.join(CUDA_HOME, 'include'),
-            'src/cuda_kernels',
-        ],
+        ] + (['src/cuda_kernels/fft_kernels.cu'] if os.environ.get('DISABLE_CUFFT') != '1' else []),
+        include_dirs=cuda_include_dirs,
         library_dirs=cuda_library_dirs,
         libraries=[
             'cudart',
-            'cufft',
-        ],
+        ] + (['cufft'] if os.environ.get('DISABLE_CUFFT') != '1' else []),
         extra_compile_args={
             'cxx': ['-O3', '-std=c++17'],
             'nvcc': [
@@ -345,6 +473,9 @@ def _build_cuda_extensions():
                 '--use_fast_math',
                 '-std=c++17',
                 '--expt-relaxed-constexpr',
+                '--extended-lambda',  # Enable extended lambda support for device code
+                '--diag-suppress=20012',  # Suppress __device__ call from __host__ __device__ errors
+                '--diag-suppress=20014',  # Suppress related device function call warnings
                 '--ptxas-options=-v',  # Verbose PTX assembly
             ] + arch_flags
         },
@@ -372,7 +503,7 @@ setup(
     name='auto_voice',
     version='0.1.0',
     author='AutoVoice Team',
-    description='GPU-accelerated voice synthesis system with CUDA 12.9',
+        description='GPU-accelerated voice synthesis system with CUDA 12.1',
     long_description=_get_long_description(),
     long_description_content_type='text/markdown',
     packages=find_packages(where='src'),
@@ -412,7 +543,7 @@ setup(
         'pyyaml>=6.0,<7.0',
         'psutil>=5.9,<6.0',
         'pynvml>=11.5,<12.0',
-        'websockets>=12.0,<13.0',
+        'websockets>=13,<14',
         'aiohttp>=3.9,<4.0',
 
         # Audio processing utilities (aligned with requirements.txt)

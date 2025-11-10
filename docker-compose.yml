@@ -9,9 +9,8 @@ services:
     container_name: auto_voice_app
     restart: unless-stopped
 
-    # GPU configuration for docker-compose (non-Swarm)
-    # Use 'gpus: all' for Compose v2 or 'runtime: nvidia' for older versions
-    runtime: nvidia
+    # GPU configuration for docker-compose v2
+    gpus: all
 
     ports:
       - "5000:5000"
@@ -107,11 +106,14 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=10GB'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
 
     depends_on:
       - auto-voice-app
+      - nvidia-exporter  # Add nvidia-exporter dependency
 
   grafana:
     image: grafana/grafana:latest
@@ -123,7 +125,8 @@ services:
       - "3000:3000"
 
     volumes:
-      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - ./config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
       - grafana-data:/var/lib/grafana
 
@@ -134,8 +137,28 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
 
-    depends_on:
-      - prometheus
+  # Optional NVIDIA GPU Exporter for GPU metrics
+  nvidia-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.0-3.4.1-ubuntu20.04
+    container_name: auto_voice_nvidia_exporter
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+    # No external port exposure - accessible only within auto-voice-net network
+    # Prometheus scrapes from nvidia-exporter:9400 internally
+    # Uncomment the following lines if external access is explicitly needed:
+    # ports:
+    #   - "9445:9400"
+
+    volumes:
+      - /var/run/nvidia-container-toolkit/nvidia-container-runtime.sock:/var/run/nvidia-container-toolkit/nvidia-container-runtime.sock:ro
+
+    networks:
+      - auto-voice-net
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - DCGM_EXPORTER_COLLECTORS=cgpu,dmon,nvmli,rmem,rsmp
 
   # Optional: Separate service for training if needed
   auto-voice-training:

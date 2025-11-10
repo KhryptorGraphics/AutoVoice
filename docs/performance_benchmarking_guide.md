@@ -662,7 +662,7 @@ python scripts/aggregate_multi_gpu_results.py --include-charts
 ## Additional Resources
 
 - [README Performance Section](../README.md#-performance-benchmarks)
-- [Multi-GPU Comparison Results](../validation_results/multi_gpu_comparison.md)
+- [Multi-GPU Comparison Results](../validation_results/benchmarks/multi_gpu_comparison.md)
 - [Raw Benchmark Data](../validation_results/benchmarks/)
 - [Performance Profiling Implementation](performance_profiling_implementation.md)
 - [Production Readiness Checklist](production_readiness_checklist.md)

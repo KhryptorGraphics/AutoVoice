@@ -224,4 +224,8 @@ inline __device__ float window_normalization_factor(float* window, int n_fft, in
 
 // CUFFT_CHECK macro is defined in kernel_utils.cuh - included at top of file
 
+// Host function declarations for cuFFT execution
+void execute_cufft_forward(float *d_input, cufftComplex *d_output, int batch_size, int n_fft, cudaStream_t stream = 0);
+void execute_cufft_inverse(cufftComplex *d_input, float *d_output, int batch_size, int n_fft, cudaStream_t stream = 0);
+
 #endif // FFT_OPS_CUH

@@ -99,6 +99,11 @@ def create_voice_profile(profile_id: str, output_dir: Path) -> dict:
     with open(profile_file, 'w') as f:
         json.dump(profile_data, f, indent=2)
     
+    # Save embedding as .npy file
+    embedding_array = np.array(profile_data['embedding'])
+    embedding_file = output_dir / f"{profile_id}_embedding.npy"
+    np.save(embedding_file, embedding_array)
+    
     return {
         'profile_id': profile_id,
         'file': str(profile_file.relative_to(output_dir.parent.parent))

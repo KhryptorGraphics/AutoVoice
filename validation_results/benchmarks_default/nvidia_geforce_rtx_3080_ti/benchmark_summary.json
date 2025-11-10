@@ -1,0 +1,18 @@
+{
+  "environment": {
+    "timestamp": "2025-10-31T22:35:24.766774",
+    "python_version": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:09:02) [GCC 11.2.0]",
+    "pytorch_available": true,
+    "cuda_available": true,
+    "gpu_info": {
+      "name": "NVIDIA GeForce RTX 3080 Ti",
+      "compute_capability": "8.6",
+      "total_memory_gb": 12.8843776,
+      "cuda_version": "12.8",
+      "driver_version": "576.57"
+    },
+    "pytorch_version": "2.9.0+cu128"
+  },
+  "metrics": {},
+  "files": {}
+}

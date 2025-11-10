@@ -23,6 +23,43 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 
+# Flags
+RUN_FULL_TESTS=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --full)
+            RUN_FULL_TESTS=true
+            shift
+            ;;
+        --help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Build CUDA extensions and run tests"
+            echo ""
+            echo "Options:"
+            echo "  --full    Run full test suite (default: Phase 1 only)"
+            echo "  --help    Show this help message"
+            echo ""
+            echo "Default behavior (no flags):"
+            echo "  - Build CUDA extensions"
+            echo "  - Run verify_bindings.py"
+            echo "  - Skip comprehensive test suites (use --full to enable)"
+            echo ""
+            echo "Examples:"
+            echo "  $0              # Phase 1: Build and verify only"
+            echo "  $0 --full       # Full test suite"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
 # Header
 echo -e "${BLUE}╔════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║        AutoVoice Build and Test Script                 ║${NC}"
@@ -54,8 +91,10 @@ print_step() {
     echo -e "\n${BLUE}${ARROW}${NC} ${1}"
 }
 
-# Navigate to project root
-cd /home/kp/autovoice
+# Navigate to project root (derive from script location)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
 
 # Step 1: Environment Prerequisites Check
 print_step "Checking environment prerequisites"
@@ -92,19 +131,76 @@ fi
 
 # Check CUDA Toolkit (for building) - comprehensive validation
 print_status "Checking CUDA toolkit requirements..."
-if ./scripts/check_cuda_toolkit.sh > cuda_check.log 2>&1; then
-    HAS_CUDA_ENV=true
-    print_success "CUDA environment validated"
-    # Extract CUDA version from check script output
-    if grep -q "CUDA compiler version" cuda_check.log; then
-        NVCC_VERSION=$(grep "CUDA compiler version" cuda_check.log | awk '{print $4}')
-        print_info "CUDA Toolkit ${NVCC_VERSION} ready"
+
+# Pre-check for nv/target header specifically
+CUDA_HOME_PATHS=(
+    "$CUDA_HOME"
+    "/usr/local/cuda"
+    "/usr/local/cuda-12.1"
+)
+
+NV_TARGET_FOUND=false
+for cuda_path in "${CUDA_HOME_PATHS[@]}"; do
+    if [ -n "$cuda_path" ] && [ -f "$cuda_path/include/nv/target" ]; then
+        print_success "Critical header 'nv/target' found at: $cuda_path/include/nv/target"
+        NV_TARGET_FOUND=true
+        break
+    fi
+done
+
+if [ "$NV_TARGET_FOUND" = false ]; then
+    print_warning "Critical header 'nv/target' not found in standard locations"
+    print_info "This header is required for building CUDA extensions"
+    print_info "Conda CUDA toolkit is often incomplete - system toolkit recommended"
+fi
+
+if [ -x "$PROJECT_ROOT/scripts/check_cuda_toolkit.sh" ]; then
+    if ./scripts/check_cuda_toolkit.sh > cuda_check.log 2>&1; then
+        HAS_CUDA_ENV=true
+        HAS_NVCC=true
+        print_success "CUDA environment validated"
+        # Extract CUDA version from check script output
+        if grep -q "CUDA compiler version" cuda_check.log; then
+            NVCC_VERSION=$(grep "CUDA compiler version" cuda_check.log | awk '{print $4}')
+            print_info "CUDA Toolkit ${NVCC_VERSION} ready"
+        else
+            # Set placeholder if version not found
+            NVCC_VERSION="Unknown"
+        fi
+    else
+        HAS_CUDA_ENV=false
+        HAS_NVCC=false
+        NVCC_VERSION="Not found"
+        print_warning "CUDA environment check failed - see cuda_check.log"
+
+        # Provide specific guidance based on what's missing
+        if [ "$NV_TARGET_FOUND" = false ]; then
+            print_error "Missing 'nv/target' header - CUDA toolkit incomplete"
+            print_info "Solution: Install system CUDA toolkit with complete headers"
+            print_info "Run: ./scripts/install_cuda_toolkit.sh"
+        else
+            print_info "Run: ./scripts/check_cuda_toolkit.sh (to diagnose issues)"
+        fi
     fi
 else
-    HAS_CUDA_ENV=false
-    print_warning "CUDA environment check failed - see cuda_check.log"
-    print_info "Run: ./scripts/install_cuda_toolkit.sh (to fix CUDA issues)"
-    print_info "Run: ./scripts/check_cuda_toolkit.sh (to diagnose issues)"
+    print_info "check_cuda_toolkit.sh not found, using reduced diagnostics"
+    # Set based on earlier checks
+    if [ "$NV_TARGET_FOUND" = true ] && command -v nvcc &> /dev/null; then
+        HAS_CUDA_ENV=true
+        HAS_NVCC=true
+        NVCC_VERSION=$(nvcc --version 2>/dev/null | grep "release" | awk '{print $5}' | cut -d, -f1 || echo "Unknown")
+        print_success "Basic CUDA environment detected (nvcc and headers present)"
+    else
+        HAS_CUDA_ENV=false
+        HAS_NVCC=false
+        NVCC_VERSION="Not found"
+        print_warning "CUDA environment incomplete"
+        if [ "$NV_TARGET_FOUND" = false ]; then
+            print_error "Missing 'nv/target' header - CUDA toolkit incomplete"
+            print_info "Solution: Install system CUDA toolkit with complete headers"
+            print_info "Run: ./scripts/install_cuda_toolkit.sh"
+        fi
+    fi
 fi
 
 # Determine build capabilities
@@ -136,7 +232,13 @@ if [ "$CAN_BUILD_CUDA" = true ]; then
     fi
 
     # Build with comprehensive error handling
-    if pip install -e . 2>&1 | tee build.log; then
+    # Capture exit code from pip, not tee
+    set +e  # Temporarily disable exit on error
+    pip install -e . 2>&1 | tee build.log
+    build_status=${PIPESTATUS[0]}
+    set -e  # Re-enable exit on error
+
+    if [ $build_status -eq 0 ]; then
         print_success "CUDA extensions built successfully"
 
         # Quick post-build verification
@@ -185,7 +287,13 @@ fi
 # Step 3: Verify Bindings
 print_step "Verifying Python bindings"
 
-if python ./scripts/verify_bindings.py 2>&1 | tee verify.log; then
+# Capture exit code from python, not tee
+set +e
+python ./scripts/verify_bindings.py 2>&1 | tee verify.log
+verify_status=${PIPESTATUS[0]}
+set -e
+
+if [ $verify_status -eq 0 ]; then
     print_success "Python bindings verified"
     ((PASSED++))
 else
@@ -194,34 +302,48 @@ else
     cat verify.log
 fi
 
-# Step 4: Run Smoke Tests
-print_step "Running smoke tests"
+# Step 4: Run Smoke Tests (only if --full)
+if [ "$RUN_FULL_TESTS" = true ]; then
+    print_step "Running smoke tests"
 
-if [ -f "tests/test_bindings_smoke.py" ]; then
-    pytest tests/test_bindings_smoke.py -v 2>&1 | tee smoke_test.log
-    status=$?
-    if [ $status -eq 0 ]; then
-        print_success "Smoke tests passed"
-        ((PASSED++))
+    if [ -f "tests/test_bindings_smoke.py" ]; then
+        set +e
+        pytest tests/test_bindings_smoke.py -v 2>&1 | tee smoke_test.log
+        status=${PIPESTATUS[0]}
+        set -e
+
+        if [ $status -eq 0 ]; then
+            print_success "Smoke tests passed"
+            ((PASSED++))
+        else
+            print_error "Smoke tests failed"
+            ((FAILED++))
+            cat smoke_test.log
+        fi
     else
-        print_error "Smoke tests failed"
-        ((FAILED++))
-        cat smoke_test.log
+        print_warning "Smoke test file not found"
+        ((SKIPPED++))
     fi
 else
-    print_warning "Smoke test file not found"
-    ((SKIPPED++))
+    print_info "Skipping smoke tests (use --full to enable)"
 fi
 
-# Step 5: Run Comprehensive Test Suite
-print_step "Running comprehensive test suite"
+# Step 5: Run Comprehensive Test Suite (only if --full)
+if [ "$RUN_FULL_TESTS" = true ]; then
+    print_step "Running comprehensive test suite"
 
-# Test coverage and reporting options
-COVERAGE_ARGS=""
-if [ -f ".coveragerc" ]; then
-    COVERAGE_ARGS="--cov=src/auto_voice --cov-report=term-missing --cov-report=html --cov-append"
-    print_info "Coverage reporting enabled with append mode"
+    # Test coverage and reporting options
+    COVERAGE_ARGS=""
+    if [ -f ".coveragerc" ]; then
+        COVERAGE_ARGS="--cov=src/auto_voice --cov-report=term-missing --cov-report=html --cov-append"
+        print_info "Coverage reporting enabled with append mode"
+    fi
+else
+    print_info "Skipping comprehensive test suite (use --full to enable)"
 fi
+
+# Only run test categories if --full is enabled
+if [ "$RUN_FULL_TESTS" = true ]; then
 
 # Run different test categories
 TEST_CATEGORIES=(
@@ -277,8 +399,10 @@ for category in "${TEST_CATEGORIES[@]}"; do
     safe_name="${safe_name// /_}"
     log_file="${safe_name}_log.txt"
 
+    set +e
     eval "$PYTEST_CMD" 2>&1 | tee "$log_file"
-    status=$?
+    status=${PIPESTATUS[0]}
+    set -e
 
     if [ $status -eq 0 ]; then
         print_success "${category_name} passed"
@@ -352,35 +476,40 @@ for category in "${TEST_CATEGORIES[@]}"; do
         echo ""
     fi
 done
+fi  # End of RUN_FULL_TESTS check for test categories
 
-# Step 5.5: Run Full Test Suite with Aggregated Coverage
-print_step "Running full test suite with aggregated coverage"
+# Step 5.5: Run Full Test Suite with Aggregated Coverage (only if --full)
+if [ "$RUN_FULL_TESTS" = true ]; then
+    print_step "Running full test suite with aggregated coverage"
 
 FULL_SUITE_CMD="pytest tests/ -v --cov=src/auto_voice --cov-report=html --cov-report=term-missing"
 
+set +e
 eval "$FULL_SUITE_CMD" 2>&1 | tee full_suite_log.txt
-status=$?
+status=${PIPESTATUS[0]}
+set -e
 
-if [ $status -eq 0 ]; then
-    print_success "Full test suite passed"
-    ((PASSED++))
-else
-    print_warning "Full test suite had failures (see full_suite_log.txt)"
-    # Don't increment FAILED as individual tests already counted
-fi
+    if [ $status -eq 0 ]; then
+        print_success "Full test suite passed"
+        ((PASSED++))
+    else
+        print_warning "Full test suite had failures (see full_suite_log.txt)"
+        # Don't increment FAILED as individual tests already counted
+    fi
 
-# Print detailed test summary
-echo ""
-print_info "Detailed Test Results:"
-echo "  Unit Tests:      ${UNIT_PASSED} passed, ${UNIT_FAILED} failed, ${UNIT_SKIPPED} skipped"
-echo "  Integration:     ${INTEGRATION_PASSED} passed, ${INTEGRATION_FAILED} failed, ${INTEGRATION_SKIPPED} skipped"
-echo "  Performance:     ${PERFORMANCE_PASSED} passed, ${PERFORMANCE_FAILED} failed, ${PERFORMANCE_SKIPPED} skipped"
-if [ "$CUDA_AVAILABLE" = true ]; then
-    echo "  CUDA Tests:      ${CUDA_PASSED} passed, ${CUDA_FAILED} failed, ${CUDA_SKIPPED} skipped"
-fi
+    # Print detailed test summary
+    echo ""
+    print_info "Detailed Test Results:"
+    echo "  Unit Tests:      ${UNIT_PASSED} passed, ${UNIT_FAILED} failed, ${UNIT_SKIPPED} skipped"
+    echo "  Integration:     ${INTEGRATION_PASSED} passed, ${INTEGRATION_FAILED} failed, ${INTEGRATION_SKIPPED} skipped"
+    echo "  Performance:     ${PERFORMANCE_PASSED} passed, ${PERFORMANCE_FAILED} failed, ${PERFORMANCE_SKIPPED} skipped"
+    if [ "$CUDA_AVAILABLE" = true ]; then
+        echo "  CUDA Tests:      ${CUDA_PASSED} passed, ${CUDA_FAILED} failed, ${CUDA_SKIPPED} skipped"
+    fi
+fi  # End of RUN_FULL_TESTS check for detailed test summary
 
-# Step 6: Legacy CUDA Integration Tests (if still needed)
-if [ "$CUDA_AVAILABLE" = true ] && [ "$CUDA_PASSED" -eq 0 ]; then
+# Step 6: Legacy CUDA Integration Tests (only if --full and if still needed)
+if [ "$RUN_FULL_TESTS" = true ] && [ "$CUDA_AVAILABLE" = true ] && [ "$CUDA_PASSED" -eq 0 ]; then
     print_step "Running legacy CUDA integration tests"
 
     LEGACY_CUDA_TESTS=(
@@ -391,7 +520,12 @@ if [ "$CUDA_AVAILABLE" = true ] && [ "$CUDA_PASSED" -eq 0 ]; then
     for test_file in "${LEGACY_CUDA_TESTS[@]}"; do
         if [ -f "$test_file" ]; then
             test_name=$(basename "$test_file" .py)
-            if python "$test_file" 2>&1 | tee "legacy_cuda_${test_name}.log"; then
+            set +e
+            python "$test_file" 2>&1 | tee "legacy_cuda_${test_name}.log"
+            legacy_status=${PIPESTATUS[0]}
+            set -e
+
+            if [ $legacy_status -eq 0 ]; then
                 print_success "Legacy CUDA test passed: ${test_name}"
                 CUDA_PASSED=$((CUDA_PASSED + 1))
                 ((PASSED++))

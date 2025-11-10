@@ -37,18 +37,24 @@ def discover_gpu_directories(input_dir: Path) -> List[Path]:
 def load_gpu_data(gpu_dir: Path) -> Optional[Dict[str, Any]]:
     """
     Load benchmark data for a GPU.
-    
+
     Args:
         gpu_dir: GPU directory path
-        
+
     Returns:
         Dictionary with GPU data or None if failed
     """
     try:
         # Load GPU info
         with open(gpu_dir / 'gpu_info.json') as f:
-            gpu_info = json.load(f)
-        
+            env_data = json.load(f)
+
+        # Normalize GPU info structure (flatten to avoid double nesting)
+        if 'gpu_info' in env_data:
+            gpu_info = env_data['gpu_info']
+        else:
+            gpu_info = {}
+
         # Load benchmark summary
         summary_file = gpu_dir / 'benchmark_summary.json'
         if summary_file.exists():
@@ -56,10 +62,11 @@ def load_gpu_data(gpu_dir: Path) -> Optional[Dict[str, Any]]:
                 summary = json.load(f)
         else:
             summary = {}
-        
+
         return {
             'name': gpu_dir.name,
-            'gpu_info': gpu_info,
+            'gpu_info': gpu_info,  # Flattened GPU info
+            'env_data': env_data,  # Full environment data
             'summary': summary
         }
     except Exception as e:
@@ -70,10 +77,10 @@ def load_gpu_data(gpu_dir: Path) -> Optional[Dict[str, Any]]:
 def extract_metrics(gpu_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract key metrics from GPU data.
-    
+
     Args:
         gpu_data: GPU data dictionary
-        
+
     Returns:
         Dictionary of extracted metrics
     """
@@ -92,32 +99,80 @@ def extract_metrics(gpu_data: Dict[str, Any]) -> Dict[str, Any]:
         'speaker_similarity': 'N/A',
         'naturalness_score': 'N/A'
     }
-    
-    # Extract GPU info
-    if 'gpu_info' in gpu_data.get('gpu_info', {}):
-        gpu_info = gpu_data['gpu_info']['gpu_info']
-        metrics['gpu_name'] = gpu_info.get('name', 'N/A')
-        metrics['compute_capability'] = gpu_info.get('compute_capability', 'N/A')
-        metrics['vram_gb'] = f"{gpu_info.get('total_memory_gb', 0):.1f}"
-    
+
+    # Extract GPU info (flattened structure)
+    gpu_info = gpu_data.get('gpu_info', {})
+    if 'gpu_info' in gpu_info:
+        # Handle nested structure
+        gpu_info = gpu_info['gpu_info']
+
+    metrics['gpu_name'] = gpu_info.get('name', 'N/A')
+    metrics['compute_capability'] = gpu_info.get('compute_capability', 'N/A')
+    if 'total_memory_gb' in gpu_info:
+        metrics['vram_gb'] = f"{gpu_info['total_memory_gb']:.1f}"
+
     # Extract metrics from summary
     summary = gpu_data.get('summary', {})
     summary_metrics = summary.get('metrics', {})
-    
-    # Pipeline metrics
+
+    # TTS metrics (if available)
+    if 'tts' in summary_metrics:
+        tts = summary_metrics['tts']
+        if 'tts_latency_ms' in tts and tts['tts_latency_ms'] is not None:
+            metrics['tts_latency_ms'] = f"{tts['tts_latency_ms']:.2f} ms"
+        if 'tts_throughput' in tts and tts['tts_throughput'] is not None:
+            metrics['tts_throughput'] = f"{tts['tts_throughput']:.2f} req/s"
+        if 'tts_memory_peak_mb' in tts and tts['tts_memory_peak_mb'] is not None:
+            # Prefer TTS memory for TTS table
+            tts_memory_gb = tts['tts_memory_peak_mb'] / 1024.0
+            metrics['gpu_memory_gb'] = f"{tts_memory_gb:.2f}"
+
+    # Pipeline metrics (aligned with profile_performance.py schema)
     if 'pipeline' in summary_metrics:
         pipeline = summary_metrics['pipeline']
-        # Extract relevant metrics (structure depends on actual output)
-        # This is a placeholder - adjust based on actual JSON structure
-        metrics['conversion_rtf_balanced'] = pipeline.get('rtf', 'N/A')
-        metrics['gpu_memory_gb'] = pipeline.get('peak_memory_gb', 'N/A')
-    
+
+        # RTF from explicit field
+        if 'rtf' in pipeline:
+            metrics['conversion_rtf_balanced'] = f"{pipeline['rtf']:.2f}x"
+        elif 'total_time_ms' in pipeline and 'audio_duration_s' in pipeline:
+            # Calculate RTF from total_time_ms and audio_duration_s
+            total_time_s = pipeline['total_time_ms'] / 1000.0
+            audio_duration_s = pipeline['audio_duration_s']
+            rtf = total_time_s / audio_duration_s if audio_duration_s > 0 else 0
+            metrics['conversion_rtf_balanced'] = f"{rtf:.2f}x"
+
+        # GPU memory from memory_peak_mb (fallback if TTS not available)
+        if 'memory_peak_mb' in pipeline and metrics['gpu_memory_gb'] == 'N/A':
+            memory_gb = pipeline['memory_peak_mb'] / 1024.0
+            metrics['gpu_memory_gb'] = f"{memory_gb:.2f}"
+
     # CUDA kernel metrics
     if 'cuda_kernels' in summary_metrics:
         cuda = summary_metrics['cuda_kernels']
-        # Extract relevant metrics
+        # Extract relevant metrics if available
         # This is a placeholder - adjust based on actual JSON structure
-    
+
+    # Pytest metrics (if available)
+    if 'pytest' in summary_metrics:
+        pytest_metrics = summary_metrics['pytest']
+        if 'cpu_gpu_speedup' in pytest_metrics:
+            metrics['cpu_gpu_speedup'] = f"{pytest_metrics['cpu_gpu_speedup']:.2f}x"
+        if 'cache_speedup' in pytest_metrics:
+            # Store for potential use
+            pass
+
+        # Extract preset RTF metrics from pytest
+        for preset in ['fast', 'balanced', 'quality']:
+            rtf_key = f'rtf_{preset}'
+            if rtf_key in pytest_metrics:
+                rtf_val = pytest_metrics[rtf_key]
+                if preset == 'fast':
+                    metrics['conversion_rtf_fast'] = f"{rtf_val:.2f}x"
+                elif preset == 'balanced':
+                    metrics['conversion_rtf_balanced'] = f"{rtf_val:.2f}x"
+                elif preset == 'quality':
+                    metrics['conversion_rtf_quality'] = f"{rtf_val:.2f}x"
+
     return metrics
 
 

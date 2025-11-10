@@ -1,0 +1,184 @@
+{
+  "created": 1761976953.5678406,
+  "duration": 0.23294758796691895,
+  "exitcode": 4,
+  "root": "/home/kp/autovoice",
+  "environment": {},
+  "summary": {
+    "total": 0,
+    "collected": 0
+  },
+  "collectors": [
+    {
+      "nodeid": "",
+      "outcome": "passed",
+      "result": [
+        {
+          "nodeid": "tests/test_end_to_end.py",
+          "type": "Module"
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/test_end_to_end.py::TestSingingConversionWorkflow",
+      "outcome": "passed",
+      "result": [
+        {
+          "nodeid": "tests/test_end_to_end.py::TestSingingConversionWorkflow::test_full_singing_conversion_workflow",
+          "type": "Function",
+          "lineno": 39
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestSingingConversionWorkflow::test_progress_callback_verification",
+          "type": "Function",
+          "lineno": 83
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestSingingConversionWorkflow::test_caching_speedup",
+          "type": "Function",
+          "lineno": 113
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestSingingConversionWorkflow::test_error_recovery",
+          "type": "Function",
+          "lineno": 147
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestSingingConversionWorkflow::test_preset_comparison",
+          "type": "Function",
+          "lineno": 165
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/test_end_to_end.py::TestVoiceCloningWorkflow",
+      "outcome": "passed",
+      "result": [
+        {
+          "nodeid": "tests/test_end_to_end.py::TestVoiceCloningWorkflow::test_voice_clone_create_and_use",
+          "type": "Function",
+          "lineno": 203
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestVoiceCloningWorkflow::test_multi_sample_profile_creation",
+          "type": "Function",
+          "lineno": 240
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/test_end_to_end.py::TestMultiComponentIntegration",
+      "outcome": "passed",
+      "result": [
+        {
+          "nodeid": "tests/test_end_to_end.py::TestMultiComponentIntegration::test_source_separator_pitch_extractor_integration",
+          "type": "Function",
+          "lineno": 274
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestMultiComponentIntegration::test_end_to_end_memory_management",
+          "type": "Function",
+          "lineno": 295
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/test_end_to_end.py::TestPerformanceE2E",
+      "outcome": "passed",
+      "result": [
+        {
+          "nodeid": "tests/test_end_to_end.py::TestPerformanceE2E::test_conversion_latency_by_length[5.0]",
+          "type": "Function",
+          "lineno": 327
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestPerformanceE2E::test_conversion_latency_by_length[10.0]",
+          "type": "Function",
+          "lineno": 327
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestPerformanceE2E::test_conversion_latency_by_length[30.0]",
+          "type": "Function",
+          "lineno": 327
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestPerformanceE2E::test_concurrent_conversions",
+          "type": "Function",
+          "lineno": 363
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/test_end_to_end.py::TestQualityValidation",
+      "outcome": "passed",
+      "result": []
+    },
+    {
+      "nodeid": "tests/test_end_to_end.py::TestGPUManagerPropagation",
+      "outcome": "passed",
+      "result": [
+        {
+          "nodeid": "tests/test_end_to_end.py::TestGPUManagerPropagation::test_gpu_manager_propagation_to_pipeline_components",
+          "type": "Function",
+          "lineno": 412
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestGPUManagerPropagation::test_gpu_manager_allocation_calls",
+          "type": "Function",
+          "lineno": 457
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestGPUManagerPropagation::test_conversion_meets_pitch_target",
+          "type": "Function",
+          "lineno": 494
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestGPUManagerPropagation::test_conversion_meets_speaker_similarity",
+          "type": "Function",
+          "lineno": 531
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestGPUManagerPropagation::test_overall_quality_score_threshold",
+          "type": "Function",
+          "lineno": 588
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestGPUManagerPropagation::test_comprehensive_quality_metrics",
+          "type": "Function",
+          "lineno": 629
+        }
+      ]
+    },
+    {
+      "nodeid": "tests/test_end_to_end.py",
+      "outcome": "passed",
+      "result": [
+        {
+          "nodeid": "tests/test_end_to_end.py::TestSingingConversionWorkflow",
+          "type": "Class"
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestVoiceCloningWorkflow",
+          "type": "Class"
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestMultiComponentIntegration",
+          "type": "Class"
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestPerformanceE2E",
+          "type": "Class"
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestQualityValidation",
+          "type": "Class"
+        },
+        {
+          "nodeid": "tests/test_end_to_end.py::TestGPUManagerPropagation",
+          "type": "Class"
+        }
+      ]
+    }
+  ],
+  "tests": []
+}

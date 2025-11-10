@@ -47,6 +47,13 @@ except ImportError:
     librosa = None
     LIBROSA_AVAILABLE = False
 
+try:
+    import noisereduce as nr
+    NOISEREDUCE_AVAILABLE = True
+except ImportError:
+    nr = None
+    NOISEREDUCE_AVAILABLE = False
+
 # Import voice cloning exceptions
 try:
     from ..inference.voice_cloner import InvalidAudioError
@@ -492,8 +499,45 @@ def process_audio():
         # Apply denoising if requested
         processed_audio = audio_tensor
         if processing_config.get('enable_denoising', False):
-            # Apply denoising (placeholder - implement actual denoising)
-            processed_audio = audio_tensor  # TODO: Implement denoising
+            if NOISEREDUCE_AVAILABLE and NUMPY_AVAILABLE:
+                try:
+                    # Convert to CPU numpy float array
+                    audio_np = processed_audio.detach().cpu().numpy() if torch and isinstance(processed_audio, torch.Tensor) else processed_audio
+
+                    # Store original shape
+                    original_shape = audio_np.shape
+
+                    # Apply denoising per channel if multi-channel
+                    if audio_np.ndim > 1 and audio_np.shape[0] > 1:
+                        # Multi-channel: apply per channel
+                        denoised_channels = []
+                        for ch in range(audio_np.shape[0]):
+                            denoised_ch = nr.reduce_noise(
+                                y=audio_np[ch],
+                                sr=sample_rate
+                            )
+                            denoised_channels.append(denoised_ch)
+                        denoised_audio = np.stack(denoised_channels, axis=0)
+                    else:
+                        # Single channel or 1D
+                        if audio_np.ndim > 1:
+                            audio_np = audio_np.squeeze()
+                        denoised_audio = nr.reduce_noise(
+                            y=audio_np,
+                            sr=sample_rate
+                        )
+                        # Restore shape if needed
+                        if len(original_shape) > 1:
+                            denoised_audio = denoised_audio.reshape(original_shape)
+
+                    # Convert back to torch tensor
+                    processed_audio = torch.from_numpy(denoised_audio).float()
+
+                except Exception as e:
+                    logger.error(f"Denoising failed: {e}", exc_info=True)
+                    processed_audio = audio_tensor
+            else:
+                logger.warning("Denoising requested but noisereduce not available")
 
         # Convert processed audio to base64
         buffer = io.BytesIO()

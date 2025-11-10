@@ -1,0 +1,145 @@
+/home/kp/anaconda3/lib/python3.13/site-packages/pytest_asyncio/plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+[1m============================= test session starts ==============================[0m
+platform linux -- Python 3.13.5, pytest-8.3.4, pluggy-1.5.0 -- /home/kp/anaconda3/bin/python
+cachedir: .pytest_cache
+metadata: {'Python': '3.13.5', 'Platform': 'Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39', 'Packages': {'pytest': '8.3.4', 'pluggy': '1.5.0'}, 'Plugins': {'cov': '7.0.0', 'anyio': '4.7.0', 'metadata': '3.1.1', 'asyncio': '1.2.0', 'Faker': '37.12.0', 'html': '4.1.1'}}
+rootdir: /home/kp/autovoice
+configfile: pytest.ini
+plugins: cov-7.0.0, anyio-4.7.0, metadata-3.1.1, asyncio-1.2.0, Faker-37.12.0, html-4.1.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+[1mcollecting ... [0mcollected 9 items
+
+tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_pitch_detection_sine_wave [31mFAILED[0m[31m [ 11%][0m
+tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_pitch_detection_multiple_frequencies [31mFAILED[0m[31m [ 22%][0m
+tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_vibrato_analysis_with_modulation [31mFAILED[0m[31m [ 33%][0m
+tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_various_sample_rates [31mFAILED[0m[31m [ 44%][0m
+tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_various_audio_lengths [31mFAILED[0m[31m [ 55%][0m
+tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_noise_robustness [31mFAILED[0m[31m [ 66%][0m
+tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_silence_detection [31mFAILED[0m[31m [ 77%][0m
+tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_memory_consistency [31mFAILED[0m[31m [ 88%][0m
+tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_long_audio_processing [31mFAILED[0m[31m [100%][0m/home/kp/anaconda3/lib/python3.13/site-packages/coverage/control.py:946: CoverageWarning: No data was collected. (no-data-collected); see https://coverage.readthedocs.io/en/7.11.0/messages.html#warning-no-data-collected
+  self._warn("No data was collected.", slug="no-data-collected")
+[31m[1m
+ERROR: Coverage failure: total of 0.00 is less than fail-under=80.00
+[0m
+
+=================================== FAILURES ===================================
+[31m[1m__________ TestCUDABindingsIntegration.test_pitch_detection_sine_wave __________[0m
+[1m[31mtests/test_bindings_integration.py[0m:57: in test_pitch_detection_sine_wave
+    [0m[96mself[39;49;00m.cuda_kernels.launch_pitch_detection([90m[39;49;00m
+[1m[31mE   AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detection'[0m
+[31m[1m____ TestCUDABindingsIntegration.test_pitch_detection_multiple_frequencies _____[0m
+[1m[31mtests/test_bindings_integration.py[0m:109: in test_pitch_detection_multiple_frequencies
+    [0m[96mself[39;49;00m.cuda_kernels.launch_pitch_detection([90m[39;49;00m
+[1m[31mE   AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detection'[0m
+[31m[1m______ TestCUDABindingsIntegration.test_vibrato_analysis_with_modulation _______[0m
+[1m[31mtests/test_bindings_integration.py[0m:148: in test_vibrato_analysis_with_modulation
+    [0m[96mself[39;49;00m.cuda_kernels.launch_pitch_detection([90m[39;49;00m
+[1m[31mE   AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detection'[0m
+[31m[1m____________ TestCUDABindingsIntegration.test_various_sample_rates _____________[0m
+[1m[31mtests/test_bindings_integration.py[0m:203: in test_various_sample_rates
+    [0m[96mself[39;49;00m.cuda_kernels.launch_pitch_detection([90m[39;49;00m
+[1m[31mE   AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detection'[0m
+[31m[1m____________ TestCUDABindingsIntegration.test_various_audio_lengths ____________[0m
+[1m[31mtests/test_bindings_integration.py[0m:236: in test_various_audio_lengths
+    [0m[96mself[39;49;00m.cuda_kernels.launch_pitch_detection([90m[39;49;00m
+[1m[31mE   AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detection'[0m
+[31m[1m______________ TestCUDABindingsIntegration.test_noise_robustness _______________[0m
+[1m[31mtests/test_bindings_integration.py[0m:275: in test_noise_robustness
+    [0m[96mself[39;49;00m.cuda_kernels.launch_pitch_detection([90m[39;49;00m
+[1m[31mE   AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detection'[0m
+[31m[1m______________ TestCUDABindingsIntegration.test_silence_detection ______________[0m
+[1m[31mtests/test_bindings_integration.py[0m:313: in test_silence_detection
+    [0m[96mself[39;49;00m.cuda_kernels.launch_pitch_detection([90m[39;49;00m
+[1m[31mE   AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detection'[0m
+[31m[1m_____________ TestCUDABindingsIntegration.test_memory_consistency ______________[0m
+[1m[31mtests/test_bindings_integration.py[0m:346: in test_memory_consistency
+    [0m[96mself[39;49;00m.cuda_kernels.launch_pitch_detection([90m[39;49;00m
+[1m[31mE   AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detection'[0m
+[31m[1m____________ TestCUDABindingsIntegration.test_long_audio_processing ____________[0m
+[1m[31mtests/test_bindings_integration.py[0m:381: in test_long_audio_processing
+    [0m[96mself[39;49;00m.cuda_kernels.launch_pitch_detection([90m[39;49;00m
+[1m[31mE   AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detection'[0m
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.13.5-final-0 ________________
+
+Name                                                      Stmts   Miss  Cover   Missing
+---------------------------------------------------------------------------------------
+src/auto_voice/audio/gpu_processor.py                        26     26  0.00%   5-65
+src/auto_voice/audio/mixer.py                               320    320  0.00%   7-796
+src/auto_voice/audio/pitch_extractor.py                     742    742  0.00%   3-1861
+src/auto_voice/audio/processor.py                           352    352  0.00%   3-736
+src/auto_voice/audio/singing_analyzer.py                    522    522  0.00%   3-1163
+src/auto_voice/audio/source_separator.py                    776    776  0.00%   3-1711
+src/auto_voice/audio/synthesizer.py                         103    103  0.00%   3-221
+src/auto_voice/evaluation/evaluator.py                      605    605  0.00%   9-1264
+src/auto_voice/gpu/cuda_manager.py                          277    277  0.00%   2-423
+src/auto_voice/gpu/gpu_manager.py                           305    305  0.00%   3-561
+src/auto_voice/gpu/memory_manager.py                        247    247  0.00%   2-568
+src/auto_voice/gpu/multi_gpu.py                              24     24  0.00%   2-37
+src/auto_voice/gpu/performance_monitor.py                   323    323  0.00%   2-648
+src/auto_voice/inference/cuda_graphs.py                      90     90  0.00%   3-165
+src/auto_voice/inference/engine.py                          514    514  0.00%   2-1004
+src/auto_voice/inference/inference_manager.py               263    263  0.00%   6-542
+src/auto_voice/inference/model_exporter.py                  120    120  0.00%   3-364
+src/auto_voice/inference/realtime_processor.py               96     96  0.00%   4-152
+src/auto_voice/inference/singing_conversion_pipeline.py     552    552  0.00%   7-1282
+src/auto_voice/inference/synthesizer.py                     243    243  0.00%   3-436
+src/auto_voice/inference/tensorrt_converter.py              421    421  0.00%   3-1049
+src/auto_voice/inference/tensorrt_engine.py                 337    337  0.00%   3-632
+src/auto_voice/inference/voice_cloner.py                    614    614  0.00%   3-1569
+src/auto_voice/models/content_encoder.py                    150    150  0.00%   8-393
+src/auto_voice/models/discriminator.py                       81     81  0.00%   8-287
+src/auto_voice/models/flow_decoder.py                       123    123  0.00%   7-411
+src/auto_voice/models/hifigan.py                            215    215  0.00%   2-407
+src/auto_voice/models/pitch_encoder.py                       82     82  0.00%   7-248
+src/auto_voice/models/posterior_encoder.py                   58     58  0.00%   8-229
+src/auto_voice/models/singing_voice_converter.py            647    647  0.00%   8-1731
+src/auto_voice/models/speaker_encoder.py                    153    153  0.00%   3-486
+src/auto_voice/models/transformer.py                        110    110  0.00%   4-234
+src/auto_voice/models/voice_model.py                        209    209  0.00%   3-431
+src/auto_voice/storage/voice_profiles.py                    201    201  0.00%   3-547
+src/auto_voice/training/checkpoint_manager.py               381    381  0.00%   6-797
+src/auto_voice/training/data_pipeline.py                    228    228  0.00%   6-530
+src/auto_voice/training/dataset.py                          370    370  0.00%   7-983
+src/auto_voice/training/trainer.py                          656    656  0.00%   5-1457
+src/auto_voice/utils/config_loader.py                       162    162  0.00%   3-389
+src/auto_voice/utils/data_utils.py                          220    220  0.00%   3-431
+src/auto_voice/utils/helpers.py                             280    280  0.00%   3-536
+src/auto_voice/utils/logging_config.py                      118    118  0.00%   3-292
+src/auto_voice/utils/metrics.py                             258    258  0.00%   3-490
+src/auto_voice/utils/model_loader.py                         77     77  0.00%   9-187
+src/auto_voice/utils/quality_metrics.py                     407    407  0.00%   9-969
+src/auto_voice/utils/visualization.py                       199    199  0.00%   7-472
+src/auto_voice/web/api.py                                   627    627  0.00%   2-1407
+src/auto_voice/web/app.py                                   275    275  0.00%   3-553
+src/auto_voice/web/utils.py                                  10     10  0.00%   4-29
+src/auto_voice/web/websocket_handler.py                     385    385  0.00%   3-798
+---------------------------------------------------------------------------------------
+TOTAL                                                     14554  14554  0.00%
+
+3 empty files skipped.
+Coverage HTML written to dir htmlcov
+[31m[1mFAIL Required test coverage of 80% not reached. Total coverage: 0.00%
+[0m============================= slowest 10 durations =============================
+0.51s call     tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_pitch_detection_sine_wave
+0.33s setup    tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_pitch_detection_sine_wave
+0.07s call     tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_long_audio_processing
+0.01s call     tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_noise_robustness
+0.01s call     tests/test_bindings_integration.py::TestCUDABindingsIntegration::test_vibrato_analysis_with_modulation
+
+(5 durations < 0.005s hidden.  Use -vv to show these durations.)
+[36m[1m=========================== short test summary info ============================[0m
+[31mFAILED[0m tests/test_bindings_integration.py::[1mTestCUDABindingsIntegration::test_pitch_detection_sine_wave[0m - AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detect...
+[31mFAILED[0m tests/test_bindings_integration.py::[1mTestCUDABindingsIntegration::test_pitch_detection_multiple_frequencies[0m - AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detect...
+[31mFAILED[0m tests/test_bindings_integration.py::[1mTestCUDABindingsIntegration::test_vibrato_analysis_with_modulation[0m - AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detect...
+[31mFAILED[0m tests/test_bindings_integration.py::[1mTestCUDABindingsIntegration::test_various_sample_rates[0m - AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detect...
+[31mFAILED[0m tests/test_bindings_integration.py::[1mTestCUDABindingsIntegration::test_various_audio_lengths[0m - AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detect...
+[31mFAILED[0m tests/test_bindings_integration.py::[1mTestCUDABindingsIntegration::test_noise_robustness[0m - AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detect...
+[31mFAILED[0m tests/test_bindings_integration.py::[1mTestCUDABindingsIntegration::test_silence_detection[0m - AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detect...
+[31mFAILED[0m tests/test_bindings_integration.py::[1mTestCUDABindingsIntegration::test_memory_consistency[0m - AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detect...
+[31mFAILED[0m tests/test_bindings_integration.py::[1mTestCUDABindingsIntegration::test_long_audio_processing[0m - AttributeError: module 'cuda_kernels' has no attribute 'launch_pitch_detect...
+[31m============================== [31m[1m9 failed[0m[31m in 5.90s[0m[31m ===============================[0m

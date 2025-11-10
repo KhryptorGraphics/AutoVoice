@@ -63,7 +63,35 @@ else
     PYTHON_313=false
 fi
 
-# Step 2: Check if PyTorch is installed
+# Step 2: Check for PyTorch CUDA variant and detect/application preferred CUDA wheel variant
+print_step "Detecting current CUDA configuration"
+if [ "$TORCH_INSTALLED" = true ]; then
+    # Use torch.version.cuda if available, else detect from nvidia-smi
+    TORCH_CUDA_VERSION=$(python -c "import torch; print(torch.version.cuda or 'cpu')" 2>/dev/null)
+    if [ "$TORCH_CUDA_VERSION" != "cpu" ]; then
+        CUDA_VARIANT="cu${TORCH_CUDA_VERSION//./}"
+        print_status "Detected PyTorch CUDA variant: $CUDA_VARIANT"
+    fi
+else
+    # Detect from NVIDIA driver capabilities
+    COMPUTE_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits | head -1)
+    if [ "$COMPUTE_CAP" ]; then
+        # Map compute capability to CUDA variant (simplified mapping)
+        CC_MAJOR=${COMPUTE_CAP%%.*}
+        if [ "$CC_MAJOR" -ge 8 ]; then
+            CUDA_VARIANT="cu121"  # Default for Ampere+
+        else
+            CUDA_VARIANT="cu118"  # For older GPUs
+        fi
+        print_status "Inferred CUDA variant from GPU: $CUDA_VARIANT (compute cap $COMPUTE_CAP)"
+    fi
+fi
+
+# Allow override via environment variable
+if [ -n "$PYTORCH_CUDA_VARIANT" ]; then
+    CUDA_VARIANT="$PYTORCH_CUDA_VARIANT"
+    print_warning "Using overridden CUDA variant from PYTORCH_CUDA_VARIANT: $CUDA_VARIANT"
+fi
 print_step "Checking PyTorch installation"
 
 if python -c "import torch" 2>/dev/null; then
@@ -183,7 +211,7 @@ case $choice in
         fi
 
         print_step "Removing existing PyTorch"
-        pip uninstall torch torchvision torchaudio functorch -y 2>/dev/null || true
+        python -m pip uninstall torch torchvision torchaudio functorch -y 2>/dev/null || true
 
         # Use torch-aware path discovery for targeted cleanup
         # Only remove specific torch packages, not all torch* (to preserve torchmetrics, torchtext, etc.)
@@ -202,13 +230,13 @@ case $choice in
         fi
 
         print_step "Clearing pip cache"
-        pip cache purge
+        python -m pip cache purge
 
         print_step "Installing PyTorch nightly"
-        if [ "$CUDA_AVAILABLE" = true ]; then
-            pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu121
+        if [ "$NVIDIA_AVAILABLE" = true ]; then
+            python -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/${CUDA_VARIANT:-cu121}
         else
-            pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cpu
+            python -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cpu
         fi
 
         print_step "Verifying installation"
@@ -239,9 +267,7 @@ case $choice in
 
         # Check if conda is available
         if ! command -v conda &> /dev/null; then
-            print_error "Conda is not installed or not in PATH"
-            echo ""
-            echo "Option 2 requires conda for environment management."
+            print_warning "Conda is not installed or not in PATH"
             echo ""
             echo "ALTERNATIVES:"
             echo ""
@@ -251,19 +277,94 @@ case $choice in
             echo "   source ~/.bashrc"
             echo "   # Then re-run this script"
             echo ""
-            echo "2. Use pip + venv fallback (manual setup):"
-            echo "   python3.12 -m venv ${PROJECT_ROOT}_py312_venv"
-            echo "   source ${PROJECT_ROOT}_py312_venv/bin/activate"
-            echo "   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \\"
-            echo "     --index-url https://download.pytorch.org/whl/cu121"
-            echo "   pip install -r ${PROJECT_ROOT}/requirements.txt"
-            echo "   pip install -e ${PROJECT_ROOT}"
+            echo "2. Use automated Python 3.12 virtualenv setup (see below)"
             echo ""
-            echo "For more information, see:"
-            echo "  - https://docs.conda.io/en/latest/miniconda.html"
-            echo "  - PYTORCH_ENVIRONMENT_FIX_REPORT.md"
-            echo ""
-            exit 1
+
+            # Offer automated venv setup
+            read -p "Conda not found. Create a Python 3.12 virtualenv at ${PROJECT_ROOT}_py312_venv and proceed automatically? (Y/n): " venv_choice
+
+            if [ "$venv_choice" = "n" ] || [ "$venv_choice" = "N" ]; then
+                echo ""
+                echo "Manual setup instructions:"
+                echo "   python3.12 -m venv ${PROJECT_ROOT}_py312_venv"
+                echo "   source ${PROJECT_ROOT}_py312_venv/bin/activate"
+                echo "   python -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \\"
+                echo "     --index-url https://download.pytorch.org/whl/cu121"
+                echo "   python -m pip install -r ${PROJECT_ROOT}/requirements.txt"
+                echo "   python -m pip install -e ${PROJECT_ROOT}"
+                echo ""
+                echo "For more information, see:"
+                echo "  - https://docs.conda.io/en/latest/miniconda.html"
+                echo "  - PYTORCH_ENVIRONMENT_FIX_REPORT.md"
+                echo ""
+                exit 1
+            fi
+
+            # Automated venv setup
+            print_step "Setting up Python 3.12 virtual environment"
+
+            # Check for python3.12
+            if ! command -v python3.12 &> /dev/null; then
+                print_error "python3.12 is not available"
+                echo ""
+                echo "Please install Python 3.12 first:"
+                echo "  sudo apt-get update"
+                echo "  sudo apt-get install python3.12 python3.12-venv"
+                echo ""
+                echo "Or use conda instead (see option 1 above)"
+                exit 1
+            fi
+
+            VENV_PATH="${PROJECT_ROOT}_py312_venv"
+
+            # Create venv if it doesn't exist
+            if [ ! -d "$VENV_PATH" ]; then
+                print_status "Creating virtual environment at ${VENV_PATH}"
+                python3.12 -m venv "$VENV_PATH"
+                print_success "Virtual environment created"
+            else
+                print_warning "Virtual environment already exists at ${VENV_PATH}"
+            fi
+
+            # Run installation in subshell with activated venv
+            (
+                print_status "Activating virtual environment"
+                source "${VENV_PATH}/bin/activate"
+
+                print_step "Upgrading pip"
+                python -m pip install --upgrade pip
+
+                print_step "Installing PyTorch"
+                if [ "$NVIDIA_AVAILABLE" = true ]; then
+                    python -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/${CUDA_VARIANT:-cu121}
+                else
+                    python -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+                fi
+                print_success "PyTorch installed"
+
+                print_step "Installing project dependencies"
+                python -m pip install -r "${PROJECT_ROOT}/requirements.txt"
+                print_success "Dependencies installed"
+
+                print_step "Verifying PyTorch installation"
+                python -c "import torch, os; p=os.path.join(os.path.dirname(torch.__file__),'lib','libtorch_global_deps.so'); print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('libtorch_global_deps.so exists:', os.path.exists(p))"
+
+                echo ""
+                print_success "Virtual environment setup complete!"
+                echo ""
+                echo "To use this environment in the future:"
+                echo "  source ${VENV_PATH}/bin/activate"
+                echo ""
+                echo "NOTE: CUDA Toolkit 12.1 is required to build CUDA extensions."
+                echo "Use \`scripts/install_cuda_toolkit.sh\` to install and \`scripts/check_cuda_toolkit.sh\` to verify."
+                echo ""
+                echo "To build CUDA extensions:"
+                echo "  source ${VENV_PATH}/bin/activate"
+                echo "  python -m pip install -e ${PROJECT_ROOT}"
+                echo ""
+            )
+
+            exit 0
         fi
 
         echo "This will guide you through creating a new Python 3.12 environment."
@@ -280,24 +381,27 @@ case $choice in
         echo "   conda activate autovoice_py312"
         echo ""
         echo "4. Install stable PyTorch (RECOMMENDED - pip method for reliability):"
-        if [ "$CUDA_AVAILABLE" = true ]; then
-            echo "   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121"
+        if [ "$NVIDIA_AVAILABLE" = true ]; then
+            echo "   python -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121"
             echo ""
             echo "   Alternative (conda):"
             echo "   conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.1 -c pytorch -c nvidia -y"
         else
-            echo "   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
+            echo "   python -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
             echo ""
             echo "   Alternative (conda):"
             echo "   conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 cpuonly -c pytorch -y"
         fi
         echo ""
+        echo "   NOTE: CUDA Toolkit 12.1 is required to build CUDA extensions."
+        echo "   Use \`scripts/install_cuda_toolkit.sh\` to install and \`scripts/check_cuda_toolkit.sh\` to verify."
+        echo ""
         echo "5. Install project dependencies:"
         echo "   cd ${PROJECT_ROOT}"
-        echo "   pip install -r requirements.txt"
+        echo "   python -m pip install -r requirements.txt"
         echo ""
         echo "6. Build CUDA extensions:"
-        echo "   pip install -e ."
+        echo "   python -m pip install -e ."
         echo ""
         echo "7. Verify installation:"
         echo "   python -c \"import torch; print(torch.__version__); print('CUDA:', torch.cuda.is_available())\""
@@ -310,11 +414,11 @@ case $choice in
             HELPER_SCRIPT="${PROJECT_ROOT}/scripts/setup_python312_helper.sh"
 
             # Determine CUDA installation method based on availability
-            if [ "$CUDA_AVAILABLE" = true ]; then
-                PYTORCH_INSTALL_CMD="conda run -n autovoice_py312 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121"
+            if [ "$NVIDIA_AVAILABLE" = true ]; then
+                PYTORCH_INSTALL_CMD="conda run -n autovoice_py312 python -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121"
                 PYTORCH_INSTALL_ALT="# Alternative (conda): conda run -n autovoice_py312 conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.1 -c pytorch -c nvidia -y"
             else
-                PYTORCH_INSTALL_CMD="conda run -n autovoice_py312 pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
+                PYTORCH_INSTALL_CMD="conda run -n autovoice_py312 python -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
                 PYTORCH_INSTALL_ALT="# Alternative (conda): conda run -n autovoice_py312 conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 cpuonly -c pytorch -y"
             fi
 
@@ -324,6 +428,44 @@ case $choice in
 # Generated by setup_pytorch_env.sh
 
 set -e
+
+# Check if conda is available
+if ! command -v conda &> /dev/null; then
+    echo "Conda is not available in PATH. Attempting to initialize..."
+    
+    # Detect shell and attempt initialization
+    SHELL_TYPE=\$(basename "\$SHELL" 2>/dev/null || echo "bash")
+    
+    if [[ "\$SHELL_TYPE" == "zsh" ]]; then
+        echo "Detected zsh shell, evaluating conda zsh hook..."
+        eval "\$(conda shell.zsh hook)" 2>/dev/null || true
+    else
+        echo "Detected bash-compatible shell, evaluating conda bash hook..."
+        eval "\$(conda shell.bash hook)" 2>/dev/null || true
+    fi
+    
+    # If hook failed, try sourcing user RC files
+    if ! command -v conda &> /dev/null; then
+        if [[ "\$SHELL_TYPE" == "zsh" ]] && [[ -f ~/.zshrc ]]; then
+            echo "Trying to source ~/.zshrc for conda initialization..."
+            source ~/.zshrc 2>/dev/null || true
+        elif [[ -f ~/.bashrc ]]; then
+            echo "Trying to source ~/.bashrc for conda initialization..."
+            source ~/.bashrc 2>/dev/null || true
+        fi
+    fi
+    
+    # Final check
+    if ! command -v conda &> /dev/null; then
+        echo "Error: conda is still not available after initialization attempts"
+        echo ""
+        echo "Please initialize conda first by running:"
+        echo "  eval \"\$(conda shell.bash hook)\""
+        echo ""
+        echo "Or install Miniconda/Anaconda if not already installed."
+        exit 1
+    fi
+fi
 
 # Compute project root dynamically for portability
 PROJECT_ROOT=\$(cd "\$(dirname "\$0")"/.. && pwd)
@@ -392,7 +534,7 @@ echo "  ${PYTORCH_INSTALL_ALT}"
 # Step 4: Install project dependencies
 echo ""
 print_status "[4/6] Installing project dependencies from requirements.txt..."
-conda run -n autovoice_py312 pip install -r \${PROJECT_ROOT}/requirements.txt
+conda run -n autovoice_py312 python -m pip install -r \${PROJECT_ROOT}/requirements.txt
 print_success "Dependencies installed successfully"
 
 # Step 5: Verify PyTorch installation and check for libtorch_global_deps.so
@@ -416,8 +558,11 @@ echo "  1. Activate the environment:"
 echo "     conda activate autovoice_py312"
 echo ""
 echo "  2. (Optional) Build CUDA extensions after installing CUDA toolkit:"
+echo "     NOTE: CUDA Toolkit 12.1 is required to build CUDA extensions."
+echo "     Use \\\`scripts/install_cuda_toolkit.sh\\\` to install and \\\`scripts/check_cuda_toolkit.sh\\\` to verify."
+echo ""
 echo "     cd \${PROJECT_ROOT}"
-echo "     pip install -e ."
+echo "     python -m pip install -e ."
 echo ""
 echo "  3. Run tests to verify everything works:"
 echo "     pytest tests/"

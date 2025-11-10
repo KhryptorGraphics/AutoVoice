@@ -34,14 +34,14 @@ class MetricsCollector:
 
         # HTTP Metrics
         self.http_requests_total = Counter(
-            'http_requests_total',
+            'autovoice_http_requests_total',
             'Total HTTP requests',
             ['method', 'endpoint', 'status'],
             registry=self.registry
         )
 
         self.http_request_duration_seconds = Histogram(
-            'http_request_duration_seconds',
+            'autovoice_http_request_duration_seconds',
             'HTTP request duration in seconds',
             ['method', 'endpoint'],
             registry=self.registry
@@ -49,19 +49,19 @@ class MetricsCollector:
 
         # WebSocket Metrics
         self.websocket_connections_total = Counter(
-            'websocket_connections_total',
+            'autovoice_websocket_connections_total',
             'Total WebSocket connections',
             registry=self.registry
         )
 
         self.active_websocket_connections = Gauge(
-            'active_websocket_connections',
+            'autovoice_active_websocket_connections',
             'Current active WebSocket connections',
             registry=self.registry
         )
 
         self.websocket_events_total = Counter(
-            'websocket_events_total',
+            'autovoice_websocket_events_total',
             'Total WebSocket events',
             ['event_type'],
             registry=self.registry
@@ -69,28 +69,28 @@ class MetricsCollector:
 
         # Synthesis Metrics
         self.synthesis_requests_total = Counter(
-            'synthesis_requests_total',
+            'autovoice_synthesis_requests_total',
             'Total synthesis requests',
             ['speaker_id', 'success'],
             registry=self.registry
         )
 
         self.synthesis_duration_seconds = Histogram(
-            'synthesis_duration_seconds',
+            'autovoice_synthesis_duration_seconds',
             'Synthesis operation duration in seconds',
             registry=self.registry
         )
 
         # Audio Processing Metrics
         self.audio_processing_total = Counter(
-            'audio_processing_total',
+            'autovoice_audio_processing_total',
             'Total audio processing operations',
             ['operation', 'success'],
             registry=self.registry
         )
 
         self.audio_processing_duration_seconds = Histogram(
-            'audio_processing_duration_seconds',
+            'autovoice_audio_processing_duration_seconds',
             'Audio processing duration in seconds',
             ['operation'],
             registry=self.registry
@@ -98,28 +98,28 @@ class MetricsCollector:
 
         # Model Inference Metrics
         self.model_inference_duration_seconds = Histogram(
-            'model_inference_duration_seconds',
+            'autovoice_model_inference_duration_seconds',
             'Model inference time in seconds',
             registry=self.registry
         )
 
         # GPU Metrics
         self.gpu_memory_used_bytes = Gauge(
-            'gpu_memory_used_bytes',
+            'autovoice_gpu_memory_used_bytes',
             'GPU memory usage in bytes',
             ['device_id'],
             registry=self.registry
         )
 
         self.gpu_utilization_percent = Gauge(
-            'gpu_utilization_percent',
+            'autovoice_gpu_utilization_percent',
             'GPU utilization percentage',
             ['device_id'],
             registry=self.registry
         )
 
         self.gpu_temperature_celsius = Gauge(
-            'gpu_temperature_celsius',
+            'autovoice_gpu_temperature_celsius',
             'GPU temperature in Celsius',
             ['device_id'],
             registry=self.registry
@@ -127,7 +127,7 @@ class MetricsCollector:
 
         # Model Status
         self.model_loaded = Gauge(
-            'model_loaded',
+            'autovoice_model_loaded',
             'Whether model is loaded (1=loaded, 0=not loaded)',
             registry=self.registry
         )

@@ -1,6 +1,7 @@
 # Multi-stage Dockerfile for AutoVoice
 # Stage 1: Builder - Compile CUDA extensions and create wheel
-FROM nvidia/cuda:12.1.0-devel-ubuntu22.04 AS builder
+# Digest retrieved via: docker inspect nvidia/cuda:12.1.0-devel-ubuntu22.04 (2025-01-29)
+FROM nvidia/cuda:12.1.0-devel-ubuntu22.04@sha256:e3a8f7b933e77ecee74731198a2a5483e965b585cea2660675cf4bb152237e9b AS builder
 
 # Build arguments for metadata
 ARG BUILD_DATE
@@ -12,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     CUDA_HOME=/usr/local/cuda \
-    TORCH_CUDA_ARCH_LIST="80;86;89" \
+    TORCH_CUDA_ARCH_LIST="70;80;86;89" \
     PATH=/usr/local/cuda/bin:$PATH \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
@@ -47,7 +48,8 @@ RUN python setup.py build_ext --inplace && \
     python setup.py bdist_wheel
 
 # Stage 2: Runtime - Smaller image with only runtime dependencies
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 AS runtime
+# Digest retrieved via: docker inspect nvidia/cuda:12.1.0-runtime-ubuntu22.04 (2025-01-29)
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04@sha256:402700b179eb764da6d60d99fe106aa16c36874f7d7fb3e122251ff6aea8b2f7 AS runtime
 
 # Build arguments for metadata
 ARG BUILD_DATE

@@ -1,0 +1,72 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    # assignees:
+    #   - "username"  # Add valid GitHub usernames here
+    labels:
+      - "dependencies"
+      - "python"
+      - "chore"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      pytorch:
+        patterns:
+          - "torch"
+          - "torchvision"
+          - "torchaudio"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "torch"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "torchvision"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "torchaudio"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "chore"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+    groups:
+      actions:
+        patterns:
+          - "actions/*"
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 2
+    labels:
+      - "dependencies"
+      - "docker"
+      - "chore"
+    commit-message:
+      prefix: "chore(docker)"
+      include: "scope"
+    # Ignore CUDA base image updates - require manual testing and validation
+    # CUDA version changes can break PyTorch compatibility and require
+    # rebuilding extensions with matching CUDA toolkit versions
+    ignore:
+      - dependency-name: "nvidia/cuda"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

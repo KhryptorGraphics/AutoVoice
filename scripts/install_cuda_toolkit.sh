@@ -31,11 +31,12 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 DEFAULT_CUDA_VERSION="12.1"
 CUDA_VERSION="${CUDA_VERSION:-$DEFAULT_CUDA_VERSION}"
 
-# Installation flags
-INSTALL_NVIDIA_DRIVERS=true
+# Installation flags - defaults changed to avoid side effects
+INSTALL_NVIDIA_DRIVERS=false
 INSTALL_CUDA_TOOLKIT=true
-INSTALL_PYTORCH_CUDA=true
+INSTALL_PYTORCH_CUDA=false
 FORCE_INSTALL=false
+NON_INTERACTIVE=false
 
 # Header
 echo -e "${BLUE}╔════════════════════════════════════════════════════════╗${NC}"
@@ -81,10 +82,15 @@ check_root() {
     if [ "$EUID" -eq 0 ]; then
         print_warning "Running as root"
         print_info "It's recommended to avoid running CUDA installation as root when possible"
-        read -p "Continue anyway? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
+
+        if [ "$NON_INTERACTIVE" = false ]; then
+            read -p "Continue anyway? (y/N): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
+        else
+            print_info "Non-interactive mode: continuing as root"
         fi
     fi
 }
@@ -112,10 +118,15 @@ detect_os() {
         *)
             print_warning "OS '$OS' may not be officially supported by NVIDIA"
             print_info "This script is optimized for Ubuntu/Debian systems"
-            read -p "Continue anyway? (y/N): " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                exit 1
+
+            if [ "$NON_INTERACTIVE" = false ]; then
+                read -p "Continue anyway? (y/N): " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    exit 1
+                fi
+            else
+                print_info "Non-interactive mode: continuing with unsupported OS"
             fi
             ;;
     esac
@@ -138,8 +149,26 @@ update_package_lists() {
 # Function to install NVIDIA drivers
 install_nvidia_drivers() {
     if [ "$INSTALL_NVIDIA_DRIVERS" = false ]; then
-        print_info "Skipping NVIDIA driver installation (--no-drivers)"
+        print_info "Skipping NVIDIA driver installation (disabled by default)"
+        print_info "Use --drivers flag to enable driver installation"
         return 0
+    fi
+
+    print_warning "NVIDIA driver installation requested"
+    print_info "This will install nvidia-driver-535 (compatible with CUDA 12.1)"
+    print_info "A system restart will be required after installation"
+    echo ""
+
+    if [ "$NON_INTERACTIVE" = false ]; then
+        read -p "Continue with driver installation? (y/N): " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Skipping driver installation"
+            INSTALL_NVIDIA_DRIVERS=false
+            return 0
+        fi
+    else
+        print_info "Non-interactive mode: proceeding with driver installation"
     fi
 
     print_gpu "Installing NVIDIA drivers..."
@@ -181,6 +210,21 @@ install_cuda_toolkit() {
 
     print_download "Installing CUDA Toolkit ${CUDA_VERSION}..."
 
+    # Check for conda CUDA toolkit and warn about incomplete headers
+    # Use $CONDA_PREFIX if set, otherwise skip conda-specific checks
+    if [ -n "$CONDA_PREFIX" ]; then
+        if [ -d "$CONDA_PREFIX/include/cuda" ]; then
+            print_warning "Conda CUDA toolkit detected - may have incomplete headers"
+            print_info "Installing system CUDA toolkit to ensure all build headers are available"
+
+            # Check if nv/target exists in conda
+            if [ ! -f "$CONDA_PREFIX/include/nv/target" ]; then
+                print_warning "Conda CUDA toolkit missing critical 'nv/target' header"
+                print_info "This is why CUDA extension builds fail - system toolkit needed"
+            fi
+        fi
+    fi
+
     # Remove existing CUDA installation if force install
     if [ "$FORCE_INSTALL" = true ]; then
         print_warning "Removing existing CUDA installation (--force)"
@@ -192,8 +236,35 @@ install_cuda_toolkit() {
     # Add NVIDIA CUDA repository
     print_info "Adding NVIDIA CUDA repository..."
 
+    # Normalize repository code to NVIDIA's expected format
+    if [[ "$OS" == "ubuntu" ]]; then
+        # Remove dot from VERSION_ID (e.g., 22.04 -> 2204)
+        repo_code="ubuntu${VERSION//./}"
+    elif [[ "$OS" == "debian" ]]; then
+        # For Debian, use major version (e.g., 12 -> debian12)
+        DEBIAN_MAJOR="${VERSION%%.*}"
+        repo_code="debian${DEBIAN_MAJOR}"
+    else
+        # Fallback for other distros
+        repo_code="${OS}${VERSION//./}"
+    fi
+
+    print_info "Using repository code: ${repo_code}"
+
     # Download and install CUDA keyring
-    wget -O /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/${OS}${VERSION}/x86_64/cuda-keyring_1.0-1_all.deb
+    KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/${repo_code}/x86_64/cuda-keyring_1.0-1_all.deb"
+    print_info "Downloading from: ${KEYRING_URL}"
+
+    if ! wget -O /tmp/cuda-keyring.deb "${KEYRING_URL}"; then
+        print_error "Failed to download CUDA keyring from ${KEYRING_URL}"
+        print_info "Please verify:"
+        print_info "  1. Your OS version is supported by NVIDIA"
+        print_info "  2. Internet connection is working"
+        print_info "  3. Repository code '${repo_code}' is correct"
+        print_info "Visit https://developer.nvidia.com/cuda-downloads for supported platforms"
+        exit 1
+    fi
+
     sudo dpkg -i /tmp/cuda-keyring.deb
     rm /tmp/cuda-keyring.deb
 
@@ -204,30 +275,71 @@ install_cuda_toolkit() {
     print_package "Installing ${CUDA_PKG}..."
     sudo apt install -y "$CUDA_PKG"
 
-    # Set CUDA environment variables
-    CUDA_HOME="/usr/local/cuda-${CUDA_VERSION}"
-    if [ -d "/usr/local/cuda" ]; then
-        CUDA_HOME="/usr/local/cuda"
-    fi
-
-    # Update .bashrc with CUDA paths
-    BASHRC="$HOME/.bashrc"
-    if [ ! -f "$BASHRC" ]; then
-        touch "$BASHRC"
-    fi
-
-    # Add CUDA to PATH and LD_LIBRARY_PATH if not already present
-    if ! grep -q "export PATH.*cuda" "$BASHRC"; then
-        echo "export CUDA_HOME=\"${CUDA_HOME}\"" >> "$BASHRC"
-        echo "export PATH=\"${CUDA_HOME}/bin:\$PATH\"" >> "$BASHRC"
-        echo "export LD_LIBRARY_PATH=\"${CUDA_HOME}/lib64:\$LD_LIBRARY_PATH\"" >> "$BASHRC"
-        print_info "Added CUDA paths to $BASHRC"
-    fi
-
-    # Source the updated bashrc
-    source "$BASHRC"
-
     print_success "CUDA Toolkit ${CUDA_VERSION} installed"
+
+    # Refresh library cache after installation
+    print_info "Refreshing library cache..."
+    sudo ldconfig
+
+    print_info "Setting CUDA environment for current shell..."
+
+    # Determine which RC files to update (for persistence)
+    USER_SHELL=$(basename "$SHELL")
+    RC_FILES=()
+
+    # Always update .bashrc if it exists or can be created
+    BASHRC="$HOME/.bashrc"
+    if [ -f "$BASHRC" ] || [ "$USER_SHELL" = "bash" ]; then
+        [ ! -f "$BASHRC" ] && touch "$BASHRC"
+        RC_FILES+=("$BASHRC")
+    fi
+
+    # Update .zshrc for zsh users
+    if [ "$USER_SHELL" = "zsh" ]; then
+        ZSHRC="$HOME/.zshrc"
+        [ ! -f "$ZSHRC" ] && touch "$ZSHRC"
+        RC_FILES+=("$ZSHRC")
+    fi
+
+    # If no RC files identified, default to .bashrc
+    if [ ${#RC_FILES[@]} -eq 0 ]; then
+        touch "$BASHRC"
+        RC_FILES+=("$BASHRC")
+    fi
+
+    # Update each RC file with CUDA paths (idempotent with consistent markers)
+    UPDATED_FILES=()
+    for RC_FILE in "${RC_FILES[@]}"; do
+        print_info "Updating $RC_FILE..."
+
+        # Remove old autovoice cuda block if it exists
+        if grep -q "# >>> autovoice cuda >>>" "$RC_FILE"; then
+            # Remove lines between markers
+            sed -i '/# >>> autovoice cuda >>>/,/# <<< autovoice cuda <<</d' "$RC_FILE"
+        fi
+
+        # Add new autovoice cuda block with all environment variables
+        {
+            echo "# >>> autovoice cuda >>>"
+            echo "export CUDA_HOME=\"${CUDA_HOME}\""
+            echo "export PATH=\"${CUDA_HOME}/bin:\$PATH\""
+            echo "export LD_LIBRARY_PATH=\"${CUDA_HOME}/lib64:\$LD_LIBRARY_PATH\""
+            echo "# <<< autovoice cuda <<<"
+        } >> "$RC_FILE"
+
+        UPDATED_FILES+=("$RC_FILE")
+    done
+
+    print_success "Updated CUDA paths in: ${UPDATED_FILES[*]}"
+    print_info "  - CUDA_HOME=${CUDA_HOME}"
+    print_info "  - PATH includes ${CUDA_HOME}/bin"
+    print_info "  - LD_LIBRARY_PATH includes ${CUDA_HOME}/lib64"
+    print_info "Note: Source your RC file manually for current session (e.g., 'source ~/.bashrc')"
+
+    # Export variables in current script context for verification only
+    export CUDA_HOME
+    export PATH="${CUDA_HOME}/bin:$PATH"
+    export LD_LIBRARY_PATH="${CUDA_HOME}/lib64:$LD_LIBRARY_PATH"
     print_info "CUDA_HOME: ${CUDA_HOME}"
     CUDA_INSTALLED=true
 }
@@ -235,8 +347,26 @@ install_cuda_toolkit() {
 # Function to install PyTorch with CUDA
 install_pytorch_cuda() {
     if [ "$INSTALL_PYTORCH_CUDA" = false ]; then
-        print_info "Skipping PyTorch CUDA installation (--no-pytorch)"
+        print_info "Skipping PyTorch CUDA installation (disabled by default)"
+        print_info "Use --pytorch flag to enable PyTorch installation"
         return 0
+    fi
+
+    print_warning "PyTorch CUDA installation requested"
+    print_info "This will install PyTorch 2.5.1 with CUDA 12.1 support"
+    print_info "This may overwrite existing PyTorch installation"
+    echo ""
+
+    if [ "$NON_INTERACTIVE" = false ]; then
+        read -p "Continue with PyTorch installation? (y/N): " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Skipping PyTorch installation"
+            INSTALL_PYTORCH_CUDA=false
+            return 0
+        fi
+    else
+        print_info "Non-interactive mode: proceeding with PyTorch installation"
     fi
 
     print_package "Installing PyTorch with CUDA support..."
@@ -286,11 +416,29 @@ verify_installation() {
 
             # Check for critical headers
             if [ -f "${CUDA_HOME}/include/nv/target" ]; then
-                print_success "CUDA build headers available"
+                print_success "CUDA build headers available (nv/target found)"
             else
                 print_error "Critical CUDA build headers missing (nv/target)"
+                print_info "Checked: ${CUDA_HOME}/include/nv/target"
+                print_info "This header is required for building CUDA extensions"
+                print_info "Try reinstalling CUDA toolkit or check CUDA_HOME setting"
                 return 1
             fi
+
+            # Check for other critical headers
+            CRITICAL_HEADERS=(
+                "cuda.h"
+                "cuda_runtime.h"
+                "device_launch_parameters.h"
+            )
+
+            for header in "${CRITICAL_HEADERS[@]}"; do
+                if [ -f "${CUDA_HOME}/include/${header}" ]; then
+                    print_success "Header found: ${header}"
+                else
+                    print_warning "Header missing: ${header}"
+                fi
+            done
         else
             print_error "CUDA toolkit not working"
             return 1
@@ -327,7 +475,11 @@ show_post_install_instructions() {
 
     echo ""
     print_info "To activate CUDA environment in new terminals:"
-    echo "  source ~/.bashrc"
+    if [ "$USER_SHELL" = "zsh" ]; then
+        echo "  source ~/.zshrc"
+    else
+        echo "  source ~/.bashrc"
+    fi
     echo ""
     print_info "To verify CUDA toolkit installation:"
     echo "  $SCRIPT_DIR/check_cuda_toolkit.sh"
@@ -344,16 +496,24 @@ show_post_install_instructions() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --drivers)
+                INSTALL_NVIDIA_DRIVERS=true
+                shift
+                ;;
             --no-drivers)
                 INSTALL_NVIDIA_DRIVERS=false
                 shift
                 ;;
-            --no-toolkit)
-                INSTALL_CUDA_TOOLKIT=false
+            --pytorch)
+                INSTALL_PYTORCH_CUDA=true
                 shift
                 ;;
             --no-pytorch)
                 INSTALL_PYTORCH_CUDA=false
+                shift
+                ;;
+            --no-toolkit)
+                INSTALL_CUDA_TOOLKIT=false
                 shift
                 ;;
             --force)
@@ -365,24 +525,39 @@ parse_args() {
                 shift
                 shift
                 ;;
+            --yes|-y)
+                NON_INTERACTIVE=true
+                shift
+                ;;
             --help)
                 echo "Usage: $0 [OPTIONS]"
                 echo ""
                 echo "Install CUDA toolkit and dependencies for AutoVoice"
                 echo ""
                 echo "Options:"
-                echo "  --no-drivers     Skip NVIDIA driver installation"
+                echo "  --drivers        Enable NVIDIA driver installation (default: disabled)"
+                echo "  --no-drivers     Disable NVIDIA driver installation"
+                echo "  --pytorch        Enable PyTorch CUDA installation (default: disabled)"
+                echo "  --no-pytorch     Disable PyTorch CUDA installation"
                 echo "  --no-toolkit     Skip CUDA toolkit installation"
-                echo "  --no-pytorch     Skip PyTorch CUDA installation"
                 echo "  --force          Force reinstall (removes existing packages)"
                 echo "  --cuda-version   Specify CUDA version (default: ${DEFAULT_CUDA_VERSION})"
-                echo "  --help          Show this help message"
+                echo "  --yes, -y        Non-interactive mode (skip prompts, use defaults)"
+                echo "  --help           Show this help message"
+                echo ""
+                echo "Default behavior (no flags):"
+                echo "  - Installs CUDA toolkit only"
+                echo "  - Does NOT install NVIDIA drivers (use --drivers to enable)"
+                echo "  - Does NOT install PyTorch (use --pytorch to enable)"
                 echo ""
                 echo "Examples:"
-                echo "  $0                           # Full installation"
-                echo "  $0 --no-drivers             # Skip driver install"
-                echo "  $0 --cuda-version 12.1      # Install CUDA 12.1"
-                echo "  $0 --force                  # Force reinstall everything"
+                echo "  $0                           # Install CUDA toolkit only"
+                echo "  $0 --drivers                 # Install toolkit + drivers"
+                echo "  $0 --pytorch                 # Install toolkit + PyTorch"
+                echo "  $0 --drivers --pytorch       # Full installation"
+                echo "  $0 --cuda-version 12.1       # Install CUDA 12.1"
+                echo "  $0 --force                   # Force reinstall everything"
+                echo "  $0 --yes                     # Non-interactive mode"
                 exit 0
                 ;;
             *)
