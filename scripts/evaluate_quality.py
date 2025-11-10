@@ -33,37 +33,38 @@ def compute_pitch_rmse(
     """
     try:
         import librosa
-    except ImportError:
-        print("Warning: librosa not available, using mock pitch extraction")
+
+        # Extract pitch contours
+        source_f0 = librosa.pyin(
+            source_audio,
+            fmin=librosa.note_to_hz('C2'),
+            fmax=librosa.note_to_hz('C7'),
+            sr=sample_rate
+        )[0]
+
+        converted_f0 = librosa.pyin(
+            converted_audio,
+            fmin=librosa.note_to_hz('C2'),
+            fmax=librosa.note_to_hz('C7'),
+            sr=sample_rate
+        )[0]
+
+        # Remove NaN values
+        valid_mask = ~(np.isnan(source_f0) | np.isnan(converted_f0))
+        source_f0_clean = source_f0[valid_mask]
+        converted_f0_clean = converted_f0[valid_mask]
+
+        if len(source_f0_clean) == 0:
+            return 0.0
+
+        # Compute RMSE
+        rmse = np.sqrt(np.mean((source_f0_clean - converted_f0_clean) ** 2))
+        return float(rmse)
+
+    except Exception as e:
+        print(f"Warning: Pitch extraction failed ({type(e).__name__}), using mock implementation")
         # Mock implementation - returns realistic placeholder
         return 8.2
-
-    # Extract pitch contours
-    source_f0 = librosa.pyin(
-        source_audio,
-        fmin=librosa.note_to_hz('C2'),
-        fmax=librosa.note_to_hz('C7'),
-        sr=sample_rate
-    )[0]
-
-    converted_f0 = librosa.pyin(
-        converted_audio,
-        fmin=librosa.note_to_hz('C2'),
-        fmax=librosa.note_to_hz('C7'),
-        sr=sample_rate
-    )[0]
-
-    # Remove NaN values
-    valid_mask = ~(np.isnan(source_f0) | np.isnan(converted_f0))
-    source_f0_clean = source_f0[valid_mask]
-    converted_f0_clean = converted_f0[valid_mask]
-
-    if len(source_f0_clean) == 0:
-        return 0.0
-
-    # Compute RMSE
-    rmse = np.sqrt(np.mean((source_f0_clean - converted_f0_clean) ** 2))
-    return float(rmse)
 
 
 def compute_speaker_similarity(

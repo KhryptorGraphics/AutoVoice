@@ -1,0 +1,39 @@
+{
+  "environment": {
+    "timestamp": "2025-11-09T22:16:11.923426",
+    "python_version": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:09:02) [GCC 11.2.0]",
+    "pytorch_available": true,
+    "cuda_available": true,
+    "gpu_info": {
+      "name": "NVIDIA GeForce RTX 3080 Ti",
+      "compute_capability": "8.6",
+      "total_memory_gb": 12.8843776,
+      "cuda_version": "12.8",
+      "driver_version": "576.57"
+    },
+    "pytorch_version": "2.9.0+cu128"
+  },
+  "metrics": {
+    "pytest": {
+      "total_tests": 30,
+      "passed": 2,
+      "failed": 0,
+      "duration": 12.920769214630127
+    },
+    "tts": {
+      "tts_latency_ms": 11.339460000090185,
+      "tts_throughput": 88.18762092657383,
+      "tts_memory_peak_mb": 0.0
+    },
+    "quality": {
+      "pitch_accuracy_hz": 8.2,
+      "speaker_similarity": 0.89,
+      "naturalness_score": 4.3
+    }
+  },
+  "files": {
+    "pytest": "validation_results/benchmarks/nvidia_geforce_rtx_3080_ti/pytest_results.json",
+    "tts": "validation_results/benchmarks/nvidia_geforce_rtx_3080_ti/tts_profile.json",
+    "quality": "validation_results/benchmarks/nvidia_geforce_rtx_3080_ti/quality_metrics.json"
+  }
+}

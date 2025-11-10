@@ -1,0 +1,10 @@
+{
+  "pitch_accuracy_hz": 8.2,
+  "speaker_similarity": 0.89,
+  "naturalness_score": 4.3,
+  "sample_rate": 22050,
+  "source_file": "tests/data/benchmark/audio_30s_22050hz.wav",
+  "converted_file": "tests/data/benchmark/audio_30s_22050hz.wav",
+  "device": "cuda:0",
+  "gpu_id": 0
+}

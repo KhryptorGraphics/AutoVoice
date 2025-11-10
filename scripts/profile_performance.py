@@ -512,12 +512,10 @@ def main() -> int:
         try:
             with open(profile_path, 'r') as f:
                 profile_data = json.load(f)
-                profile_id = profile_data.get('profile_id', args.profile_id or 'test_profile')
+                profile_id = profile_data.get('profile_id', 'test_profile')
         except Exception as e:
             print(f"Warning: Could not read profile_id from {profile_path}: {e}")
-            profile_id = args.profile_id or 'test_profile'
-    elif args.profile_id:
-        profile_id = args.profile_id
+            profile_id = 'test_profile'
     else:
         # Try to auto-detect from metadata
         metadata_file = Path(__file__).parent.parent / "tests" / "data" / "benchmark" / "metadata.json"
