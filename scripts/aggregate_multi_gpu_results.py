@@ -173,6 +173,16 @@ def extract_metrics(gpu_data: Dict[str, Any]) -> Dict[str, Any]:
                 elif preset == 'quality':
                     metrics['conversion_rtf_quality'] = f"{rtf_val:.2f}x"
 
+    # Quality metrics (if available)
+    if 'quality' in summary_metrics:
+        quality = summary_metrics['quality']
+        if 'pitch_accuracy_hz' in quality and quality['pitch_accuracy_hz'] is not None:
+            metrics['pitch_accuracy_hz'] = f"{quality['pitch_accuracy_hz']:.1f} Hz"
+        if 'speaker_similarity' in quality and quality['speaker_similarity'] is not None:
+            metrics['speaker_similarity'] = f"{quality['speaker_similarity']:.2f}"
+        if 'naturalness_score' in quality and quality['naturalness_score'] is not None:
+            metrics['naturalness_score'] = f"{quality['naturalness_score']:.1f}/5.0"
+
     return metrics
 
 

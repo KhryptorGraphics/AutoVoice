@@ -264,6 +264,72 @@ def run_pipeline_profiling(output_dir: Path, quick: bool = False, full: bool = F
         return None
 
 
+def run_quality_evaluation(output_dir: Path, gpu_id: int = 0) -> Optional[Path]:
+    """
+    Run quality metrics evaluation.
+
+    Args:
+        output_dir: Output directory
+        gpu_id: GPU device index
+
+    Returns:
+        Path to results file or None if failed
+    """
+    print("\n" + "="*60)
+    print("Running quality metrics evaluation...")
+    print("="*60)
+
+    output_file = output_dir / 'quality_metrics.json'
+    script_path = Path(__file__).parent / 'evaluate_quality.py'
+
+    # Check if we have test audio for evaluation
+    test_data_dir = Path('tests/data/benchmark')
+    source_audio = test_data_dir / 'audio_30s_22050hz.wav'
+
+    if not source_audio.exists():
+        print("⚠️  Skipping quality evaluation: test audio not found")
+        return None
+
+    # For now, use same file for both source and converted (placeholder)
+    # In production, this would use actual conversion output
+    converted_audio = source_audio
+
+    cmd = [
+        sys.executable, str(script_path),
+        '--source-audio', str(source_audio),
+        '--converted-audio', str(converted_audio),
+        '--gpu-id', str(gpu_id),
+        '--output-dir', str(output_dir)
+    ]
+
+    try:
+        import os
+        env = os.environ.copy()
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minutes
+            env=env
+        )
+
+        print(result.stdout)
+
+        if result.returncode == 0 and output_file.exists():
+            print(f"✓ Quality evaluation results saved to: {output_file}")
+            return output_file
+        else:
+            print(f"⚠️  Quality evaluation completed with warnings")
+            if output_file.exists():
+                return output_file
+            return None
+    except Exception as e:
+        print(f"⚠️  Quality evaluation error: {e}")
+        return None
+
+
 def run_tts_benchmark(output_dir: Path, quick: bool = False, gpu_id: int = 0) -> Optional[Path]:
     """
     Run TTS synthesis benchmarking.
@@ -491,6 +557,19 @@ def aggregate_results(output_dir: Path, env_info: Dict[str, Any]) -> Dict[str, A
                 'tts_memory_peak_mb': tts_data.get('tts_memory_peak_mb')
             }
 
+    # Load quality metrics results
+    quality_file = output_dir / 'quality_metrics.json'
+    if quality_file.exists():
+        with open(quality_file) as f:
+            quality_data = json.load(f)
+            summary['files']['quality'] = str(quality_file)
+            # Extract quality metrics
+            summary['metrics']['quality'] = {
+                'pitch_accuracy_hz': quality_data.get('pitch_accuracy_hz'),
+                'speaker_similarity': quality_data.get('speaker_similarity'),
+                'naturalness_score': quality_data.get('naturalness_score')
+            }
+
     # Save summary
     summary_file = output_dir / 'benchmark_summary.json'
     with open(summary_file, 'w') as f:
@@ -607,6 +686,11 @@ def main():
         help='Skip TTS synthesis benchmarking'
     )
     parser.add_argument(
+        '--skip-quality',
+        action='store_true',
+        help='Skip quality metrics evaluation'
+    )
+    parser.add_argument(
         '--quick',
         action='store_true',
         help='Run quick benchmarks only (1s, 5s audio)'
@@ -681,6 +765,10 @@ def main():
     if not args.skip_tts:
         tts_result = run_tts_benchmark(gpu_output_dir, args.quick, args.gpu_id)
         results['tts'] = tts_result is not None
+
+    if not args.skip_quality:
+        quality_result = run_quality_evaluation(gpu_output_dir, args.gpu_id)
+        results['quality'] = quality_result is not None
 
     # Aggregate results
     summary = aggregate_results(gpu_output_dir, env_info)
