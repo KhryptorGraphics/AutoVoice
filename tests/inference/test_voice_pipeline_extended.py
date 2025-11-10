@@ -63,12 +63,12 @@ class TestErrorHandling:
         with pytest.raises((VoiceConversionError, TypeError, AttributeError)):
             cpu_pipeline.convert(audio, embedding)
 
-    def test_invalid_embedding_none(self, cpu_pipeline):
+    def test_invalid_embedding_none(self, no_fallback_pipeline):
         """Test handling of None embedding input."""
         audio = np.random.randn(22050).astype(np.float32)
 
         with pytest.raises((VoiceConversionError, TypeError, AttributeError)):
-            cpu_pipeline.convert(audio, None)
+            no_fallback_pipeline.convert(audio, None)
 
     def test_invalid_embedding_wrong_shape(self, cpu_pipeline):
         """Test handling of wrong embedding shape."""
@@ -97,21 +97,21 @@ class TestErrorHandling:
         result = cpu_pipeline.convert(audio, embedding, pitch_shift_semitones=24.0)
         assert result is not None
 
-    def test_invalid_sample_rate_zero(self, cpu_pipeline):
+    def test_invalid_sample_rate_zero(self, no_fallback_pipeline):
         """Test handling of zero sample rate."""
         audio = np.random.randn(22050).astype(np.float32)
         embedding = np.random.randn(256).astype(np.float32)
 
         with pytest.raises((VoiceConversionError, ValueError, RuntimeError)):
-            cpu_pipeline.convert(audio, embedding, source_sample_rate=0)
+            no_fallback_pipeline.convert(audio, embedding, source_sample_rate=0)
 
-    def test_invalid_sample_rate_negative(self, cpu_pipeline):
+    def test_invalid_sample_rate_negative(self, no_fallback_pipeline):
         """Test handling of negative sample rate."""
         audio = np.random.randn(22050).astype(np.float32)
         embedding = np.random.randn(256).astype(np.float32)
 
         with pytest.raises((VoiceConversionError, ValueError, RuntimeError)):
-            cpu_pipeline.convert(audio, embedding, source_sample_rate=-1)
+            no_fallback_pipeline.convert(audio, embedding, source_sample_rate=-1)
 
     def test_preprocessing_error_handling(self, no_fallback_pipeline):
         """Test preprocessing error without fallback."""
