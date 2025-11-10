@@ -1,6 +1,6 @@
 {
   "environment": {
-    "timestamp": "2025-11-09T22:16:11.923426",
+    "timestamp": "2025-11-09T22:53:21.740028",
     "python_version": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:09:02) [GCC 11.2.0]",
     "pytorch_available": true,
     "cuda_available": true,
@@ -18,11 +18,11 @@
       "total_tests": 30,
       "passed": 2,
       "failed": 0,
-      "duration": 12.920769214630127
+      "duration": 11.328046321868896
     },
     "tts": {
-      "tts_latency_ms": 11.339460000090185,
-      "tts_throughput": 88.18762092657383,
+      "tts_latency_ms": 11.269520000132616,
+      "tts_throughput": 88.734923935379,
       "tts_memory_peak_mb": 0.0
     },
     "quality": {

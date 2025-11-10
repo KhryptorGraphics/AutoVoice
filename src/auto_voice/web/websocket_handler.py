@@ -733,18 +733,12 @@ class WebSocketHandler:
                         if buf_len < min_len:
                             logger.debug(f"Skipping pitch shift: short buffer {buf_len}<{min_len}")
                         else:
-                            # Check buffer length guard
-                        min_len = 2048
-                        buf_len = audio_np.shape[-1]
-                        if buf_len < min_len:
-                            logger.debug(f"Skipping pitch shift: short buffer {buf_len}<{min_len}")
-                        else:
                             # Apply pitch shift
-                        shifted_audio = librosa.effects.pitch_shift(
-                            y=audio_np,
-                            sr=sample_rate,
-                            n_steps=config['pitch_shift']
-                        )
+                            shifted_audio = librosa.effects.pitch_shift(
+                                y=audio_np,
+                                sr=sample_rate,
+                                n_steps=config['pitch_shift']
+                            )
 
                         # Convert back to torch tensor
                         processed_audio = torch.from_numpy(shifted_audio).float()
@@ -789,16 +783,16 @@ class WebSocketHandler:
                                 audio_np = audio_np.squeeze()
 
                             # Check buffer length guard
-                        min_len = 2048
-                        buf_len = audio_np.shape[-1]
-                        if buf_len < min_len:
-                            logger.debug(f"Skipping time stretch: short buffer {buf_len}<{min_len}")
-                        else:
-                            # Apply time stretch
-                            stretched_audio = librosa.effects.time_stretch(
-                                y=audio_np,
-                                rate=config['speed']
-                            )
+                            min_len = 2048
+                            buf_len = audio_np.shape[-1]
+                            if buf_len < min_len:
+                                logger.debug(f"Skipping time stretch: short buffer {buf_len}<{min_len}")
+                            else:
+                                # Apply time stretch
+                                stretched_audio = librosa.effects.time_stretch(
+                                    y=audio_np,
+                                    rate=config['speed']
+                                )
 
                             # Convert back to torch tensor
                             processed_audio = torch.from_numpy(stretched_audio).float()

@@ -1369,6 +1369,146 @@ def multi_sample_rate_audio(tmp_path: Path):
 
 
 @pytest.fixture
+def memory_monitor(cuda_available: bool):
+    """Memory monitoring fixture for CPU and GPU memory tracking.
+
+    Tracks memory usage before and after tests with configurable thresholds.
+    """
+    import psutil
+    import os
+
+    class MemoryMonitor:
+        def __init__(self, cuda_available):
+            self.cuda_available = cuda_available
+            self.process = psutil.Process(os.getpid())
+            self.initial_cpu_memory = 0
+            self.initial_gpu_memory = 0
+            self.final_cpu_memory = 0
+            self.final_gpu_memory = 0
+
+        def __enter__(self):
+            # Record initial memory
+            self.initial_cpu_memory = self.process.memory_info().rss
+            if self.cuda_available:
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+                self.initial_gpu_memory = torch.cuda.memory_allocated()
+            return self
+
+        def __exit__(self, *args):
+            # Check final memory
+            import gc
+            gc.collect()
+            if self.cuda_available:
+                torch.cuda.empty_cache()
+
+            self.final_cpu_memory = self.process.memory_info().rss
+            if self.cuda_available:
+                self.final_gpu_memory = torch.cuda.memory_allocated()
+
+        def get_stats(self):
+            """Get memory statistics in MB."""
+            cpu_delta = self.final_cpu_memory - self.initial_cpu_memory
+            stats = {
+                'initial_cpu_mb': self.initial_cpu_memory / 1024 / 1024,
+                'final_cpu_mb': self.final_cpu_memory / 1024 / 1024,
+                'cpu_delta_mb': cpu_delta / 1024 / 1024,
+            }
+
+            if self.cuda_available:
+                gpu_delta = self.final_gpu_memory - self.initial_gpu_memory
+                peak_memory = torch.cuda.max_memory_allocated()
+                stats.update({
+                    'initial_gpu_mb': self.initial_gpu_memory / 1024 / 1024,
+                    'final_gpu_mb': self.final_gpu_memory / 1024 / 1024,
+                    'peak_mb': peak_memory / 1024 / 1024,
+                    'gpu_delta_mb': gpu_delta / 1024 / 1024,
+                    'delta_mb': gpu_delta / 1024 / 1024  # Alias for compatibility
+                })
+            else:
+                stats['peak_mb'] = 0.0
+                stats['delta_mb'] = 0.0
+
+            return stats
+
+    return MemoryMonitor(cuda_available)
+
+
+@pytest.fixture
+def voice_profile_storage(tmp_path: Path):
+    """Mock voice profile storage for testing."""
+    from unittest.mock import Mock
+
+    storage = Mock()
+    storage.storage_dir = str(tmp_path / 'profiles')
+    storage.profile_exists = Mock(return_value=True)
+    storage.get_profile = Mock(return_value={
+        'profile_id': 'test-profile-123',
+        'user_id': 'test_user',
+        'embedding': np.random.randn(256).astype(np.float32),
+        'sample_rate': 22050
+    })
+    storage.save_profile = Mock()
+    storage.delete_profile = Mock()
+
+    return storage
+
+
+@pytest.fixture
+def vocal_separator(device):
+    """Mock vocal separator for testing."""
+    from unittest.mock import Mock
+
+    separator = Mock()
+    separator.device = device
+
+    def mock_separate(audio_path):
+        """Mock separation returning synthetic vocals and instrumental."""
+        # Generate synthetic outputs
+        sample_rate = 22050
+        duration = 2.0
+        samples = int(sample_rate * duration)
+
+        vocals = np.random.randn(samples).astype(np.float32) * 0.3
+        instrumental = np.random.randn(samples).astype(np.float32) * 0.3
+
+        return vocals, instrumental
+
+    separator.separate_vocals = Mock(side_effect=mock_separate)
+    separator.config = {'cache_enabled': False}
+
+    return separator
+
+
+@pytest.fixture
+def singing_voice_converter(cuda_available: bool):
+    """Mock singing voice converter for testing."""
+    from unittest.mock import Mock
+
+    device = "cuda" if cuda_available else "cpu"
+    converter = Mock()
+    converter.device = device
+
+    def mock_convert(source_audio, target_speaker_embedding, source_sample_rate=22050):
+        """Mock conversion returning synthetic converted audio."""
+        # Return audio with same length as input
+        if isinstance(source_audio, torch.Tensor):
+            length = source_audio.shape[-1]
+        else:
+            length = len(source_audio)
+
+        converted = torch.randn(length) * 0.5
+        return converted
+
+    converter.convert = Mock(side_effect=mock_convert)
+    converter.eval = Mock(return_value=converter)
+    converter.to = Mock(return_value=converter)
+    converter.prepare_for_inference = Mock()
+
+    return converter
+
+
+@pytest.fixture
 def stereo_mono_pairs(tmp_path: Path):
     """Generate stereo and mono pairs for testing.
 
@@ -1551,3 +1691,15 @@ def mock_conversion_pipeline(cuda_available: bool):
                 pytest.skip("soundfile not available for mock pipeline")
 
     return MockPipeline()
+
+# ============================================================================
+# Import New Testing Infrastructure Fixtures
+# ============================================================================
+pytest_plugins = [
+    'tests.fixtures.audio_fixtures',
+    'tests.fixtures.model_fixtures',
+    'tests.fixtures.gpu_fixtures',
+    'tests.fixtures.mock_fixtures',
+    'tests.fixtures.integration_fixtures',
+    'tests.fixtures.performance_fixtures',
+]

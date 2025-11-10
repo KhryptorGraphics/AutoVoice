@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from .inference_manager import InferenceManager
     from .voice_cloner import VoiceCloner
     from .singing_conversion_pipeline import SingingConversionPipeline
+    from .voice_conversion_pipeline import VoiceConversionPipeline, PipelineConfig, VoiceConversionError
 
 __all__ = [
     'VoiceInferenceEngine',
@@ -28,7 +29,10 @@ __all__ = [
     'GraphOptimizedModel',
     'InferenceManager',
     'VoiceCloner',
-    'SingingConversionPipeline'
+    'SingingConversionPipeline',
+    'VoiceConversionPipeline',
+    'PipelineConfig',
+    'VoiceConversionError'
 ]
 
 # Module-level cache for lazy-loaded classes
@@ -114,6 +118,21 @@ def __getattr__(name):
             from .singing_conversion_pipeline import SingingConversionPipeline
             _module_cache[name] = SingingConversionPipeline
             return SingingConversionPipeline
+
+        elif name == 'VoiceConversionPipeline':
+            from .voice_conversion_pipeline import VoiceConversionPipeline
+            _module_cache[name] = VoiceConversionPipeline
+            return VoiceConversionPipeline
+
+        elif name == 'PipelineConfig':
+            from .voice_conversion_pipeline import PipelineConfig
+            _module_cache[name] = PipelineConfig
+            return PipelineConfig
+
+        elif name == 'VoiceConversionError':
+            from .voice_conversion_pipeline import VoiceConversionError
+            _module_cache[name] = VoiceConversionError
+            return VoiceConversionError
 
     except Exception as e:
         import logging
