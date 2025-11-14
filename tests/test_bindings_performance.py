@@ -31,6 +31,11 @@ class TestCUDABindingsPerformance:
             except ImportError:
                 pytest.skip("cuda_kernels module not available")
 
+        # Default parameters for pitch detection
+        self.f0_min = 50.0
+        self.f0_max = 1000.0
+        self.confidence_threshold = 0.7
+
         # Warm up GPU
         dummy = torch.randn(1000, device='cuda')
         _ = dummy * 2
@@ -56,7 +61,8 @@ class TestCUDABindingsPerformance:
         # Warm up
         self.cuda_kernels.launch_pitch_detection(
             audio_tensor, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            self.f0_min, self.f0_max, self.confidence_threshold
         )
         torch.cuda.synchronize()
 
@@ -68,7 +74,8 @@ class TestCUDABindingsPerformance:
 
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
 
             torch.cuda.synchronize()
@@ -229,7 +236,8 @@ class TestCUDABindingsPerformance:
         # Get pitch contour
         self.cuda_kernels.launch_pitch_detection(
             audio_tensor, pitch_contour, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            self.f0_min, self.f0_max, self.confidence_threshold
         )
         torch.cuda.synchronize()
 
@@ -298,11 +306,10 @@ class TestCUDABindingsPerformance:
 
             output_pitch = torch.zeros(n_frames, device='cuda')
             output_confidence = torch.zeros(n_frames, device='cuda')
-            output_vibrato = torch.zeros(n_frames, device='cuda')
-
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
             torch.cuda.synchronize()
 
@@ -337,7 +344,8 @@ class TestCUDABindingsPerformance:
         for _ in range(10):
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
         torch.cuda.synchronize()
 
@@ -350,7 +358,8 @@ class TestCUDABindingsPerformance:
 
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
 
             torch.cuda.synchronize()
@@ -396,7 +405,8 @@ class TestCUDABindingsPerformance:
         for _ in range(iterations):
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
 
         torch.cuda.synchronize()

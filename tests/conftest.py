@@ -228,7 +228,8 @@ def audio_processor():
     """Instantiate AudioProcessor with test config."""
     try:
         from src.auto_voice.audio.processor import AudioProcessor
-        return AudioProcessor(sample_rate=16000)
+        config = {'sample_rate': 16000}
+        return AudioProcessor(config=config)
     except ImportError:
         pytest.skip("AudioProcessor not available")
 
@@ -1432,6 +1433,20 @@ def memory_monitor(cuda_available: bool):
             return stats
 
     return MemoryMonitor(cuda_available)
+
+
+@pytest.fixture
+def quality_evaluator(device):
+    """Create evaluator for quality tests."""
+    try:
+        from src.auto_voice.evaluation.evaluator import VoiceConversionEvaluator
+        evaluator = VoiceConversionEvaluator(
+            sample_rate=44100,
+            device=device
+        )
+        return evaluator
+    except ImportError:
+        pytest.skip("VoiceConversionEvaluator not available")
 
 
 @pytest.fixture

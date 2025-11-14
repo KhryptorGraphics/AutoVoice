@@ -694,6 +694,46 @@ class AudioProcessor:
             n_freqs = n_fft // 2 + 1
             return torch.ones(n_freqs, frames) * 0.01
 
+    def voice_activity_detection(self, audio: Union[torch.Tensor, np.ndarray], threshold: float = 0.5) -> torch.Tensor:
+        """Perform voice activity detection (VAD)
+
+        Args:
+            audio: Input audio
+            threshold: VAD threshold
+
+        Returns:
+            VAD output tensor
+        """
+        if self.device == 'cuda':
+            try:
+                from auto_voice import cuda_kernels
+                if isinstance(audio, np.ndarray):
+                    audio = torch.from_numpy(audio.astype(np.float32)).to(self.device)
+                elif not isinstance(audio, torch.Tensor):
+                    audio = torch.tensor(audio, dtype=torch.float32).to(self.device)
+                
+                if audio.device.type != 'cuda':
+                    audio = audio.to(self.device)
+
+                output = torch.zeros(audio.shape[0] // self.hop_length, device=self.device)
+                cuda_kernels.launch_voice_activity_detection(audio, output, threshold)
+                return output
+            except ImportError:
+                logger.warning("CUDA kernels not available for VAD. Falling back to CPU.")
+        
+        # Fallback to CPU implementation if not on CUDA or if kernels are missing
+        if isinstance(audio, torch.Tensor):
+            audio = audio.cpu().numpy()
+        
+        if not LIBROSA_AVAILABLE:
+            logger.warning("Librosa not available for VAD. Returning dummy output.")
+            return torch.ones(audio.shape[0] // self.hop_length)
+
+        # Simple energy-based VAD
+        rms = librosa.feature.rms(y=audio, hop_length=self.hop_length)[0]
+        vad_result = (rms > threshold).astype(np.float32)
+        return torch.from_numpy(vad_result)
+
     def extract_features(self, audio: Union[torch.Tensor, np.ndarray],
                         sample_rate: Optional[int] = None) -> Union[Dict, torch.Tensor]:
         """Extract various audio features

@@ -228,7 +228,7 @@ class PitchAccuracyMetrics:
 
     def __init__(self, sample_rate: int = 44100):
         self.sample_rate = sample_rate
-        self.pitch_extractor = SingingPitchExtractor(sample_rate=sample_rate)
+        self.pitch_extractor = SingingPitchExtractor(config={'sample_rate': sample_rate})
 
     def evaluate_pitch_accuracy(self, source_audio: torch.Tensor,
                               target_audio: torch.Tensor) -> PitchAccuracyResult:

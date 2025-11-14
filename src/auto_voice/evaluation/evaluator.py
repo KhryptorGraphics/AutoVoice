@@ -101,7 +101,7 @@ class VoiceConversionEvaluator:
         self.device = self._resolve_device(device)
 
         # Initialize core components
-        self.audio_processor = AudioProcessor(sample_rate=sample_rate)
+        self.audio_processor = AudioProcessor(config={'sample_rate': sample_rate})
 
         # Load configuration first
         self.config = self._load_evaluation_config(evaluation_config_path)

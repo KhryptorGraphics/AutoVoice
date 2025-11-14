@@ -387,23 +387,7 @@ class TestPerformanceE2E:
         assert all('mixed_audio' in r for r in results)
 
 
-@pytest.mark.quality
-@pytest.mark.slow
-class TestQualityValidation:
-    """End-to-end quality validation tests enforcing quality targets."""
 
-    @pytest.fixture
-    def quality_evaluator(self, device):
-        """Create evaluator for quality tests."""
-        try:
-            from src.auto_voice.evaluation.evaluator import VoiceConversionEvaluator
-            evaluator = VoiceConversionEvaluator(
-                sample_rate=44100,
-                device=device
-            )
-            return evaluator
-        except ImportError:
-            pytest.skip("VoiceConversionEvaluator not available")
 
 
 @pytest.mark.integration

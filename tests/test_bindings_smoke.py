@@ -88,10 +88,15 @@ def test_function_callable():
         output_confidence = torch.zeros(n_frames, device='cuda')
         output_vibrato = torch.zeros(n_frames, device='cuda')
 
+        f0_min = 50.0
+        f0_max = 1000.0
+        confidence_threshold = 0.7
+
         # Try to call the function
         cuda_kernels.launch_pitch_detection(
             audio, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            f0_min, f0_max, confidence_threshold
         )
 
         print("✓ launch_pitch_detection callable with correct signature")
@@ -148,9 +153,14 @@ def test_input_validation():
             output_confidence = torch.zeros(n_frames, device='cuda')
             output_vibrato = torch.zeros(n_frames, device='cuda')
 
+            f0_min = 50.0
+            f0_max = 1000.0
+            confidence_threshold = 0.7
+
             cuda_kernels.launch_pitch_detection(
                 audio, output_pitch, output_confidence, output_vibrato,
-                sample_rate, -1, hop_length  # Invalid frame_length
+                sample_rate, -1, hop_length,  # Invalid frame_length
+                f0_min, f0_max, confidence_threshold
             )
             print("✗ Should have raised exception for invalid frame_length")
             pytest.fail("Should have raised exception for invalid frame_length")
@@ -168,9 +178,14 @@ def test_input_validation():
             output_confidence = torch.zeros(n_frames, device='cuda')
             output_vibrato = torch.zeros(n_frames, device='cuda')
 
+            f0_min = 50.0
+            f0_max = 1000.0
+            confidence_threshold = 0.7
+
             cuda_kernels.launch_pitch_detection(
                 audio_cpu, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                f0_min, f0_max, confidence_threshold
             )
             print("✗ Should have raised exception for CPU tensor")
             pytest.fail("Should have raised exception for CPU tensor")
@@ -184,13 +199,16 @@ def test_input_validation():
         # Test 3: Non-contiguous tensors
         try:
             audio = torch.zeros(n_samples, device='cuda')
-            output_pitch = torch.zeros(n_frames * 2, device='cuda')[::2]  # Non-contiguous
-            output_confidence = torch.zeros(n_frames, device='cuda')
             output_vibrato = torch.zeros(n_frames, device='cuda')
+
+            f0_min = 50.0
+            f0_max = 1000.0
+            confidence_threshold = 0.7
 
             cuda_kernels.launch_pitch_detection(
                 audio, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                f0_min, f0_max, confidence_threshold
             )
             print("✗ Should have raised exception for non-contiguous tensor")
             pytest.fail("Should have raised exception for non-contiguous tensor")
@@ -208,9 +226,14 @@ def test_input_validation():
             output_confidence = torch.zeros(n_frames, device='cuda')
             output_vibrato = torch.zeros(n_frames, device='cuda')
 
+            f0_min = 50.0
+            f0_max = 1000.0
+            confidence_threshold = 0.7
+
             cuda_kernels.launch_pitch_detection(
                 audio, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                f0_min, f0_max, confidence_threshold
             )
             print("✗ Should have raised exception for wrong dtype")
             pytest.fail("Should have raised exception for wrong dtype")
@@ -283,9 +306,14 @@ def test_boundary_values():
         output_confidence = torch.zeros(n_frames, device='cuda')
         output_vibrato = torch.zeros(n_frames, device='cuda')
 
+        f0_min = 50.0
+        f0_max = 1000.0
+        confidence_threshold = 0.7
+
         cuda_kernels.launch_pitch_detection(
             audio, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            f0_min, f0_max, confidence_threshold
         )
         print("✓ Minimum parameters test passed")
 
@@ -301,9 +329,14 @@ def test_boundary_values():
         output_confidence = torch.zeros(n_frames, device='cuda')
         output_vibrato = torch.zeros(n_frames, device='cuda')
 
+        f0_min = 50.0
+        f0_max = 1000.0
+        confidence_threshold = 0.7
+
         cuda_kernels.launch_pitch_detection(
             audio, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            f0_min, f0_max, confidence_threshold
         )
         print("✓ Maximum parameters test passed")
 
@@ -316,9 +349,14 @@ def test_boundary_values():
         output_confidence = torch.zeros(n_frames, device='cuda')
         output_vibrato = torch.zeros(n_frames, device='cuda')
 
+        f0_min = 50.0
+        f0_max = 1000.0
+        confidence_threshold = 0.7
+
         cuda_kernels.launch_pitch_detection(
             audio, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            f0_min, f0_max, confidence_threshold
         )
         print("✓ Single frame test passed")
 
@@ -369,9 +407,14 @@ def test_stress_large_tensors():
         # Check initial memory
         initial_memory = torch.cuda.memory_allocated()
 
+        f0_min = 50.0
+        f0_max = 1000.0
+        confidence_threshold = 0.7
+
         cuda_kernels.launch_pitch_detection(
             audio, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            f0_min, f0_max, confidence_threshold
         )
 
         # Check final memory
@@ -422,9 +465,14 @@ def test_empty_and_edge_cases():
         output_confidence = torch.zeros(n_frames, device='cuda')
         output_vibrato = torch.zeros(n_frames, device='cuda')
 
+        f0_min = 50.0
+        f0_max = 1000.0
+        confidence_threshold = 0.7
+
         cuda_kernels.launch_pitch_detection(
             audio, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            f0_min, f0_max, confidence_threshold
         )
 
         # Silent audio should have zero pitch
@@ -437,9 +485,14 @@ def test_empty_and_edge_cases():
         output_confidence = torch.zeros(n_frames, device='cuda')
         output_vibrato = torch.zeros(n_frames, device='cuda')
 
+        f0_min = 50.0
+        f0_max = 1000.0
+        confidence_threshold = 0.7
+
         cuda_kernels.launch_pitch_detection(
             audio, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            f0_min, f0_max, confidence_threshold
         )
         print("✓ Low amplitude audio test passed")
 

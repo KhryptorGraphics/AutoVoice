@@ -30,6 +30,11 @@ class TestCUDABindingsIntegration:
             except ImportError:
                 pytest.skip("cuda_kernels module not available")
 
+        # Default parameters for pitch detection
+        self.f0_min = 50.0
+        self.f0_max = 1000.0
+        self.confidence_threshold = 0.7
+
     def test_pitch_detection_sine_wave(self):
         """Test pitch detection with synthetic sine wave of known frequency"""
         # Generate 440 Hz sine wave (A4 note)
@@ -56,7 +61,8 @@ class TestCUDABindingsIntegration:
         # Run pitch detection
         self.cuda_kernels.launch_pitch_detection(
             audio_tensor, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            self.f0_min, self.f0_max, self.confidence_threshold
         )
 
         # Verify results
@@ -108,7 +114,8 @@ class TestCUDABindingsIntegration:
             # Run pitch detection
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
 
             # Verify
@@ -147,7 +154,8 @@ class TestCUDABindingsIntegration:
 
         self.cuda_kernels.launch_pitch_detection(
             audio_tensor, pitch_contour, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            self.f0_min, self.f0_max, self.confidence_threshold
         )
 
         # Then analyze vibrato
@@ -190,19 +198,11 @@ class TestCUDABindingsIntegration:
             audio = np.sin(2 * np.pi * frequency * t).astype(np.float32)
             audio_tensor = torch.from_numpy(audio).cuda()
 
-            # Adjust parameters based on sample rate
-            frame_length = min(2048, int(sample_rate * 0.05))  # 50ms frame
-            hop_length = frame_length // 4
-            n_frames = max(0, (len(audio) - frame_length) // hop_length + 1)
-
-            output_pitch = torch.zeros(n_frames, device='cuda')
-            output_confidence = torch.zeros(n_frames, device='cuda')
-            output_vibrato = torch.zeros(n_frames, device='cuda')
-
             # Run pitch detection
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
 
             # Verify
@@ -235,7 +235,8 @@ class TestCUDABindingsIntegration:
             # Run pitch detection
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
 
             # Verify
@@ -263,18 +264,13 @@ class TestCUDABindingsIntegration:
             noise_power = signal_power / (10 ** (snr_db / 10))
             noise = np.random.randn(len(signal)) * np.sqrt(noise_power)
 
-            audio = (signal + noise).astype(np.float32)
-            audio_tensor = torch.from_numpy(audio).cuda()
-
-            n_frames = max(0, (len(audio) - frame_length) // hop_length + 1)
-            output_pitch = torch.zeros(n_frames, device='cuda')
-            output_confidence = torch.zeros(n_frames, device='cuda')
             output_vibrato = torch.zeros(n_frames, device='cuda')
 
             # Run pitch detection
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
 
             # Verify
@@ -312,10 +308,9 @@ class TestCUDABindingsIntegration:
         # Run pitch detection
         self.cuda_kernels.launch_pitch_detection(
             audio_tensor, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            self.f0_min, self.f0_max, self.confidence_threshold
         )
-
-        # Verify all outputs are zero
         assert torch.all(output_pitch == 0.0), "Silence should have zero pitch"
         assert torch.all(output_confidence == 0.0), "Silence should have zero confidence"
         assert torch.all(output_vibrato == 0.0), "Silence should have zero vibrato"
@@ -345,7 +340,8 @@ class TestCUDABindingsIntegration:
             # Run pitch detection
             self.cuda_kernels.launch_pitch_detection(
                 audio_tensor, output_pitch, output_confidence, output_vibrato,
-                sample_rate, frame_length, hop_length
+                sample_rate, frame_length, hop_length,
+                self.f0_min, self.f0_max, self.confidence_threshold
             )
 
             # Clean up tensors
@@ -380,7 +376,8 @@ class TestCUDABindingsIntegration:
         # Run pitch detection
         self.cuda_kernels.launch_pitch_detection(
             audio_tensor, output_pitch, output_confidence, output_vibrato,
-            sample_rate, frame_length, hop_length
+            sample_rate, frame_length, hop_length,
+            self.f0_min, self.f0_max, self.confidence_threshold
         )
 
         # Verify processing completed

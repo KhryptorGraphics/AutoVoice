@@ -71,19 +71,7 @@ def validation_pipeline(device):
         pytest.skip("SingingConversionPipeline not available")
 
 
-@pytest.fixture(scope='module')
-def quality_evaluator(device):
-    """Create quality evaluator for validation metrics."""
-    try:
-        from auto_voice.evaluation.evaluator import VoiceConversionEvaluator
 
-        evaluator = VoiceConversionEvaluator(
-            sample_rate=44100,
-            device=device
-        )
-        return evaluator
-    except ImportError:
-        pytest.skip("VoiceConversionEvaluator not available")
 
 
 @pytest.fixture
