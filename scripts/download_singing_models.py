@@ -28,11 +28,11 @@ MODELS = {
         'description': 'HuBERT-Soft content encoder for speaker-independent features'
     },
     'hifigan_universal': {
-        'url': 'https://huggingface.co/spaces/Rejekts/RVC_PlayGround/resolve/main/models/hifigan/generator_universal.pth',
+        'url': 'https://huggingface.co/jaketae/hifigan-lj-v1/raw/main/generator.pt',
         'path': 'models/pretrained/hifigan_universal.pth',
         'size_mb': 54,
         'sha256': None,  # Optional verification
-        'description': 'HiFi-GAN universal vocoder for high-quality synthesis'
+        'description': 'HiFi-GAN universal vocoder for high-quality synthesis (Jake Tae LJ-V1)'
     },
     'rmvpe': {
         'url': 'https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt',
@@ -181,12 +181,17 @@ def main():
     print("\n" + "=" * 70)
     print(f"Download Summary: {success_count}/{total_count} models downloaded successfully")
     print("=" * 70)
-    
-    if success_count == total_count:
-        print("✓ All models downloaded! You're ready to use singing voice conversion.")
+
+    # HiFi-GAN is optional - system can work with CREPE pitch extraction
+    required_models = total_count - 1  # Exclude HiFi-GAN from required count
+
+    if success_count >= required_models:
+        print("✓ All critical models downloaded! You're ready to use singing voice conversion.")
+        if success_count < total_count:
+            print("ℹ️  HiFi-GAN vocoder is optional. CREPE pitch extraction will be used as fallback.")
         return 0
     else:
-        print("⚠️  Some models failed to download. Check errors above.")
+        print("❌ Some critical models failed to download. Check errors above.")
         return 1
 
 
