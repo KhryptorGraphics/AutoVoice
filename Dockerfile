@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for AutoVoice
 # Stage 1: Builder - Compile CUDA extensions and create wheel
 # Digest retrieved via: docker inspect nvidia/cuda:12.1.0-devel-ubuntu22.04 (2025-01-29)
-FROM nvidia/cuda:12.1.0-devel-ubuntu22.04@sha256:e3a8f7b933e77ecee74731198a2a5483e965b585cea2660675cf4bb152237e9b AS builder
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04@sha256:7012e535a47883527d402da998384c30b936140c05e2537158c80b8143ee7425 AS builder
 
 # Build arguments for metadata
 ARG BUILD_DATE
@@ -49,7 +49,7 @@ RUN python setup.py build_ext --inplace && \
 
 # Stage 2: Runtime - Smaller image with only runtime dependencies
 # Digest retrieved via: docker inspect nvidia/cuda:12.1.0-runtime-ubuntu22.04 (2025-01-29)
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04@sha256:402700b179eb764da6d60d99fe106aa16c36874f7d7fb3e122251ff6aea8b2f7 AS runtime
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04@sha256:8bbc6e304b193e84327fa30d93eea70ec0213b808239a46602a919a479a73b12 AS runtime
 
 # Build arguments for metadata
 ARG BUILD_DATE
