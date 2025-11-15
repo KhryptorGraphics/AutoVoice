@@ -240,6 +240,40 @@ class ApiService {
     const response = await this.client.post(`/convert/cancel/${jobId}`)
     return response.data
   }
+
+  // Pause conversion (if supported)
+  async pauseConversion(jobId: string) {
+    const response = await this.client.post(`/convert/pause/${jobId}`)
+    return response.data
+  }
+
+  // Resume conversion (if supported)
+  async resumeConversion(jobId: string) {
+    const response = await this.client.post(`/convert/resume/${jobId}`)
+    return response.data
+  }
+
+  // Export audio with format options
+  async exportAudio(
+    audioUrl: string,
+    format: 'mp3' | 'wav' | 'flac' | 'ogg',
+    options?: {
+      bitrate?: number // kbps (e.g., 128, 192, 256, 320)
+      sampleRate?: number // Hz (e.g., 44100, 48000)
+      channels?: 1 | 2 // mono or stereo
+    }
+  ): Promise<Blob> {
+    const response = await this.client.post(
+      '/audio/export',
+      {
+        audio_url: audioUrl,
+        format,
+        ...options,
+      },
+      { responseType: 'blob' }
+    )
+    return response.data
+  }
 }
 
 export const apiService = new ApiService()
@@ -354,5 +388,28 @@ export interface AppConfig {
     enabled: boolean
     device_id: number
   }
+}
+
+// Export format options
+export interface ExportOptions {
+  format: 'mp3' | 'wav' | 'flac' | 'ogg'
+  bitrate?: number // kbps (128, 192, 256, 320)
+  sampleRate?: number // Hz (44100, 48000, 96000)
+  channels?: 1 | 2 // mono or stereo
+}
+
+// Conversion history record
+export interface ConversionRecord {
+  id: string
+  originalFileName: string
+  targetVoice: string
+  targetVoiceId: string
+  timestamp: Date
+  duration: number
+  quality: string
+  resultUrl?: string
+  isFavorite?: boolean
+  tags?: string[]
+  notes?: string
 }
 

@@ -1,11 +1,13 @@
 import { useState } from 'react'
-import { User, Plus, Trash2, Edit2, Music, Upload, X, Check, AlertCircle, Loader } from 'lucide-react'
+import { User, Plus, Trash2, Edit2, Music, Upload, X, Check, AlertCircle, Loader, Zap } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiService, VoiceProfile } from '../services/api'
+import { VoiceProfileTester } from '../components/VoiceProfileTester'
 
 export function VoiceProfilesPage() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
+  const [showTester, setShowTester] = useState(false)
   const [selectedProfile, setSelectedProfile] = useState<VoiceProfile | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [profileToDelete, setProfileToDelete] = useState<VoiceProfile | null>(null)
@@ -112,12 +114,16 @@ export function VoiceProfilesPage() {
       {/* Profiles Grid */}
       {!isLoading && !error && profiles.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {profiles.map((profile) => (
+          {profiles.map((profile: VoiceProfile) => (
             <ProfileCard
               key={profile.id}
               profile={profile}
               onEdit={handleEdit}
               onDelete={handleDelete}
+              onTest={() => {
+                setSelectedProfile(profile)
+                setShowTester(true)
+              }}
             />
           ))}
         </div>
@@ -162,6 +168,17 @@ export function VoiceProfilesPage() {
           isDeleting={deleteMutation.isPending}
         />
       )}
+
+      {/* Voice Profile Tester */}
+      {showTester && selectedProfile && (
+        <VoiceProfileTester
+          profile={selectedProfile}
+          onClose={() => {
+            setShowTester(false)
+            setSelectedProfile(null)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -171,9 +188,10 @@ interface ProfileCardProps {
   profile: VoiceProfile
   onEdit: (profile: VoiceProfile) => void
   onDelete: (profile: VoiceProfile) => void
+  onTest: () => void
 }
 
-function ProfileCard({ profile, onEdit, onDelete }: ProfileCardProps) {
+function ProfileCard({ profile, onEdit, onDelete, onTest }: ProfileCardProps) {
   return (
     <div className="bg-white rounded-lg shadow-lg p-6 hover:shadow-xl transition-shadow">
       <div className="flex items-start justify-between mb-4">
@@ -189,6 +207,13 @@ function ProfileCard({ profile, onEdit, onDelete }: ProfileCardProps) {
           </div>
         </div>
         <div className="flex space-x-2">
+          <button
+            onClick={onTest}
+            className="p-2 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+            title="Test profile"
+          >
+            <Zap className="w-4 h-4" />
+          </button>
           <button
             onClick={() => onEdit(profile)}
             className="p-2 text-gray-600 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
