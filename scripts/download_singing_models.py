@@ -28,14 +28,14 @@ MODELS = {
         'description': 'HuBERT-Soft content encoder for speaker-independent features'
     },
     'hifigan_universal': {
-        'url': 'https://github.com/jik876/hifi-gan/releases/download/v1.0/generator_universal.pth.tar',
+        'url': 'https://huggingface.co/spaces/Rejekts/RVC_PlayGround/resolve/main/models/hifigan/generator_universal.pth',
         'path': 'models/pretrained/hifigan_universal.pth',
         'size_mb': 54,
         'sha256': None,  # Optional verification
         'description': 'HiFi-GAN universal vocoder for high-quality synthesis'
     },
     'rmvpe': {
-        'url': 'https://github.com/yxlllc/RMVPE/releases/download/230917/rmvpe.pt',
+        'url': 'https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt',
         'path': 'models/pretrained/rmvpe.pt',
         'size_mb': 80,
         'sha256': None,
