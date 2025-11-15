@@ -1420,10 +1420,138 @@ def get_gpu_status():
     return jsonify(status)
 
 
+@api_bp.route('/convert/song', methods=['POST'])
+def convert_song():
+    """Convert a song using singing voice conversion.
+
+    Request (multipart/form-data):
+        audio (file): Song audio file
+        target_profile_id (str): Target voice profile ID
+        settings (JSON str): Conversion settings
+            - pitch_shift (float): Pitch shift in semitones (-12 to +12)
+            - preserve_original_pitch (bool): Keep original pitch contour
+            - preserve_vibrato (bool): Maintain vibrato patterns
+            - preserve_expression (bool): Keep dynamics and expression
+            - output_quality (str): 'fast', 'balanced', 'high', or 'studio'
+            - denoise_input (bool): Apply noise reduction
+            - enhance_output (bool): Apply post-processing
+
+    Returns:
+        JSON with job_id for tracking progress via WebSocket
+    """
+    singing_pipeline = getattr(current_app, 'singing_pipeline', None)
+    if not singing_pipeline:
+        return jsonify({
+            'error': 'Singing conversion service unavailable',
+            'message': 'Pipeline not initialized'
+        }), 503
+
+    try:
+        # Get audio file
+        if 'audio' not in request.files:
+            return jsonify({'error': 'No audio file provided'}), 400
+
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'error': 'Empty filename'}), 400
+
+        # Get target profile ID
+        target_profile_id = request.form.get('target_profile_id')
+        if not target_profile_id:
+            return jsonify({'error': 'No target_profile_id provided'}), 400
+
+        # Parse settings
+        settings_str = request.form.get('settings', '{}')
+        try:
+            settings = json.loads(settings_str)
+        except json.JSONDecodeError:
+            return jsonify({'error': 'Invalid settings JSON'}), 400
+
+        # Generate job ID
+        import uuid
+        job_id = str(uuid.uuid4())
+
+        # Save uploaded file temporarily
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio_file.filename)[1]) as tmp:
+            audio_file.save(tmp.name)
+            temp_path = tmp.name
+
+        # Start conversion in background thread
+        import threading
+
+        def run_conversion():
+            try:
+                # Progress callback for WebSocket updates
+                def progress_callback(percent, message, stage_info=None):
+                    socketio = getattr(current_app, 'socketio', None)
+                    if socketio:
+                        socketio.emit('conversion_progress', {
+                            'job_id': job_id,
+                            'overall_progress': percent,
+                            'current_stage': message,
+                            'stages': stage_info or []
+                        }, room=job_id)
+
+                # Run conversion
+                result = singing_pipeline.convert_song(
+                    song_path=temp_path,
+                    target_profile_id=target_profile_id,
+                    pitch_shift_semitones=settings.get('pitch_shift', 0),
+                    preserve_pitch=settings.get('preserve_original_pitch', True),
+                    preserve_vibrato=settings.get('preserve_vibrato', True),
+                    preserve_expression=settings.get('preserve_expression', True),
+                    output_quality=settings.get('output_quality', 'balanced'),
+                    denoise_input=settings.get('denoise_input', False),
+                    enhance_output=settings.get('enhance_output', False),
+                    progress_callback=progress_callback
+                )
+
+                # Emit completion event
+                socketio = getattr(current_app, 'socketio', None)
+                if socketio:
+                    socketio.emit('conversion_complete', {
+                        'job_id': job_id,
+                        'output_url': f'/api/v1/convert/download/{job_id}',
+                        'result': result
+                    }, room=job_id)
+
+                # Clean up temp file
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+
+            except Exception as e:
+                logger.error(f"Conversion error for job {job_id}: {e}", exc_info=True)
+                socketio = getattr(current_app, 'socketio', None)
+                if socketio:
+                    socketio.emit('conversion_error', {
+                        'job_id': job_id,
+                        'error': str(e)
+                    }, room=job_id)
+
+        thread = threading.Thread(target=run_conversion, daemon=True)
+        thread.start()
+
+        return jsonify({
+            'status': 'started',
+            'job_id': job_id,
+            'message': 'Conversion started. Connect to WebSocket for progress updates.'
+        }), 202
+
+    except Exception as e:
+        logger.error(f"Failed to start conversion: {e}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to start conversion',
+            'message': str(e) if current_app.debug else 'Internal error'
+        }), 500
+
+
 @api_bp.route('/ws/audio_stream', methods=['GET'])
 def websocket_info():
     """Information about WebSocket audio streaming endpoint.
-    
+
     Returns:
         JSON with WebSocket connection information
     """
@@ -1432,16 +1560,21 @@ def websocket_info():
         'protocol': 'WebSocket',
         'supported_events': [
             'connect',
-            'disconnect', 
+            'disconnect',
             'join',
             'leave',
+            'join_job',
+            'leave_job',
             'audio_stream',
             'synthesize_stream',
             'audio_analysis',
             'voice_config',
-            'get_status'
+            'get_status',
+            'conversion_progress',
+            'conversion_complete',
+            'conversion_error'
         ],
-        'message': 'Use WebSocket connection for real-time audio streaming'
+        'message': 'Use WebSocket connection for real-time audio streaming and conversion progress'
     })
 
 

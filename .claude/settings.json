@@ -7,6 +7,7 @@
     "CLAUDE_FLOW_REMOTE_EXECUTION": "true",
     "CLAUDE_FLOW_CHECKPOINTS_ENABLED": "true"
   },
+  "includeCoAuthoredBy": true,
   "permissions": {
     "allow": [
       "Bash(npx claude-flow:*)",
@@ -15,18 +16,12 @@
       "Bash(npm test:*)",
       "Bash(git status)",
       "Bash(git diff:*)",
-      "Bash(git log:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push)",
-      "Bash(git config:*)",
-      "Bash(git tag:*)",
-      "Bash(git branch:*)",
       "Bash(git checkout:*)",
-      "Bash(git stash:*)",
       "Bash(jq:*)",
       "Bash(node:*)",
-      "Bash(which:*)",
       "Bash(pwd)",
       "Bash(ls:*)"
     ],
@@ -34,6 +29,10 @@
       "Bash(rm -rf /)"
     ]
   },
+  "enabledMcpjsonServers": [
+    "claude-flow",
+    "ruv-swarm"
+  ],
   "hooks": {
     "PreToolUse": [
       {
@@ -106,8 +105,6 @@
       }
     ]
   },
-  "includeCoAuthoredBy": true,
-  "enabledMcpjsonServers": ["claude-flow", "ruv-swarm"],
   "statusLine": {
     "type": "command",
     "command": ".claude/statusline-command.sh"

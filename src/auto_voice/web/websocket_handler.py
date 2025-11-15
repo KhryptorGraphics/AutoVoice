@@ -113,6 +113,24 @@ class WebSocketHandler:
                 leave_room(room)
                 emit('left', {'room': room})
 
+        @self.socketio.on('join_job')
+        def handle_join_job(data):
+            """Handle joining a conversion job room for progress updates"""
+            job_id = data.get('job_id')
+            if job_id:
+                join_room(job_id)
+                logger.info(f"Client {request.sid} joined job room: {job_id}")
+                emit('joined_job', {'job_id': job_id})
+
+        @self.socketio.on('leave_job')
+        def handle_leave_job(data):
+            """Handle leaving a conversion job room"""
+            job_id = data.get('job_id')
+            if job_id:
+                leave_room(job_id)
+                logger.info(f"Client {request.sid} left job room: {job_id}")
+                emit('left_job', {'job_id': job_id})
+
         @self.socketio.on('get_status')
         def handle_get_status():
             """Get server status and capabilities"""

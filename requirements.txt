@@ -59,13 +59,16 @@ aiohttp>=3.9,<4.0
 # Audio processing and ML utilities
 webrtcvad>=2.0,<3.0  # Voice activity detection
 crepe>=0.0.12  # Pitch detection (CPU fallback)
-# torchcrepe>=0.0.23,<0.1  # PyTorch-based CREPE (install after PyTorch if needed)
+torchcrepe>=0.0.23,<0.1  # PyTorch-based CREPE for singing voice pitch extraction (REQUIRED)
 praat-parselmouth>=0.4.0  # Advanced audio analysis
 pyrubberband>=0.3.0  # Pitch-preserving time stretch for singing voice augmentation
 resemblyzer>=0.1.1  # Pre-trained speaker encoder for voice cloning (Apache-2.0 license)
 noisereduce>=3.0.0  # Noise reduction
 # NOTE: Install PyTorch with CUDA first; if PyTorch is already installed, run: pip install --no-deps demucs
 demucs>=4.0.0,<5.0.0  # State-of-the-art music source separation (Meta/Facebook)
+transformers>=4.30.0,<5.0  # HuggingFace transformers for HuBERT models
+fairseq>=0.12.0  # Facebook AI Sequence-to-Sequence toolkit for HuBERT
+faiss-cpu>=1.7.4  # Facebook AI Similarity Search (use faiss-gpu for GPU acceleration)
 
 # Objective quality evaluation metrics
 pystoi>=0.3.3  # Short-Time Objective Intelligibility measure

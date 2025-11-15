@@ -350,3 +350,11 @@ NEVER create files unless they're absolutely necessary for achieving your goal.
 ALWAYS prefer editing an existing file to creating a new one.
 NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
 Never save working files, text/mds and tests to the root folder.
+- # In Claude Code, create a new conversation and paste:
+
+[Paste entire CLAUDE_CODE_SWARM_PROMPT.md content]
+
+# Then add this execution command:
+Execute this prompt using parallel agent swarms. Spawn all 6 agents 
+concurrently and coordinate their work to deliver a production-ready 
+singing voice conversion system within 4 weeks.

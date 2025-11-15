@@ -68,8 +68,9 @@ class ModelLoadError(PitchExtractionError):
 class SingingPitchExtractor:
     """High-accuracy pitch extraction optimized for singing voice with GPU acceleration
 
-    This class uses torchcrepe (PyTorch port of CREPE) for state-of-the-art pitch detection
-    with comprehensive vibrato detection and analysis capabilities.
+    This class supports multiple pitch extraction methods including torchcrepe (CREPE)
+    and RMVPE for state-of-the-art pitch detection with comprehensive vibrato detection
+    and analysis capabilities.
 
     Features:
         - GPU-accelerated pitch extraction using torchcrepe
@@ -137,6 +138,7 @@ class SingingPitchExtractor:
 
         # Configuration parameters
         self.model = self.config.get('model', 'full')
+        self.method = self.config.get('method', 'crepe')  # 'crepe' or 'rmvpe'
         self.fmin = self.config.get('fmin', 80.0)
         self.fmax = self.config.get('fmax', 1000.0)
         self.hop_length_ms = self.config.get('hop_length_ms', 10.0)
@@ -170,8 +172,19 @@ class SingingPitchExtractor:
         # COMMENT 5 FIX: Add use_gpu_vibrato_analysis flag
         self.use_gpu_vibrato_analysis = self.config.get('use_gpu_vibrato_analysis', False)
 
+        # Initialize RMVPE extractor if method is 'rmvpe'
+        self.rmvpe_extractor = None
+        if self.method == 'rmvpe':
+            try:
+                from .rmvpe_pitch_extractor import RMVPEPitchExtractor
+                self.rmvpe_extractor = RMVPEPitchExtractor(config=config, device=device, gpu_manager=gpu_manager)
+                self.logger.info("RMVPE pitch extractor initialized")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize RMVPE extractor: {e}")
+                self.method = 'crepe'  # Fallback to CREPE
+
         self.logger.info(
-            f"SingingPitchExtractor initialized: model={self.model}, device={self.device}, "
+            f"SingingPitchExtractor initialized: method={self.method}, model={self.model}, device={self.device}, "
             f"fmin={self.fmin}Hz, fmax={self.fmax}Hz"
         )
 
@@ -328,7 +341,7 @@ class SingingPitchExtractor:
         return_confidence: bool = True,
         return_times: bool = True
     ) -> Dict[str, Any]:
-        """Extract F0 contour from audio using torchcrepe
+        """Extract F0 contour from audio using selected pitch extraction method
 
         Args:
             audio: Audio tensor, numpy array, or file path
@@ -350,6 +363,11 @@ class SingingPitchExtractor:
             ValueError: If audio is empty or too short
             PitchExtractionError: If extraction fails
         """
+        # Use RMVPE extractor if method is 'rmvpe' and extractor is available
+        if self.method == 'rmvpe' and self.rmvpe_extractor is not None:
+            return self.rmvpe_extractor.extract_f0_contour(audio, sample_rate, return_confidence, return_times)
+
+        # Otherwise use CREPE (default method)
         with self.lock:
             # Load audio if file path (before validation)
             if isinstance(audio, str):
@@ -872,6 +890,11 @@ class SingingPitchExtractor:
             - Returns zeros for all metrics if no vibrato is detected
             - Thread-safe for concurrent calls
         """
+        # Use RMVPE extractor if method is 'rmvpe' and extractor is available
+        if self.method == 'rmvpe' and self.rmvpe_extractor is not None:
+            return self.rmvpe_extractor.classify_vibrato(f0_data)
+
+        # Otherwise use CREPE (default method)
         with self.lock:
             try:
                 # Extract required data
@@ -1343,8 +1366,9 @@ class SingingPitchExtractor:
         """Extract F0 for real-time applications with stateful overlap buffering and smoothing
 
         This method provides optimized real-time pitch extraction using CUDA kernels or
-        fast torchcrepe. It supports stateful processing with overlap buffering for
-        seamless frame-to-frame transitions and temporal smoothing for stable pitch output.
+        the selected pitch extraction method. It supports stateful processing with overlap
+        buffering for seamless frame-to-frame transitions and temporal smoothing for
+        stable pitch output.
 
         Args:
             audio_chunk: Audio tensor chunk for processing (1D tensor)
@@ -1381,6 +1405,11 @@ class SingingPitchExtractor:
             - Falls back to torchcrepe if CUDA kernel unavailable
             - Uses 'tiny' model for real-time speed
         """
+        # Use RMVPE extractor if method is 'rmvpe' and extractor is available
+        if self.method == 'rmvpe' and self.rmvpe_extractor is not None:
+            return self.rmvpe_extractor.extract_f0_realtime(audio_chunk, sample_rate, state, return_device)
+
+        # Otherwise use CREPE (default method)
         with self.lock:
             # COMMENT 6 FIX: Use sample_rate from state if available, validate consistency
             if state is not None and 'sample_rate' in state and state['sample_rate'] is not None:
@@ -1585,6 +1614,11 @@ class SingingPitchExtractor:
             This implementation uses true batching for items with the same sample rate
             and similar lengths. Items are grouped by sample rate and processed together.
         """
+        # Use RMVPE extractor if method is 'rmvpe' and extractor is available
+        if self.method == 'rmvpe' and self.rmvpe_extractor is not None:
+            return self.rmvpe_extractor.batch_extract(audio_list, sample_rate)
+
+        # Otherwise use CREPE (default method)
         if not audio_list:
             return []
 
