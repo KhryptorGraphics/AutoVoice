@@ -582,7 +582,7 @@ setup(
             'onnxruntime-gpu>=1.16.0,<1.18.0',
         ],
         'dev': [
-            'pytest>=7.4,<8.0',
+            'pytest>=7.4,<9.0',
             'pytest-cov>=4.1,<5.0',
             'black>=23.7,<24.0',
             'isort>=5.12,<6.0',
