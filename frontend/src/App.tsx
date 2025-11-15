@@ -5,6 +5,9 @@ import { HomePage } from './pages/HomePage'
 import { SingingConversionPage } from './pages/SingingConversionPage'
 import { VoiceProfilesPage } from './pages/VoiceProfilesPage'
 import { SystemStatusPage } from './pages/SystemStatusPage'
+import { BatchConversionPage } from './pages/BatchConversionPage'
+import { ConversionHistoryPage } from './pages/ConversionHistoryPage'
+import { SettingsPage } from './pages/SettingsPage'
 import './index.css'
 
 const queryClient = new QueryClient({
@@ -24,8 +27,11 @@ function App() {
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/singing-conversion" element={<SingingConversionPage />} />
+            <Route path="/batch-conversion" element={<BatchConversionPage />} />
+            <Route path="/history" element={<ConversionHistoryPage />} />
             <Route path="/voice-profiles" element={<VoiceProfilesPage />} />
             <Route path="/system-status" element={<SystemStatusPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </Layout>
       </Router>

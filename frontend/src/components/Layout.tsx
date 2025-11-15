@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { Music, User, Activity, Home } from 'lucide-react'
+import { Music, User, Activity, Home, Layers, Clock, Settings } from 'lucide-react'
 import clsx from 'clsx'
 
 interface LayoutProps {
@@ -11,9 +11,12 @@ export function Layout({ children }: LayoutProps) {
 
   const navigation = [
     { name: 'Home', href: '/', icon: Home },
-    { name: 'Singing Conversion', href: '/singing-conversion', icon: Music },
-    { name: 'Voice Profiles', href: '/voice-profiles', icon: User },
-    { name: 'System Status', href: '/system-status', icon: Activity },
+    { name: 'Convert', href: '/singing-conversion', icon: Music },
+    { name: 'Batch', href: '/batch-conversion', icon: Layers },
+    { name: 'History', href: '/history', icon: Clock },
+    { name: 'Profiles', href: '/voice-profiles', icon: User },
+    { name: 'Status', href: '/system-status', icon: Activity },
+    { name: 'Settings', href: '/settings', icon: Settings },
   ]
 
   return (
