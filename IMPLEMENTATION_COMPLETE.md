@@ -151,7 +151,26 @@ Navigate to: **http://localhost:3000**
 | Documentation | ✅ Complete | 50% |
 | Deployment | 📋 Planned | 10% |
 
-**Overall Progress**: ~60% complete
+**Overall Progress**: ~70% complete (up from 60%)
+
+---
+
+## ✅ Latest Updates (November 15, 2025)
+
+### Model Downloads - SUCCESSFUL ✅
+- ✅ **HuBERT-Soft** (360.9 MB) - Downloaded successfully
+- ✅ **RMVPE** (172.8 MB) - Downloaded successfully from Hugging Face
+- ⚠️ **HiFi-GAN** - Still needs alternative source (404 error on current URL)
+
+### URL Updates
+- Updated `scripts/download_singing_models.py` with working Hugging Face URLs
+- RMVPE now downloads from: `https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/rmvpe.pt`
+- HiFi-GAN needs alternative source (currently 404)
+
+### Frontend Setup - COMPLETE ✅
+- 326 npm packages installed successfully
+- All React, TypeScript, Vite, TailwindCSS dependencies ready
+- Frontend can now be started with `npm run dev`
 
 ---
 
