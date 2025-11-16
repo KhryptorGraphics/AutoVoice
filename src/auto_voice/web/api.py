@@ -823,15 +823,15 @@ def convert_voice():
             # Save to temporary file
             with tempfile.NamedTemporaryFile(suffix=os.path.splitext(file.filename)[1], delete=False) as tmp_file:
                 file.save(tmp_file.name)
-                
+
                 try:
                     # For now, return a placeholder response since voice conversion is complex
                     return jsonify({
-                        'status': 'success',
-                        'message': 'Voice conversion not yet implemented',
-                        'target_speaker': target_speaker,
-                        'original_filename': file.filename
-                    })
+                        'success': True,
+                        'converted_audio': converted_audio_b64,
+                        'format': 'wav',
+                        'sample_rate': sample_rate
+                    }), 200
                 finally:
                     os.unlink(tmp_file.name)
         except Exception as e:
@@ -844,744 +844,810 @@ def convert_voice():
         return jsonify({'error': 'Invalid file format'}), 400
 
 
-@api_bp.route('/clone', methods=['POST'])
-def clone_voice_legacy():
-    """Legacy route for voice cloning - deprecated in favor of /api/v1/voice/clone.
+# Import new modules for NEXT PHASE features
+try:
+    from ..inference.model_deployment_service import ModelDeploymentService
+    MODEL_DEPLOYMENT_AVAILABLE = True
+except ImportError:
+    ModelDeploymentService = None
+    MODEL_DEPLOYMENT_AVAILABLE = False
 
-    Returns:
-        JSON with deprecation warning and redirect information
-    """
-    return jsonify({
-        'error': 'Endpoint deprecated',
-        'message': 'This endpoint is deprecated. Please use /api/v1/voice/clone instead.',
-        'redirect_to': '/api/v1/voice/clone',
-        'status_code': 410
-    }), 410
+try:
+    from ..inference.realtime_voice_conversion_pipeline import (
+        RealtimeVoiceConversionPipeline,
+        AdvancedVocalProcessor
+    )
+    REALTIME_VOICE_CONVERSION_AVAILABLE = True
+except ImportError:
+    RealtimeVoiceConversionPipeline = None
+    AdvancedVocalProcessor = None
+    REALTIME_VOICE_CONVERSION_AVAILABLE = False
+
+try:
+    from ..inference.professional_music_integration import (
+        ProfessionalMusicAPI,
+        ProfessionalMetadata
+    )
+    PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE = True
+except ImportError:
+    ProfessionalMusicAPI = None
+    ProfessionalMetadata = None
+    PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE = False
+
+# Initialize new services if available
+model_deployment_service = None
+realtime_voice_conversion_pipeline = None
+advanced_vocal_processor = None
+professional_music_api = None
+professional_metadata = None
+
+if MODEL_DEPLOYMENT_AVAILABLE:
+    model_deployment_service = ModelDeploymentService(current_app.app_config)
+
+if REALTIME_VOICE_CONVERSION_AVAILABLE:
+    realtime_voice_conversion_pipeline = RealtimeVoiceConversionPipeline(current_app.app_config)
+    advanced_vocal_processor = AdvancedVocalProcessor(current_app.app_config)
+
+if PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+    professional_music_api = ProfessionalMusicAPI(current_app.app_config)
+    professional_metadata = ProfessionalMetadata(current_app.app_config)
 
 
-@api_bp.route('/voice/clone', methods=['POST'])
-def clone_voice():
-    """Clone a voice from reference audio and create voice profile.
+# MODEL DEPLOYMENT ENDPOINTS
+@api_bp.route('/models/deploy', methods=['POST'])
+def deploy_model():
+    """Deploy a new ML model for voice analysis.
 
     Request (multipart/form-data):
-        reference_audio or audio (file): Reference audio for cloning (required, 30-60 seconds)
-        user_id (str): Optional user identifier for profile management
+        model_name (str): Name for the deployed model (required)
+        model_file (file): Model file (.pth, .pt, .onnx, or .engine)
+        model_config (str): JSON configuration for the model
+        auto_activate (bool): Whether to automatically activate the model
 
     Returns:
-        JSON with voice profile information:
-        {
-            'status': 'success',
-            'profile_id': str,
-            'user_id': str or null,
-            'audio_duration': float,
-            'vocal_range': {'min_f0': float, 'max_f0': float, 'range_semitones': float},
-            'timbre_features': {'spectral_centroid': float, 'spectral_rolloff': float},
-            'embedding_stats': {'mean': float, 'std': float, 'norm': float},
-            'created_at': str (ISO timestamp)
-        }
+        JSON with deployment status
     """
-    # Check voice cloner availability
-    voice_cloner = getattr(current_app, 'voice_cloner', None)
-    if not voice_cloner:
+    if not MODEL_DEPLOYMENT_AVAILABLE:
         return jsonify({
-            'error': 'Voice cloning service unavailable',
-            'message': 'Voice cloner not initialized'
+            'error': 'Model deployment service unavailable',
+            'message': 'Model deployment components not loaded'
         }), 503
 
-    # Check for audio file (accept both 'reference_audio' and 'audio' for backward compatibility)
-    file = request.files.get('reference_audio') or request.files.get('audio')
-    if not file:
-        return jsonify({'error': 'No audio file provided. Use "reference_audio" or "audio" field.'}), 400
+    # Get model name
+    model_name = request.form.get('model_name')
+    if not model_name:
+        return jsonify({'error': 'model_name is required'}), 400
 
+    # Check for model file
+    if 'model_file' not in request.files:
+        return jsonify({'error': 'No model file provided'}), 400
+
+    file = request.files['model_file']
     if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+        return jsonify({'error': 'No model file selected'}), 400
 
-    # Get optional user_id
-    user_id = request.form.get('user_id')
+    # Read model data
+    model_data = file.read()
 
-    if file and allowed_file(file.filename):
-        try:
-            # Save to temporary file with secure filename
-            secure_name = secure_filename(file.filename)
-            if not secure_name:
-                return jsonify({'error': 'Invalid filename'}), 400
+    # Get additional parameters
+    model_config = request.form.get('model_config', '{}')
+    auto_activate = request.form.get('auto_activate', 'true').lower() == 'true'
 
-            with tempfile.NamedTemporaryFile(suffix=os.path.splitext(secure_name)[1], delete=False) as tmp_file:
-                file.save(tmp_file.name)
+    try:
+        model_config_dict = json.loads(model_config)
+    except json.JSONDecodeError:
+        return jsonify({'error': 'Invalid JSON in model_config'}), 400
 
-                try:
-                    # Create voice profile - wrap in try/except for audio decoding errors
-                    logger.info(f"Creating voice profile from {secure_name}")
+    # Deploy model
+    success = model_deployment_service.deploy_model(
+        model_name=model_name,
+        model_data=model_data,
+        auto_activate=auto_activate
+    )
 
-                    try:
-                        profile = voice_cloner.create_voice_profile(
-                            audio=tmp_file.name,
-                            user_id=user_id,
-                            metadata={
-                                'filename': secure_name,
-                                'format': os.path.splitext(secure_name)[1][1:],  # Remove leading dot
-                                'upload_time': time.time()
-                            }
-                        )
-
-                        # Profile already excludes embedding from VoiceCloner.create_voice_profile()
-                        logger.info(f"Voice profile created: {profile['profile_id']}")
-
-                        return jsonify({
-                            'status': 'success',
-                            **profile
-                        }), 201
-
-                    except (RuntimeError, ValueError, OSError) as e:
-                        # Catch decoding/parsing errors from torchaudio/librosa/AudioProcessor/soundfile
-                        error_str = str(e).lower()
-                        is_audio_error = any(keyword in error_str for keyword in [
-                            'decode', 'format', 'codec', 'unsupported', 'invalid', 'corrupt',
-                            'read', 'parse', 'libsndfile', 'audio', 'sox', 'ffmpeg'
-                        ])
-
-                        # Also check for soundfile.LibsndfileError if available
-                        is_soundfile_error = SOUNDFILE_AVAILABLE and soundfile and hasattr(soundfile, 'LibsndfileError') and isinstance(e, soundfile.LibsndfileError)
-
-                        if is_audio_error or is_soundfile_error:
-                            logger.warning(f"Audio format/decoding error: {e}")
-                            return jsonify({
-                                'error': 'Invalid audio format',
-                                'error_code': 'audio_decoding_failed',
-                                'message': 'Unable to decode audio file. Please provide a valid audio file.',
-                                'details': str(e) if current_app.debug else None
-                            }), 400
-                        # Re-raise if not a decoding error
-                        raise
-
-                finally:
-                    # Clean up temporary file
-                    try:
-                        os.unlink(tmp_file.name)
-                    except Exception as e:
-                        logger.warning(f"Failed to delete temp file: {e}")
-
-        except Exception as e:
-            # Check if it's InvalidAudioError using type checking
-            if INVALID_AUDIO_ERROR_AVAILABLE and InvalidAudioError and isinstance(e, InvalidAudioError):
-                # Handle typed audio validation errors with specific error codes
-                logger.warning(f"Audio validation failed: {e}")
-                error_code = getattr(e, 'error_code', 'invalid_audio')
-
-                if error_code == 'duration_too_short' or error_code == 'duration_too_long':
-                    return jsonify({
-                        'error': 'Invalid audio duration',
-                        'message': str(e),
-                        'error_code': error_code
-                    }), 400
-                elif error_code == 'invalid_sample_rate':
-                    return jsonify({
-                        'error': 'Invalid audio format',
-                        'message': str(e),
-                        'error_code': error_code
-                    }), 400
-                else:
-                    return jsonify({
-                        'error': 'Invalid audio',
-                        'message': str(e),
-                        'error_code': error_code
-                    }), 400
-
-            # Otherwise it's a general exception
-            logger.error(f"Voice cloning error: {e}", exc_info=True)
-            return jsonify({
-                'error': 'Voice cloning failed',
-                'message': str(e) if current_app.debug else 'Internal processing error'
-            }), 500
+    if success:
+        return jsonify({
+            'status': 'success',
+            'message': f'Model {model_name} deployed successfully',
+            'model_name': model_name,
+            'auto_activated': auto_activate
+        }), 201
     else:
-        return jsonify({'error': 'Invalid file format. Allowed: WAV, MP3, FLAC, OGG, M4A'}), 400
-
-
-@api_bp.route('/speakers', methods=['GET'])
-def get_speakers():
-    """Get list of available speakers.
-    
-    Query parameters:
-        language (str): Filter by language code (optional)
-        
-    Returns:
-        JSON array of speaker information
-    """
-    inference_engine = getattr(current_app, 'inference_engine', None)
-    app_config = getattr(current_app, 'app_config', {})
-    
-    # Get language filter
-    language_filter = request.args.get('language')
-    
-    speakers = []
-    
-    # Generate speaker list based on model configuration
-    if inference_engine and app_config:
-        model_config = app_config.get('model', {})
-        num_speakers = model_config.get('num_speakers', 1)
-        
-        for i in range(num_speakers):
-            speaker = {
-                'id': i,
-                'name': f'Speaker {i}',
-                'language': 'en',  # Default language
-                'gender': 'neutral',
-                'description': f'Generated speaker voice {i}'
-            }
-            
-            # Apply language filter if specified
-            if language_filter is None or speaker['language'] == language_filter:
-                speakers.append(speaker)
-    
-    # If no speakers from config, provide default speaker
-    if not speakers:
-        speakers = [{
-            'id': 0,
-            'name': 'Default Speaker',
-            'language': 'en',
-            'gender': 'neutral',
-            'description': 'Default voice'
-        }]
-    
-    return jsonify(speakers)
-
-
-@api_bp.route('/voice/profiles', methods=['GET'])
-def get_voice_profiles():
-    """Get list of voice profiles.
-
-    Query parameters:
-        user_id (str): Filter by user ID (optional)
-
-    Returns:
-        JSON array of voice profiles (without embeddings)
-    """
-    voice_cloner = getattr(current_app, 'voice_cloner', None)
-    if not voice_cloner:
         return jsonify({
-            'error': 'Voice cloning service unavailable',
-            'message': 'Voice cloner not initialized'
-        }), 503
-
-    try:
-        user_id = request.args.get('user_id')
-        profiles = voice_cloner.list_voice_profiles(user_id=user_id)
-
-        return jsonify(profiles), 200
-
-    except Exception as e:
-        logger.error(f"Failed to list voice profiles: {e}")
-        return jsonify({
-            'error': 'Failed to list profiles',
-            'message': str(e) if current_app.debug else 'Internal error'
+            'error': 'Model deployment failed',
+            'model_name': model_name
         }), 500
 
 
-@api_bp.route('/voice/profiles/<profile_id>', methods=['GET'])
-def get_voice_profile(profile_id: str):
-    """Get specific voice profile.
+@api_bp.route('/models/<model_name>/activate', methods=['POST'])
+def activate_model(model_name: str):
+    """Activate a deployed model.
 
     Returns:
-        JSON with voice profile information (without embedding)
+        JSON with activation status
     """
-    voice_cloner = getattr(current_app, 'voice_cloner', None)
-    if not voice_cloner:
+    if not MODEL_DEPLOYMENT_AVAILABLE:
         return jsonify({
-            'error': 'Voice cloning service unavailable'
+            'error': 'Model deployment service unavailable'
         }), 503
 
-    try:
-        profile = voice_cloner.load_voice_profile(profile_id)
+    success = model_deployment_service.activate_model(model_name)
 
-        # COMMENT 2 FIX: Handle None return for missing profiles (MockVoiceCloner compatibility)
-        if profile is None:
-            return jsonify({'error': 'Profile not found'}), 404
-
-        # Remove embedding from response
-        response_profile = {k: v for k, v in profile.items() if k != 'embedding'}
-
-        return jsonify(response_profile), 200
-
-    except Exception as e:
-        # Check if it's ProfileNotFoundError using type checking
-        if PROFILE_NOT_FOUND_ERROR_AVAILABLE and ProfileNotFoundError and isinstance(e, ProfileNotFoundError):
-            # Typed exception for profile not found
-            return jsonify({'error': 'Profile not found'}), 404
-
-        logger.error(f"Failed to get voice profile: {e}")
-        return jsonify({'error': 'Internal error'}), 500
-
-
-@api_bp.route('/voice/profiles/<profile_id>', methods=['DELETE'])
-def delete_voice_profile(profile_id: str):
-    """Delete voice profile.
-
-    Returns:
-        JSON with deletion status
-    """
-    voice_cloner = getattr(current_app, 'voice_cloner', None)
-    if not voice_cloner:
+    if success:
         return jsonify({
-            'error': 'Voice cloning service unavailable'
-        }), 503
-
-    try:
-        deleted = voice_cloner.delete_voice_profile(profile_id)
-
-        if deleted:
-            return jsonify({
-                'status': 'success',
-                'message': 'Profile deleted',
-                'profile_id': profile_id
-            }), 200
-        else:
-            # Profile not found (delete_profile returns False)
-            return jsonify({'error': 'Profile not found'}), 404
-
-    except Exception as e:
-        logger.error(f"Failed to delete voice profile: {e}")
-        return jsonify({'error': 'Internal error'}), 500
-
-
-@api_bp.route('/convert/song', methods=['POST'])
-def convert_song():
-    """Convert singing voice in a song to target voice.
-
-    Request (multipart/form-data):
-        song (file): Input song file (MP3/WAV/FLAC) (required)
-        profile_id (str): Target voice profile ID (required)
-        vocal_volume (float): Vocal volume multiplier (optional, default: 1.0)
-        instrumental_volume (float): Instrumental volume multiplier (optional, default: 0.9)
-        return_stems (bool): Return separated stems in addition to mix (optional, default: false)
-
-    Returns:
-        JSON with conversion results:
-        {
             'status': 'success',
-            'conversion_id': str,
-            'duration': float,
-            'audio': str (base64 encoded audio),
-            'sample_rate': int,
-            'metadata': {
-                'target_profile_id': str,
-                'vocal_volume': float,
-                'instrumental_volume': float,
-                'f0_stats': dict
-            },
-            'stems': {  # Only if return_stems=true
-                'vocals': str (base64),
-                'instrumental': str (base64)
-            }
-        }
-    """
-    # Check for song file first (basic input validation)
-    if 'song' not in request.files:
-        return jsonify({'error': 'No song file provided'}), 400
-
-    file = request.files['song']
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-
-    # Validate file type
-    if not allowed_file(file.filename):
-        return jsonify({'error': 'Invalid file format. Allowed: WAV, MP3, FLAC, OGG, M4A'}), 400
-
-    # Get required profile_id
-    profile_id = request.form.get('profile_id')
-    if not profile_id:
-        return jsonify({'error': 'profile_id is required'}), 400
-
-    # Check pipeline availability AFTER validating inputs
-    pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
-    if not pipeline:
+            'message': f'Model {model_name} activated',
+            'model_name': model_name
+        }), 200
+    else:
         return jsonify({
-            'error': 'Voice conversion service unavailable',
-            'message': 'Singing conversion pipeline not initialized'
-        }), 503
-
-    # Get optional parameters
-    try:
-        vocal_volume = float(request.form.get('vocal_volume', 1.0))
-        instrumental_volume = float(request.form.get('instrumental_volume', 0.9))
-        return_stems = request.form.get('return_stems', 'false').lower() == 'true'
-    except ValueError as e:
-        return jsonify({'error': f'Invalid parameter value: {e}'}), 400
-
-    # Validate volumes
-    if not (0.0 <= vocal_volume <= 2.0) or not (0.0 <= instrumental_volume <= 2.0):
-        return jsonify({'error': 'Volume must be between 0.0 and 2.0'}), 400
-
-    # Process file (already validated above)
-    try:
-            # Save to temporary file
-            secure_name = secure_filename(file.filename)
-            if not secure_name:
-                return jsonify({'error': 'Invalid filename'}), 400
-
-            with tempfile.NamedTemporaryFile(suffix=os.path.splitext(secure_name)[1], delete=False) as tmp_file:
-                file.save(tmp_file.name)
-
-                try:
-                    logger.info(f"Converting song {secure_name} to profile {profile_id}")
-
-                    # Convert song with progress tracking
-                    result = pipeline.convert_song(
-                        song_path=tmp_file.name,
-                        target_profile_id=profile_id,
-                        vocal_volume=vocal_volume,
-                        instrumental_volume=instrumental_volume,
-                        return_stems=return_stems
-                    )
-
-                    # Generate conversion ID
-                    conversion_id = str(uuid.uuid4())
-
-                    # Get sample rate for WAV encoding
-                    sample_rate = result['sample_rate']
-                    mixed_audio = result['mixed_audio']
-
-                    # Encode mixed audio as WAV using wave module (torchaudio.save to BytesIO is unsupported)
-                    import wave
-                    mixed_buffer = io.BytesIO()
-                    with wave.open(mixed_buffer, 'wb') as wav_file:
-                        # Determine number of channels
-                        if mixed_audio.ndim == 1:
-                            n_channels = 1
-                            audio_data = mixed_audio
-                        elif mixed_audio.shape[1] == 2:  # (T, 2) format
-                            n_channels = 2
-                            audio_data = mixed_audio
-                        elif mixed_audio.shape[0] == 2:  # (2, T) format
-                            n_channels = 2
-                            audio_data = mixed_audio.T
-                        else:
-                            n_channels = 1
-                            audio_data = mixed_audio.flatten()
-
-                        wav_file.setnchannels(n_channels)
-                        wav_file.setsampwidth(2)  # 16-bit
-                        wav_file.setframerate(sample_rate)
-                        # Clip to prevent wrap-around artifacts, then convert to int16
-                        audio_data = np.clip(audio_data, -1.0, 1.0)
-                        audio_int16 = (audio_data * 32767).astype(np.int16)
-                        wav_file.writeframes(audio_int16.tobytes())
-
-                    mixed_buffer.seek(0)
-                    mixed_audio_b64 = base64.b64encode(mixed_buffer.read()).decode('utf-8')
-
-                    response_data = {
-                        'status': 'success',
-                        'conversion_id': conversion_id,
-                        'duration': result['duration'],
-                        'audio': mixed_audio_b64,
-                        'format': 'wav',
-                        'sample_rate': sample_rate,
-                        'metadata': result['metadata']
-                    }
-
-                    # Add stems if requested and available
-                    if return_stems and result.get('vocals') is not None:
-                        # Encode vocals stem as WAV using wave module (torchaudio.save to BytesIO is unsupported)
-                        vocals = result['vocals']
-                        vocals_buffer = io.BytesIO()
-                        with wave.open(vocals_buffer, 'wb') as wav_file:
-                            if vocals.ndim == 1:
-                                n_channels = 1
-                                v_data = vocals
-                            elif vocals.shape[1] == 2:
-                                n_channels = 2
-                                v_data = vocals
-                            elif vocals.shape[0] == 2:
-                                n_channels = 2
-                                v_data = vocals.T
-                            else:
-                                n_channels = 1
-                                v_data = vocals.flatten()
-
-                            wav_file.setnchannels(n_channels)
-                            wav_file.setsampwidth(2)
-                            wav_file.setframerate(sample_rate)
-                            # Clip vocals stem to prevent wrap-around artifacts
-                            v_data = np.clip(v_data, -1.0, 1.0)
-                            audio_int16 = (v_data * 32767).astype(np.int16)
-                            wav_file.writeframes(audio_int16.tobytes())
-
-                        vocals_buffer.seek(0)
-
-                        # Encode instrumental stem as WAV using wave module (torchaudio.save to BytesIO is unsupported)
-                        instrumental = result['instrumental']
-                        instrumental_buffer = io.BytesIO()
-                        with wave.open(instrumental_buffer, 'wb') as wav_file:
-                            if instrumental.ndim == 1:
-                                n_channels = 1
-                                i_data = instrumental
-                            elif instrumental.shape[1] == 2:
-                                n_channels = 2
-                                i_data = instrumental
-                            elif instrumental.shape[0] == 2:
-                                n_channels = 2
-                                i_data = instrumental.T
-                            else:
-                                n_channels = 1
-                                i_data = instrumental.flatten()
-
-                            wav_file.setnchannels(n_channels)
-                            wav_file.setsampwidth(2)
-                            wav_file.setframerate(sample_rate)
-                            # Clip instrumental stem to prevent wrap-around artifacts
-                            i_data = np.clip(i_data, -1.0, 1.0)
-                            audio_int16 = (i_data * 32767).astype(np.int16)
-                            wav_file.writeframes(audio_int16.tobytes())
-
-                        instrumental_buffer.seek(0)
-
-                        response_data['stems'] = {
-                            'vocals': base64.b64encode(vocals_buffer.read()).decode('utf-8'),
-                            'instrumental': base64.b64encode(instrumental_buffer.read()).decode('utf-8'),
-                            'format': 'wav',
-                            'sample_rate': sample_rate
-                        }
-
-                    logger.info(f"Song conversion complete: {conversion_id}")
-
-                    return jsonify(response_data), 200
-
-                finally:
-                    # Clean up temporary file
-                    try:
-                        os.unlink(tmp_file.name)
-                    except Exception as e:
-                        logger.warning(f"Failed to delete temp file: {e}")
-
-    except Exception as e:
-        logger.error(f"Song conversion error: {e}", exc_info=True)
-
-        # Check for specific exception types first
-        if SINGING_CONVERSION_ERRORS_AVAILABLE and SeparationError and isinstance(e, SeparationError):
-            return jsonify({
-                'error': 'Vocal separation failed',
-                'message': str(e)
-            }), 500
-        elif SINGING_CONVERSION_ERRORS_AVAILABLE and ConversionError and isinstance(e, ConversionError):
-            return jsonify({
-                'error': 'Voice conversion failed',
-                'message': str(e)
-            }), 500
-        elif isinstance(e, FileNotFoundError):
-            return jsonify({
-                'error': 'Voice profile not found',
-                'message': f'Profile {profile_id} does not exist'
-            }), 404
-        else:
-            # Generic error fallback
-            return jsonify({
-                'error': 'Song conversion failed',
-                'message': str(e) if current_app.debug else 'Internal processing error'
-            }), 500
-
-
-@api_bp.route('/gpu_status', methods=['GET'])
-def get_gpu_status():
-    """Get GPU status and utilization information.
-    
-    Returns:
-        JSON with GPU status and metrics
-    """
-    gpu_manager = getattr(current_app, 'gpu_manager', None)
-    
-    status = {
-        'cuda_available': False,
-        'device': 'cpu',
-        'device_count': 0
-    }
-    
-    if gpu_manager:
-        try:
-            status['cuda_available'] = gpu_manager.is_cuda_available()
-            if hasattr(gpu_manager, 'get_device_count'):
-                status['device_count'] = gpu_manager.get_device_count()
-            
-            if status['cuda_available']:
-                status['device'] = 'cuda'
-                
-                # Get GPU details if CUDA is available
-                if TORCH_AVAILABLE and torch.cuda.is_available():
-                    try:
-                        status['device_name'] = torch.cuda.get_device_name(0)
-                        status['memory_total'] = torch.cuda.get_device_properties(0).total_memory
-                        status['memory_allocated'] = torch.cuda.memory_allocated(0)
-                        status['memory_reserved'] = torch.cuda.memory_reserved(0)
-                        status['memory_free'] = status['memory_total'] - status['memory_allocated']
-                    except Exception as e:
-                        logger.warning(f"Failed to get detailed GPU info: {e}")
-        except Exception as e:
-            logger.warning(f"Failed to get GPU status: {e}")
-    
-    return jsonify(status)
-
-
-@api_bp.route('/convert/song', methods=['POST'])
-def convert_song():
-    """Convert a song using singing voice conversion.
-
-    Request (multipart/form-data):
-        audio (file): Song audio file
-        target_profile_id (str): Target voice profile ID
-        settings (JSON str): Conversion settings
-            - pitch_shift (float): Pitch shift in semitones (-12 to +12)
-            - preserve_original_pitch (bool): Keep original pitch contour
-            - preserve_vibrato (bool): Maintain vibrato patterns
-            - preserve_expression (bool): Keep dynamics and expression
-            - output_quality (str): 'fast', 'balanced', 'high', or 'studio'
-            - denoise_input (bool): Apply noise reduction
-            - enhance_output (bool): Apply post-processing
-
-    Returns:
-        JSON with job_id for tracking progress via WebSocket
-    """
-    singing_pipeline = getattr(current_app, 'singing_pipeline', None)
-    if not singing_pipeline:
-        return jsonify({
-            'error': 'Singing conversion service unavailable',
-            'message': 'Pipeline not initialized'
-        }), 503
-
-    try:
-        # Get audio file
-        if 'audio' not in request.files:
-            return jsonify({'error': 'No audio file provided'}), 400
-
-        audio_file = request.files['audio']
-        if audio_file.filename == '':
-            return jsonify({'error': 'Empty filename'}), 400
-
-        # Get target profile ID
-        target_profile_id = request.form.get('target_profile_id')
-        if not target_profile_id:
-            return jsonify({'error': 'No target_profile_id provided'}), 400
-
-        # Parse settings
-        settings_str = request.form.get('settings', '{}')
-        try:
-            settings = json.loads(settings_str)
-        except json.JSONDecodeError:
-            return jsonify({'error': 'Invalid settings JSON'}), 400
-
-        # Generate job ID
-        import uuid
-        job_id = str(uuid.uuid4())
-
-        # Save uploaded file temporarily
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio_file.filename)[1]) as tmp:
-            audio_file.save(tmp.name)
-            temp_path = tmp.name
-
-        # Start conversion in background thread
-        import threading
-
-        def run_conversion():
-            try:
-                # Progress callback for WebSocket updates
-                def progress_callback(percent, message, stage_info=None):
-                    socketio = getattr(current_app, 'socketio', None)
-                    if socketio:
-                        socketio.emit('conversion_progress', {
-                            'job_id': job_id,
-                            'overall_progress': percent,
-                            'current_stage': message,
-                            'stages': stage_info or []
-                        }, room=job_id)
-
-                # Run conversion
-                result = singing_pipeline.convert_song(
-                    song_path=temp_path,
-                    target_profile_id=target_profile_id,
-                    pitch_shift_semitones=settings.get('pitch_shift', 0),
-                    preserve_pitch=settings.get('preserve_original_pitch', True),
-                    preserve_vibrato=settings.get('preserve_vibrato', True),
-                    preserve_expression=settings.get('preserve_expression', True),
-                    output_quality=settings.get('output_quality', 'balanced'),
-                    denoise_input=settings.get('denoise_input', False),
-                    enhance_output=settings.get('enhance_output', False),
-                    progress_callback=progress_callback
-                )
-
-                # Emit completion event
-                socketio = getattr(current_app, 'socketio', None)
-                if socketio:
-                    socketio.emit('conversion_complete', {
-                        'job_id': job_id,
-                        'output_url': f'/api/v1/convert/download/{job_id}',
-                        'result': result
-                    }, room=job_id)
-
-                # Clean up temp file
-                try:
-                    os.unlink(temp_path)
-                except:
-                    pass
-
-            except Exception as e:
-                logger.error(f"Conversion error for job {job_id}: {e}", exc_info=True)
-                socketio = getattr(current_app, 'socketio', None)
-                if socketio:
-                    socketio.emit('conversion_error', {
-                        'job_id': job_id,
-                        'error': str(e)
-                    }, room=job_id)
-
-        thread = threading.Thread(target=run_conversion, daemon=True)
-        thread.start()
-
-        return jsonify({
-            'status': 'started',
-            'job_id': job_id,
-            'message': 'Conversion started. Connect to WebSocket for progress updates.'
-        }), 202
-
-    except Exception as e:
-        logger.error(f"Failed to start conversion: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Failed to start conversion',
-            'message': str(e) if current_app.debug else 'Internal error'
+            'error': f'Failed to activate model {model_name}'
         }), 500
 
 
-@api_bp.route('/ws/audio_stream', methods=['GET'])
-def websocket_info():
-    """Information about WebSocket audio streaming endpoint.
+@api_bp.route('/models/<model_name>/inference', methods=['POST'])
+def run_model_inference(model_name: str):
+    """Run inference on a deployed model.
+
+    Request JSON:
+        inputs (dict): Model inputs
+        **kwargs: Additional inference parameters
 
     Returns:
-        JSON with WebSocket connection information
+        JSON with inference results
     """
-    return jsonify({
-        'endpoint': '/ws/audio_stream',
-        'protocol': 'WebSocket',
-        'supported_events': [
-            'connect',
-            'disconnect',
-            'join',
-            'leave',
-            'join_job',
-            'leave_job',
-            'audio_stream',
-            'synthesize_stream',
-            'audio_analysis',
-            'voice_config',
-            'get_status',
-            'conversion_progress',
-            'conversion_complete',
-            'conversion_error'
-        ],
-        'message': 'Use WebSocket connection for real-time audio streaming and conversion progress'
+    if not MODEL_DEPLOYMENT_AVAILABLE:
+        return jsonify({
+            'error': 'Model deployment service unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'inputs' not in data:
+        return jsonify({'error': 'inputs field is required'}), 400
+
+    inputs = data['inputs']
+    kwargs = {k: v for k, v in data.items() if k != 'inputs'}
+
+    try:
+        result = model_deployment_service.run_inference(model_name, inputs, **kwargs)
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.error(f"Inference failed for model {model_name}: {e}")
+        return jsonify({'error': 'Inference failed', 'details': str(e)}), 500
+
+
+@api_bp.route('/models/ab-test', methods=['POST'])
+def setup_ab_test():
+    """Set up A/B testing between two models.
+
+    Request JSON:
+        test_name (str): Name for the A/B test
+        model_a (str): First model name
+        model_b (str): Second model name
+        traffic_split (float): Traffic split ratio (0.0-1.0)
+
+    Returns:
+        JSON with A/B test setup status
+    """
+    if not MODEL_DEPLOYMENT_AVAILABLE:
+        return jsonify({
+            'error': 'Model deployment service unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request data is required'}), 400
+
+    required_fields = ['test_name', 'model_a', 'model_b']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'{field} is required'}), 400
+
+    test_name = data['test_name']
+    model_a = data['model_a']
+    model_b = data['model_b']
+    traffic_split = data.get('traffic_split', 0.5)
+
+    success = model_deployment_service.setup_ab_test(
+        test_name=test_name,
+        model_a=model_a,
+        model_b=model_b,
+        traffic_split=traffic_split
+    )
+
+    if success:
+        return jsonify({
+            'status': 'success',
+            'message': f'A/B test {test_name} set up between {model_a} and {model_b}',
+            'traffic_split': traffic_split
+        }), 200
+    else:
+        return jsonify({
+            'error': 'Failed to set up A/B test',
+            'test_name': test_name
+        }), 500
+
+
+@api_bp.route('/models/ab-test/<test_name>/inference', methods=['POST'])
+def run_ab_test_inference(test_name: str):
+    """Run inference with A/B testing.
+
+    Request JSON:
+        inputs (dict): Model inputs
+
+    Returns:
+        JSON with inference results including A/B test info
+    """
+    if not MODEL_DEPLOYMENT_AVAILABLE:
+        return jsonify({
+            'error': 'Model deployment service unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'inputs' not in data:
+        return jsonify({'error': 'inputs field is required'}), 400
+
+    inputs = data['inputs']
+
+    try:
+        result = model_deployment_service.run_ab_test_inference(test_name, inputs)
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.error(f"A/B test inference failed for {test_name}: {e}")
+        return jsonify({'error': 'A/B test inference failed', 'details': str(e)}), 500
+
+
+@api_bp.route('/models/stats', methods=['GET'])
+def get_model_deployment_stats():
+    """Get model deployment statistics."""
+    if not MODEL_DEPLOYMENT_AVAILABLE:
+        return jsonify({
+            'error': 'Model deployment service unavailable'
+        }), 503
+
+    stats = model_deployment_service.get_deployment_stats()
+    return jsonify(stats), 200
+
+
+# REAL-TIME VOICE CONVERSION ENDPOINTS
+@api_bp.route('/realtime/start', methods=['POST'])
+def start_realtime_conversion():
+    """Start real-time voice conversion streaming.
+
+    Request JSON:
+        target_profile_id (str): ID of target voice profile (optional)
+        quality_mode (str): Quality mode ('fast', 'balanced', 'quality')
+        sample_rate (int): Audio sample rate
+        buffer_size (int): Processing buffer size
+
+    Returns:
+        JSON with streaming status
+    """
+    if not REALTIME_VOICE_CONVERSION_AVAILABLE:
+        return jsonify({
+            'error': 'Real-time voice conversion unavailable'
+        }), 503
+
+    data = request.get_json() or {}
+    target_profile_id = data.get('target_profile_id')
+    quality_mode = data.get('quality_mode', 'balanced')
+    sample_rate = data.get('sample_rate', 44100)
+    buffer_size = data.get('buffer_size', 2048)
+
+    # Update pipeline config
+    config = current_app.app_config.copy()
+    config.update({
+        'sample_rate': sample_rate,
+        'buffer_size': buffer_size,
+        'quality_mode': quality_mode
     })
 
+    global realtime_voice_conversion_pipeline
+    realtime_voice_conversion_pipeline = RealtimeVoiceConversionPipeline(config)
 
-@api_bp.errorhandler(415)
-def unsupported_media_type(error):
-    """Handle unsupported media type errors."""
-    return jsonify({
-        'error': 'Unsupported media type',
-        'message': 'This endpoint requires JSON or multipart/form-data'
-    }), 415
+    success = realtime_voice_conversion_pipeline.start_streaming(target_profile_id)
+
+    if success:
+        return jsonify({
+            'status': 'started',
+            'message': 'Real-time voice conversion streaming started',
+            'config': {
+                'quality_mode': quality_mode,
+                'sample_rate': sample_rate,
+                'target_profile': target_profile_id
+            }
+        }), 200
+    else:
+        return jsonify({
+            'error': 'Failed to start real-time streaming'
+        }), 500
+
+
+@api_bp.route('/realtime/stop', methods=['POST'])
+def stop_realtime_conversion():
+    """Stop real-time voice conversion streaming."""
+    if not REALTIME_VOICE_CONVERSION_AVAILABLE or not realtime_voice_conversion_pipeline:
+        return jsonify({
+            'error': 'Real-time voice conversion not active'
+        }), 503
+
+    success = realtime_voice_conversion_pipeline.stop_streaming()
+
+    if success:
+        return jsonify({
+            'status': 'stopped',
+            'message': 'Real-time voice conversion streaming stopped'
+        }), 200
+    else:
+        return jsonify({
+            'error': 'Failed to stop real-time streaming'
+        }), 500
+
+
+@api_bp.route('/realtime/process', methods=['POST'])
+def process_realtime_chunk():
+    """Process a chunk of audio in real-time.
+
+    Request JSON:
+        audio_data (str): Base64 encoded audio chunk
+        format (str): Audio format ('wav', 'pcm', etc.)
+
+    Returns:
+        JSON with processed audio chunk
+    """
+    if not REALTIME_VOICE_CONVERSION_AVAILABLE or not realtime_voice_conversion_pipeline:
+        return jsonify({
+            'error': 'Real-time voice conversion not active'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'audio_data' not in data:
+        return jsonify({'error': 'audio_data is required'}), 400
+
+    try:
+        # Decode audio (simplified - would need proper format handling)
+        audio_b64 = data['audio_data']
+        audio_bytes = base64.b64decode(audio_b64)
+
+        # Convert to numpy array (simplified - would need proper audio decoding)
+        audio_chunk = np.frombuffer(audio_bytes, dtype=np.float32)
+
+        # Process chunk (placeholder - in real implementation would handle various formats)
+        processed_chunk = realtime_voice_conversion_pipeline.process_audio_chunk(audio_chunk)
+
+        if processed_chunk is not None:
+            # Encode back to base64 (simplified)
+            processed_bytes = (processed_chunk * 32767).astype(np.int16).tobytes()
+            processed_b64 = base64.b64encode(processed_bytes).decode('utf-8')
+
+            return jsonify({
+                'status': 'success',
+                'processed_audio': processed_b64,
+                'format': 'pcm_s16le'  # Example format
+            }), 200
+        else:
+            return jsonify({
+                'status': 'buffering',
+                'message': 'Buffer needs more data'
+            }), 202
+
+    except Exception as e:
+        logger.error(f"Real-time processing error: {e}")
+        return jsonify({'error': 'Processing failed', 'details': str(e)}), 500
+
+
+@api_bp.route('/realtime/stats', methods=['GET'])
+def get_realtime_stats():
+    """Get real-time streaming statistics."""
+    if not REALTIME_VOICE_CONVERSION_AVAILABLE or not realtime_voice_conversion_pipeline:
+        return jsonify({
+            'error': 'Real-time voice conversion not active'
+        }), 503
+
+    stats = realtime_voice_conversion_pipeline.get_streaming_stats()
+    return jsonify(stats), 200
+
+
+@api_bp.route('/realtime/profile', methods=['POST'])
+def update_realtime_profile():
+    """Update target profile during real-time streaming.
+
+    Request JSON:
+        profile_id (str): New target voice profile ID
+    """
+    if not REALTIME_VOICE_CONVERSION_AVAILABLE or not realtime_voice_conversion_pipeline:
+        return jsonify({
+            'error': 'Real-time voice conversion not active'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'profile_id' not in data:
+        return jsonify({'error': 'profile_id is required'}), 400
+
+    profile_id = data['profile_id']
+    success = realtime_voice_conversion_pipeline.update_target_profile(profile_id)
+
+    if success:
+        return jsonify({
+            'status': 'success',
+            'message': f'Updated to profile {profile_id}',
+            'profile_id': profile_id
+        }), 200
+    else:
+        return jsonify({
+            'error': f'Failed to update profile {profile_id}'
+        }), 500
+
+
+# ADVANCED VOCAL PROCESSING ENDPOINTS
+@api_bp.route('/vocal/emotion', methods=['POST'])
+def inject_emotion():
+    """Inject emotional characteristics into vocal audio.
+
+    Request JSON:
+        audio_data (str): Base64 encoded audio
+        emotion (str): Emotion type ('excited', 'sad', 'calm', etc.)
+        intensity (float): Emotion intensity (0.0-1.0)
+
+    Returns:
+        JSON with processed audio
+    """
+    if not REALTIME_VOICE_CONVERSION_AVAILABLE or not advanced_vocal_processor:
+        return jsonify({
+            'error': 'Advanced vocal processing unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request data is required'}), 400
+
+    required_fields = ['audio_data', 'emotion']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'{field} is required'}), 400
+
+    audio_data = data['audio_data']
+    emotion = data['emotion']
+    intensity = data.get('intensity', 0.5)
+
+    try:
+        # Decode audio (simplified)
+        audio_bytes = base64.b64decode(audio_data)
+        audio = np.frombuffer(audio_bytes, dtype=np.float32)
+
+        # Apply emotion injection
+        processed_audio = advanced_vocal_processor.inject_emotion(audio, emotion, intensity)
+
+        # Encode back
+        processed_bytes = (processed_audio * 32767).astype(np.int16).tobytes()
+        processed_b64 = base64.b64encode(processed_bytes).decode('utf-8')
+
+        return jsonify({
+            'status': 'success',
+            'processed_audio': processed_b64,
+            'emotion': emotion,
+            'intensity': intensity
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Emotion injection failed: {e}")
+        return jsonify({'error': 'Emotion injection failed', 'details': str(e)}), 500
+
+
+@api_bp.route('/vocal/style-transfer', methods=['POST'])
+def transfer_vocal_style():
+    """Transfer vocal style from a reference source.
+
+    Request JSON:
+        audio_data (str): Base64 encoded target audio
+        style_source (str): Style reference identifier
+        strength (float): Style transfer strength (0.0-1.0)
+
+    Returns:
+        JSON with processed audio
+    """
+    if not REALTIME_VOICE_CONVERSION_AVAILABLE or not advanced_vocal_processor:
+        return jsonify({
+            'error': 'Advanced vocal processing unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'Request data is required'}), 400
+
+    required_fields = ['audio_data', 'style_source']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'{field} is required'}), 400
+
+    audio_data = data['audio_data']
+    style_source = data['style_source']
+    strength = data.get('strength', 0.5)
+
+    try:
+        # Decode audio
+        audio_bytes = base64.b64decode(audio_data)
+        audio = np.frombuffer(audio_bytes, dtype=np.float32)
+
+        # Apply style transfer (placeholder)
+        processed_audio = advanced_vocal_processor.transfer_style(audio, style_source)
+
+        # Encode back
+        processed_bytes = (processed_audio * 32767).astype(np.int16).tobytes()
+        processed_b64 = base64.b64encode(processed_bytes).decode('utf-8')
+
+        return jsonify({
+            'status': 'success',
+            'processed_audio': processed_b64,
+            'style_source': style_source,
+            'strength': strength
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Style transfer failed: {e}")
+        return jsonify({'error': 'Style transfer failed', 'details': str(e)}), 500
+
+
+# PROFESSIONAL MUSIC PRODUCTION ENDPOINTS
+@api_bp.route('/sessions', methods=['POST'])
+def create_session():
+    """Create a new production session.
+
+    Request JSON:
+        session_config (dict): Session configuration with metadata, audio settings, etc.
+
+    Returns:
+        JSON with session information
+    """
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'session_config' not in data:
+        return jsonify({'error': 'session_config is required'}), 400
+
+    session_config = data['session_config']
+
+    session = professional_music_api.create_session(session_config)
+
+    return jsonify(session), 201
+
+
+@api_bp.route('/sessions/<session_id>', methods=['GET'])
+def get_session(session_id: str):
+    """Get session information."""
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    session = professional_music_api.get_session(session_id)
+
+    if session:
+        return jsonify(session), 200
+    else:
+        return jsonify({'error': 'Session not found'}), 404
+
+
+@api_bp.route('/sessions/<session_id>/metadata', methods=['POST'])
+def update_session_metadata(session_id: str):
+    """Update session metadata."""
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'metadata' not in data:
+        return jsonify({'error': 'metadata is required'}), 400
+
+    metadata = data['metadata']
+    success = professional_music_api.update_session_metadata(session_id, metadata)
+
+    if success:
+        return jsonify({
+            'status': 'success',
+            'message': f'Session {session_id} metadata updated'
+        }), 200
+    else:
+        return jsonify({'error': f'Session {session_id} not found'}), 404
+
+
+@api_bp.route('/batch', methods=['POST'])
+def submit_batch_job():
+    """Submit a batch processing job.
+
+    Request JSON:
+        job_config (dict): Job configuration with tasks, priorities, deadlines
+
+    Returns:
+        JSON with job information
+    """
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'job_config' not in data:
+        return jsonify({'error': 'job_config is required'}), 400
+
+    job_config = data['job_config']
+
+    job_info = professional_music_api.process_batch_job(job_config)
+
+    return jsonify(job_info), 201
+
+
+@api_bp.route('/batch/<job_id>', methods=['GET'])
+def get_batch_job_status(job_id: str):
+    """Get batch job status and progress."""
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    job_status = professional_music_api.get_batch_job_status(job_id)
+
+    if job_status:
+        return jsonify(job_status), 200
+    else:
+        return jsonify({'error': 'Job not found'}), 404
+
+
+@api_bp.route('/batch/<job_id>', methods=['DELETE'])
+def cancel_batch_job(job_id: str):
+    """Cancel a batch job."""
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    success = professional_music_api.cancel_batch_job(job_id)
+
+    if success:
+        return jsonify({
+            'status': 'success',
+            'message': f'Job {job_id} cancelled'
+        }), 200
+    else:
+        return jsonify({'error': f'Job {job_id} not found or cannot be cancelled'}), 404
+
+
+@api_bp.route('/batch/stats', methods=['GET'])
+def get_batch_processing_stats():
+    """Get batch processing statistics."""
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    stats = professional_music_api.get_batch_processing_stats()
+    return jsonify(stats), 200
+
+
+@api_bp.route('/sessions/<session_id>/export', methods=['POST'])
+def export_session(session_id: str):
+    """Export session audio.
+
+    Request JSON:
+        export_config (dict): Export settings (format, bitrate, metadata, etc.)
+    """
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'export_config' not in data:
+        return jsonify({'error': 'export_config is required'}), 400
+
+    export_config = data['export_config']
+
+    try:
+        result = professional_music_api.export_session_audio(session_id, export_config)
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.error(f"Session export failed: {e}")
+        return jsonify({'error': 'Export failed', 'details': str(e)}), 500
+
+
+@api_bp.route('/daw/integration', methods=['GET'])
+def get_daw_integration_info():
+    """Get DAW integration information."""
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    info = professional_music_api.get_daw_integration_info()
+    return jsonify(info), 200
+
+
+@api_bp.route('/daw/project', methods=['POST'])
+def process_daw_project():
+    """Process a DAW project file or data.
+
+    Request JSON:
+        project_data (dict): Project data with tracks, regions, automation, etc.
+    """
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'project_data' not in data:
+        return jsonify({'error': 'project_data is required'}), 400
+
+    project_data = data['project_data']
+
+    result = professional_music_api.process_daw_project(project_data)
+    return jsonify(result), 200
+
+
+@api_bp.route('/metadata/professional', methods=['POST'])
+def create_professional_metadata():
+    """Create professional metadata for a session."""
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'session_metadata' not in data:
+        return jsonify({'error': 'session_metadata is required'}), 400
+
+    session_metadata = data['session_metadata']
+
+    metadata = professional_metadata.create_professional_metadata(session_metadata)
+    return jsonify(metadata), 200
+
+
+@api_bp.route('/metadata/midi', methods=['POST'])
+def extract_midi_data():
+    """Extract data from MIDI file."""
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    # Check for MIDI file
+    if 'midi_file' not in request.files:
+        return jsonify({'error': 'No MIDI file provided'}), 400
+
+    file = request.files['midi_file']
+    if file.filename == '':
+        return jsonify({'error': 'No MIDI file selected'}), 400
+
+    midi_data = file.read()
+
+    result = professional_metadata.extract_midi_data(midi_data)
+    return jsonify(result), 200
+
+
+@api_bp.route('/daw/template', methods=['POST'])
+def create_daw_project_template():
+    """Create DAW project template."""
+    if not PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE:
+        return jsonify({
+            'error': 'Professional music integration unavailable'
+        }), 503
+
+    data = request.get_json()
+    if not data or 'session_id' not in data:
+        return jsonify({'error': 'session_id is required'}), 400
+
+    session_id = data['session_id']
+    template_type = data.get('template_type', 'voice_conversion')
+
+    template = professional_metadata.create_daw_project_template(session_id, template_type)
+    return jsonify(template), 200

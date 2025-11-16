@@ -14,7 +14,7 @@ interface StemPlayerProps {
   className?: string
 }
 
-export function StemPlayer({ stems, format = 'wav', sampleRate = 44100, className = '' }: StemPlayerProps) {
+export function StemPlayer({ stems, format = 'wav', className = '' }: StemPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)

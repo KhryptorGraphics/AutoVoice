@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Cpu, Activity, Thermometer, HardDrive, AlertCircle } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
-import { apiService, SystemStatus } from '../services/api'
+import { apiService } from '../services/api'
 
 interface GPUMonitorProps {
   refreshInterval?: number // milliseconds
@@ -134,7 +134,7 @@ export function GPUMonitor({ refreshInterval = 2000, className = '' }: GPUMonito
           {status.models && status.models.length > 0 && (
             <div className="pt-4 border-t border-gray-200 space-y-2">
               <h4 className="text-sm font-semibold text-gray-700 mb-2">Models:</h4>
-              {status.models.map((model, index) => (
+              {status.models.map((model: any, index: number) => (
                 <div key={index} className="flex items-center justify-between text-sm">
                   <div className="flex items-center space-x-2">
                     <div

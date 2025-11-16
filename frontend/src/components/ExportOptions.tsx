@@ -24,7 +24,6 @@ export function ExportOptions({ audioUrl, fileName, onExport }: ExportOptionsPro
     ogg: 'OGG - Compressed, open format',
   }
 
-  const bitrateOptions = [128, 192, 256, 320]
   const sampleRateOptions = [44100, 48000, 96000]
 
   const handleExport = async () => {

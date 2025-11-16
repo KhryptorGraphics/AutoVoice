@@ -9,7 +9,6 @@ interface RealtimeWaveformProps {
 export function RealtimeWaveform({ isProcessing, progress, audioUrl }: RealtimeWaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animationRef = useRef<number>()
-  const [audioContext, setAudioContext] = useState<AudioContext | null>(null)
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null)
 
   useEffect(() => {

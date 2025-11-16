@@ -176,7 +176,6 @@ export function ABComparison({
       <div className="mb-6">
         <AudioWaveform
           audioUrl={activeTrack === 'original' ? getAudioUrl(originalAudio) : getAudioUrl(convertedAudio)}
-          height={120}
         />
       </div>
 

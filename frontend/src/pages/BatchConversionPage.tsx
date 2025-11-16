@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Music, Upload, Play, Download, Trash2, Plus, Pause, Play as PlayIcon, X } from 'lucide-react'
+import { Music, Play, Download, Trash2, Plus, Pause, Play as PlayIcon, X } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { apiService, VoiceProfile } from '../services/api'
 import { VoiceProfileSelector } from '../components/VoiceProfileSelector'

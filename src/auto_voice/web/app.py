@@ -43,6 +43,37 @@ from ..models.voice_model import VoiceModel
 from ..inference.synthesizer import VoiceSynthesizer
 from ..inference.voice_cloner import VoiceCloner
 from ..inference.singing_conversion_pipeline import SingingConversionPipeline
+
+# Import new NEXT PHASE services
+try:
+    from ..inference.model_deployment_service import ModelDeploymentService
+    MODEL_DEPLOYMENT_AVAILABLE = True
+except ImportError:
+    ModelDeploymentService = None
+    MODEL_DEPLOYMENT_AVAILABLE = False
+
+try:
+    from ..inference.realtime_voice_conversion_pipeline import (
+        RealtimeVoiceConversionPipeline,
+        AdvancedVocalProcessor
+    )
+    REALTIME_VOICE_CONVERSION_AVAILABLE = True
+except ImportError:
+    RealtimeVoiceConversionPipeline = None
+    AdvancedVocalProcessor = None
+    REALTIME_VOICE_CONVERSION_AVAILABLE = False
+
+try:
+    from ..inference.professional_music_integration import (
+        ProfessionalMusicAPI,
+        ProfessionalMetadata
+    )
+    PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE = True
+except ImportError:
+    ProfessionalMusicAPI = None
+    ProfessionalMetadata = None
+    PROFESSIONAL_MUSIC_INTEGRATION_AVAILABLE = False
+
 from .api import api_bp
 from .websocket_handler import WebSocketHandler
 from .utils import allowed_file, ALLOWED_AUDIO_EXTENSIONS
@@ -246,7 +277,13 @@ def create_app(config_path=None, config=None):
             audio_processor = type('MockAudioProcessor', (), {})()
             voice_model = type('MockVoiceModel', (), {'is_loaded': lambda: False})()
             synthesizer = type('MockSynthesizer', (), {})()
-            voice_cloner = type('MockVoiceCloner', (), {})()
+            # Use the same MockVoiceCloner as in the testing section but as a simple mock
+            voice_cloner = type('MockVoiceCloner', (), {
+                'list_voice_profiles': lambda self=None, user_id=None: ([] if NUMPY_AVAILABLE else []),
+                'create_voice_profile': lambda self=None, audio=None, **kwargs: {'profile_id': 'mock-profile-123', 'created_at': '2025-01-01T00:00:00Z'},
+                'load_voice_profile': lambda self=None, profile_id=None: None,
+                'delete_voice_profile': lambda self=None, profile_id=None: False
+            })()
             singing_conversion_pipeline = type('MockSingingConversionPipeline', (), {})()
 
     # Set app context attributes for blueprints
