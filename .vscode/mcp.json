@@ -81,7 +81,35 @@
         "postgresql://localhost/autovoice"
       ],
       "description": "PostgreSQL database access (if applicable)"
+    },
+    "github.com/executeautomation/mcp-playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@executeautomation/playwright-mcp-server"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "playwright_navigate",
+        "playwright_console_logs"
+      ],
+      "description": "Playwright browser automation from ExecuteAutomation"
+    },
+    "cipher": {
+      "command": "cipher",
+      "args": [
+        "--mode",
+        "mcp"
+      ],
+      "disabled": false,
+      "autoApprove": [
+        "cipher_memory_search"
+      ],
+      "env": {
+        "MCP_SERVER_MODE": "aggregator",
+        "OPENAI_API_KEY": "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"
+      },
+      "description": "Cipher memory and search server"
     }
   }
 }
-

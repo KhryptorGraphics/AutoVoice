@@ -64,6 +64,9 @@ class ApiService {
   }
 
   // Singing Voice Conversion
+  /**
+   * Supports async (202) and sync (200) based on server config.
+   */
   async convertSong(
     audioFile: File,
     targetProfileId: string,
@@ -81,8 +84,16 @@ class ApiService {
     const formData = new FormData()
     formData.append('audio', audioFile)
     formData.append('target_profile_id', targetProfileId)
-    formData.append('settings', JSON.stringify(settings))
-
+    
+    // Map frontend settings to backend parameters
+    const backendSettings = {
+      pitch_shift: settings.pitchShift || 0,
+      output_quality: settings.outputQuality || 'balanced',
+      // Note: preserve_original_pitch is always true for singing (backend default)
+      // vocal_volume and instrumental_volume use backend defaults (1.0, 0.9)
+    }
+    formData.append('settings', JSON.stringify(backendSettings))
+    
     const response = await this.client.post('/convert/song', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
@@ -94,7 +105,19 @@ class ApiService {
         }
       },
     })
-    return response.data
+
+    // Handle both sync and async responses
+    const data = response.data
+    if (response.status === 202 && data.status === 'queued') {
+      return {
+        job_id: data.job_id,
+        status: 'queued',
+        websocket_room: data.websocket_room || data.job_id  // ADDED with fallback
+      }
+    }
+
+    // Sync response (status === 'success')
+    return data
   }
 
   async getConversionStatus(jobId: string) {
@@ -181,7 +204,19 @@ class ApiService {
         }
       },
     })
-    return response.data
+
+    // Handle both sync and async responses (mirror convertSong behavior)
+    const data = response.data
+    if (response.status === 202 && data.status === 'queued') {
+      return {
+        job_id: data.job_id,
+        status: 'queued',
+        websocket_room: data.websocket_room || data.job_id  // ADDED with fallback
+      }
+    }
+
+    // Sync response (status === 'success')
+    return data
   }
 
   // Stem Separation
@@ -200,8 +235,8 @@ class ApiService {
   }
 
   // Quality Metrics
-  async getConversionMetrics(jobId: string) {
-    const response = await this.client.get(`/convert/metrics/${jobId}`)
+  async getConversionMetrics(jobId: string): Promise<QualityMetricsResponse> {
+    const response = await this.client.get<QualityMetricsResponse>(`/convert/metrics/${jobId}`)
     return response.data
   }
 
@@ -303,22 +338,14 @@ export interface VoiceProfile {
 
 export interface ConversionJob {
   job_id: string
-  status: 'pending' | 'processing' | 'complete' | 'error'
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled'
   progress: number
-  stages: {
-    id: string
-    name: string
-    progress: number
-    status: string
-    message?: string
-  }[]
-  result?: {
-    output_path: string
-    duration: number
-    sample_rate: number
-    quality_metrics?: QualityMetrics
-  }
+  stage: string
+  created_at: number
+  completed_at?: number
   error?: string
+  f0_contour?: number[]
+  f0_times?: number[]
 }
 
 export interface QualityMetrics {
@@ -338,6 +365,21 @@ export interface QualityMetrics {
   intelligibility?: {
     stoi: number
     pesq: number
+  }
+}
+
+export interface QualityMetricsResponse {
+  metrics: QualityMetrics
+  job_id: string
+  calculated_at: number
+  targets?: {
+    min_pitch_accuracy_correlation?: number
+    max_pitch_accuracy_rmse_hz?: number
+    min_speaker_similarity?: number
+    max_spectral_distortion?: number
+    min_stoi_score?: number
+    min_pesq_score?: number
+    min_mos_estimate?: number
   }
 }
 
@@ -390,6 +432,55 @@ export interface AppConfig {
   }
 }
 
+// Pitch data interface
+export interface PitchData {
+  f0: number[]
+  times: number[]
+}
+
+export interface ConversionProgress {
+  job_id: string
+  progress: number  // 0.0-1.0 range (standardized across streaming and JobManager flows)
+  stage: string     // Changed from current_stage
+  timestamp?: number
+  // Remove stages array - backend doesn't send this
+  estimated_time_remaining?: number
+  // Optional pitch contour data
+  f0_contour?: number[]
+  f0_times?: number[]
+}
+
+/**
+ * CompleteCallback for conversion completion events
+ *
+ * NOTE: WebSocket completion payloads have two shapes:
+ * - JobManager flows emit: { job_id, output_url, status, ... }
+ * - Streaming flows emit: { job_id, audio, stems?, status, ... }
+ *
+ * The frontend handles both by checking which fields are present.
+ */
+export type CompleteCallback = (result: {
+  job_id: string
+  // JobManager path: URL to download result
+  output_url?: string
+  // Streaming path: base64 audio data
+  audio?: string
+  stems?: {
+    vocals?: string
+    instrumental?: string
+    bass?: string
+    drums?: string
+    other?: string
+  }
+  status: string
+  duration?: number
+  sample_rate?: number
+  metadata?: any
+  // Optional pitch contour data
+  f0_contour?: number[]
+  f0_times?: number[]
+}) => void
+
 // Export format options
 export interface ExportOptions {
   format: 'mp3' | 'wav' | 'flac' | 'ogg'
@@ -412,4 +503,3 @@ export interface ConversionRecord {
   tags?: string[]
   notes?: string
 }
-

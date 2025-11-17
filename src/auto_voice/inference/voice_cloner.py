@@ -492,6 +492,9 @@ class VoiceCloner:
 
             except InvalidAudioError:
                 raise
+            except (InsufficientQualityError, InconsistentSamplesError):
+                # Re-raise domain-specific quality/consistency errors for API layer handling
+                raise
             except Exception as e:
                 self.logger.error(f"Failed to create voice profile: {e}")
                 raise VoiceCloningError(f"Profile creation failed: {e}")

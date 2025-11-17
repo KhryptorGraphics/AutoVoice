@@ -1125,7 +1125,7 @@ monitor.connect();
 | `low_quality_audio` | 422 | Audio quality insufficient | Improve recording quality |
 | `separation_failed` | 422 | Vocal separation failed | Ensure song has clear vocals |
 | `pitch_extraction_failed` | 422 | Pitch detection failed | Use higher quality source |
-| `conversion_failed` | 422 | Voice conversion failed | Check error details |
+| `conversion_error` | 422 | Voice conversion failed | Check error details |
 
 ### Server Errors (5xx)
 

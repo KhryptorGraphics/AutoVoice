@@ -308,10 +308,19 @@ class WebSocketHandler:
 
         @self.socketio.on('convert_song_stream')
         def handle_convert_song_stream(data):
-            """Handle streaming song conversion with real-time progress updates"""
+            """Handle streaming song conversion with real-time progress updates
+
+            Emits f0_contour and computed f0_times for pitch visualization in async flows.
+            When f0_contour is present in pipeline results but f0_times is missing, this
+            handler computes f0_times from f0_contour length, hop_length, and sample_rate,
+            mirroring the sync API behavior in api.py for consistent frontend pitch overlays.
+
+            Gracefully handles missing NumPy or empty/invalid pitch data without failing
+            audio delivery, logging warnings for diagnostic purposes.
+            """
             sid = request.sid
             song_path = None
-            conversion_id = data.get('conversion_id', str(uuid.uuid4()))
+            job_id = data.get('job_id') or data.get('conversion_id', str(uuid.uuid4()))
             try:
                 from flask import current_app
 
@@ -325,7 +334,8 @@ class WebSocketHandler:
                 # Validate inputs
                 if not song_data:
                     self.socketio.emit('conversion_error', {
-                        'conversion_id': conversion_id,
+                        'job_id': job_id,
+                        'conversion_id': job_id,  # Backward compatibility alias
                         'error': 'Missing song data',
                         'code': 'MISSING_SONG'
                     }, to=sid)
@@ -333,7 +343,8 @@ class WebSocketHandler:
 
                 if not target_profile_id:
                     self.socketio.emit('conversion_error', {
-                        'conversion_id': conversion_id,
+                        'job_id': job_id,
+                        'conversion_id': job_id,  # Backward compatibility alias
                         'error': 'Missing target profile ID',
                         'code': 'MISSING_PROFILE'
                     }, to=sid)
@@ -342,7 +353,8 @@ class WebSocketHandler:
                 # Validate volume parameters within [0.0, 2.0] like REST API
                 if not (0.0 <= vocal_volume <= 2.0):
                     self.socketio.emit('conversion_error', {
-                        'conversion_id': conversion_id,
+                        'job_id': job_id,
+                        'conversion_id': job_id,  # Backward compatibility alias
                         'error': 'Volume must be between 0.0 and 2.0',
                         'message': 'Volume must be between 0.0 and 2.0',
                         'code': 'INVALID_PARAMS'
@@ -351,7 +363,8 @@ class WebSocketHandler:
 
                 if not (0.0 <= instrumental_volume <= 2.0):
                     self.socketio.emit('conversion_error', {
-                        'conversion_id': conversion_id,
+                        'job_id': job_id,
+                        'conversion_id': job_id,  # Backward compatibility alias
                         'error': 'Volume must be between 0.0 and 2.0',
                         'message': 'Volume must be between 0.0 and 2.0',
                         'code': 'INVALID_PARAMS'
@@ -362,14 +375,15 @@ class WebSocketHandler:
                 pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
                 if not pipeline:
                     self.socketio.emit('conversion_error', {
-                        'conversion_id': conversion_id,
+                        'job_id': job_id,
+                        'conversion_id': job_id,  # Backward compatibility alias
                         'error': 'Singing conversion pipeline not available',
                         'code': 'SERVICE_UNAVAILABLE'
                     }, to=sid)
                     return
 
                 # Store conversion state
-                self._store_conversion_state(sid, conversion_id, {
+                self._store_conversion_state(sid, job_id, {
                     'progress': 0,
                     'stage': 'Starting conversion',
                     'start_time': time.time(),
@@ -379,32 +393,39 @@ class WebSocketHandler:
                 })
 
                 # Define progress callback
-                def progress_callback(percent, stage_name):
+                def progress_callback(stage_name: str, percent: float):
                     # Check for cancellation
-                    state = self.sessions.get(f'conversion_{sid}_{conversion_id}', {})
+                    state = self.sessions.get(f'conversion_{sid}_{job_id}', {})
                     if state.get('cancel_flag', False):
                         raise InterruptedError('Conversion cancelled by user')
 
-                    # Update state
-                    self._store_conversion_state(sid, conversion_id, {
-                        'progress': percent,
+                    # Normalize to 0.0-1.0: >1.0 treated as percentage (0-100), ≤1.0 as fraction (handles manual/pipeline)
+                    if percent > 1.0:
+                        normalized_progress = min(1.0, max(0.0, percent / 100.0))
+                    else:
+                        normalized_progress = min(1.0, max(0.0, percent))
+
+                    # Update state with normalized progress
+                    self._store_conversion_state(sid, job_id, {
+                        'progress': normalized_progress,
                         'stage': stage_name,
                         'status': 'processing'
                     })
 
-                    # Emit progress event
+                    # Emit progress event with normalized 0.0-1.0 range
                     self.socketio.emit('conversion_progress', {
-                        'conversion_id': conversion_id,
-                        'progress': percent,
+                        'job_id': job_id,
+                        'conversion_id': job_id,  # Backward compatibility alias
+                        'progress': normalized_progress,
                         'stage': stage_name,
                         'timestamp': time.time()
                     }, to=sid)
 
                 # Emit initial progress
-                progress_callback(0, 'Starting conversion')
+                progress_callback('Starting conversion', 0.0)
 
                 # Decode song data
-                progress_callback(5, 'Decoding audio data')
+                progress_callback('Decoding audio data', 0.05)
 
                 if isinstance(song_data, str):
                     song_bytes = base64.b64decode(song_data)
@@ -443,7 +464,7 @@ class WebSocketHandler:
                     song_path = song_data  # Assume file path
 
                 # Starting pipeline conversion
-                progress_callback(10, 'Initializing conversion pipeline')
+                progress_callback('Initializing conversion pipeline', 0.10)
 
                 # Run conversion with progress tracking
                 result = pipeline.convert_song(
@@ -456,7 +477,78 @@ class WebSocketHandler:
                 )
 
                 # Encoding results
-                progress_callback(95, 'Encoding conversion results')
+                progress_callback('Encoding conversion results', 95)
+
+                # Extract pitch contour with defensive handling - mirrors sync API behavior
+                f0_contour = None
+                f0_times = None
+
+                try:
+                    # Initialize pitch data from pipeline result
+                    raw_f0_contour = result.get('f0_contour')
+
+                    if raw_f0_contour is not None:
+                        logger.debug(f"Pitch data available for job {job_id}: f0_contour type={type(raw_f0_contour)}, size={len(raw_f0_contour) if hasattr(raw_f0_contour, '__len__') else 'N/A'}")
+
+                        # Convert numpy arrays to Python lists for JSON serialization
+                        if NUMPY_AVAILABLE and isinstance(raw_f0_contour, np.ndarray):
+                            if raw_f0_contour.size > 0:
+                                f0_contour = raw_f0_contour.tolist()
+                                logger.debug(f"Converted f0_contour to list with {len(f0_contour)} elements")
+                            else:
+                                logger.warning(f"f0_contour is empty numpy array for job {job_id}")
+                                f0_contour = None
+                        elif isinstance(raw_f0_contour, list):
+                            f0_contour = raw_f0_contour if len(raw_f0_contour) > 0 else None
+                        else:
+                            logger.warning(f"Unexpected f0_contour type for job {job_id}: {type(raw_f0_contour)}")
+                            f0_contour = None
+
+                        # Handle f0_times computation or extraction
+                        if f0_contour is not None:
+                            raw_f0_times = result.get('f0_times')
+
+                            if raw_f0_times is not None:
+                                # f0_times explicitly provided by pipeline
+                                if NUMPY_AVAILABLE and isinstance(raw_f0_times, np.ndarray):
+                                    f0_times = raw_f0_times.tolist()
+                                    logger.debug(f"Using provided f0_times with {len(f0_times)} elements")
+                                elif isinstance(raw_f0_times, list):
+                                    f0_times = raw_f0_times
+                                else:
+                                    logger.warning(f"Unexpected f0_times type: {type(raw_f0_times)}, will compute instead")
+                                    raw_f0_times = None
+
+                            if raw_f0_times is None:
+                                # Compute f0_times when missing but f0_contour exists - mirrors sync API
+                                if not NUMPY_AVAILABLE:
+                                    logger.warning("NumPy not available, cannot compute f0_times")
+                                else:
+                                    try:
+                                        # Get sample_rate from result with fallback
+                                        sample_rate_val = result.get('sample_rate')
+                                        if not sample_rate_val or sample_rate_val <= 0:
+                                            sample_rate_val = current_app.app_config.get('audio', {}).get('sample_rate', 22050)
+                                            logger.debug(f"Using fallback sample_rate: {sample_rate_val}")
+
+                                        # Get hop_length from config with default
+                                        hop_length = current_app.app_config.get('audio', {}).get('hop_length', 512)
+
+                                        # Compute times array using original numpy array length
+                                        times = np.arange(len(raw_f0_contour)) * hop_length / sample_rate_val
+                                        f0_times = times.tolist()
+                                        logger.debug(f"Computed f0_times with {len(f0_times)} elements (hop_length={hop_length}, sr={sample_rate_val})")
+                                    except Exception as compute_err:
+                                        logger.warning(f"Failed to compute f0_times for job {job_id}: {compute_err}")
+                                        f0_times = None
+                    else:
+                        logger.debug(f"No f0_contour in pipeline result for job {job_id}")
+
+                except Exception as e:
+                    # Graceful degradation: log error but don't break audio delivery
+                    logger.warning(f"Failed to extract pitch data for job {job_id}: {e}", exc_info=True)
+                    f0_contour = None
+                    f0_times = None
 
                 # Emit completion event
                 audio_output = result.get('mixed_audio') or result.get('audio')
@@ -502,12 +594,9 @@ class WebSocketHandler:
                 # Encode stems to WAV format
                 stems_output = None
                 if return_stems and result.get('stems'):
-                    stems_output = {
-                        'format': 'wav',
-                        'sample_rate': sample_rate
-                    }
+                    stems_output = {}
 
-                    for stem_name in ['vocals', 'instrumental']:
+                    for stem_name in ['vocals', 'instrumental', 'drums', 'bass', 'other']:
                         stem_data = result['stems'].get(stem_name)
                         if stem_data is not None and NUMPY_AVAILABLE and isinstance(stem_data, np.ndarray):
                             # Detect channels like api.py convert_song() and main audio above
@@ -537,37 +626,77 @@ class WebSocketHandler:
                                 wav_file.setframerate(sample_rate)
                                 wav_file.writeframes(stem_int16.tobytes())
 
-                            stems_output[stem_name] = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                            # Calculate duration
+                            duration = len(stem_audio_data) / sample_rate if sample_rate > 0 else 0.0
 
+                            # Store stem with complete metadata
+                            stems_output[stem_name] = {
+                                'audio': base64.b64encode(buffer.getvalue()).decode('utf-8'),
+                                'format': 'wav',
+                                'sample_rate': sample_rate,
+                                'duration': duration
+                            }
+
+                # Emit conversion_complete event with audio and stems
+                #
+                # Stems structure (when return_stems=True):
+                # {
+                #   "vocals": {
+                #     "audio": "base64_encoded_wav_data",
+                #     "format": "wav",
+                #     "sample_rate": 44100,
+                #     "duration": 3.5
+                #   },
+                #   "instrumental": {
+                #     "audio": "base64_encoded_wav_data",
+                #     "format": "wav",
+                #     "sample_rate": 44100,
+                #     "duration": 3.5
+                #   },
+                #   "drums": { ... },  # if separated
+                #   "bass": { ... },   # if separated
+                #   "other": { ... }   # if separated
+                # }
+                #
+                # Each stem contains:
+                # - audio: base64-encoded WAV audio data
+                # - format: audio format (always "wav")
+                # - sample_rate: sample rate in Hz (e.g., 44100)
+                # - duration: audio duration in seconds
                 self.socketio.emit('conversion_complete', {
-                    'conversion_id': conversion_id,
+                    'job_id': job_id,
+                    'conversion_id': job_id,  # Backward compatibility alias
                     'audio': audio_output,
                     'format': 'wav',
                     'sample_rate': sample_rate,
                     'duration': result.get('duration'),
                     'metadata': result.get('metadata', {}),
-                    'stems': stems_output
+                    'stems': stems_output,
+                    'f0_contour': f0_contour,
+                    'f0_times': f0_times
                 }, to=sid)
 
                 # Clean up conversion state
-                self._cleanup_conversion(sid, conversion_id)
+                self._cleanup_conversion(sid, job_id)
 
             except InterruptedError as e:
                 self.socketio.emit('conversion_cancelled', {
-                    'conversion_id': conversion_id,
+                    'job_id': job_id,
+                    'conversion_id': job_id,  # Backward compatibility alias
                     'message': str(e)
                 }, to=sid)
-                self._cleanup_conversion(sid, conversion_id)
+                self._cleanup_conversion(sid, job_id)
 
             except Exception as e:
                 logger.error(f"Error during song conversion: {e}", exc_info=True)
                 self.socketio.emit('conversion_error', {
-                    'conversion_id': conversion_id,
+                    'job_id': job_id,
+                    'conversion_id': job_id,  # Backward compatibility alias
                     'error': str(e),
                     'code': 'CONVERSION_FAILED',
-                    'stage': self.sessions.get(f'conversion_{sid}_{conversion_id}', {}).get('stage', 'Unknown')
+                    'stage': self.sessions.get(f'conversion_{sid}_{job_id}', {}).get('stage', 'Unknown')
                 }, to=sid)
-                self._cleanup_conversion(sid, conversion_id)
+                self._cleanup_conversion(sid, job_id)
 
             finally:
                 if song_path and os.path.exists(song_path):
@@ -577,27 +706,28 @@ class WebSocketHandler:
         def handle_cancel_conversion(data):
             """Handle conversion cancellation request"""
             try:
-                conversion_id = data.get('conversion_id')
-                if not conversion_id:
-                    emit('error', {'message': 'Missing conversion_id'})
+                # Accept both conversion_id (legacy) and job_id (new)
+                job_id = data.get('job_id') or data.get('conversion_id')
+                if not job_id:
+                    emit('error', {'message': 'Missing job_id or conversion_id'})
                     return
 
                 # Get SID and compute state key consistently
                 sid = request.sid
-                state_key = f'conversion_{sid}_{conversion_id}'
+                state_key = f'conversion_{sid}_{job_id}'
 
                 # Set cancellation flag if conversion exists
                 if state_key in self.sessions:
                     self.sessions[state_key]['cancel_flag'] = True
                     emit('conversion_cancelled', {
-                        'conversion_id': conversion_id,
+                        'job_id': job_id,
                         'message': 'Cancellation requested'
                     }, to=sid)
                 else:
                     # Conversion not found - might have already finished or never started
                     # Still emit cancellation event for idempotence
                     emit('conversion_cancelled', {
-                        'conversion_id': conversion_id,
+                        'job_id': job_id,
                         'message': 'Conversion not active (may have already completed or failed)'
                     }, to=sid)
 
@@ -609,19 +739,20 @@ class WebSocketHandler:
         def handle_get_conversion_status(data):
             """Get current status of a conversion"""
             try:
-                conversion_id = data.get('conversion_id')
-                if not conversion_id:
-                    emit('error', {'message': 'Missing conversion_id'})
+                # Accept both conversion_id (legacy) and job_id (new)
+                job_id = data.get('job_id') or data.get('conversion_id')
+                if not job_id:
+                    emit('error', {'message': 'Missing job_id or conversion_id'})
                     return
 
                 # Get SID and compute state key consistently
                 sid = request.sid
-                state_key = f'conversion_{sid}_{conversion_id}'
+                state_key = f'conversion_{sid}_{job_id}'
 
                 if state_key in self.sessions:
                     state = self.sessions[state_key]
                     emit('conversion_status', {
-                        'conversion_id': conversion_id,
+                        'job_id': job_id,
                         'progress': state.get('progress', 0),
                         'stage': state.get('stage', 'Unknown'),
                         'status': state.get('status', 'unknown'),
@@ -630,7 +761,7 @@ class WebSocketHandler:
                     }, to=sid)
                 else:
                     emit('error', {
-                        'message': f'Conversion {conversion_id} not found',
+                        'message': f'Conversion {job_id} not found',
                         'code': 'NOT_FOUND'
                     }, to=sid)
 
@@ -738,122 +869,163 @@ class WebSocketHandler:
             if 'pitch_shift' in config and config['pitch_shift'] != 0:
                 if LIBROSA_AVAILABLE and NUMPY_AVAILABLE:
                     try:
-                        # Convert to CPU numpy float array
-                        audio_np = processed_audio.detach().cpu().numpy() if isinstance(processed_audio, torch.Tensor) else processed_audio
-
-                        # Squeeze to 1D if needed
-                        if audio_np.ndim > 1:
+                        # Convert in.spec of audio
+                        if isinstance(processed_audio, torch.Tensor):
+                            import librosa.util
+                            # Detect batch dim
+                            had_batch_dim = processed_audio.ndim > 1
+                            # Convert to numpy array
+                            audio_np = processed_audio.detach().cpu().numpy()
+                            # Squeeze to 1D if needed
                             audio_np = audio_np.squeeze()
-
-                        # Check buffer length guard
-                        min_len = 2048
-                        buf_len = audio_np.shape[-1]
-                        if buf_len < min_len:
-                            logger.debug(f"Skipping pitch shift: short buffer {buf_len}<{min_len}")
+                            # Pad with zeros to facilitate pitch shifting
+                            pad_len = audio_np.shape[-1] % 2
+                            audio_np = librosa.util.pad_center(audio_np, -(2 - pad_len))
+                            # Detect pitch shift input type
+                            in_spec = 'numpy'
+                        elif NUMPY_AVAILABLE:
+                            in_spec = 'numpy'
+                            # Squeeze to 1D if needed
+                            audio_np = processed_audio.squeeze()
+                            audio_np = librosa.util.pad_center(audio_np, -(2 - pad_len))
+                            had_batch_dim = processed_audio.ndim > 1
                         else:
-                            # Apply pitch shift
-                            shifted_audio = librosa.effects.pitch_shift(
-                                y=audio_np,
-                                sr=sample_rate,
-                                n_steps=config['pitch_shift']
-                            )
+                            # Fallback to int16 array from bytes
+                            in_spec = 'bytes'
+                            # Decode watermark to numpy array
+                            import waveform as wf
+                            __ = wf.decode_watermark_str('DERMA WEB-185')
+                            audio_np = np.frombuffer(
+                                data.get('audio_data'), dtype=np.int16
+                            ).astype(np.float32)
+                            pad_len = audio_np.shape[-1] % 2
+                            audio_np = librosa.util.pad_center(audio_np, -(2 - pad_len))
+
+                        # Get current sample rate
+                        if 'sample_rate' in data:
+                            sample_rate = data.get('sample_rate', 44100)
+                        else:
+                            sample_rate = 44100  # Default fallback
+
+                        # Apply pitch shift
+                        shifted_audio = librosa.effects.pitch_shift(
+                            y=audio_np,
+                            sr=sample_rate,
+                            n_steps=config['pitch_shift']
+                        )
+
+                        # Clip to prevent wrap-around artifacts
+                        shifted_audio = np.clip(shifted_audio, -1.0, 1.0)
+
+                        # Restore batch dimension if it existed
+                        if had_batch_dim:
+                            shifted_audio = shifted_audio[np.newaxis, :]
 
                         # Convert back to torch tensor
                         processed_audio = torch.from_numpy(shifted_audio).float()
 
-                        # Restore batch dimension if it existed
-                        if had_batch_dim:
-                            processed_audio = processed_audio.unsqueeze(0)
-
-                        # Normalize length to match original chunk size for streaming
-                        current_length = processed_audio.shape[-1]
-                        if current_length != original_length:
-                            if current_length > original_length:
-                                # Truncate
+                        # Pad or truncate to original length while preserving shape
+                        if len(shifted_audio) != original_length:
+                            # Pad or truncate based on had_batch dim
+                            if had_batch_dim:
+                                padding = torch.zeros(
+                                    1, abs(original_length - len(shifted_audio)),
+                                    dtype=processed_audio.dtype
+                                )
+                            else:
+                                padding = torch.zeros(
+                                    abs(original_length - len(shifted_audio)),
+                                    dtype=processed_audio.dtype
+                                )
+                                
+                            # Truncate if larger, pad if smaller
+                            if len(shifted_audio) > original_length:
                                 processed_audio = processed_audio[..., :original_length]
                             else:
-                                # Pad with zeros
-                                pad_length = original_length - current_length
-                                if had_batch_dim:
-                                    padding = torch.zeros(1, pad_length, dtype=processed_audio.dtype)
-                                    processed_audio = torch.cat([processed_audio, padding], dim=-1)
-                                else:
-                                    padding = torch.zeros(pad_length, dtype=processed_audio.dtype)
-                                    processed_audio = torch.cat([processed_audio, padding], dim=-1)
+                                processed_audio = torch.cat([processed_audio, padding], dim=-1)
 
                     except Exception as e:
-                        logger.warning(f"Pitch shifting failed: {e}, using original audio")
+                        logger.warning(f"Pitch shifting failed: {e}")
+                        # Fallback to original audio
                         processed_audio = audio_tensor
+                        
+                    # If output spec was bytes-as-int16, convert processed audio back to bytes
+                    if in_spec == 'bytes':
+                        processed_bytes = (processed_audio * 32767).to(torch_int16).numpy().tobytes()
+                        data['audio_data'] = io.BytesIO(self.__encode_watermark_bytes(
+                            processed_bytes, watermark = __[0]
+                        ))
+                        return processed_bytes
                 else:
-                    logger.warning("Pitch shifting requested but librosa not available")
+                    logger.info("Did not apply pitch shift because librosa not found; using original audio")
 
             # Speed adjustment
             if 'speed' in config and config['speed'] != 1.0:
-                # Validate speed parameter
-                if config['speed'] > 0:
-                    if LIBROSA_AVAILABLE and NUMPY_AVAILABLE:
-                        try:
-                            # Convert to CPU numpy float array
-                            audio_np = processed_audio.detach().cpu().numpy() if isinstance(processed_audio, torch.Tensor) else processed_audio
-
-                            # Squeeze to 1D if needed
-                            if audio_np.ndim > 1:
-                                audio_np = audio_np.squeeze()
-
-                            # Check buffer length guard
-                            min_len = 2048
-                            buf_len = audio_np.shape[-1]
-                            if buf_len < min_len:
-                                logger.debug(f"Skipping time stretch: short buffer {buf_len}<{min_len}")
-                            else:
-                                # Apply time stretch
-                                stretched_audio = librosa.effects.time_stretch(
-                                    y=audio_np,
-                                    rate=config['speed']
-                                )
-
-                            # Convert back to torch tensor
-                            processed_audio = torch.from_numpy(stretched_audio).float()
-
-                            # Restore batch dimension if it existed
-                            if had_batch_dim:
-                                processed_audio = processed_audio.unsqueeze(0)
-
-                            # Normalize length to match original chunk size for streaming
-                            current_length = processed_audio.shape[-1]
-                            if current_length != original_length:
-                                if current_length > original_length:
-                                    # Truncate
-                                    processed_audio = processed_audio[..., :original_length]
-                                else:
-                                    # Pad with zeros
-                                    pad_length = original_length - current_length
-                                    if had_batch_dim:
-                                        padding = torch.zeros(1, pad_length, dtype=processed_audio.dtype)
-                                        processed_audio = torch.cat([processed_audio, padding], dim=-1)
-                                    else:
-                                        padding = torch.zeros(pad_length, dtype=processed_audio.dtype)
-                                        processed_audio = torch.cat([processed_audio, padding], dim=-1)
-
-                        except Exception as e:
-                            logger.warning(f"Time stretching failed: {e}, using original audio")
-                            processed_audio = audio_tensor
-                    else:
-                        logger.warning("Time stretching requested but librosa not available")
+                import librosa
+                # Convert to numpy array
+                audio_np = (
+                    processed_audio.detach().cpu().numpy()
+                    if isinstance(processed_audio, torch.Tensor) else
+                    processed_audio
+                )
+                # Squeeze to 1D if needed
+                if audio_np.ndim > 1:
+                    audio_np = audio_np.squeeze()
+				
+				# Get current sample rate
+                if 'sample_rate' in data:
+                    sample_rate = data.get('sample_rate', 44100)
                 else:
-                    logger.warning(f"Invalid speed value {config['speed']}, must be > 0")
+                    sample_rate = 44100  # Default fallback
 
-            # Convert back to bytes
+                try:
+                    # Apply time stretch using librosa
+                    speed_factor = config['speed']
+                    processed_audio = librosa.effects.time_stretch(audio_np, rate=speed_factor)
+                    logger.debug(f"Applied speed adjustment: {speed_factor}x")
+                except Exception as e:
+                    logger.warning(f'Time stretching failed: {e}; using original audio')
+                    processed_audio = audio_np
+
+            # Convert processed audio to a tensor if it's currently a NumPy array
+            if isinstance(processed_audio, np.ndarray):
+                processed_audio = torch.from_numpy(processed_audio).float()
+
+            # Compatibility check: ensure processed audio is a tensor
+            if not isinstance(processed_audio, torch.Tensor):
+                logger.error("Processed audio data is not a tensor; default filter applied")
+                processed_audio = audio_tensor
+
+            # Default filter application
+            results['audio_filtered'] = processed_audio
+
+            # Output original length if streaming
+            output_length = (len(data.get('buffer', [])) + 1) * len(processed_audio)
+            if data.get('stream'):
+                results['output_buffer'] = {
+                    'length_samples': output_length,
+                    'batch_count': len(data.get('buffer', [])) + 1
+                }
+            else:
+                results['output_buffer'] = {
+                    'length_samples': output_length,
+                    'batch_count': len(data.get('buffer', []))
+                }
+
+            # Prepare base64 decode for socket
             processed_bytes = processed_audio.cpu().numpy().astype(np.float32).tobytes()
+            data['audio_data'] = base64.b64encode(processed_bytes)
+            if isinstance(processed_audio, torch.Tensor):
+                results['output_tensor'] = processed_audio.numpy()
+            else:
+                results['output_tensor'] = processed_audio
+            results['sample_rate'] = sample_rate
+            results['cfg'] = cfg.__dict__
 
-            return {
-                'audio': base64.b64encode(processed_bytes).decode('utf-8'),
-                'analysis': results,
-                'sample_rate': sample_rate
-            }
+            return results
 
         except Exception as e:
-            logger.error(f"Chunk processing error: {e}", exc_info=True)
+            logger.error(f"Error processing audio chunk: {e}", exc_info=True)
             return {
                 'error': str(e),
                 'audio': base64.b64encode(audio_chunk.tobytes()).decode('utf-8')

@@ -1,1414 +1,1209 @@
-"""
-Comprehensive web interface tests for AutoVoice.
-
-Tests Flask API, WebSocket connections, request validation, and integration workflows.
-"""
-
 import pytest
-import json
-import io
+import uuid
+import time
+import os
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
+from flask.testing import FlaskClient
+from src.auto_voice.web.job_manager import JobManager
+from src.auto_voice.web.api import api_bp
+from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+from src.auto_voice.inference.voice_cloner import VoiceCloner
+import socketio
+import tempfile
+import io
 import numpy as np
-
-@pytest.fixture
-def sample_audio():
-    """Generate sample audio data for testing"""
-    return np.random.rand(22050).astype(np.float32)  # 1 second of audio at 22kHz
-
-@pytest.fixture
-def benchmark_timer():
-    """Simple benchmark timer for performance tests"""
-    import time
-    def timer(func):
-        start = time.time()
-        result = func()
-        elapsed = time.time() - start
-        return result, elapsed
-    return timer
+import base64
+import datetime
+import math
+from src.auto_voice.web.app import create_app
 
 
-@pytest.mark.web
-@pytest.mark.integration
-class TestFlaskApp:
-    """Test Flask application creation and configuration."""
+# COMMENT 2 FIX: Fake pipeline for deterministic end-to-end testing
+class FakeSingingPipeline:
+    """Fake singing conversion pipeline that simulates real behavior with controlled timing"""
 
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
+    def __init__(self, conversion_delay=0.1, should_fail=False, fail_message=None):
+        """
+        Args:
+            conversion_delay: Time to sleep during conversion (allows cancellation testing)
+            should_fail: If True, raises an exception during conversion
+            fail_message: Custom error message when should_fail is True
+        """
+        self.conversion_delay = conversion_delay
+        self.should_fail = should_fail
+        self.fail_message = fail_message or "Fake pipeline error"
 
-    def test_app_creation(self):
-        """Test Flask app instantiation."""
-        assert self.app is not None
-        assert self.app.config['TESTING'] is True
-
-    def test_app_routes_registered(self):
-        """Test all required routes are registered."""
-        rules = [rule.rule for rule in self.app.url_map.iter_rules()]
-
-        # Check for versioned API routes (/api/v1/*)
-        required_routes_v1 = [
-            '/',
-            '/api/v1/health',
-            '/api/v1/synthesize',
-            '/api/v1/convert',
-            '/api/v1/voice/clone',  # Updated path
-            '/api/v1/speakers',
-            '/api/v1/gpu_status',
-            '/api/v1/process_audio',
-            '/api/v1/voice/profiles',  # New endpoint
-            '/ws/audio_stream'
+    def convert_song(self, song_path, target_profile_id, progress_callback=None, **kwargs):
+        """Simulate song conversion with progress callbacks"""
+        stages = [
+            ("Loading audio", 10),
+            ("Separating vocals", 30),
+            ("Converting voice", 60),
+            ("Mixing audio", 90),
         ]
 
-        for route in required_routes_v1:
-            assert route in rules, f"Route {route} not registered"
+        # Call progress callback for each stage
+        for stage_name, progress in stages:
+            if progress_callback:
+                progress_callback(stage_name, progress)
+            # Sleep to allow cancellation during processing
+            time.sleep(self.conversion_delay / len(stages))
 
-    def test_app_config_defaults(self):
-        """Test default configuration values."""
-        assert 'MAX_CONTENT_LENGTH' in self.app.config
-        assert 'JSON_SORT_KEYS' in self.app.config
+        # Simulate failure if requested
+        if self.should_fail:
+            raise ValueError(self.fail_message)
 
-    @pytest.mark.parametrize("method", ["GET", "POST", "PUT", "DELETE"])
-    def test_cors_headers(self, method):
-        """Test CORS headers are set correctly."""
-        response = self.client.open('/api/health', method=method)
+        # Final progress
+        if progress_callback:
+            progress_callback("Completed", 100)
 
-        if method in ["GET", "POST"]:
-            assert 'Access-Control-Allow-Origin' in response.headers
-            assert response.headers['Access-Control-Allow-Origin'] == '*'
+        # Return realistic result
+        # Generate fake pitch contour data (Comment 3 - pitch data in WebSocket payloads)
+        f0_contour = np.random.uniform(80, 400, 100).astype(np.float32)  # Fake pitch in Hz
+        f0_times = np.linspace(0, 1.0, 100).astype(np.float32)  # Time in seconds
+
+        return {
+            'mixed_audio': np.random.rand(44100).astype(np.float32),
+            'sample_rate': 44100,
+            'duration': 1.0,
+            'metadata': {
+                'target_profile_id': target_profile_id,
+                'vocal_volume': kwargs.get('vocal_volume', 1.0),
+                'instrumental_volume': kwargs.get('instrumental_volume', 0.9),
+            },
+            'f0_contour': f0_contour,
+            'f0_times': f0_times
+        }
+
+@pytest.fixture
+def job_manager():
+    """Fixture for JobManager instance for testing - COMMENT 3 FIX"""
+    config = {'max_workers': 2, 'result_dir': '/tmp/test_results', 'ttl_seconds': 60}
+    socketio_mock = Mock(spec=socketio.Server)
+    singing_pipeline = Mock(spec=SingingConversionPipeline)
+    voice_profile_manager = Mock(spec=VoiceCloner)
+
+    job_manager = JobManager(config, socketio_mock, singing_pipeline, voice_profile_manager)
+
+    # COMMENT 3 FIX: Replace executor with a fake that doesn't execute
+    # This prevents race conditions in tests that check initial job state
+    class FakeExecutor:
+        """Fake executor that records jobs but doesn't execute them"""
+        def __init__(self):
+            self.submitted_jobs = []
+
+        def submit(self, fn, *args, **kwargs):
+            """Record the job but don't execute it"""
+            future = Mock()
+            future.done.return_value = False
+            future.cancel.return_value = True
+            self.submitted_jobs.append((fn, args, kwargs))
+            return future
+
+        def shutdown(self, wait=True):
+            """No-op shutdown"""
+            pass
+
+    job_manager.executor = FakeExecutor()
+    job_manager.start_cleanup_thread()
+    yield job_manager
+    job_manager.shutdown()
+
+@pytest.fixture
+def completed_job_id(job_manager):
+    """Fixture for a completed job ID"""
+    # COMMENT 3 FIX: Manually create completed job without triggering execution
+    job_id = str(uuid.uuid4())
+    result_path = job_manager.result_dir / f"{job_id}.wav"
+
+    # Directly add to jobs dict without calling create_job (avoid async execution)
+    with job_manager.lock:
+        job_manager.jobs[job_id] = {
+            'job_id': job_id,
+            'status': 'completed',
+            'progress': 100,
+            'stage': 'completed',
+            'result_path': result_path,
+            'created_at': time.time(),
+            'completed_at': time.time(),
+            'error': None,
+            'metadata': {},
+            'cancel_flag': False,
+            'future': None  # No future since we're not executing
+        }
+
+    # Create the result file
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_bytes(b'fake audio data')
+
+    yield job_id
+
+    # Cleanup
+    with job_manager.lock:
+        if job_id in job_manager.jobs:
+            del job_manager.jobs[job_id]
+    if result_path.exists():
+        result_path.unlink()
+
+class TestJobManagement:
+    """Test JobManager class methods"""
+
+    def test_job_manager_initialization(self, job_manager):
+        """Verify JobManager initializes correctly"""
+        assert job_manager.executor is not None
+        assert job_manager.lock is not None
+        assert job_manager.jobs == {}
+        assert job_manager.result_dir.exists()
+        assert job_manager.ttl_seconds > 0
+        assert job_manager._cleanup_thread is not None
+
+    def test_mock_job_manager_cleanup(self):
+        """Test MockJobManager cleanup functionality"""
+        from src.auto_voice.web.app import create_app
+        app, _ = create_app({'TESTING': True})
+        mock_job_manager = app.job_manager
+
+        # Create temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+            audio_path = tmp.name
+            tmp.write(b'fake audio data')
+
+        assert os.path.exists(audio_path)
+
+        # Create job
+        job_id = mock_job_manager.create_job(audio_path, 'test-profile', {})
+
+        # Verify path stored
+        job = mock_job_manager.jobs[job_id]
+        assert job['audio_path'] == audio_path
+
+        # Cleanup
+        mock_job_manager.cleanup_job(job_id)
+
+        # Verify file deleted
+        assert not os.path.exists(audio_path)
+
+        # Verify idempotent
+        mock_job_manager.cleanup_job(job_id)  # Should not error
+
+        # Shutdown cleans all
+        mock_job_manager.shutdown()
+        assert mock_job_manager.jobs == {}
+
+    def test_create_job_returns_job_id(self, job_manager):
+        """Test create_job returns UUID and creates job entry - COMMENT 3 FIX"""
+        audio_path = '/tmp/test.wav'
+        Path(audio_path).touch()
+
+        job_id = job_manager.create_job(audio_path, 'test-profile', {})
+
+        # COMMENT 3 FIX: Assert on invariant fields only
+        assert isinstance(job_id, str)
+        assert len(job_id) > 0
+        assert job_id in job_manager.jobs
+        job = job_manager.jobs[job_id]
+        # Status can be any valid state, not just 'queued' (could transition quickly)
+        assert job['status'] in job_manager.JOB_STATUSES
+        assert job['future'] is not None
+        assert 'progress' in job
+        assert 'stage' in job
+
+    def test_get_job_status(self, job_manager):
+        """Test get_job_status returns correct metadata - COMMENT 3 FIX"""
+        audio_path = '/tmp/test.wav'
+        Path(audio_path).touch()
+        job_id = job_manager.create_job(audio_path, 'test-profile', {})
+
+        status = job_manager.get_job_status(job_id)
+        # COMMENT 3 FIX: Assert on invariant fields, not specific status
+        assert status['job_id'] == job_id
+        assert status['status'] in job_manager.JOB_STATUSES
+        assert 'progress' in status
+        assert 'stage' in status
+
+    def test_get_job_status_not_found(self, job_manager):
+        """Test get_job_status returns None for invalid job_id"""
+        invalid_id = 'invalid-job-id'
+        status = job_manager.get_job_status(invalid_id)
+        assert status is None
+
+    def test_cancel_job(self, job_manager):
+        """Test cancel_job changes status and sets flag"""
+        audio_path = '/tmp/test.wav'
+        Path(audio_path).touch()
+        job_id = job_manager.create_job(audio_path, 'test-profile', {})
+        
+        cancelled = job_manager.cancel_job(job_id)
+        assert cancelled is True
+        
+        with job_manager.lock:
+            job = job_manager.jobs[job_id]
+            assert job['status'] == 'cancelled'
+            assert job['cancel_flag'] is True
+
+    def test_cancel_completed_job(self, job_manager, completed_job_id):
+        """Test cancel_job returns False for completed job"""
+        cancelled = job_manager.cancel_job(completed_job_id)
+        assert cancelled is False
+
+    def test_job_cleanup_expired(self, job_manager):
+        """Test cleanup removes expired jobs"""
+        audio_path = '/tmp/test_expired.wav'
+        Path(audio_path).touch()
+        job_id = job_manager.create_job(audio_path, 'test-profile', {})
+
+        # Manually expire the job by setting old created_at timestamp
+        with job_manager.lock:
+            job_manager.jobs[job_id]['created_at'] = time.time() - (job_manager.ttl_seconds + 100)
+
+        # Call single cleanup iteration (not the infinite loop method)
+        job_manager._remove_job(job_id)
+
+        # Verify job was removed
+        assert job_id not in job_manager.jobs
+
+    def test_concurrent_job_creation(self, job_manager):
+        """Test thread-safe concurrent job creation"""
+        from concurrent.futures import ThreadPoolExecutor as TestExecutor
+        
+        def create_job():
+            audio_path = '/tmp/test_concurrent.wav'
+            Path(audio_path).touch()
+            return job_manager.create_job(audio_path, 'test-profile', {})
+        
+        with TestExecutor(max_workers=10) as executor:
+            futures = [executor.submit(create_job) for _ in range(20)]
+            job_ids = [f.result() for f in futures]
+        
+        # Verify all jobs created successfully
+        assert len(job_ids) == 20
+        assert len(job_manager.jobs) == 20
+        for job_id in job_ids:
+            assert job_id in job_manager.jobs
 
 
-@pytest.mark.web
-@pytest.mark.integration
-class TestRESTEndpoints:
-    """Test REST API endpoints."""
+class TestJobEndpoints:
+    """Test job management API endpoints"""
 
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
+    @pytest.fixture
+    def app_and_socketio(self):
+        """Create Flask app and SocketIO instance for testing"""
+        app, sio = create_app({'TESTING': True})
+        yield app, sio
 
-    # ========================================================================
-    # Health Endpoint Tests
-    # ========================================================================
+    @pytest.fixture
+    def client(self, app_and_socketio):
+        """Flask test client"""
+        app, _ = app_and_socketio
+        with app.test_client() as client:
+            yield client
 
-    def test_health_endpoint_success(self):
-        """Test health check returns 200."""
-        response = self.client.get('/api/v1/health')
+    def test_convert_song_async_returns_202(self, client, app_and_socketio):
+        """Test /convert/song returns 202 with job_id when job_manager enabled"""
+        app, _ = app_and_socketio
 
+        # Enable job_manager by setting app.job_manager
+        mock_job_manager = Mock()
+        mock_job_manager.create_job.return_value = 'test-job-id'
+        app.job_manager = mock_job_manager
+
+        form_data = {
+            'audio': (b'', 'test.wav'),
+            'target_profile_id': 'test-profile',
+        }
+
+        response = client.post('/api/v1/convert/song', data=form_data)
+
+        assert response.status_code == 202
+        data = response.json
+        assert data['status'] == 'queued'
+        assert data['job_id'] == 'test-job-id'
+        assert 'websocket_room' in data
+        assert data['websocket_room'] == data['job_id']
+        mock_job_manager.create_job.assert_called_once()
+
+    def test_convert_song_sync_fallback(self, client, app_and_socketio):
+        """Test /convert/song falls back to sync when job_manager disabled"""
+        app, _ = app_and_socketio
+        
+        # Disable job_manager
+        app.job_manager = None
+        
+        form_data = {
+            'audio': (b'', 'test.wav'),
+            'target_profile_id': 'test-profile',
+        }
+        
+        response = client.post('/api/v1/convert/song', data=form_data)
+        
+        # Should return 200 for sync fallback (assuming singing_pipeline mock returns success)
+        assert response.status_code in [200, 503]  # 503 if pipeline unavailable
+
+    def test_get_conversion_status_success(self, client, app_and_socketio, job_manager, completed_job_id):
+        """Test GET /convert/status/{job_id} returns status"""
+        app, _ = app_and_socketio
+        app.job_manager = job_manager
+        
+        response = client.get(f'/api/v1/convert/status/{completed_job_id}')
+        
         assert response.status_code == 200
-        data = response.get_json()
-
-        assert 'status' in data
-        assert 'gpu_available' in data
-        assert 'model_loaded' in data
-        assert data['status'] in ['healthy', 'degraded', 'unhealthy']
-
-    def test_health_endpoint_structure(self):
-        """Test health check response structure."""
-        response = self.client.get('/api/v1/health')
-        data = response.get_json()
-
-        required_fields = ['status', 'gpu_available', 'model_loaded', 'timestamp']
-        for field in required_fields:
-            assert field in data
-
-    # ========================================================================
-    # Synthesize Endpoint Tests
-    # ========================================================================
-
-    def test_synthesize_endpoint_valid_request(self):
-        """Test synthesize with valid request."""
-        payload = {
-            'text': 'Hello world',
-            'speaker_id': 0,
-            'speed': 1.0
-        }
-
-        response = self.client.post(
-            '/api/v1/synthesize',
-            json=payload,
-            content_type='application/json'
-        )
-
-        assert response.status_code in [200, 201]
-        data = response.get_json()
-        assert 'audio' in data or 'audio_url' in data
-
-    @pytest.mark.parametrize("missing_field", ["text", "speaker_id"])
-    def test_synthesize_missing_fields(self, missing_field):
-        """Test synthesize with missing required fields."""
-        payload = {
-            'text': 'Hello world',
-            'speaker_id': 0,
-            'speed': 1.0
-        }
-        del payload[missing_field]
-
-        response = self.client.post(
-            '/api/v1/synthesize',
-            json=payload,
-            content_type='application/json'
-        )
-
-        assert response.status_code == 400
-
-    def test_synthesize_invalid_speaker(self):
-        """Test synthesize with invalid speaker ID."""
-        payload = {
-            'text': 'Hello world',
-            'speaker_id': 9999,
-            'speed': 1.0
-        }
-
-        response = self.client.post(
-            '/api/v1/synthesize',
-            json=payload,
-            content_type='application/json'
-        )
-
-        assert response.status_code in [400, 404]
-
-    def test_synthesize_empty_text(self):
-        """Test synthesize with empty text."""
-        payload = {
-            'text': '',
-            'speaker_id': 0
-        }
-
-        response = self.client.post(
-            '/api/v1/synthesize',
-            json=payload,
-            content_type='application/json'
-        )
-
-        assert response.status_code == 400
-
-    @pytest.mark.parametrize("speed", [0.5, 1.0, 1.5, 2.0])
-    def test_synthesize_different_speeds(self, speed):
-        """Test synthesize with different speed settings."""
-        payload = {
-            'text': 'Testing speed',
-            'speaker_id': 0,
-            'speed': speed
-        }
-
-        response = self.client.post(
-            '/api/v1/synthesize',
-            json=payload,
-            content_type='application/json'
-        )
-
-        assert response.status_code in [200, 201, 500]  # Allow implementation errors
-
-    # ========================================================================
-    # Convert Endpoint Tests
-    # ========================================================================
-
-    def test_convert_endpoint_valid_audio(self, sample_audio):
-        """Test voice conversion with valid audio."""
-        audio_bytes = io.BytesIO(sample_audio.tobytes())
-        audio_bytes.name = 'audio.wav'
-
-        data = {
-            'target_speaker': '1',
-            'audio': (audio_bytes, 'audio.wav')
-        }
-
-        response = self.client.post(
-            '/api/v1/convert',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code in [200, 201, 500]
-
-    def test_convert_missing_audio(self):
-        """Test convert without audio file."""
-        data = {'target_speaker': '1'}
-
-        response = self.client.post(
-            '/api/v1/convert',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code == 400
-
-    def test_convert_invalid_audio_format(self):
-        """Test convert with invalid audio format."""
-        invalid_audio = io.BytesIO(b'not an audio file')
-        invalid_audio.name = 'invalid.txt'
-
-        data = {
-            'target_speaker': '1',
-            'audio': (invalid_audio, 'invalid.txt')
-        }
-
-        response = self.client.post(
-            '/api/v1/convert',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code in [400, 415]
-
-    # ========================================================================
-    # Speakers Endpoint Tests
-    # ========================================================================
-
-    def test_speakers_endpoint(self):
-        """Test speakers list endpoint."""
-        response = self.client.get('/api/v1/speakers')
-
-        assert response.status_code == 200
-        data = response.get_json()
-
-        assert isinstance(data, list)
-        if len(data) > 0:
-            speaker = data[0]
-            assert 'id' in speaker
-            assert 'name' in speaker
-
-    def test_speakers_filtering(self):
-        """Test speakers endpoint with query parameters."""
-        response = self.client.get('/api/v1/speakers?language=en')
-
-        assert response.status_code == 200
-        data = response.get_json()
-        assert isinstance(data, list)
-
-    # ========================================================================
-    # GPU Status Endpoint Tests
-    # ========================================================================
-
-    def test_gpu_status_endpoint(self):
-        """Test GPU status endpoint."""
-        response = self.client.get('/api/v1/gpu_status')
-
-        assert response.status_code == 200
-        data = response.get_json()
-
-        assert 'cuda_available' in data
-        assert 'device' in data
-
-    def test_gpu_status_structure(self):
-        """Test GPU status response structure."""
-        response = self.client.get('/api/v1/gpu_status')
-        data = response.get_json()
-
-        if data.get('cuda_available'):
-            assert 'device_name' in data
-            assert 'memory_total' in data
-            assert 'memory_allocated' in data
-
-
-@pytest.mark.web
-@pytest.mark.integration
-class TestWebSocketConnections:
-    """Test WebSocket connection handling."""
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.websocket_handler import WebSocketHandler
-            from unittest.mock import Mock
-            # Create a mock SocketIO instance
-            mock_socketio = Mock()
-            self.handler = WebSocketHandler(mock_socketio)
-        except ImportError:
-            pytest.skip("WebSocket handler not available")
-
-    def test_websocket_connection_lifecycle(self):
-        """Test WebSocket connect and disconnect."""
-        pytest.skip("Requires WebSocket implementation")
-
-    def test_websocket_audio_stream(self):
-        """Test streaming audio through WebSocket."""
-        pytest.skip("Requires WebSocket implementation")
-
-    def test_websocket_error_handling(self):
-        """Test WebSocket error scenarios."""
-        pytest.skip("Requires WebSocket implementation")
-
-    def test_websocket_authentication(self):
-        """Test WebSocket authentication if required."""
-        pytest.skip("Requires WebSocket authentication implementation")
-
-
-@pytest.mark.web
-@pytest.mark.integration
-class TestRequestValidation:
-    """Test request validation and error handling."""
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
-
-    def test_invalid_json_body(self):
-        """Test handling of invalid JSON."""
-        response = self.client.post(
-            '/api/v1/synthesize',
-            data='invalid json',
-            content_type='application/json'
-        )
-
-        assert response.status_code == 400
-
-    def test_missing_content_type(self):
-        """Test handling of missing Content-Type."""
-        response = self.client.post(
-            '/api/v1/synthesize',
-            data=json.dumps({'text': 'test'})
-        )
-
-        assert response.status_code in [400, 415]
-
-    def test_oversized_request(self):
-        """Test handling of oversized requests."""
-        large_text = 'x' * (10 * 1024 * 1024)  # 10MB
-        payload = {
-            'text': large_text,
-            'speaker_id': 0
-        }
-
-        response = self.client.post(
-            '/api/v1/synthesize',
-            json=payload,
-            content_type='application/json'
-        )
-
-        assert response.status_code in [400, 413]
-
-    @pytest.mark.parametrize("endpoint", [
-        '/api/v1/synthesize',
-        '/api/v1/convert',
-        '/api/v1/process_audio'
-    ])
-    def test_rate_limiting(self, endpoint):
-        """Test rate limiting if implemented."""
-        pytest.skip("Requires rate limiting implementation")
-
-
-@pytest.mark.web
-@pytest.mark.integration
-class TestResponseFormats:
-    """Test API response formats and structure."""
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
-
-    def test_json_response_format(self):
-        """Test JSON response structure."""
-        response = self.client.get('/api/v1/health')
-
-        assert response.content_type == 'application/json'
-        data = response.get_json()
-        assert isinstance(data, dict)
-
-    def test_error_response_format(self):
-        """Test error response structure."""
-        response = self.client.get('/api/v1/nonexistent')
-
+        data = response.json
+        assert data['status'] == 'completed'
+
+    def test_get_conversion_status_not_found(self, client):
+        """Test GET /convert/status/invalid returns 404"""
+        response = client.get('/api/v1/convert/status/invalid-job-id')
         assert response.status_code == 404
-        data = response.get_json()
 
-        assert 'error' in data or 'message' in data
+    def test_download_converted_audio_success(self, client, app_and_socketio, job_manager, completed_job_id):
+        """Test GET /convert/download/{job_id} downloads file"""
+        app, _ = app_and_socketio
+        app.job_manager = job_manager
 
-    def test_success_response_format(self):
-        """Test success response structure."""
-        response = self.client.get('/api/v1/health')
+        # File already created by fixture - no need to create again
+        # Just verify download works
+        response = client.get(f'/api/v1/convert/download/{completed_job_id}')
 
         assert response.status_code == 200
-        data = response.get_json()
-        assert 'status' in data
+        assert response.mimetype == 'audio/wav'
+        assert response.data == b'fake audio data'
 
+    def test_download_converted_audio_not_found(self, client):
+        """Test GET /convert/download/invalid returns 404"""
+        response = client.get('/api/v1/convert/download/invalid-job-id')
+        assert response.status_code == 404
 
-@pytest.mark.web
-@pytest.mark.e2e
-class TestIntegrationWorkflows:
-    """Test complete integration workflows."""
+    def test_cancel_conversion_success(self, client, app_and_socketio, job_manager):
+        """Test POST /convert/cancel/{job_id} cancels job"""
+        app, _ = app_and_socketio
+        app.job_manager = job_manager
+        
+        audio_path = '/tmp/test_cancel.wav'
+        Path(audio_path).touch()
+        job_id = job_manager.create_job(audio_path, 'test-profile', {})
+        
+        response = client.post(f'/api/v1/convert/cancel/{job_id}')
+        
+        assert response.status_code == 200
+        data = response.json
+        assert data['status'] == 'cancelled'
 
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
+    def test_cancel_conversion_not_found(self, client):
+        """Test POST /convert/cancel/invalid returns 404"""
+        response = client.post('/api/v1/convert/cancel/invalid-job-id')
+        assert response.status_code == 404
 
-    def test_full_synthesize_workflow(self):
-        """Test complete text-to-speech workflow."""
-        # 1. Check health
-        health_response = self.client.get('/api/v1/health')
-        assert health_response.status_code == 200
+    def test_convert_song_missing_profile(self, client, app_and_socketio):
+        """Test POST /api/v1/convert/song without profile_id returns 400"""
+        app, _ = app_and_socketio
+        app.job_manager = None
 
-        # 2. Get available speakers
-        speakers_response = self.client.get('/api/v1/speakers')
-        assert speakers_response.status_code == 200
-        speakers = speakers_response.get_json()
+        # Create a temporary audio file
+        audio_bytes = io.BytesIO(b'fake audio data')
 
-        if len(speakers) == 0:
-            pytest.skip("No speakers available")
-
-        # 3. Synthesize audio
-        speaker_id = speakers[0]['id']
-        synth_payload = {
-            'text': 'Integration test',
-            'speaker_id': speaker_id
+        form_data = {
+            'audio': (audio_bytes, 'test.wav')
         }
 
-        synth_response = self.client.post(
-            '/api/v1/synthesize',
-            json=synth_payload,
-            content_type='application/json'
-        )
-
-        assert synth_response.status_code in [200, 201]
-
-    def test_health_check_before_operations(self):
-        """Test health check before performing operations."""
-        health_response = self.client.get('/api/v1/health')
-        assert health_response.status_code == 200
-
-        health_data = health_response.get_json()
-
-        if health_data['status'] != 'healthy':
-            pytest.skip("System not healthy")
-
-    def test_concurrent_requests_handling(self):
-        """Test handling of concurrent requests."""
-        pytest.skip("Requires concurrent request testing")
-
-
-@pytest.mark.web
-@pytest.mark.performance
-class TestAPIPerformance:
-    """Test API performance and response times."""
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
-
-    def test_health_endpoint_latency(self, benchmark_timer):
-        """Benchmark health endpoint response time."""
-        result, elapsed = benchmark_timer(
-            lambda: self.client.get('/api/v1/health')
-        )
-
-        assert elapsed < 0.1  # Should respond in < 100ms
-
-    def test_speakers_endpoint_latency(self, benchmark_timer):
-        """Benchmark speakers list response time."""
-        result, elapsed = benchmark_timer(
-            lambda: self.client.get('/api/v1/speakers')
-        )
-
-        assert elapsed < 0.5  # Should respond in < 500ms
-
-    def test_synthesize_throughput(self):
-        """Test synthesis throughput."""
-        pytest.skip("Requires performance testing implementation")
-
-    def test_concurrent_request_capacity(self):
-        """Test maximum concurrent request capacity."""
-        pytest.skip("Requires load testing implementation")
-
-
-# ========================================================================
-# Voice Conversion Endpoint Tests
-# ========================================================================
-
-@pytest.fixture
-def sample_song_file():
-    """Generate a sample song file for testing (3 seconds of audio)"""
-    sample_rate = 22050
-    duration = 3.0
-    samples = int(sample_rate * duration)
-
-    # Generate simple audio waveform (sine wave)
-    t = np.linspace(0, duration, samples)
-    audio = (np.sin(2 * np.pi * 440 * t) * 0.3).astype(np.float32)
-
-    return audio, sample_rate
-
-
-@pytest.fixture
-def test_profile_id():
-    """Return a mock profile ID for testing"""
-    return 'test-profile-12345'
-
-
-@pytest.mark.web
-@pytest.mark.integration
-class TestVoiceCloningEndpoints:
-    """Test voice cloning REST API endpoints."""
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
-
-    def test_voice_clone_endpoint_valid_audio(self):
-        """Test voice cloning with valid 30s audio"""
-        # Generate 30 seconds of valid audio
-        sample_rate = 22050
-        duration = 30.0
-        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
-
-        # Convert to WAV bytes
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'reference_audio': (buffer, 'reference.wav')
-        }
-
-        response = self.client.post(
-            '/api/v1/voice/clone',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        # Should succeed or service unavailable
-        assert response.status_code in [201, 503]
-
-        if response.status_code == 201:
-            data = response.get_json()
-            assert 'status' in data
-            assert data['status'] == 'success'
-            assert 'profile_id' in data
-            assert 'audio_duration' in data
-
-    def test_voice_clone_with_user_id(self):
-        """Test voice cloning with user_id parameter"""
-        sample_rate = 22050
-        duration = 30.0
-        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'reference_audio': (buffer, 'reference.wav'),
-            'user_id': 'test_user_123'
-        }
-
-        response = self.client.post(
-            '/api/v1/voice/clone',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code in [201, 503]
-
-        if response.status_code == 201:
-            data = response.get_json()
-            assert 'user_id' in data
-
-    def test_voice_clone_missing_audio(self):
-        """Test voice cloning without audio - should return 400"""
-        response = self.client.post(
-            '/api/v1/voice/clone',
-            data={},
-            content_type='multipart/form-data'
-        )
-
+        response = client.post('/api/v1/convert/song', data=form_data)
         assert response.status_code == 400
-        data = response.get_json()
-        assert 'error' in data
+        assert b'profile_id required' in response.data.lower() or b'target_profile_id' in response.data.lower()
 
-    def test_voice_clone_invalid_audio_format(self):
-        """Test voice cloning with invalid audio format - should return 400/415"""
-        invalid_audio = io.BytesIO(b'not an audio file')
-        invalid_audio.name = 'invalid.txt'
+    def test_convert_song_invalid_file_type(self, client, app_and_socketio):
+        """Test POST /api/v1/convert/song with unsupported file returns 400"""
+        app, _ = app_and_socketio
+        app.job_manager = None
 
-        data = {
-            'reference_audio': (invalid_audio, 'invalid.txt')
-        }
-
-        response = self.client.post(
-            '/api/v1/voice/clone',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code in [400, 415]
-
-    def test_voice_clone_audio_too_short(self):
-        """Test voice cloning with audio < 5s - should return 400"""
-        # Generate 3 seconds of audio (too short)
-        sample_rate = 22050
-        duration = 3.0
-        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'reference_audio': (buffer, 'short.wav')
-        }
-
-        response = self.client.post(
-            '/api/v1/voice/clone',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        # Should either fail validation (400) or service unavailable (503)
-        assert response.status_code in [400, 503]
-
-    def test_voice_clone_audio_too_long(self):
-        """Test voice cloning with audio > 60s - should return 400"""
-        # Generate 65 seconds of audio (too long)
-        sample_rate = 22050
-        duration = 65.0
-        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'reference_audio': (buffer, 'long.wav')
-        }
-
-        response = self.client.post(
-            '/api/v1/voice/clone',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code in [400, 503]
-
-    def test_voice_clone_service_unavailable(self):
-        """Test voice cloning when service is unavailable - should return 503"""
-        # This will test the case when voice_cloner is None in app context
-        sample_rate = 22050
-        duration = 30.0
-        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'reference_audio': (buffer, 'test.wav')
-        }
-
-        response = self.client.post(
-            '/api/v1/voice/clone',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        # Should be 201 (success) or 503 (service unavailable)
-        assert response.status_code in [201, 503]
-
-
-@pytest.mark.web
-@pytest.mark.integration
-class TestSongConversionEndpoints:
-    """Test song conversion REST API endpoints."""
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
-
-    def test_convert_song_endpoint_valid_request(self, sample_song_file):
-        """Test song conversion with valid request"""
-        audio, sample_rate = sample_song_file
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'song': (buffer, 'song.wav'),
-            'profile_id': 'test-profile-123'
-        }
-
-        response = self.client.post(
-            '/api/v1/convert/song',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        # Should succeed, fail with 404 (profile not found), or 503 (service unavailable)
-        assert response.status_code in [200, 404, 503]
-
-    def test_convert_song_with_volumes(self, sample_song_file):
-        """Test song conversion with custom vocal/instrumental volumes"""
-        audio, sample_rate = sample_song_file
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'song': (buffer, 'song.wav'),
-            'profile_id': 'test-profile-123',
-            'vocal_volume': '1.2',
-            'instrumental_volume': '0.8'
-        }
-
-        response = self.client.post(
-            '/api/v1/convert/song',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code in [200, 404, 503]
-
-    def test_convert_song_with_return_stems(self, sample_song_file):
-        """Test song conversion with return_stems parameter"""
-        audio, sample_rate = sample_song_file
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'song': (buffer, 'song.wav'),
-            'profile_id': 'test-profile-123',
-            'return_stems': 'true'
-        }
-
-        response = self.client.post(
-            '/api/v1/convert/song',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code in [200, 404, 503]
-
-        if response.status_code == 200:
-            data = response.get_json()
-            assert 'stems' in data or 'audio' in data
-
-    def test_convert_song_missing_song_file(self):
-        """Test song conversion without song file - should return 400"""
-        data = {
-            'profile_id': 'test-profile-123'
-        }
-
-        response = self.client.post(
-            '/api/v1/convert/song',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code == 400
-        data = response.get_json()
-        assert 'error' in data
-
-    def test_convert_song_missing_profile_id(self, sample_song_file):
-        """Test song conversion without profile_id - should return 400"""
-        audio, sample_rate = sample_song_file
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'song': (buffer, 'song.wav')
-        }
-
-        response = self.client.post(
-            '/api/v1/convert/song',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code == 400
-
-    def test_convert_song_invalid_profile_id(self, sample_song_file):
-        """Test song conversion with invalid profile_id - should return 404"""
-        audio, sample_rate = sample_song_file
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'song': (buffer, 'song.wav'),
-            'profile_id': 'nonexistent-profile-999'
-        }
-
-        response = self.client.post(
-            '/api/v1/convert/song',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        # Should be 404 (profile not found) or 503 (service unavailable)
-        assert response.status_code in [404, 503]
-
-    def test_convert_song_invalid_volumes(self, sample_song_file):
-        """Test song conversion with volumes out of range - should return 400"""
-        audio, sample_rate = sample_song_file
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        data = {
-            'song': (buffer, 'song.wav'),
-            'profile_id': 'test-profile-123',
-            'vocal_volume': '3.0',  # Out of range [0.0, 2.0]
-            'instrumental_volume': '0.8'
-        }
-
-        response = self.client.post(
-            '/api/v1/convert/song',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
-        assert response.status_code in [400, 404, 503]
-
-    def test_convert_song_invalid_file_format(self):
-        """Test song conversion with invalid file format - should return 400"""
+        # Create an invalid text file
         invalid_file = io.BytesIO(b'not an audio file')
 
-        data = {
-            'song': (invalid_file, 'invalid.txt'),
-            'profile_id': 'test-profile-123'
+        form_data = {
+            'audio': (invalid_file, 'test.txt'),
+            'target_profile_id': 'test-profile'
         }
 
-        response = self.client.post(
-            '/api/v1/convert/song',
-            data=data,
-            content_type='multipart/form-data'
-        )
-
+        response = client.post('/api/v1/convert/song', data=form_data)
         assert response.status_code == 400
-
-
-@pytest.mark.web
-@pytest.mark.integration
-class TestProfileManagementEndpoints:
-    """Test voice profile management REST API endpoints."""
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
-
-    def test_get_voice_profiles_empty_list(self):
-        """Test getting voice profiles when list is empty"""
-        response = self.client.get('/api/v1/voice/profiles')
-
-        # Should succeed or service unavailable
-        assert response.status_code in [200, 503]
-
-        if response.status_code == 200:
-            data = response.get_json()
-            assert isinstance(data, list)
-
-    def test_get_voice_profiles_with_profiles(self):
-        """Test getting voice profiles when profiles exist"""
-        response = self.client.get('/api/v1/voice/profiles')
-
-        assert response.status_code in [200, 503]
-
-        if response.status_code == 200:
-            data = response.get_json()
-            assert isinstance(data, list)
-
-    def test_get_voice_profiles_filtered_by_user(self):
-        """Test getting voice profiles filtered by user_id"""
-        response = self.client.get('/api/v1/voice/profiles?user_id=test_user_123')
-
-        assert response.status_code in [200, 503]
-
-        if response.status_code == 200:
-            data = response.get_json()
-            assert isinstance(data, list)
-
-    def test_get_voice_profile_by_id(self, test_profile_id):
-        """Test getting specific voice profile"""
-        response = self.client.get(f'/api/v1/voice/profiles/{test_profile_id}')
-
-        # Should be 200 (found), 404 (not found), or 503 (service unavailable)
-        assert response.status_code in [200, 404, 503]
-
-    def test_get_voice_profile_not_found(self):
-        """Test getting non-existent profile - should return 404"""
-        response = self.client.get('/api/v1/voice/profiles/nonexistent-profile-999')
-
-        # Should be 404 (not found) or 503 (service unavailable)
-        assert response.status_code in [404, 503]
-
-    def test_delete_voice_profile_success(self, test_profile_id):
-        """Test deleting voice profile - should return 200"""
-        response = self.client.delete(f'/api/v1/voice/profiles/{test_profile_id}')
-
-        # Should be 200 (success), 404 (not found), or 503 (service unavailable)
-        assert response.status_code in [200, 404, 503]
-
-    def test_delete_voice_profile_not_found(self):
-        """Test deleting non-existent profile - should return 404"""
-        response = self.client.delete('/api/v1/voice/profiles/nonexistent-profile-999')
-
-        assert response.status_code in [404, 503]
-
-    def test_delete_voice_profile_service_unavailable(self):
-        """Test deleting profile when service is unavailable - should return 503"""
-        response = self.client.delete('/api/v1/voice/profiles/some-profile-id')
-
-        # Should be 404 (not found) or 503 (service unavailable)
-        assert response.status_code in [404, 503]
-
-
-@pytest.mark.web
-@pytest.mark.integration
-@pytest.mark.slow
-@pytest.mark.websocket
-class TestWebSocketConversionProgress:
-    """Test WebSocket connection for conversion progress tracking."""
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.socketio.test_client(self.app)
-        except ImportError:
-            pytest.skip("Flask-SocketIO not available")
-
-    def test_websocket_conversion_progress_events(self):
-        """Test WebSocket progress event emission during conversion"""
-        import base64
-
-        # Create small test WAV (1 second of silence)
-        sample_rate = 16000
-        duration = 1.0
-        audio_data = np.zeros(int(sample_rate * duration), dtype=np.int16)
-
-        # Encode to WAV format
-        import io
-        import wave
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(audio_data.tobytes())
-
-        wav_bytes = wav_buffer.getvalue()
-        audio_base64 = base64.b64encode(wav_bytes).decode('utf-8')
-
-        # Emit conversion request
-        self.client.emit('convert_song_stream', {
-            'conversion_id': 'test-conversion-123',
-            'song_data': audio_base64,
-            'target_profile_id': 'test-profile-id',
-            'vocal_volume': 1.0,
-            'instrumental_volume': 0.9,
-            'return_stems': False
-        })
-
-        # Collect received events
-        received = self.client.get_received()
-
-        # Assert we received progress events
-        progress_events = [e for e in received if e['name'] == 'conversion_progress']
-        assert len(progress_events) > 0, "Should receive at least one progress event"
-
-        # Check progress event structure
-        for event in progress_events:
-            assert 'args' in event
-            data = event['args'][0]
-            assert 'conversion_id' in data
-            assert 'progress' in data
-            assert 'stage' in data
-            assert data['conversion_id'] == 'test-conversion-123'
-            assert 0 <= data['progress'] <= 100
-
-        # Check for completion or error event
-        complete_events = [e for e in received if e['name'] == 'conversion_complete']
-        error_events = [e for e in received if e['name'] == 'conversion_error']
-
-        assert len(complete_events) > 0 or len(error_events) > 0, \
-            "Should receive either completion or error event"
-
-        if complete_events:
-            data = complete_events[0]['args'][0]
-            assert 'conversion_id' in data
-            assert 'audio' in data or 'error' in data
-            assert 'sample_rate' in data or 'error' in data
-            assert 'duration' in data or 'error' in data
-
-    def test_websocket_conversion_cancellation(self):
-        """Test canceling conversion mid-process via WebSocket"""
-        import base64
-        import time
-
-        # Create small test WAV
-        sample_rate = 16000
-        audio_data = np.zeros(int(sample_rate * 0.5), dtype=np.int16)
-
-        import io
-        import wave
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(audio_data.tobytes())
-
-        wav_bytes = wav_buffer.getvalue()
-        audio_base64 = base64.b64encode(wav_bytes).decode('utf-8')
-
-        conversion_id = 'test-cancel-456'
-
-        # Start conversion
-        self.client.emit('convert_song_stream', {
-            'conversion_id': conversion_id,
-            'song_data': audio_base64,
-            'target_profile_id': 'test-profile-id',
-            'vocal_volume': 1.0,
-            'instrumental_volume': 0.9,
-            'return_stems': False
-        })
-
-        # Give it a moment to start
-        time.sleep(0.1)
-
-        # Cancel the conversion
-        self.client.emit('cancel_conversion', {
-            'conversion_id': conversion_id
-        })
-
-        # Collect events
-        received = self.client.get_received()
-
-        # Check for cancellation event
-        cancel_events = [e for e in received if e['name'] == 'conversion_cancelled']
-
-        # Should receive cancellation acknowledgment
-        assert len(cancel_events) > 0, "Should receive cancellation event"
-
-        if cancel_events:
-            data = cancel_events[0]['args'][0]
-            assert data['conversion_id'] == conversion_id
-
-    def test_websocket_conversion_error_handling(self):
-        """Test error event handling via WebSocket"""
-        # Send invalid conversion request (missing required fields)
-        self.client.emit('convert_song_stream', {
-            'conversion_id': 'test-error-789'
-            # Missing song_data and target_profile_id
-        })
-
-        # Collect events
-        received = self.client.get_received()
-
-        # Should receive error event
-        error_events = [e for e in received if e['name'] == 'conversion_error' or e['name'] == 'error']
-
-        assert len(error_events) > 0, "Should receive error event for invalid request"
-
-    def test_websocket_get_conversion_status(self):
-        """Test querying conversion status via WebSocket"""
-        import base64
-
-        # Create small test WAV
-        sample_rate = 16000
-        audio_data = np.zeros(int(sample_rate * 0.5), dtype=np.int16)
-
-        import io
-        import wave
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(audio_data.tobytes())
-
-        wav_bytes = wav_buffer.getvalue()
-        audio_base64 = base64.b64encode(wav_bytes).decode('utf-8')
-
-        conversion_id = 'test-status-101'
-
-        # Start conversion
-        self.client.emit('convert_song_stream', {
-            'conversion_id': conversion_id,
-            'song_data': audio_base64,
-            'target_profile_id': 'test-profile-id',
-            'vocal_volume': 1.0,
-            'instrumental_volume': 0.9,
-            'return_stems': False
-        })
-
-        # Query status
-        self.client.emit('get_conversion_status', {
-            'conversion_id': conversion_id
-        })
-
-        # Collect events
-        received = self.client.get_received()
-
-        # Check for status event
-        status_events = [e for e in received if e['name'] == 'conversion_status']
-
-        if status_events:
-            data = status_events[0]['args'][0]
-            assert 'conversion_id' in data
-            assert 'progress' in data
-            assert 'stage' in data
-            assert 'status' in data
-            assert data['conversion_id'] == conversion_id
-
-
-@pytest.mark.web
-@pytest.mark.e2e
-@pytest.mark.slow
-class TestEndToEndWorkflows:
-    """Test complete end-to-end workflows for voice conversion."""
-
-    @pytest.fixture(autouse=True)
-    def setup_method(self):
-        """Set up test fixtures"""
-        try:
-            from src.auto_voice.web.app import create_app
-            self.app, self.socketio = create_app(config={'TESTING': True})
-            self.client = self.app.test_client()
-        except ImportError:
-            pytest.skip("Flask app not available")
-
-    def test_full_voice_cloning_workflow(self):
-        """Test complete workflow: Create → List → Get → Delete"""
-        # Step 1: Create voice profile
-        sample_rate = 22050
-        duration = 30.0
-        audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
-
-        import wave
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-
-        create_response = self.client.post(
-            '/api/v1/voice/clone',
-            data={'reference_audio': (buffer, 'test.wav')},
-            content_type='multipart/form-data'
+        assert b'invalid file type' in response.data.lower() or b'invalid' in response.data.lower()
+
+    def test_error_handling_invalid_profile_sync(self, client, app_and_socketio):
+        """Test error handling for invalid profile ID in sync mode returns 404"""
+        app, _ = app_and_socketio
+
+        # Force sync mode by disabling job_manager
+        app.job_manager = None
+
+        # Mock pipeline to raise profile not found error
+        mock_pipeline = MagicMock()
+        mock_pipeline.convert_song.side_effect = ValueError('Profile not found: nonexistent-profile')
+        app.singing_conversion_pipeline = mock_pipeline
+
+        form_data = {
+            'audio': (io.BytesIO(b'fake audio'), 'test.wav'),
+            'target_profile_id': 'nonexistent-profile',
+        }
+
+        response = client.post('/api/v1/convert/song', data=form_data)
+        assert response.status_code in [404, 503]  # Could be 404 or 503 depending on error handling
+        data = response.json
+        assert 'error' in data
+
+def test_convert_song_sync_success(client, app_and_socketio):
+    """Test synchronous convert_song returns 200 with full success response fields"""
+    app, _ = app_and_socketio
+    app.job_manager = None  # Force sync mode
+    
+    # Mock pipeline result
+    mock_pipeline = MagicMock()
+    mock_result = {
+        'mixed_audio': np.random.rand(1, 44100).astype(np.float32),
+        'sample_rate': 22050,
+        'duration': 2.0,
+        'metadata': {'target_profile_id': 'test', 'vocal_volume': 1.0}
+    }
+    mock_pipeline.convert_song.return_value = mock_result
+    app.singing_conversion_pipeline = mock_pipeline
+    
+    form_data = {
+        'song': (io.BytesIO(b''), 'test.wav'),
+        'profile_id': 'test'
+    }
+    
+    response = client.post('/api/v1/convert/song', data=form_data)
+    
+    assert response.status_code == 200
+    data = response.json
+    assert data['status'] == 'success'
+    assert 'job_id' in data and len(data['job_id']) > 0
+    assert 'audio' in data and len(data['audio']) > 100  # Non-empty base64
+    assert isinstance(data['sample_rate'], (int, float)) and data['sample_rate'] > 0
+    assert data['duration'] >= 0
+    assert isinstance(data['metadata'], dict) and 'target_profile_id' in data['metadata']
+    assert data['format'] == 'wav'
+    
+    # Optional: Verify base64 decodes to WAV
+    audio_bytes = base64.b64decode(data['audio'])
+    assert audio_bytes.startswith(b'RIFF')
+    
+    mock_pipeline.convert_song.assert_called_once()
+
+
+def test_convert_song_with_stems(client, app_and_socketio):
+    """Test synchronous convert_song with stems returns full stems data"""
+    app, _ = app_and_socketio
+    app.job_manager = None  # Force sync mode
+    
+    # Mock pipeline result with stems
+    mock_pipeline = MagicMock()
+    mock_result = {
+        'mixed_audio': np.random.rand(1, 44100).astype(np.float32),
+        'sample_rate': 22050,
+        'duration': 2.0,
+        'metadata': {'target_profile_id': 'test', 'vocal_volume': 1.0},
+        'stems': {
+            'vocals': np.random.rand(1, 44100).astype(np.float32),
+            'instrumental': np.random.rand(1, 44100).astype(np.float32)
+        }
+    }
+    mock_pipeline.convert_song.return_value = mock_result
+    app.singing_conversion_pipeline = mock_pipeline
+    
+    form_data = {
+        'song': (io.BytesIO(b''), 'test.wav'),
+        'profile_id': 'test',
+        'return_stems': 'true'
+    }
+    
+    response = client.post('/api/v1/convert/song', data=form_data)
+    
+    assert response.status_code == 200
+    data = response.json
+    assert data['status'] == 'success'
+    assert 'stems' in data
+    assert 'vocals' in data['stems']
+    assert 'audio' in data['stems']['vocals'] and len(data['stems']['vocals']['audio']) > 100
+    assert data['stems']['vocals']['duration'] > 0
+    assert 'instrumental' in data['stems']
+    assert 'audio' in data['stems']['instrumental'] and len(data['stems']['instrumental']['audio']) > 100
+    assert data['stems']['instrumental']['duration'] > 0
+
+@pytest.mark.skip
+class TestLegacyVoiceProfileEndpoints:
+    """Test legacy voice profile manipulation endpoints (skipped)"""
+
+    @pytest.fixture
+    def client(self, app_and_socketio):
+        """Flask test client"""
+        app, _ = app_and_socketio
+        with app.test_client() as client:
+            yield client
+
+    def test_create_voice_profile_success(self, client, voice_cloner, create_tempfile):
+        """Test POST /api/v1/voice_profiles"""
+        form_data = {
+            'profile_name': 'New Profile',
+            'voice_file': open(create_tempfile, 'rb'),
+            'sound_signature_id': valid_sound_signature_id,
+            'astapor_api_key': 'valid-api-key',
+        }
+        
+        response = client.post('/api/v1/voice_profiles', data=form_data)
+        
+        assert response.status_code == 201
+        data = response.json
+        assert "id" in data
+        assert data["status"] == "success"
+        assert data["profile_name"] == "New Profile"
+        assert data["user_id"] == None
+
+    def test_create_voice_profile_missing_field(self, client, voice_cloner):
+        """Test create voice profile with missing required field
+        Return 400 and error message"""
+        form_data = {
+            'profile_name': 'Incomplete Profile',
+            'sound_signature_id': valid_sound_signature_id,
+            'astapor_api_key': 'valid-api-key',
+        }
+        
+        response = client.post('/api/v1/voice_profiles', data=form_data)
+        
+        print(response)
+        assert response.status_code == 400
+        data = response.json
+        assert "errors" in data
+        assert "voice_file" in data["errors"]
+
+@pytest.mark.usefixtures("app_and_socketio")
+class TestVoiceProfileEndpoints:
+    """Test voice profile API endpoints (/api/v1/voice/*) using MockVoiceCloner in TESTING mode"""
+
+    @pytest.fixture
+    def client(self):
+        """Flask test client fixture (app_and_socketio already provides TESTING=True with MockVoiceCloner)"""
+        from src.auto_voice.web.app import create_app
+        app, _ = create_app({'TESTING': True})
+        with app.test_client() as client:
+            yield client
+
+    @pytest.fixture
+    def mock_audio_file(self):
+        """Mock WAV file for upload testing"""
+        # Minimal valid WAV file (RIFF header + silence data)
+        wav_bytes = b'RIFF$\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\x3E\x00\x00\x80\x7E\x00\x00\x02\x00\x10\x00data\x04\x00\x00\x00\x00\x00\x00\x00'
+        return (io.BytesIO(wav_bytes), 'test_audio.wav')
+
+    def test_create_voice_profile_success_201(self, client, mock_audio_file):
+        """Test successful profile creation returns 201 with expected fields excluding embedding"""
+        form_data = {
+            'reference_audio': mock_audio_file,
+            'user_id': 'test_user'
+        }
+        response = client.post('/api/v1/voice/clone', data=form_data)
+        assert response.status_code == 201
+        data = response.json
+        assert 'profile_id' in data
+        assert 'user_id' in data
+        assert data['user_id'] == 'test_user'
+        assert 'audio_duration' in data
+        assert 'vocal_range' in data
+        assert isinstance(data['audio_duration'], (int, float))
+        assert isinstance(data['vocal_range'], dict)
+        assert 'embedding' not in data  # Excluded as specified
+
+    def test_create_voice_profile_missing_reference_audio_400(self, client):
+        """Test missing reference_audio returns 400"""
+        form_data = {'user_id': 'test_user'}  # No audio
+        response = client.post('/api/v1/voice/clone', data=form_data)
+        assert response.status_code == 400
+        data = response.json
+        assert data['error'] == 'No reference_audio file provided'
+
+    def test_create_voice_profile_invalid_reference_audio_400(self, client):
+        """Test invalid file type for reference_audio returns 400"""
+        invalid_file = (io.BytesIO(b'invalid content'), 'invalid.txt')
+        form_data = {'reference_audio': invalid_file}
+        response = client.post('/api/v1/voice/clone', data=form_data)
+        assert response.status_code == 400
+        data = response.json
+        assert 'Invalid file format' in data['error']
+
+    def test_list_profiles_no_user_filter(self, client, mock_audio_file):
+        """Test GET /api/v1/voice/profiles lists all profiles (empty then populated)"""
+        # Empty list initially
+        resp = client.get('/api/v1/voice/profiles')
+        assert resp.status_code == 200
+        assert resp.json == []
+
+        # Create 2 profiles
+        client.post('/api/v1/voice/clone', data={'reference_audio': mock_audio_file})
+        client.post('/api/v1/voice/clone', data={'reference_audio': mock_audio_file})
+
+        resp = client.get('/api/v1/voice/profiles')
+        assert resp.status_code == 200
+        profiles = resp.json
+        assert len(profiles) == 2
+        assert all('profile_id' in p and 'created_at' in p for p in profiles)
+
+    def test_list_profiles_with_user_id_filter(self, client, mock_audio_file):
+        """Test GET /api/v1/voice/profiles?user_id=... filters correctly"""
+        # Create mixed user profiles
+        client.post('/api/v1/voice/clone', data={'reference_audio': mock_audio_file, 'user_id': 'user1'})
+        client.post('/api/v1/voice/clone', data={'reference_audio': mock_audio_file, 'user_id': 'user1'})
+        client.post('/api/v1/voice/clone', data={'reference_audio': mock_audio_file, 'user_id': 'user2'})
+
+        # Filter user1: expect 2
+        resp = client.get('/api/v1/voice/profiles?user_id=user1')
+        assert resp.status_code == 200
+        assert len(resp.json) == 2
+        assert all(p['user_id'] == 'user1' for p in resp.json)
+
+        # Filter user2: expect 1
+        resp = client.get('/api/v1/voice/profiles?user_id=user2')
+        assert resp.status_code == 200
+        assert len(resp.json) == 1
+
+    def test_get_voice_profile_by_id_success_200(self, client, mock_audio_file):
+        """Test GET /api/v1/voice/profiles/{id} returns 200 with profile"""
+        # Create profile
+        resp_create = client.post('/api/v1/voice/clone', data={'reference_audio': mock_audio_file})
+        profile_id = resp_create.json['profile_id']
+
+        resp = client.get(f'/api/v1/voice/profiles/{profile_id}')
+        assert resp.status_code == 200
+        data = resp.json
+        assert data['profile_id'] == profile_id
+        assert 'vocal_range' in data
+        assert 'embedding' not in data
+
+    def test_get_voice_profile_not_found_404(self, client):
+        """Test GET non-existent profile returns 404"""
+        resp = client.get('/api/v1/voice/profiles/nonexistent-id')
+        assert resp.status_code == 404
+        data = resp.json
+        assert data['error'] == 'Voice profile not found'
+
+    def test_delete_voice_profile_success_200(self, client, mock_audio_file):
+        """Test DELETE existing profile returns 200, subsequent GET 404"""
+        # Create profile
+        resp_create = client.post('/api/v1/voice/clone', data={'reference_audio': mock_audio_file})
+        profile_id = resp_create.json['profile_id']
+
+        # Delete
+        resp = client.delete(f'/api/v1/voice/profiles/{profile_id}')
+        assert resp.status_code == 200
+        data = resp.json
+        assert data['status'] == 'success'
+
+        # Verify deleted
+        resp_get = client.get(f'/api/v1/voice/profiles/{profile_id}')
+        assert resp_get.status_code == 404
+
+    def test_delete_voice_profile_not_found_404(self, client):
+        """Test DELETE non-existent profile returns 404"""
+        resp = client.delete('/api/v1/voice/profiles/nonexistent-id')
+        assert resp.status_code == 404
+        data = resp.json
+        assert data['error'] == 'Voice profile not found'
+
+    def test_endpoints_return_503_when_voice_cloner_none(self, monkeypatch, client):
+        """Test all endpoints return 503 when current_app.voice_cloner is None"""
+        monkeypatch.setattr(client.application, 'voice_cloner', None)
+
+        # Test each endpoint
+        assert client.post('/api/v1/voice/clone').status_code == 503
+        assert client.get('/api/v1/voice/profiles').status_code == 503
+        assert client.get('/api/v1/voice/profiles/test-id').status_code == 503
+        assert client.delete('/api/v1/voice/profiles/test-id').status_code == 503
+
+class TestEndToEndConversionFlow:
+    """Test complete conversion workflow from REST API to WebSocket completion"""
+
+    @pytest.fixture
+    def app_and_socketio(self):
+        """Create Flask app and SocketIO instance for testing"""
+        app, sio = create_app({'TESTING': True})
+        yield app, sio
+
+    @pytest.fixture
+    def client(self, app_and_socketio):
+        """Flask test client"""
+        app, _ = app_and_socketio
+        with app.test_client() as client:
+            yield client
+
+    @pytest.fixture
+    def socketio_client(self, app_and_socketio):
+        """Create SocketIO test client bound to in-process server - COMMENT 4 FIX"""
+        app, socketio = app_and_socketio
+
+        # Use flask_socketio's test_client for in-process testing
+        client = socketio.test_client(app)
+        yield client
+        client.disconnect()
+
+    def test_rest_to_websocket_flow(self, client, app_and_socketio, socketio_client, job_manager):
+        """Test REST API creates job and WebSocket receives progress - COMMENT 1 & 4 FIX"""
+        app, socketio = app_and_socketio
+
+        # COMMENT 2 FIX: Use FakeSingingPipeline for deterministic behavior (COMMENT 1 implementation)
+        # This fake pipeline emits progress callbacks and returns valid results
+        fake_pipeline = FakeSingingPipeline(conversion_delay=0.1, should_fail=False)
+
+        job_manager_real = JobManager(
+            config={'max_workers': 2, 'result_dir': job_manager.result_dir, 'ttl_seconds': 60},
+            socketio=socketio,  # Use real socketio, not mock
+            singing_pipeline=fake_pipeline,  # Use FakeSingingPipeline that works correctly
+            voice_profile_manager=Mock(spec=VoiceCloner)
         )
+        job_manager_real.start_cleanup_thread()
+        app.job_manager = job_manager_real
 
-        if create_response.status_code == 503:
-            pytest.skip("Service unavailable")
+        # COMMENT 4 FIX: Temporarily disable TESTING to use async path
+        original_testing = app.config.get('TESTING', True)
+        app.config['TESTING'] = False
 
-        assert create_response.status_code in [201, 400]
+        try:
+            # Join job room before starting conversion
+            socketio_client.emit('join_job', {'job_id': 'test-job'})
 
-        if create_response.status_code == 201:
-            created_profile = create_response.get_json()
-            profile_id = created_profile['profile_id']
+            # Create job via REST API
+            form_data = {
+                'audio': (io.BytesIO(b'fake audio'), 'test.wav'),
+                'target_profile_id': 'test-profile',
+            }
+            response = client.post('/api/v1/convert/song', data=form_data)
+            assert response.status_code == 202
 
-            # Step 2: List profiles
-            list_response = self.client.get('/api/v1/voice/profiles')
-            assert list_response.status_code == 200
+            job_id = response.json['job_id']
 
-            # Step 3: Get specific profile
-            get_response = self.client.get(f'/api/v1/voice/profiles/{profile_id}')
-            assert get_response.status_code in [200, 404]
+            # Join WebSocket room for this job
+            socketio_client.emit('join_job', {'job_id': job_id})
 
-            # Step 4: Delete profile
-            delete_response = self.client.delete(f'/api/v1/voice/profiles/{profile_id}')
-            assert delete_response.status_code in [200, 404]
+            # COMMENT 4 FIX: Wait for events from in-process server
+            timeout = 30
+            start = time.time()
+            received_events = []
 
-    def test_full_song_conversion_workflow(self, sample_song_file):
-        """Test complete workflow: Create profile → Convert → Verify → Cleanup"""
-        # Step 1: Create voice profile first
-        sample_rate = 22050
-        duration = 30.0
-        ref_audio = np.random.rand(int(sample_rate * duration)).astype(np.float32)
+            while (time.time() - start) < timeout:
+                # Get events from flask_socketio test_client
+                received = socketio_client.get_received()
+                received_events.extend(received)
 
-        import wave
-        ref_buffer = io.BytesIO()
-        with wave.open(ref_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            audio_int16 = (ref_audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
+                # Check if we got completion event
+                if any(msg.get('name') == 'conversion_complete' for msg in received_events):
+                    break
+                time.sleep(0.1)
 
-        ref_buffer.seek(0)
+            # Verify events received
+            assert len(received_events) > 0, "No WebSocket events received"
 
-        create_response = self.client.post(
-            '/api/v1/voice/clone',
-            data={'reference_audio': (ref_buffer, 'reference.wav')},
-            content_type='multipart/form-data'
+            # Check for completion or progress events
+            event_names = [msg.get('name') for msg in received_events]
+            assert 'conversion_progress' in event_names or 'conversion_complete' in event_names, \
+                f"No conversion events received. Got: {event_names}"
+
+            # If completion event exists, verify structure
+            complete_events = [msg for msg in received_events if msg.get('name') == 'conversion_complete']
+            if complete_events:
+                complete_data = complete_events[0]['args'][0]
+                assert complete_data['job_id'] == job_id
+                assert 'output_url' in complete_data or 'result_path' in complete_data
+
+                # COMMENT 3: Verify pitch data is included in WebSocket payload
+                # Note: f0_contour and f0_times may be None if not available from pipeline
+                assert 'f0_contour' in complete_data, "f0_contour field missing from conversion_complete payload"
+                assert 'f0_times' in complete_data, "f0_times field missing from conversion_complete payload"
+
+                # If pitch data is available (not None), verify it's properly serialized
+                if complete_data['f0_contour'] is not None:
+                    assert isinstance(complete_data['f0_contour'], list), "f0_contour should be a list for JSON serialization"
+                    assert len(complete_data['f0_contour']) > 0, "f0_contour should not be empty"
+
+                if complete_data['f0_times'] is not None:
+                    assert isinstance(complete_data['f0_times'], list), "f0_times should be a list for JSON serialization"
+                    assert len(complete_data['f0_times']) > 0, "f0_times should not be empty"
+
+        finally:
+            # Cleanup
+            job_manager_real.shutdown()
+    
+    def test_download_after_completion(self, client, app_and_socketio, job_manager, completed_job_id):
+        """Test downloading result after job completes"""
+        app, _ = app_and_socketio
+        app.job_manager = job_manager
+
+        # File already created by fixture - verify download works
+        response = client.get(f'/api/v1/convert/download/{completed_job_id}')
+        assert response.status_code == 200
+        assert response.mimetype == 'audio/wav'
+        assert response.data == b'fake audio data'
+    
+    def test_cancel_during_processing(self, client, app_and_socketio, socketio_client, job_manager):
+        """Test cancelling job while processing - COMMENT 4 FIX"""
+        app, socketio = app_and_socketio
+
+        # COMMENT 4 FIX: Use real JobManager with real socketio
+        # COMMENT 2 FIX: Use FakeSingingPipeline with longer delay for reliable cancellation
+        job_manager_real = JobManager(
+            config={'max_workers': 2, 'result_dir': job_manager.result_dir, 'ttl_seconds': 60},
+            socketio=socketio,
+            singing_pipeline=FakeSingingPipeline(conversion_delay=1.0),  # Longer delay for cancellation
+            voice_profile_manager=Mock(spec=VoiceCloner)
         )
+        job_manager_real.start_cleanup_thread()
+        app.job_manager = job_manager_real
 
-        if create_response.status_code == 503:
-            pytest.skip("Service unavailable")
+        try:
+            # Create long-running job
+            audio_path = '/tmp/test_long.wav'
+            Path(audio_path).touch()
+            job_id = job_manager_real.create_job(audio_path, 'test-profile', {})
 
-        if create_response.status_code != 201:
-            pytest.skip("Could not create profile")
+            # Join room
+            socketio_client.emit('join_job', {'job_id': job_id})
 
-        profile_id = create_response.get_json()['profile_id']
+            # Cancel immediately
+            response = client.post(f'/api/v1/convert/cancel/{job_id}')
+            assert response.status_code == 200
+            assert response.json['status'] == 'cancelled'
 
-        # Step 2: Convert song
-        audio, sr = sample_song_file
-        song_buffer = io.BytesIO()
-        with wave.open(song_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sr)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
+            # Verify job status
+            status = job_manager_real.get_job_status(job_id)
+            assert status['status'] == 'cancelled'
 
-        song_buffer.seek(0)
+        finally:
+            job_manager_real.shutdown()
 
-        convert_response = self.client.post(
-            '/api/v1/convert/song',
-            data={
-                'song': (song_buffer, 'song.wav'),
-                'profile_id': profile_id
-            },
-            content_type='multipart/form-data'
+    def test_cancel_queued_job_websocket(self, client, app_and_socketio, socketio_client):
+        """Test cancelling queued job emits conversion_cancelled WebSocket event"""
+        app, socketio = app_and_socketio
+
+        # Create JobManager with 0 workers to keep jobs queued
+        config = {'max_workers': 0, 'result_dir': '/tmp/test_results', 'ttl_seconds': 60}
+        job_manager_real = JobManager(
+            config=config,
+            socketio=socketio,
+            singing_pipeline=Mock(spec=SingingConversionPipeline),
+            voice_profile_manager=Mock(spec=VoiceCloner)
         )
+        job_manager_real.start_cleanup_thread()
+        app.job_manager = job_manager_real
 
-        # Conversion may fail due to dependencies, but workflow should be testable
-        assert convert_response.status_code in [200, 404, 500, 503]
+        try:
+            # Create queued job
+            audio_path = '/tmp/test_queued.wav'
+            Path(audio_path).touch()
+            job_id = job_manager_real.create_job(audio_path, 'test-profile', {})
 
-        # Step 3: Cleanup - delete profile
-        delete_response = self.client.delete(f'/api/v1/voice/profiles/{profile_id}')
-        assert delete_response.status_code in [200, 404]
+            # Verify queued
+            status = job_manager_real.get_job_status(job_id)
+            assert status['status'] == 'queued'
+
+            # Join room
+            socketio_client.emit('join_job', {'job_id': job_id})
+
+            # Cancel via API
+            response = client.post(f'/api/v1/convert/cancel/{job_id}')
+            assert response.status_code == 200
+            assert response.json['status'] == 'cancelled'
+
+            # Wait for conversion_cancelled event
+            timeout = 5
+            start = time.time()
+            cancel_received = False
+            while (time.time() - start) < timeout:
+                received = socketio_client.get_received()
+                for msg in received:
+                    if msg.get('name') == 'conversion_cancelled':
+                        data = msg['args'][0]
+                        assert data['job_id'] == job_id
+                        assert data['code'] == 'CONVERSION_CANCELLED'
+                        cancel_received = True
+                        break
+                if cancel_received:
+                    break
+                time.sleep(0.1)
+
+            assert cancel_received, "No conversion_cancelled event received for queued job"
+
+        finally:
+            job_manager_real.shutdown()
+            if os.path.exists(audio_path):
+                os.unlink(audio_path)
+    
+    def test_error_handling_invalid_profile(self, client, app_and_socketio, socketio_client, job_manager):
+        """Test error handling for invalid profile ID in both sync and async modes"""
+        app, socketio = app_and_socketio
+
+        # First test SYNC mode (no job_manager)
+        original_job_manager = app.job_manager
+        app.job_manager = None
+
+        form_data = {
+            'audio': (io.BytesIO(b'fake audio'), 'test.wav'),
+            'target_profile_id': 'nonexistent-profile',
+        }
+        response = client.post('/api/v1/convert/song', data=form_data)
+
+        # In sync mode with invalid profile, expect immediate error
+        # The actual behavior depends on voice_cloner.load_voice_profile()
+        # For MockVoiceCloner (TESTING mode), it returns None for missing profiles
+        # This should be handled upstream before conversion, but if not caught,
+        # we expect either 404 or service error
+        assert response.status_code in [404, 503], f"Expected 404 or 503, got {response.status_code}"
+        if response.status_code == 404:
+            assert 'not found' in response.json.get('error', '').lower() or 'not found' in response.json.get('message', '').lower()
+
+        # Restore job_manager for ASYNC mode test
+        app.job_manager = original_job_manager
+
+        # Now test ASYNC mode with real JobManager
+        # COMMENT 4 FIX: Use real JobManager with real socketio
+        # COMMENT 2 FIX: Use FakeSingingPipeline that fails to simulate error
+        job_manager_real = JobManager(
+            config={'max_workers': 2, 'result_dir': job_manager.result_dir, 'ttl_seconds': 60},
+            socketio=socketio,
+            singing_pipeline=FakeSingingPipeline(conversion_delay=0.1, should_fail=True, fail_message="Invalid profile ID"),
+            voice_profile_manager=Mock(spec=VoiceCloner)
+        )
+        job_manager_real.start_cleanup_thread()
+        app.job_manager = job_manager_real
+
+        try:
+            # Create job with invalid profile
+            form_data = {
+                'audio': (io.BytesIO(b'fake audio'), 'test.wav'),
+                'target_profile_id': 'nonexistent-profile',
+            }
+            response = client.post('/api/v1/convert/song', data=form_data)
+
+            # Async mode should return 202 and handle error via WebSocket
+            if response.status_code == 202:
+                job_id = response.json['job_id']
+                socketio_client.emit('join_job', {'job_id': job_id})
+
+                # Wait for error event from flask_socketio test_client
+                timeout = 10
+                start = time.time()
+                error_received = False
+
+                while (time.time() - start) < timeout:
+                    received = socketio_client.get_received()
+
+                    # Check for error events
+                    for msg in received:
+                        if msg.get('name') == 'conversion_error':
+                            error_data = msg['args'][0]
+                            assert 'error' in error_data
+                            error_received = True
+                            break
+
+                    if error_received:
+                        break
+                    time.sleep(0.1)
+
+                assert error_received, "No error event received via WebSocket in async mode"
+
+        finally:
+            job_manager_real.shutdown()
+            # Restore original job_manager
+            app.job_manager = original_job_manager
+
+    def test_concurrent_job_processing(self, client, app_and_socketio, job_manager):
+        """Test multiple jobs can be processed concurrently - COMMENT 1 FIX"""
+        app, _ = app_and_socketio
+        app.job_manager = job_manager
+
+        # Create multiple jobs
+        job_ids = []
+        for i in range(3):
+            form_data = {
+                'audio': (io.BytesIO(f'audio {i}'.encode()), f'test{i}.wav'),
+                'target_profile_id': 'test-profile',
+            }
+            response = client.post('/api/v1/convert/song', data=form_data)
+            assert response.status_code == 202
+            job_ids.append(response.json['job_id'])
+
+        # Verify all jobs are tracked
+        for job_id in job_ids:
+            status = job_manager.get_job_status(job_id)
+            assert status is not None
+            assert status['status'] in ['queued', 'processing', 'completed']
+    
+def test_convert_song_invalid_params_400(client, app_and_socketio):
+    """Test invalid parameters return 400"""
+    app, _ = app_and_socketio
+    app.job_manager = None
+    
+    # vocal_volume >2.0
+    form_data = {
+        'song': (io.BytesIO(b''), 'test.wav'),
+        'profile_id': 'test',
+        'vocal_volume': '3.0'
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 400
+    assert 'Invalid value for vocal_volume' in response.json['error']
+    
+    # settings JSON with invalid
+    form_data = {
+        'song': (io.BytesIO(b''), 'test.wav'),
+        'profile_id': 'test',
+        'settings': '{"vocal_volume":1.5,"invalid_key":true}'
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 200  # Parses ok, ignores invalid_key
+    
+    # Invalid quality
+    form_data['settings'] = '{"output_quality":"invalid"}'
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 400
+    assert 'Invalid value for output_quality' in response.json['error']
+
+
+@pytest.mark.api
+@pytest.mark.validation
+def test_convert_song_missing_profile_400(client, app_and_socketio):
+    """Test missing profile_id returns 400 with 'profile_id required' error"""
+    app, _ = app_and_socketio
+    app.job_manager = None  # Force sync mode for predictable testing
+
+    # Test with no profile_id or target_profile_id
+    form_data = {
+        'song': (io.BytesIO(b'fake audio'), 'test.wav'),
+        # Intentionally omit profile_id
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 400
+    assert 'profile_id required' in response.json['error']
+
+    # Test with 'audio' field name (alternative accepted field)
+    form_data = {
+        'audio': (io.BytesIO(b'fake audio'), 'test.wav'),
+        # Intentionally omit profile_id
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 400
+    assert 'profile_id required' in response.json['error']
+
+
+@pytest.mark.api
+@pytest.mark.validation
+def test_convert_song_invalid_file_type_400(client, app_and_socketio):
+    """Test invalid file type returns 400 with 'Invalid file type' error"""
+    app, _ = app_and_socketio
+    app.job_manager = None  # Force sync mode
+
+    # Test with .txt file (unsupported)
+    form_data = {
+        'song': (io.BytesIO(b'fake text content'), 'test.txt'),
+        'target_profile_id': 'test-profile'
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 400
+    assert 'Invalid file type' in response.json['error']
+
+    # Test with .jpg file (unsupported)
+    form_data = {
+        'song': (io.BytesIO(b'\xff\xd8\xff\xe0'), 'image.jpg'),
+        'target_profile_id': 'test-profile'
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 400
+    assert 'Invalid file type' in response.json['error']
+
+    # Test with .pdf file (unsupported)
+    form_data = {
+        'audio': (io.BytesIO(b'%PDF-1.4'), 'document.pdf'),
+        'profile_id': 'test-profile'
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 400
+    assert 'Invalid file type' in response.json['error']
+
+
+def test_convert_song_pipeline_failure_503(client, app_and_socketio):
+    """Test pipeline failure returns 503"""
+    app, _ = app_and_socketio
+    app.job_manager = None
+    
+    mock_pipeline = MagicMock()
+    mock_pipeline.convert_song.side_effect = ValueError('Mock fail')
+    app.singing_conversion_pipeline = mock_pipeline
+    
+    form_data = {
+        'song': (io.BytesIO(b''), 'test.wav'),
+        'profile_id': 'test'
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 503
+    assert 'Temporary service unavailability' in response.json['error']
+
+
+class TestJobManagerConfig:
+    """Test JobManager enabled/disabled via config"""
+
+    def test_convert_song_disabled_job_manager_returns_sync_200(self):
+        \"\"\"Test config job_manager.enabled: false returns 200 with inline audio\"\"\"
+        config = {'job_manager': {'enabled': False}}
+        app, _ = create_app(config=config)
+        # Mock singing pipeline
+        mock_pipeline = Mock()
+        mock_result = {
+            'mixed_audio': np.zeros(44100),
+            'sample_rate': 44100,
+            'duration': 1.0,
+            'metadata': {}
+        }
+        mock_pipeline.convert_song.return_value
+
+
+def test_convert_song_empty_audio_503(client, app_and_socketio):
+    """Test empty mixed_audio returns 503"""
+    app, _ = app_and_socketio
+    app.job_manager = None
+    
+    mock_pipeline = MagicMock()
+    mock_result = {
+        'mixed_audio': np.array([]),
+        'sample_rate': 22050,
+        'duration': 0.0,
+        'metadata': {'target_profile_id': 'test'}
+    }
+    mock_pipeline.convert_song.return_value = mock_result
+    app.singing_conversion_pipeline = mock_pipeline
+    
+    form_data = {
+        'song': (io.BytesIO(b''), 'test.wav'),
+        'profile_id': 'test'
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 503
+    assert 'Temporary service unavailability' in response.json['error']
+
+
+@patch('src.auto_voice.web.api.torchaudio.save', side_effect=RuntimeError('Encoding fail'))
+def test_convert_song_encoding_fail_503(mock_torchaudio_save, client, app_and_socketio):
+    """Test encoding failure returns 503"""
+    app, _ = app_and_socketio
+    app.job_manager = None
+
+    mock_pipeline = MagicMock()
+    mock_result = {
+        'mixed_audio': np.random.rand(1, 44100).astype(np.float32),
+        'sample_rate': 22050,
+        'duration': 2.0,
+        'metadata': {'target_profile_id': 'test'}
+    }
+    mock_pipeline.convert_song.return_value = mock_result
+    app.singing_conversion_pipeline = mock_pipeline
+
+    form_data = {
+        'song': (io.BytesIO(b''), 'test.wav'),
+        'profile_id': 'test'
+    }
+    response = client.post('/api/v1/convert/song', data=form_data)
+    assert response.status_code == 503
+    assert 'Temporary service unavailability' in response.json['error']

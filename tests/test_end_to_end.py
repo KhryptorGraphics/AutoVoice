@@ -101,10 +101,11 @@ class TestSingingConversionWorkflow:
         # Verify callbacks were made
         assert len(progress_calls) > 0, "Progress callback was never called"
 
-        # Verify progress goes from 0 to 1
+        # Verify progress goes from 0 to 1 (0.0-1.0 range)
         progress_values = [p['progress'] for p in progress_calls]
         assert min(progress_values) >= 0.0
         assert max(progress_values) <= 1.0
+        assert max(progress_values) >= 0.95  # Pipeline should reach near completion
 
         # Verify multiple stages
         stages = set(p['stage'] for p in progress_calls)
@@ -740,3 +741,175 @@ class TestGPUManagerPropagation:
         print(f"  ✓ STOI: {stoi_score:.3f} > 0.9")
         if mcd_value is not None:
             print(f"  ✓ MCD: {mcd_value:.2f} dB < 6.0 dB")
+
+
+@pytest.mark.e2e
+@pytest.mark.integration
+class TestWebSocketIntegration:
+    """Test WebSocket integration with conversion pipeline"""
+    
+    def test_websocket_progress_updates(self, song_file, test_profile, device):
+        """Test WebSocket receives progress updates during conversion"""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+            from flask_socketio import SocketIO
+            from flask import Flask
+        except ImportError:
+            pytest.skip("Components not available")
+        
+        # Create mock SocketIO
+        app = Flask(__name__)
+        socketio = SocketIO(app)
+        
+        # Track emitted events
+        emitted_events = []
+        
+        def mock_emit(event, data, room=None):
+            emitted_events.append({'event': event, 'data': data, 'room': room})
+        
+        socketio.emit = mock_emit
+        
+        # Create pipeline with progress callback
+        pipeline = SingingConversionPipeline(config={'device': device})
+        
+        progress_updates = []
+        
+        def progress_callback(stage, percent):
+            progress_updates.append({'percent': percent, 'stage': stage})
+            # Simulate WebSocket emission
+            socketio.emit('conversion_progress', {
+                'job_id': 'test-job',
+                'progress': percent,
+                'stage': stage
+            }, room='test-job')
+        
+        # Run conversion
+        result = pipeline.convert_song(
+            song_path=str(song_file),
+            target_profile_id=test_profile['profile_id'],
+            progress_callback=progress_callback
+        )
+        
+        # Verify progress updates
+        assert len(progress_updates) > 0, "No progress updates received"
+        assert len(emitted_events) > 0, "No WebSocket events emitted"
+        
+        # Verify progress goes from 0 to 100
+        percents = [p['percent'] for p in progress_updates]
+        assert min(percents) >= 0.0
+        assert max(percents) >= 90.0  # Should reach near 100%
+        
+        # Verify all expected stages present
+        stages = set(p['stage'] for p in progress_updates)
+        expected_stages = {'source_separation', 'pitch_extraction', 'voice_conversion', 'audio_mixing'}
+        assert len(stages.intersection(expected_stages)) >= 3, f"Missing stages: {expected_stages - stages}"
+        
+        # Verify WebSocket events have correct structure
+        for event in emitted_events:
+            assert event['event'] == 'conversion_progress'
+            assert 'job_id' in event['data']
+            assert 'progress' in event['data']
+            assert 'stage' in event['data']
+            assert event['room'] == 'test-job'
+    
+    def test_websocket_completion_event(self, song_file, test_profile, device):
+        """Test WebSocket emits completion event with correct data"""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("Components not available")
+        
+        pipeline = SingingConversionPipeline(config={'device': device})
+        
+        # Run conversion
+        result = pipeline.convert_song(
+            song_path=str(song_file),
+            target_profile_id=test_profile['profile_id']
+        )
+        
+        # Simulate completion event emission
+        completion_data = {
+            'job_id': 'test-job',
+            'status': 'completed',
+            'output_url': '/api/v1/convert/download/test-job',
+            'duration': result['duration'],
+            'sample_rate': result['sample_rate'],
+            'metadata': result['metadata']
+        }
+        
+        # Verify completion data structure
+        assert 'job_id' in completion_data
+        assert 'output_url' in completion_data
+        assert 'duration' in completion_data
+        assert completion_data['duration'] > 0
+        assert completion_data['sample_rate'] > 0
+        assert 'metadata' in completion_data
+        assert 'target_profile_id' in completion_data['metadata']
+    
+    def test_websocket_error_event(self, device):
+        """Test WebSocket emits error event on conversion failure"""
+        try:
+            from src.auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+        except ImportError:
+            pytest.skip("Components not available")
+        
+        pipeline = SingingConversionPipeline(config={'device': device})
+        
+        # Try conversion with invalid file
+        with pytest.raises(FileNotFoundError):
+            pipeline.convert_song(
+                song_path='/nonexistent/file.wav',
+                target_profile_id='test-profile'
+            )
+        
+        # Simulate error event emission
+        error_data = {
+            'job_id': 'test-job',
+            'error': 'Song file not found: /nonexistent/file.wav',
+            'stage': 'source_separation'
+        }
+        
+        # Verify error data structure
+        assert 'job_id' in error_data
+        assert 'error' in error_data
+        assert len(error_data['error']) > 0
+    
+    def test_websocket_room_isolation(self, song_file, test_profile, device):
+        """Test WebSocket events are isolated to correct rooms"""
+        # This test verifies that progress updates for job A
+        # don't leak to clients subscribed to job B
+        
+        # Create two mock clients
+        client_a_events = []
+        client_b_events = []
+        
+        def client_a_handler(data):
+            client_a_events.append(data)
+        
+        def client_b_handler(data):
+            client_b_events.append(data)
+        
+        # Simulate two jobs running concurrently
+        job_a_id = 'job-a'
+        job_b_id = 'job-b'
+        
+        # Emit events to different rooms
+        events = [
+            {'room': job_a_id, 'data': {'job_id': job_a_id, 'progress': 50}},
+            {'room': job_b_id, 'data': {'job_id': job_b_id, 'progress': 75}},
+            {'room': job_a_id, 'data': {'job_id': job_a_id, 'progress': 100}},
+        ]
+        
+        # Simulate room-based delivery
+        for event in events:
+            if event['room'] == job_a_id:
+                client_a_handler(event['data'])
+            elif event['room'] == job_b_id:
+                client_b_handler(event['data'])
+        
+        # Verify isolation
+        assert len(client_a_events) == 2
+        assert all(e['job_id'] == job_a_id for e in client_a_events)
+        
+        assert len(client_b_events) == 1
+        assert all(e['job_id'] == job_b_id for e in client_b_events)

@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
-import { Music, Download, Play, Pause } from 'lucide-react'
+import { Music, Download, Play } from 'lucide-react'
 import { UploadInterface } from '../components/SingingConversion/UploadInterface'
 import { ConversionControls, ConversionSettings } from '../components/SingingConversion/ConversionControls'
-import { ProgressDisplay, PipelineStage } from '../components/SingingConversion/ProgressDisplay'
+import { ProgressDisplay } from '../components/SingingConversion/ProgressDisplay'
 import { VoiceProfileSelector } from '../components/VoiceProfileSelector'
-import { apiService, VoiceProfile } from '../services/api'
+import { AudioWaveform } from '../components/AudioWaveform'
+import { QualityMetricsDisplay } from '../components/QualityMetricsDisplay'
+import { apiService, VoiceProfile, QualityMetrics } from '../services/api'
 import { wsService, ConversionProgress } from '../services/websocket'
 import { useQuery } from '@tanstack/react-query'
 
@@ -13,9 +15,16 @@ export function SingingConversionPage() {
   const [selectedProfile, setSelectedProfile] = useState<VoiceProfile | null>(null)
   const [isConverting, setIsConverting] = useState(false)
   const [jobId, setJobId] = useState<string | null>(null)
+  const [websocketRoom, setWebsocketRoom] = useState<string>('')
   const [progress, setProgress] = useState<ConversionProgress | null>(null)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [originalAudioUrl, setOriginalAudioUrl] = useState<string | null>(null)
+  const [convertedPitchData, setConvertedPitchData] = useState<{f0: number[], times: number[]} | null>(null)
+  const [qualityMetrics, setQualityMetrics] = useState<QualityMetrics | null>(null)
+  const [metricsLoading, setMetricsLoading] = useState(false)
+  const [metricsError, setMetricsError] = useState<string | null>(null)
+  const [waveformError, setWaveformError] = useState<string | null>(null)
 
   const [settings, setSettings] = useState<ConversionSettings>({
     pitchShift: 0,
@@ -41,10 +50,34 @@ export function SingingConversionPage() {
 
     return () => {
       if (jobId) {
-        wsService.unsubscribeFromJob(jobId)
+        wsService.unsubscribeFromJob(jobId, websocketRoom)
       }
     }
-  }, [jobId])
+  }, [jobId, websocketRoom])
+
+  // Create audio URL when file is selected
+  useEffect(() => {
+    if (selectedFile) {
+      const url = URL.createObjectURL(selectedFile)
+      setOriginalAudioUrl(url)
+
+      // Cleanup on unmount or when file changes
+      return () => {
+        URL.revokeObjectURL(url)
+      }
+    } else {
+      setOriginalAudioUrl(null)
+    }
+  }, [selectedFile])
+
+  // Cleanup resultUrl when it changes (blob URLs only)
+  useEffect(() => {
+    return () => {
+      if (resultUrl && resultUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(resultUrl)
+      }
+    }
+  }, [resultUrl])
 
   const handleStartConversion = async () => {
     if (!selectedFile || !selectedProfile) {
@@ -56,50 +89,159 @@ export function SingingConversionPage() {
     setIsConverting(true)
     setProgress(null)
     setResultUrl(null)
+    setConvertedPitchData(null)
+    setQualityMetrics(null)
+    setMetricsError(null)
+    setWaveformError(null)
 
     try {
-      // Start conversion
+      // Ensure WebSocket is connected
+      if (!wsService.isConnected()) {
+        await wsService.connect()
+      }
+
+      // Start conversion (returns job_id for async mode)
       const response = await apiService.convertSong(
         selectedFile,
         selectedProfile.id,
         {
-          pitch_shift: settings.pitchShift,
-          preserve_original_pitch: settings.preserveOriginalPitch,
-          preserve_vibrato: settings.preserveVibrato,
-          preserve_expression: settings.preserveExpression,
-          output_quality: settings.outputQuality,
-          denoise_input: settings.denoiseInput,
-          enhance_output: settings.enhanceOutput,
+          pitchShift: settings.pitchShift,
+          preserveOriginalPitch: settings.preserveOriginalPitch,
+          preserveVibrato: settings.preserveVibrato,
+          preserveExpression: settings.preserveExpression,
+          outputQuality: settings.outputQuality,
+          denoiseInput: settings.denoiseInput,
+          enhanceOutput: settings.enhanceOutput,
         }
       )
 
-      const newJobId = response.job_id
-      setJobId(newJobId)
+      // Handle async response (202 with job_id)
+      if (response.status === 'queued' && response.job_id) {
+        const newJobId = response.job_id
+        setJobId(newJobId)
+        setWebsocketRoom(response.websocket_room || response.job_id)  // ADDED
 
-      // Subscribe to WebSocket updates
-      wsService.subscribeToJob(newJobId, {
-        onProgress: (progressData) => {
-          setProgress(progressData)
-        },
-        onComplete: (result) => {
-          setResultUrl(result.output_url)
-          setIsConverting(false)
-        },
-        onError: (err) => {
-          setError(err.message)
-          setIsConverting(false)
-        },
-      })
+        // Subscribe to WebSocket updates BEFORE job starts processing
+        await wsService.subscribeToJob(newJobId, {
+          onProgress: (progressData) => {
+            // Backend sends progress and stage directly
+            setProgress(progressData)
+          },
+          onComplete: async (result) => {
+            // Extract pitch data if available
+            if (result.f0_contour && result.f0_times) {
+              setConvertedPitchData({
+                f0: result.f0_contour,
+                times: result.f0_times
+              })
+            }
+
+            // Handle both payload shapes:
+            // - JobManager flows provide output_url
+            // - Streaming flows provide audio (base64)
+            if (result.output_url) {
+              // JobManager path: fetch audio and create blob URL
+              try {
+                const audioBlob = await apiService.downloadConvertedAudio(newJobId)
+                const blobUrl = URL.createObjectURL(audioBlob)
+                setResultUrl(blobUrl)
+              } catch (err) {
+                setError('Failed to load converted audio')
+              }
+            } else if (result.audio) {
+              // Streaming path: convert base64 to blob URL
+              const audioBlob = base64ToBlob(result.audio, 'audio/wav')
+              const url = URL.createObjectURL(audioBlob)
+              setResultUrl(url)
+            }
+            setIsConverting(false)
+
+            // Fetch quality metrics after conversion completes
+            if (newJobId) {
+              setMetricsLoading(true)
+              setMetricsError(null)
+              try {
+                const response = await apiService.getConversionMetrics(newJobId)
+                setQualityMetrics(response.metrics)
+              } catch (err: any) {
+                console.error('Failed to fetch quality metrics:', err)
+                setMetricsError('Failed to load quality metrics')
+              } finally {
+                setMetricsLoading(false)
+              }
+            }
+          },
+          onError: (err) => {
+            // Handle cancellation specifically
+            if (err.code === 'CONVERSION_CANCELLED') {
+              setIsConverting(false)
+              setProgress(null)
+              setError('Conversion cancelled')
+            } else {
+              // Existing error handling
+              setIsConverting(false)
+              setError(err.message || err.error || 'Conversion failed')
+            }
+          },
+        }, response.websocket_room)  // ADDED custom room parameter
+      } else if (response.status === 'success') {
+        // Handle sync response (200 with audio data)
+        // Set jobId if provided by backend (needed for download functionality)
+        if (response.job_id) {
+          setJobId(response.job_id)
+        }
+
+        // Extract pitch data if available
+        if (response.f0_contour && response.f0_times) {
+          setConvertedPitchData({
+            f0: response.f0_contour,
+            times: response.f0_times
+          })
+        }
+
+        // Extract quality metrics if available in sync response
+        if (response.quality_metrics) {
+          setQualityMetrics(response.quality_metrics)
+        }
+
+        // Create blob URL from base64 audio
+        const audioBlob = base64ToBlob(response.audio, 'audio/wav')
+        const url = URL.createObjectURL(audioBlob)
+        setResultUrl(url)
+        setIsConverting(false)
+      }
     } catch (err: any) {
       setError(err.response?.data?.message || err.message || 'Failed to start conversion')
       setIsConverting(false)
     }
   }
 
+  function base64ToBlob(base64: string, mimeType: string): Blob {
+    const byteCharacters = atob(base64)
+    const byteNumbers = new Array(byteCharacters.length)
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i)
+    }
+    const byteArray = new Uint8Array(byteNumbers)
+    return new Blob([byteArray], { type: mimeType })
+  }
+
   const handleDownload = async () => {
     if (!jobId || !resultUrl) return
 
     try {
+      // If we have a blob URL already, download it directly (client-side)
+      if (resultUrl.startsWith('blob:')) {
+        const a = document.createElement('a')
+        a.href = resultUrl
+        a.download = `converted_${selectedFile?.name || 'song.wav'}`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        return
+      }
+
+      // Fallback: fetch from API (shouldn't happen with new flow)
       const blob = await apiService.downloadConvertedAudio(jobId)
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -116,15 +258,27 @@ export function SingingConversionPage() {
 
   const handleReset = () => {
     if (jobId) {
-      wsService.unsubscribeFromJob(jobId)
+      wsService.unsubscribeFromJob(jobId, websocketRoom)
+    }
+    if (originalAudioUrl) {
+      URL.revokeObjectURL(originalAudioUrl)
+    }
+    if (resultUrl && resultUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(resultUrl)
     }
     setSelectedFile(null)
     setSelectedProfile(null)
     setIsConverting(false)
     setJobId(null)
+    setWebsocketRoom('')
     setProgress(null)
     setResultUrl(null)
     setError(null)
+    setOriginalAudioUrl(null)
+    setConvertedPitchData(null)
+    setQualityMetrics(null)
+    setMetricsError(null)
+    setWaveformError(null)
   }
 
   return (
@@ -206,20 +360,56 @@ export function SingingConversionPage() {
           {progress && (
             <div className="bg-white rounded-lg shadow-lg p-6">
               <ProgressDisplay
-                stages={progress.stages}
-                overallProgress={progress.overall_progress}
+                stages={[{
+                  id: progress.stage,
+                  name: progress.stage,
+                  progress: progress.progress,
+                  status: 'processing',
+                }]}
+                overallProgress={progress.progress}
                 estimatedTimeRemaining={progress.estimated_time_remaining}
               />
             </div>
           )}
 
+          {/* Audio Waveform Display - Side by Side */}
+          {(originalAudioUrl || resultUrl) && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {originalAudioUrl && (
+                <AudioWaveform
+                  audioUrl={originalAudioUrl}
+                  title="Original Song"
+                />
+              )}
+              {resultUrl && (
+                <AudioWaveform
+                  audioUrl={resultUrl}
+                  title="Converted Song"
+                  pitchData={convertedPitchData || undefined}
+                  isLoading={isConverting}
+                  error={waveformError || undefined}
+                  onError={(error) => {
+                    setWaveformError(error.message)
+                  }}
+                />
+              )}
+            </div>
+          )}
+
+          {/* Quality Metrics Display */}
+          {resultUrl && (
+            <QualityMetricsDisplay
+              metrics={qualityMetrics}
+              isLoading={metricsLoading}
+              error={metricsError}
+            />
+          )}
+
           {resultUrl && (
             <div className="bg-white rounded-lg shadow-lg p-6">
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">Converted Audio</h2>
-              <audio controls className="w-full" src={resultUrl} />
               <button
                 onClick={handleReset}
-                className="mt-4 w-full bg-gray-600 hover:bg-gray-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
+                className="w-full bg-gray-600 hover:bg-gray-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors"
               >
                 Convert Another Song
               </button>
@@ -230,4 +420,3 @@ export function SingingConversionPage() {
     </div>
   )
 }
-

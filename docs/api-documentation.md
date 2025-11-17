@@ -1935,7 +1935,7 @@ fetch(url)
 **Conversion failed**:
 ```json
 {
-  "error": "conversion_failed",
+  "error": "conversion_error",
   "message": "Conversion failed and no output is available",
   "conversion_id": "conv-770e8400-e29b-41d4-a716-446655440002"
 }
@@ -2378,7 +2378,7 @@ General error event.
 | `poor_audio_quality` | 400 | Audio quality insufficient | Improve SNR, reduce noise |
 | `separation_failed` | 500 | Vocal separation failed | Check audio quality |
 | `pitch_extraction_failed` | 500 | Pitch extraction failed | Ensure clear vocals |
-| `conversion_failed` | 500 | Voice conversion failed | Check model status |
+| `conversion_error` | 500 | Voice conversion failed | Check model status |
 | `file_not_found` | 404 | Result file not found | Check conversion status |
 | `conversion_incomplete` | 409 | Conversion not complete | Wait for completion |
 
