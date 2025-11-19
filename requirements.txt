@@ -73,7 +73,7 @@ faiss-cpu>=1.7.4  # Facebook AI Similarity Search (use faiss-gpu for GPU acceler
 # Objective quality evaluation metrics
 pystoi>=0.3.3  # Short-Time Objective Intelligibility measure
 pesq>=0.0.4  # Perceptual Evaluation of Speech Quality
-seaborn>=0.12,<0.13  # Statistical data visualization (for quality plots)
+seaborn>=0.12,<0.14  # Statistical data visualization (for quality plots)
 pyloudnorm>=0.1.0  # LUFS loudness normalization (ITU-R BS.1770-4)
 
 # ===========================================================================================
