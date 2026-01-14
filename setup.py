@@ -564,7 +564,7 @@ setup(
 
         # Configuration and utilities (aligned with requirements.txt)
         'pyyaml>=6.0,<7.0',
-        'psutil>=5.9,<6.0',
+        'psutil>=5.9,<8.0',
         'pynvml>=11.5,<12.0',
         'websockets>=13,<14',
         'aiohttp>=3.9,<4.0',
