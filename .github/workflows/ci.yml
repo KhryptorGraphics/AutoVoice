@@ -30,6 +30,6 @@ jobs:
           CUDA_VISIBLE_DEVICES: ""
           SKIP_CUDA_TESTS: "true"
         run: pytest -v -m "not cuda" --cov=src/auto_voice --cov-report=xml
-      - uses: codecov/codecov-action@v4
+      - uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
