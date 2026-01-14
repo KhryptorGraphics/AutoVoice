@@ -574,17 +574,10 @@ class TestLegacyVoiceProfileEndpoints:
         assert "errors" in data
         assert "voice_file" in data["errors"]
 
-@pytest.mark.usefixtures("app_and_socketio")
 class TestVoiceProfileEndpoints:
     """Test voice profile API endpoints (/api/v1/voice/*) using MockVoiceCloner in TESTING mode"""
 
-    @pytest.fixture
-    def client(self):
-        """Flask test client fixture (app_and_socketio already provides TESTING=True with MockVoiceCloner)"""
-        from src.auto_voice.web.app import create_app
-        app, _ = create_app({'TESTING': True})
-        with app.test_client() as client:
-            yield client
+    # Uses conftest.py client fixture which sets up MockVoiceCloner
 
     @pytest.fixture
     def mock_audio_file(self):
@@ -1146,7 +1139,7 @@ class TestJobManagerConfig:
     """Test JobManager enabled/disabled via config"""
 
     def test_convert_song_disabled_job_manager_returns_sync_200(self):
-        \"\"\"Test config job_manager.enabled: false returns 200 with inline audio\"\"\"
+        """Test config job_manager.enabled: false returns 200 with inline audio"""
         config = {'job_manager': {'enabled': False}}
         app, _ = create_app(config=config)
         # Mock singing pipeline

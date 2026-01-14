@@ -394,6 +394,109 @@ def sample_diminuendo_audio():
 
 
 # ============================================================================
+# Web Application Fixtures
+# ============================================================================
+
+class MockVoiceCloner:
+    """Mock VoiceCloner for testing that doesn't require GPU or models."""
+
+    def __init__(self):
+        self.profiles = {}
+        self._profile_counter = 0
+
+    def create_voice_profile(self, audio, user_id=None):
+        """Create a mock voice profile."""
+        import uuid
+        profile_id = str(uuid.uuid4())
+        self._profile_counter += 1
+        profile = {
+            'profile_id': profile_id,
+            'user_id': user_id,
+            'audio_duration': 5.0,
+            'vocal_range': {'min_hz': 100, 'max_hz': 500},
+            'embedding': [0.1] * 256,
+            'created_at': '2024-01-01T00:00:00Z'
+        }
+        self.profiles[profile_id] = profile
+        return profile
+
+    def list_profiles(self, user_id=None):
+        """List all profiles, optionally filtered by user_id."""
+        if user_id:
+            return [p for p in self.profiles.values() if p.get('user_id') == user_id]
+        return list(self.profiles.values())
+
+    def get_profile(self, profile_id):
+        """Get a specific profile by ID."""
+        return self.profiles.get(profile_id)
+
+    def delete_profile(self, profile_id):
+        """Delete a profile by ID."""
+        if profile_id in self.profiles:
+            del self.profiles[profile_id]
+            return True
+        return False
+
+    def load_voice_profile(self, profile_id):
+        """Load a voice profile by ID.
+
+        For testing, returns a mock profile for any ID to allow pipeline tests
+        to proceed past validation.
+        """
+        # Return existing profile if found
+        profile = self.get_profile(profile_id)
+        if profile:
+            return profile
+        # For testing convenience, return a mock profile for any ID
+        # This allows tests to focus on pipeline behavior without profile setup
+        return {
+            'profile_id': profile_id,
+            'user_id': 'test_user',
+            'audio_duration': 5.0,
+            'vocal_range': {'min_hz': 100, 'max_hz': 500},
+            'embedding': [0.1] * 256,
+            'created_at': '2024-01-01T00:00:00Z'
+        }
+
+
+@pytest.fixture
+def app_and_socketio():
+    """Create Flask app and SocketIO instance for testing.
+
+    Sets up mock services for voice_cloner and other dependencies.
+
+    Returns:
+        Tuple of (Flask app, SocketIO instance)
+    """
+    from src.auto_voice.web.app import create_app
+    app, sio = create_app(config={'TESTING': True})
+
+    # Set up mock voice cloner for testing
+    app.voice_cloner = MockVoiceCloner()
+
+    # Set up app_config for audio settings (used by API endpoints)
+    app.app_config = {
+        'audio': {
+            'sample_rate': 22050,
+            'hop_length': 512
+        }
+    }
+
+    yield app, sio
+
+
+@pytest.fixture
+def client(app_and_socketio):
+    """Flask test client fixture.
+
+    Uses the app_and_socketio fixture to create a test client.
+    """
+    app, _ = app_and_socketio
+    with app.test_client() as client:
+        yield client
+
+
+# ============================================================================
 # Model Fixtures
 # ============================================================================
 
