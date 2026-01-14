@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Music, Play, Download, Trash2, Plus, Pause, Play as PlayIcon, X } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
-import { apiService, VoiceProfile } from '../services/api'
+import { apiService, VoiceProfile, AdvancedConversionSettings as SettingsType } from '../services/api'
 import { VoiceProfileSelector } from '../components/VoiceProfileSelector'
 import { AdvancedConversionSettings } from '../components/AdvancedConversionSettings'
 import { RealtimeWaveform } from '../components/RealtimeWaveform'
@@ -22,11 +22,11 @@ export function BatchConversionPage() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [currentProcessingFile, setCurrentProcessingFile] = useState<string | null>(null)
-  const [batchSettings, setBatchSettings] = useState({
-    outputQuality: 'balanced' as const,
-    preserveOriginalPitch: true,
-    preserveVibrato: true,
-    preserveExpression: true,
+  const [batchSettings, setBatchSettings] = useState<SettingsType>({
+    output_quality: 'balanced',
+    preserve_original_pitch: true,
+    preserve_vibrato: true,
+    preserve_expression: true,
   })
   const [stats, setStats] = useState({
     totalFiles: 0,
@@ -89,7 +89,7 @@ export function BatchConversionPage() {
           prev.map((f) => (f.id === file.id ? { ...f, status: 'processing' as const } : f))
         )
 
-        const response = await apiService.convertSong(
+        const response = await apiService.convertSongAdvanced(
           file.file,
           selectedProfile.id,
           batchSettings,
@@ -233,7 +233,7 @@ export function BatchConversionPage() {
             <h2 className="text-xl font-semibold text-gray-900 mb-4">Conversion Settings</h2>
             <AdvancedConversionSettings
               settings={batchSettings}
-              onSettingsChange={setBatchSettings}
+              onChange={setBatchSettings}
             />
           </div>
 

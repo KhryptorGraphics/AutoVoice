@@ -1,10 +1,22 @@
 #include "kernel_utils.cuh"
 #include <cuda_runtime.h>
-#include <cublas_v2.h>
-#include <cusparse.h>
 #include <cooperative_groups.h>
 #include <device_launch_parameters.h>
+#include <cstdint>   // GCC 14 compatibility
+#include <cstddef>   // GCC 14 compatibility
+
+// Prevent cublasLt.h extern "C" error during device code compilation (CUDA 13.0+)
+#ifdef __CUDA_ARCH__
+#define CUBLASLT_H_
+#endif
+
 #include <torch/extension.h>
+
+// C libraries with extern "C" - only include for host code
+#ifndef __CUDA_ARCH__
+#include <cublas_v2.h>
+#include <cusparse.h>
+#endif
 
 using namespace cooperative_groups;
 

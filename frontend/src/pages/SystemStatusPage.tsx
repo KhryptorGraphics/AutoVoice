@@ -5,7 +5,7 @@ import { GPUMonitor } from '../components/GPUMonitor'
 import clsx from 'clsx'
 
 export function SystemStatusPage() {
-  const { data: status, isLoading, error } = useQuery({
+  const { data: _status, isLoading, error } = useQuery({
     queryKey: ['systemStatus'],
     queryFn: () => apiService.getSystemStatus(),
     refetchInterval: 5000, // Refresh every 5 seconds

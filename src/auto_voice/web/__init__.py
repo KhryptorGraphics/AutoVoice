@@ -1,5 +1,5 @@
 """Web interface module for AutoVoice"""
 
-from .app import create_app, run_server
+from .api import api_bp
 
-__all__ = ['create_app', 'run_server']
+__all__ = ['api_bp']

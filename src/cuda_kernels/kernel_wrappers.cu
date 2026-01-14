@@ -3,10 +3,16 @@
  * These functions bridge the CUDA kernels with the Python bindings
  */
 
-#include <torch/extension.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <vector>
+
+// Prevent cublasLt.h extern "C" error during device code compilation (CUDA 13.0+)
+#ifdef __CUDA_ARCH__
+#define CUBLASLT_H_
+#endif
+
+#include <torch/extension.h>
 
 // External kernel launchers from other files (updated to match actual signatures)
 void launch_pitch_detection(torch::Tensor& input, torch::Tensor& output_pitch, torch::Tensor& output_confidence, torch::Tensor& output_vibrato, float sample_rate, int frame_length, int hop_length, float fmin, float fmax, float threshold);

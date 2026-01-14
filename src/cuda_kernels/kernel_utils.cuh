@@ -2,12 +2,19 @@
 #define KERNEL_UTILS_CUH
 
 #include <cuda_runtime.h>
-#include <cublas_v2.h>
-#include <cusparse.h>
 #include <cufft.h>
 #include <cooperative_groups.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <cstdint>   // GCC 14 compatibility
+#include <cstddef>   // GCC 14 compatibility
+
+// C libraries with extern "C" - only include for host code
+// These cause "linkage specification not allowed" errors in device context
+#ifndef __CUDA_ARCH__
+#include <cublas_v2.h>
+#include <cusparse.h>
+#endif
 
 // CUDA Error Checking Macro (PyTorch-compatible)
 #ifdef __CUDACC__

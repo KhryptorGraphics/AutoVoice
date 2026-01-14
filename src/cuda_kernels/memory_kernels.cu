@@ -2,9 +2,16 @@
 #include <cuda_runtime.h>
 #include <cooperative_groups.h>
 #include <device_launch_parameters.h>
-#include <torch/extension.h>
 #include <cstdint>
 #include <cstring>
+
+// Prevent cublasLt.h extern "C" error during device code compilation (CUDA 13.0+)
+#ifdef __CUDA_ARCH__
+#define CUBLASLT_H_
+#endif
+
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
 
 using namespace cooperative_groups;
 
@@ -117,7 +124,6 @@ void launch_async_memory_copy(torch::Tensor& dst, torch::Tensor& src, uintptr_t 
     cudaStream_t stream;
     if (stream_id == 0) {
         // Use current CUDA stream from PyTorch
-        #include <ATen/cuda/CUDAContext.h>
         stream = at::cuda::getCurrentCUDAStream();
     } else {
         stream = reinterpret_cast<cudaStream_t>(stream_id);

@@ -212,7 +212,7 @@ export function AudioWaveform({
   } : null
 
   // Calculate max time safely
-  const maxTime = len > 0 && pitchData.times[len - 1] !== undefined ? pitchData.times[len - 1] : 1
+  const maxTime = sampledLen > 0 && pitchData?.times && pitchData.times[sampledLen - 1] !== undefined ? pitchData.times[sampledLen - 1] : 1
 
   const pitchChartOptions = {
     responsive: true,

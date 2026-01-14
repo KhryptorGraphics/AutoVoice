@@ -18,8 +18,16 @@
 #include <cufft.h>
 #include <cooperative_groups.h>
 #include <device_launch_parameters.h>
-#include <torch/extension.h>
 #include <algorithm>
+#include <cstdint>   // GCC 14 compatibility
+#include <cstddef>   // GCC 14 compatibility
+
+// Prevent cublasLt.h extern "C" error during device code compilation (CUDA 13.0+)
+#ifdef __CUDA_ARCH__
+#define CUBLASLT_H_
+#endif
+
+#include <torch/extension.h>
 
 using namespace cooperative_groups;
 

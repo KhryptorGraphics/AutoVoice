@@ -163,7 +163,15 @@ class WebSocketService {
       }) => {
         const callback = this.errorCallbacks.get(data.job_id)
         if (callback) {
-          callback(data)
+          callback({
+            message: data.error,
+            job_id: data.job_id,
+            conversion_id: data.conversion_id,
+            error: data.error,
+            code: data.code,
+            stage: data.stage,
+            details: data.details
+          })
         }
         // Clean up callbacks
         this.unsubscribeFromJob(data.job_id)

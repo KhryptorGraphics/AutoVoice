@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Clock, Download, Play, Trash2, Music, Star, Search, Filter, Tag, FileText } from 'lucide-react'
+import { Clock, Download, Play, Trash2, Music, Star, Search, Filter, FileText } from 'lucide-react'
 import { ConversionRecord } from '../services/api'
 
 interface FilterOptions {

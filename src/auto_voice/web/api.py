@@ -883,3 +883,287 @@ def delete_voice_profile(profile_id):
             'error': 'Temporary service unavailability during profile deletion',
             'message': str(e) if current_app.debug else None
         }), 503
+
+
+# ============================================================================
+# Health & Metrics Endpoints
+# ============================================================================
+
+@api_bp.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for liveness/readiness probes.
+
+    Returns:
+        JSON with status and component health information
+
+    Response Schema:
+        {
+            "status": "healthy" | "degraded" | "unhealthy",
+            "timestamp": "ISO8601 timestamp",
+            "components": {
+                "api": {"status": "up"},
+                "torch": {"status": "up" | "down", "cuda": bool, "version": str},
+                "voice_cloner": {"status": "up" | "down"},
+                "singing_pipeline": {"status": "up" | "down"},
+                "job_manager": {"status": "up" | "down"}
+            },
+            "cuda_kernels_available": bool,
+            "version": str
+        }
+    """
+    components = {}
+    overall_status = "healthy"
+
+    # API is up if we're responding
+    components['api'] = {'status': 'up'}
+
+    # Check PyTorch
+    if TORCH_AVAILABLE:
+        components['torch'] = {
+            'status': 'up',
+            'version': torch.__version__,
+            'cuda': torch.cuda.is_available()
+        }
+        if torch.cuda.is_available():
+            try:
+                components['torch']['device'] = torch.cuda.get_device_name(0)
+            except Exception:
+                pass
+    else:
+        components['torch'] = {'status': 'down', 'cuda': False}
+        overall_status = "degraded"
+
+    # Check voice cloner
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if voice_cloner:
+        components['voice_cloner'] = {'status': 'up'}
+    else:
+        components['voice_cloner'] = {'status': 'down'}
+        overall_status = "degraded"
+
+    # Check singing pipeline
+    singing_pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
+    if singing_pipeline:
+        components['singing_pipeline'] = {'status': 'up'}
+    else:
+        components['singing_pipeline'] = {'status': 'down'}
+        overall_status = "degraded"
+
+    # Check job manager
+    job_manager = getattr(current_app, 'job_manager', None)
+    if job_manager:
+        components['job_manager'] = {'status': 'up'}
+    else:
+        components['job_manager'] = {'status': 'down'}
+
+    # Check CUDA kernels availability
+    try:
+        from ..gpu.cuda_kernels import CUDA_KERNELS_AVAILABLE
+        cuda_kernels = CUDA_KERNELS_AVAILABLE
+    except ImportError:
+        cuda_kernels = False
+
+    return jsonify({
+        'status': overall_status,
+        'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'components': components,
+        'cuda_kernels_available': cuda_kernels,
+        'version': '0.1.0'
+    })
+
+
+@api_bp.route('/gpu/metrics', methods=['GET'])
+def gpu_metrics():
+    """Get GPU utilization and memory metrics.
+
+    Returns:
+        JSON with GPU metrics including memory usage, utilization, temperature
+
+    Response Schema:
+        {
+            "available": bool,
+            "device_count": int,
+            "devices": [
+                {
+                    "index": int,
+                    "name": str,
+                    "memory_total_gb": float,
+                    "memory_used_gb": float,
+                    "memory_free_gb": float,
+                    "utilization_percent": float,
+                    "temperature_c": float
+                }
+            ]
+        }
+    """
+    if not TORCH_AVAILABLE or not torch.cuda.is_available():
+        return jsonify({
+            'available': False,
+            'device_count': 0,
+            'devices': [],
+            'message': 'CUDA not available'
+        })
+
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        device_count = pynvml.nvmlDeviceGetCount()
+
+        devices = []
+        for i in range(device_count):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+            name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(name, bytes):
+                name = name.decode('utf-8')
+
+            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+
+            try:
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                gpu_util = util.gpu
+            except Exception:
+                gpu_util = None
+
+            try:
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+            except Exception:
+                temp = None
+
+            devices.append({
+                'index': i,
+                'name': name,
+                'memory_total_gb': round(mem_info.total / (1024**3), 2),
+                'memory_used_gb': round(mem_info.used / (1024**3), 2),
+                'memory_free_gb': round(mem_info.free / (1024**3), 2),
+                'utilization_percent': gpu_util,
+                'temperature_c': temp
+            })
+
+        pynvml.nvmlShutdown()
+
+        return jsonify({
+            'available': True,
+            'device_count': device_count,
+            'devices': devices
+        })
+
+    except ImportError:
+        # pynvml not available, use PyTorch fallback
+        device_count = torch.cuda.device_count()
+        devices = []
+
+        for i in range(device_count):
+            props = torch.cuda.get_device_properties(i)
+            mem_allocated = torch.cuda.memory_allocated(i)
+            mem_reserved = torch.cuda.memory_reserved(i)
+
+            devices.append({
+                'index': i,
+                'name': props.name,
+                'memory_total_gb': round(props.total_memory / (1024**3), 2),
+                'memory_used_gb': round(mem_allocated / (1024**3), 2),
+                'memory_reserved_gb': round(mem_reserved / (1024**3), 2),
+                'utilization_percent': None,
+                'temperature_c': None
+            })
+
+        return jsonify({
+            'available': True,
+            'device_count': device_count,
+            'devices': devices,
+            'note': 'Limited metrics (pynvml not available)'
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to get GPU metrics: {e}")
+        return jsonify({
+            'available': True,
+            'device_count': torch.cuda.device_count(),
+            'devices': [],
+            'error': str(e)
+        }), 500
+
+
+@api_bp.route('/kernels/metrics', methods=['GET'])
+def kernel_metrics():
+    """Get CUDA kernel performance metrics.
+
+    Returns:
+        JSON array of kernel metrics or empty array if unavailable
+
+    Response Schema:
+        [
+            {
+                "name": str,
+                "calls": int,
+                "total_time_ms": float,
+                "avg_time_ms": float,
+                "min_time_ms": float,
+                "max_time_ms": float
+            }
+        ]
+    """
+    # Check if custom CUDA kernels are available
+    try:
+        from ..gpu.cuda_kernels import CUDA_KERNELS_AVAILABLE, get_kernel_metrics
+        if CUDA_KERNELS_AVAILABLE:
+            metrics = get_kernel_metrics()
+            return jsonify(metrics if metrics else [])
+    except (ImportError, AttributeError):
+        pass
+
+    # Return empty list with note about fallback mode
+    return jsonify({
+        'kernels': [],
+        'note': 'Using PyTorch fallbacks - custom CUDA kernel metrics not available',
+        'cuda_available': TORCH_AVAILABLE and torch.cuda.is_available() if TORCH_AVAILABLE else False
+    })
+
+
+@api_bp.route('/system/info', methods=['GET'])
+def system_info():
+    """Get comprehensive system information.
+
+    Returns:
+        JSON with system, Python, PyTorch, and CUDA information
+    """
+    import platform
+    import sys
+
+    info = {
+        'system': {
+            'platform': platform.system(),
+            'platform_release': platform.release(),
+            'architecture': platform.machine(),
+            'processor': platform.processor(),
+            'python_version': sys.version
+        },
+        'dependencies': {
+            'numpy': NUMPY_AVAILABLE,
+            'torch': TORCH_AVAILABLE,
+            'torchaudio': TORCHAUDIO_AVAILABLE,
+            'soundfile': SOUNDFILE_AVAILABLE,
+            'librosa': LIBROSA_AVAILABLE,
+            'noisereduce': NOISEREDUCE_AVAILABLE
+        }
+    }
+
+    if TORCH_AVAILABLE:
+        info['torch'] = {
+            'version': torch.__version__,
+            'cuda_available': torch.cuda.is_available(),
+            'cuda_version': torch.version.cuda if torch.cuda.is_available() else None,
+            'cudnn_version': torch.backends.cudnn.version() if torch.cuda.is_available() else None
+        }
+        if torch.cuda.is_available():
+            info['torch']['device_name'] = torch.cuda.get_device_name(0)
+            info['torch']['device_count'] = torch.cuda.device_count()
+
+    # Check custom CUDA kernels
+    try:
+        from ..gpu.cuda_kernels import CUDA_KERNELS_AVAILABLE
+        info['cuda_kernels_available'] = CUDA_KERNELS_AVAILABLE
+    except ImportError:
+        info['cuda_kernels_available'] = False
+
+    return jsonify(info)

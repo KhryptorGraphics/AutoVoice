@@ -30,7 +30,7 @@ export function RealtimeWaveform({ isProcessing, progress, audioUrl }: RealtimeW
         analyserNode.connect(ctx.destination)
         source.start(0)
 
-        setAudioContext(ctx)
+        // Note: ctx is created but not stored in state since we only need the analyser
         setAnalyser(analyserNode)
       } catch (err) {
         console.error('Failed to initialize audio:', err)

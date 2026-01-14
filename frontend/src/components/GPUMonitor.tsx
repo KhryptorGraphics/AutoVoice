@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { Cpu, Activity, Thermometer, HardDrive, AlertCircle } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { apiService } from '../services/api'

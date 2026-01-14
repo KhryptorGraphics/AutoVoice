@@ -5,12 +5,28 @@
 #include <cufft.h>
 #include <cooperative_groups.h>
 #include <device_launch_parameters.h>
-#include <torch/extension.h>
 #include <unordered_map>
 #include <mutex>
 #include <string>
+#include <cstdint>   // GCC 14 compatibility
+#include <cstddef>   // GCC 14 compatibility
+
+// Prevent cublasLt.h extern "C" error during device code compilation (CUDA 13.0+)
+#ifdef __CUDA_ARCH__
+#define CUBLASLT_H_
+#endif
+
+#include <torch/extension.h>
 
 using namespace cooperative_groups;
+
+// Forward declarations (not in headers)
+__global__ void normalize_kernel(float *data, int n_fft, int total_samples);
+cufftHandle get_or_create_plan(const std::string& key, int n_fft, cufftType type, int batch);
+void apply_perceptual_weighting(
+    torch::Tensor mel_spectrogram,
+    torch::Tensor mel_frequencies,
+    int n_frames, int mel_bins, int batch_size);
 
 // Windowing kernel using provided window tensor (batched version)
 __global__ void apply_window_kernel(float *audio, float *window, float *windowed, int audio_length, int n_fft, int hop_length, int n_frames) {
@@ -248,8 +264,6 @@ __global__ void normalize_istft_kernel(
     }
 }
 
-#include <torch/extension.h>
-
 // Host function to apply window
 void launch_apply_window(torch::Tensor& input, torch::Tensor& window, torch::Tensor& output) {
     float *d_input = input.data_ptr<float>();
@@ -318,7 +332,7 @@ void launch_apply_mel_filters(torch::Tensor& magnitude, torch::Tensor& mel_filte
 }
 
 // Host function to execute forward FFT (refactored to use plan cache)
-void execute_cufft_forward(float *d_input, cufftComplex *d_output, int batch_size, int n_fft, cudaStream_t stream = 0) {
+void execute_cufft_forward(float *d_input, cufftComplex *d_output, int batch_size, int n_fft, cudaStream_t stream) {
     // Generate plan key
     std::string plan_key = "fft_forward_" + std::to_string(n_fft) + "_" + std::to_string(batch_size);
 
@@ -335,7 +349,7 @@ void execute_cufft_forward(float *d_input, cufftComplex *d_output, int batch_siz
 }
 
 // Host function to execute inverse FFT (refactored to use plan cache)
-void execute_cufft_inverse(cufftComplex *d_input, float *d_output, int batch_size, int n_fft, cudaStream_t stream = 0) {
+void execute_cufft_inverse(cufftComplex *d_input, float *d_output, int batch_size, int n_fft, cudaStream_t stream) {
     // Generate plan key
     std::string plan_key = "fft_inverse_" + std::to_string(n_fft) + "_" + std::to_string(batch_size);
 

@@ -115,7 +115,8 @@ def run_app(app, socketio, config=None, host=None, port=None, debug=None):
             app,
             host=host,
             port=port,
-            debug=debug
+            debug=debug,
+            allow_unsafe_werkzeug=True  # Required for Flask-SocketIO 5.x
         )
     except KeyboardInterrupt:
         logger.info("Shutdown initiated by user")

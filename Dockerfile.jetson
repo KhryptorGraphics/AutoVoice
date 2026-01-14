@@ -1,0 +1,80 @@
+# Dockerfile for AutoVoice on NVIDIA Jetson AGX Thor
+# Platform: Thor (sm_110), JetPack R38.4.0, CUDA 13.0
+
+# Use L4T base image for Jetson
+FROM nvcr.io/nvidia/l4t-pytorch:r38.4.0-pth2.6-py3 AS base
+
+# Build arguments
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION=dev
+
+# Labels
+LABEL org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.title="AutoVoice Jetson Thor" \
+      org.opencontainers.image.description="GPU-accelerated voice synthesis for Jetson AGX Thor" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}"
+
+# Environment variables
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    CUDA_HOME=/usr/local/cuda \
+    TORCH_CUDA_ARCH_LIST="11.0" \
+    PYTHONPATH=/app/src \
+    PATH=/usr/local/cuda/bin:$PATH \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    cmake \
+    ninja-build \
+    libsndfile1-dev \
+    ffmpeg \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN pip3 install --upgrade pip
+
+# Copy requirements first for caching
+WORKDIR /app
+COPY requirements-jetson.txt /app/
+
+# Install Python dependencies
+RUN pip3 install --no-cache-dir -r requirements-jetson.txt
+
+# Install additional ML dependencies
+RUN pip3 install --no-cache-dir \
+    transformers \
+    webrtcvad \
+    noisereduce \
+    resemblyzer \
+    torchcrepe \
+    praat-parselmouth
+
+# Install demucs without deps (uses existing torch)
+RUN pip3 install --no-deps demucs
+
+# Copy application code
+COPY . /app
+
+# Install the package
+RUN pip3 install -e .
+
+# Create directories
+RUN mkdir -p /app/logs /app/data /app/models
+
+# Expose ports
+EXPOSE 5000 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:5000/api/health || exit 1
+
+# Default command
+CMD ["python3", "main.py", "--host", "0.0.0.0", "--port", "5000"]

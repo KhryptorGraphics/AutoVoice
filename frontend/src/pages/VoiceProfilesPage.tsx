@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { User, Plus, Trash2, Edit2, Music, Upload, X, Check, AlertCircle, Loader, Zap, Mic, Play, Square, Volume2, Brain, BarChart3, Target, Trophy, Star, TrendingUp, Guitar,Headphones } from 'lucide-react'
+import { User, Plus, Trash2, Edit2, Music, Upload, X, Check, AlertCircle, Loader, Zap, Mic, Play, Square, Volume2, Brain, Trophy } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiService, VoiceProfile } from '../services/api'
 import { VoiceProfileTester } from '../components/VoiceProfileTester'
@@ -12,73 +12,8 @@ interface VocalCoachingTip {
   suggestion: string
 }
 
-interface CoachingSession {
-  sessionStart: Date
-  tipsProvided: VocalCoachingTip[]
-  qualityHistory: number[]
-  averageQuality: number
-  favoriteTip: string
-  improvementAreas: string[]
-}
-
-interface VocalProgress {
-  totalSessions: number
-  bestQualitySession: number
-  averageQuality: number
-  improvementTrend: 'improving' | 'stable' | 'declining'
-  achievements: string[]
-  lastSessionDate: Date
-  practiceStreak: number
-  sessionHistory: {
-    sessionId: string
-    date: Date
-    avgQuality: number
-    duration: number
-    songName?: string
-    qualityMetrics: {
-      volumeStability: number
-      pitchStability: number
-      noiseLevel: number
-      signalToNoise: number
-    }
-  }[]
-  strengths: string[]
-  areasForImprovement: string[]
-  personalizedGoals: {
-    targetQuality: number
-    targetPractice: number // sessions per week
-    dueDate: Date
-    description: string
-  }[]
-}
-
-interface AutoAccompaniment {
-  detectChordProgression: (frequencyData: Float32Array) => string[]
-  generateHarmonyLayer: (inputPitch: number, harmonicRole: string) => number
-  matchStyle: (vocalCharacteristics: any) => string
-  createBackingTrack: (chords: string[], tempo: number, style: string) => AudioBuffer
-}
-
-type AudioEffect = {
-  id: string
-  name: string
-  enabled: boolean
-  parameters: Record<string, number>
-  processAudio: (inputBuffer: AudioBuffer, parameters: any) => AudioBuffer
-}
-
-interface ProfessionalEffectsChain {
-  equalizer: AudioEffect
-  compressor: AudioEffect
-  reverb: AudioEffect
-  limiter: AudioEffect
-  enhancer: AudioEffect
-  saturation: AudioEffect
-
-  applyChain: (inputBuffer: AudioBuffer) => AudioBuffer
-  savePreset: (presetName: string) => void
-  loadPreset: (presetName: string) => boolean
-}
+// Note: CoachingSession, VocalProgress, AutoAccompaniment, ProfessionalEffectsChain
+// interfaces reserved for future advanced features
 
 function VocalCoachingAssistant({
   vocalQualityScore,
@@ -606,10 +541,10 @@ function SingAlongProfileModal({ onClose, onSuccess }: SingAlongProfileModalProp
   const [pitchStability, setPitchStability] = useState(0)
   const [signalToNoise, setSignalToNoise] = useState(0)
 
-  // Recording features
-  const [countdown, setCountdown] = useState(0)
-  const [recordingChunks, setRecordingChunks] = useState<Blob[]>([])
-  const [recordingStats, setRecordingStats] = useState<any>(null)
+  // Recording features (prefixed with _ to suppress unused warnings - future use)
+  const [_countdown, _setCountdown] = useState(0)
+  const [_recordingChunks, _setRecordingChunks] = useState<Blob[]>([])
+  const [_recordingStats, _setRecordingStats] = useState<any>(null)
   const [waveformData, setWaveformData] = useState<number[]>([])
 
   // Controls
@@ -833,7 +768,7 @@ function SingAlongProfileModal({ onClose, onSuccess }: SingAlongProfileModalProp
 
   // Update time displays
   useEffect(() => {
-    let interval: number
+    let interval: ReturnType<typeof setInterval> | undefined
     if (isRecording && recordingStartTimeRef.current) {
       interval = setInterval(() => {
         setRecordingTime((Date.now() - recordingStartTimeRef.current) / 1000)
