@@ -111,7 +111,7 @@ class TestVoiceTransformer:
             with torch.no_grad():
                 output = self.model(input_mel)
 
-            assert output.device == cuda_device
+            assert output.device.type == cuda_device.type
 
 
 @pytest.mark.model

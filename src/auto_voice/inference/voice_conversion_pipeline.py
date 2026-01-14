@@ -512,19 +512,29 @@ class VoiceConversionPipeline:
         Returns:
             Resampled audio
         """
+        # Save original state for fallback
+        original_audio = audio.clone()
+        original_ndim = audio.ndim
+
         try:
             import torchaudio.transforms as T
 
             resampler = T.Resample(orig_freq=orig_freq, new_freq=new_freq).to(self.device)
 
-            # Ensure correct shape
-            if audio.ndim == 1:
+            # Ensure audio is on the same device as resampler
+            audio = audio.to(self.device)
+
+            # Track if we need to squeeze back
+            was_1d = audio.ndim == 1
+
+            # Ensure correct shape for torchaudio (needs at least 2D: [channels, samples])
+            if was_1d:
                 audio = audio.unsqueeze(0)
 
             resampled = resampler(audio)
 
             # Remove batch dimension if added
-            if resampled.shape[0] == 1:
+            if was_1d and resampled.ndim > 1:
                 resampled = resampled.squeeze(0)
 
             return resampled
@@ -532,16 +542,28 @@ class VoiceConversionPipeline:
         except Exception as e:
             logger.warning(f"Torchaudio resampling failed: {e}, using linear interpolation")
 
-            # Fallback to linear interpolation
+            # Fallback to linear interpolation using original audio
+            # F.interpolate needs 3D input: (batch, channels, length)
+            audio = original_audio
+            if original_ndim == 1:
+                audio = audio.unsqueeze(0).unsqueeze(0)  # (1, 1, length)
+            elif original_ndim == 2:
+                audio = audio.unsqueeze(0)  # (1, channels, length)
+
             factor = new_freq / orig_freq
             resampled = F.interpolate(
-                audio.unsqueeze(0).unsqueeze(0),
+                audio,
                 scale_factor=factor,
                 mode='linear',
                 align_corners=False
             )
 
-            return resampled.squeeze()
+            # Restore original dimensions
+            if original_ndim == 1:
+                return resampled.squeeze(0).squeeze(0)
+            elif original_ndim == 2:
+                return resampled.squeeze(0)
+            return resampled
 
     def _fallback_conversion(self, audio: np.ndarray) -> np.ndarray:
         """Fallback conversion when main pipeline fails.

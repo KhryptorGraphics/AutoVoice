@@ -533,7 +533,7 @@ class TestAudioProcessingMethods:
 
         result = cpu_pipeline._preprocess_audio(audio, 22050)
 
-        assert result.device == cpu_pipeline.device
+        assert result.device.type == cpu_pipeline.device.type
 
     def test_encode_speaker_normalization(self, cpu_pipeline):
         """Test speaker embedding normalization."""
