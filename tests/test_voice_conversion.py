@@ -533,12 +533,12 @@ class TestSingingVoiceConverter:
     # Temperature Control Tests
     # ========================================================================
 
-    def test_set_temperature(self):
+    def test_set_temperature(self, model_config):
         """Test setting sampling temperature for flow decoder.
 
         Tests set_temperature() method which controls randomness in generation.
         """
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
         model.prepare_for_inference()
 
@@ -548,9 +548,9 @@ class TestSingingVoiceConverter:
             # Model should store temperature
             assert hasattr(model, 'temperature') or hasattr(model, 'flow_decoder')
 
-    def test_temperature_out_of_range(self):
+    def test_temperature_out_of_range(self, model_config):
         """Test that invalid temperature values are rejected."""
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
 
         # Temperature too low
@@ -565,12 +565,12 @@ class TestSingingVoiceConverter:
         with pytest.raises(ValueError):
             model.set_temperature(-0.5)
 
-    def test_auto_tune_temperature(self):
+    def test_auto_tune_temperature(self, model_config):
         """Test automatic temperature tuning based on audio characteristics.
 
         Tests auto_tune_temperature() which analyzes source/target to determine optimal temperature.
         """
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
         model.prepare_for_inference()
 
@@ -591,9 +591,9 @@ class TestSingingVoiceConverter:
         assert isinstance(optimal_temp, float)
         assert 0.1 <= optimal_temp <= 2.0
 
-    def test_temperature_affects_output_variability(self):
+    def test_temperature_affects_output_variability(self, model_config):
         """Test that temperature controls output variability."""
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
         model.prepare_for_inference()
 
@@ -644,12 +644,12 @@ class TestSingingVoiceConverter:
     # Pitch Shift Tests
     # ========================================================================
 
-    def test_pitch_shift_semitones(self):
+    def test_pitch_shift_semitones(self, model_config):
         """Test pitch shifting during conversion.
 
         Tests convert() method with pitch_shift_semitones parameter.
         """
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
         model.prepare_for_inference()
 
@@ -673,12 +673,12 @@ class TestSingingVoiceConverter:
             assert len(output) > 0
             assert np.isfinite(output).all()
 
-    def test_pitch_shift_method_multiply(self):
+    def test_pitch_shift_method_multiply(self, model_config):
         """Test pitch shift with multiply method.
 
         Tests pitch_shift_method='multiply' parameter for frequency domain pitch shifting.
         """
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
         model.prepare_for_inference()
 
@@ -699,9 +699,9 @@ class TestSingingVoiceConverter:
         assert isinstance(output, np.ndarray)
         assert np.isfinite(output).all()
 
-    def test_pitch_shift_preserves_timbre(self):
+    def test_pitch_shift_preserves_timbre(self, model_config):
         """Test that pitch shifting preserves speaker timbre."""
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
         model.prepare_for_inference()
 
@@ -731,18 +731,18 @@ class TestSingingVoiceConverter:
         assert isinstance(output_no_shift, np.ndarray)
         assert isinstance(output_with_shift, np.ndarray)
         # Lengths may differ slightly due to processing
-        assert abs(len(output_no_shift) - len(output_with_shift)) < sample_rate * 0.1  # Within 100ms
+        assert abs(len(output_no_shift) - len(output_with_shift)) < 16000 * 0.1  # Within 100ms
 
     # ========================================================================
     # Quality Preset Tests
     # ========================================================================
 
-    def test_set_quality_preset(self):
+    def test_set_quality_preset(self, model_config):
         """Test setting quality presets (draft, fast, balanced, high, studio).
 
         Tests set_quality_preset() method which affects conversion speed/quality trade-off.
         """
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
 
         # Test all quality presets
@@ -751,20 +751,20 @@ class TestSingingVoiceConverter:
             # Should store current preset
             assert hasattr(model, 'current_preset') or hasattr(model, 'quality_preset')
 
-    def test_quality_preset_invalid(self):
+    def test_quality_preset_invalid(self, model_config):
         """Test that invalid quality preset raises error."""
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
 
         with pytest.raises(ValueError):
             model.set_quality_preset('invalid_preset')
 
-    def test_get_quality_preset_info(self):
+    def test_get_quality_preset_info(self, model_config):
         """Test retrieving quality preset information.
 
         Tests get_quality_preset_info() method which returns preset details.
         """
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
 
         # Get info for each preset
@@ -779,9 +779,9 @@ class TestSingingVoiceConverter:
             if 'estimated_rtf' in info:
                 assert isinstance(info['estimated_rtf'], (int, float))
 
-    def test_get_current_preset_info(self):
+    def test_get_current_preset_info(self, model_config):
         """Test getting currently active preset info."""
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
 
         # Set a preset
@@ -794,12 +794,12 @@ class TestSingingVoiceConverter:
         assert 'name' in info
         assert info['name'] == 'balanced'
 
-    def test_estimate_conversion_time(self):
+    def test_estimate_conversion_time(self, model_config):
         """Test conversion time estimation for given audio duration.
 
         Tests estimate_conversion_time() method with different presets.
         """
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
 
         # Test time estimation for different durations and presets
@@ -812,9 +812,9 @@ class TestSingingVoiceConverter:
                 assert isinstance(estimated_time, float)
                 assert estimated_time > 0
 
-    def test_quality_preset_affects_throughput(self):
+    def test_quality_preset_affects_throughput(self, model_config):
         """Test that quality presets affect conversion throughput."""
-        config = create_test_config()
+        config = model_config
         model = SingingVoiceConverter(config)
         model.prepare_for_inference()
 
