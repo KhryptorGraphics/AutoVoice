@@ -11,6 +11,9 @@ from werkzeug.utils import secure_filename
 from auto_voice.inference import VoiceSynthesizer
 from auto_voice.audio import AudioProcessor
 from auto_voice.web.api import api_bp
+from auto_voice.web.job_manager import JobManager
+from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+from auto_voice.inference.voice_cloner import VoiceCloner
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,9 @@ def create_app(config_path: str = None, model_path: str = None, vocoder_path: st
     # Merge provided config
     if config:
         app.config.update(config)
+    
+    # Store app-level config for API access
+    app.app_config = config if config else {}
     # SECURITY: Require SECRET_KEY in production
     secret_key = os.environ.get('SECRET_KEY')
     if not secret_key:
@@ -69,6 +75,55 @@ def create_app(config_path: str = None, model_path: str = None, vocoder_path: st
     # Audio processor
     audio_processor = AudioProcessor()
     app.config['audio_processor'] = audio_processor
+
+    # Initialize singing conversion pipeline and voice cloner for job_manager
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Initialize singing conversion pipeline
+    singing_pipeline = None
+    if config and config.get('singing_conversion_enabled', True):
+        try:
+            singing_pipeline = SingingConversionPipeline(device=device)
+            app.singing_conversion_pipeline = singing_pipeline
+            logger.info(f"Singing conversion pipeline initialized on {device}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize singing conversion pipeline: {e}")
+    
+    # Initialize voice cloner
+    voice_cloner = None
+    if config and config.get('voice_cloning_enabled', True):
+        try:
+            voice_cloner = VoiceCloner(device=device)
+            app.voice_cloner = voice_cloner
+            logger.info(f"Voice cloner initialized on {device}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize voice cloner: {e}")
+    
+    # Initialize JobManager if components are available
+    job_manager = None
+    if singing_pipeline and voice_cloner:
+        try:
+            job_manager_config = config.get('job_manager', {}) if config else {}
+            job_manager_config.setdefault('max_workers', 4)
+            job_manager_config.setdefault('ttl_seconds', 3600)
+            job_manager_config.setdefault('in_progress_ttl_seconds', 7200)
+            
+            # Pass app.config for audio settings
+            job_manager_config['audio'] = app.config
+            
+            job_manager = JobManager(
+                config=job_manager_config,
+                socketio=socketio,
+                singing_pipeline=singing_pipeline,
+                voice_profile_manager=voice_cloner
+            )
+            app.job_manager = job_manager
+            job_manager.start_cleanup_thread()
+            logger.info("JobManager initialized and cleanup thread started")
+        except Exception as e:
+            logger.warning(f"Failed to initialize JobManager: {e}")
+    else:
+        logger.info("JobManager not initialized (missing singing_pipeline or voice_cloner)")
 
     @app.route('/')
     def index():

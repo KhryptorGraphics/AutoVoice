@@ -20,7 +20,13 @@ def _wants_cuda_build(argv):
 
     Returns True for build commands (build_ext, install, develop, bdist_wheel, etc.)
     Returns False for metadata-only commands (egg_info, sdist, dist_info, etc.)
+
+    Set AUTO_VOICE_NO_CUDA=1 environment variable to skip CUDA build entirely.
     """
+    # Allow explicit skip of CUDA build via environment variable
+    if os.environ.get('AUTO_VOICE_NO_CUDA', '').lower() in ('1', 'true', 'yes'):
+        return False
+
     # Commands that require building extensions
     build_commands = {
         'build_ext', 'build', 'install', 'develop',
@@ -400,10 +406,18 @@ def _build_cuda_extensions():
 
     # Build include directories from resolved path
     if resolved_include_base:
-        cuda_include_dirs = [resolved_include_base, 'src/cuda_kernels']
+        cuda_include_dirs = [
+            resolved_include_base,
+            os.path.join(resolved_include_base, 'cccl'),  # CUDA 13 CCCL headers
+            'src/cuda_kernels'
+        ]
     else:
         # Fallback to standard path
-        cuda_include_dirs = [os.path.join(CUDA_HOME, 'include'), 'src/cuda_kernels']
+        cuda_include_dirs = [
+            os.path.join(CUDA_HOME, 'include'),
+            os.path.join(CUDA_HOME, 'include', 'cccl'),  # CUDA 13 CCCL headers
+            'src/cuda_kernels'
+        ]
 
     # Build library directories list (support both lib64 and lib)
     cuda_library_dirs = []
@@ -427,9 +441,9 @@ def _build_cuda_extensions():
             if torch.cuda.is_available():
                 CUDA_ARCH_LIST = ';'.join([str(arch) for arch in torch.cuda.get_arch_list()])
             else:
-                CUDA_ARCH_LIST = '70;75;80;86'  # Common architectures
+                CUDA_ARCH_LIST = '72;87;110'  # Jetson: Xavier, Orin, Thor
         except:
-            CUDA_ARCH_LIST = '70;75;80;86'  # Fallback to common architectures
+            CUDA_ARCH_LIST = '72;87;110'  # Fallback: Jetson architectures
 
     arch_flags = []
     arch_list = []
@@ -442,9 +456,9 @@ def _build_cuda_extensions():
             arch_flags.extend(['-gencode', f'arch=compute_{arch_clean},code=sm_{arch_clean}'])
             arch_list.append(arch_clean)
 
-    # If arch_list is empty after processing, use default architectures
+    # If arch_list is empty after processing, use default Jetson architectures
     if not arch_list:
-        arch_list = ['70', '75', '80', '86']
+        arch_list = ['72', '87', '110']  # Xavier, Orin, Thor
         for arch in arch_list:
             arch_flags.extend(['-gencode', f'arch=compute_{arch},code=sm_{arch}'])
 
@@ -467,16 +481,25 @@ def _build_cuda_extensions():
             'cudart',
         ] + (['cufft'] if os.environ.get('DISABLE_CUFFT') != '1' else []),
         extra_compile_args={
-            'cxx': ['-O3', '-std=c++17'],
+            'cxx': ['-O3', '-std=c++17', '-Wno-deprecated-declarations'],
             'nvcc': [
                 '-O3',
                 '--use_fast_math',
                 '-std=c++17',
                 '--expt-relaxed-constexpr',
-                '--extended-lambda',  # Enable extended lambda support for device code
+                '--expt-extended-lambda',  # Enable extended lambda support for device code
+                '-D__CORRECT_ISO_CPP11_MATH_H_PROTO',  # Fix cmath issues with GCC 14
+                '--allow-unsupported-compiler',  # Allow GCC 14 with CUDA 13
+                # CUDA 13.0 Thor sm_110 compatibility flags
+                '-device-entity-has-hidden-visibility=false',  # CUDA 13.0 changed ELF visibility default
+                '--static-global-template-stub=false',  # CUDA 13.0 static global template stubs
                 '--diag-suppress=20012',  # Suppress __device__ call from __host__ __device__ errors
                 '--diag-suppress=20014',  # Suppress related device function call warnings
+                '--diag-suppress=20036',  # Suppress extern "C" linkage warnings
+                '--diag-suppress=174',    # Suppress expression has no effect warnings
+                '--diag-suppress=20092',  # Suppress deprecation warnings for CUDA 13.0
                 '--ptxas-options=-v',  # Verbose PTX assembly
+                '-Xcompiler', '-Wno-deprecated-declarations',  # GCC 14 compat
             ] + arch_flags
         },
     )
@@ -527,7 +550,7 @@ setup(
         # ===========================================================================================
 
         # Core numerical and audio processing (aligned with requirements.txt)
-        'numpy>=1.26,<2.0',
+        'numpy>=1.26',
         'librosa>=0.10,<0.11',
         'soundfile>=0.12,<0.13',
         'scipy>=1.12,<1.14',
