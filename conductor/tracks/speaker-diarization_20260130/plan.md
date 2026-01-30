@@ -3,7 +3,7 @@
 **Track ID:** speaker-diarization_20260130
 **Spec:** [spec.md](./spec.md)
 **Created:** 2026-01-30
-**Status:** [~] In Progress
+**Status:** [~] In Progress (Phases 1-6 Complete, 7-8 Deferred)
 
 ## Overview
 
@@ -161,7 +161,7 @@ Update YouTube download flow to use metadata and diarization.
 
 ### Tasks
 
-- [ ] Task 7.1: Update YouTube download UI to show detected featured artists
+- [x] Task 7.1: Update YouTube download UI to show detected featured artists
 - [ ] Task 7.2: Add option to auto-create profiles for featured artists
 - [ ] Task 7.3: Show diarization progress during download processing
 - [ ] Task 7.4: Add "Filter to target artist only" toggle

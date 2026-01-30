@@ -80,6 +80,15 @@ except ImportError:
     ConversionError = None
     SINGING_CONVERSION_ERRORS_AVAILABLE = False
 
+# Import YouTube downloader
+try:
+    from ..audio.youtube_downloader import YouTubeDownloader, YouTubeDownloadResult
+    YOUTUBE_DOWNLOADER_AVAILABLE = True
+except ImportError:
+    YouTubeDownloader = None
+    YouTubeDownloadResult = None
+    YOUTUBE_DOWNLOADER_AVAILABLE = False
+
 # Import shared utilities
 from .utils import allowed_file, ALLOWED_AUDIO_EXTENSIONS
 
@@ -2888,3 +2897,184 @@ def delete_checkpoint(profile_id: str, checkpoint_id: str):
     del _profile_checkpoints[profile_id][checkpoint_id]
     logger.info(f"Deleted checkpoint {checkpoint_id} from profile {profile_id}")
     return '', 204
+
+
+# =============================================================================
+# YOUTUBE DOWNLOAD ENDPOINTS
+# =============================================================================
+
+# Module-level YouTube downloader instance
+_youtube_downloader: Optional['YouTubeDownloader'] = None
+
+
+def get_youtube_downloader() -> 'YouTubeDownloader':
+    """Get or create a YouTubeDownloader instance."""
+    global _youtube_downloader
+    if _youtube_downloader is None:
+        if not YOUTUBE_DOWNLOADER_AVAILABLE:
+            raise RuntimeError("YouTube downloader not available")
+        output_dir = os.path.join(UPLOAD_FOLDER, 'youtube')
+        os.makedirs(output_dir, exist_ok=True)
+        _youtube_downloader = YouTubeDownloader(output_dir)
+    return _youtube_downloader
+
+
+@api_bp.route('/youtube/info', methods=['POST'])
+def youtube_info():
+    """Get video information and detected artists without downloading.
+
+    Request (JSON):
+        url (str): YouTube video URL (required)
+
+    Returns:
+        {
+            "success": true/false,
+            "title": "Video Title",
+            "duration": 180.5,
+            "main_artist": "Artist Name",
+            "featured_artists": ["Artist 1", "Artist 2"],
+            "is_cover": false,
+            "original_artist": null,
+            "song_title": "Song Name",
+            "thumbnail_url": "https://...",
+            "video_id": "abc123",
+            "error": null
+        }
+    """
+    if not YOUTUBE_DOWNLOADER_AVAILABLE:
+        return jsonify({'error': 'YouTube downloader not available. Install yt-dlp.'}), 503
+
+    data = request.get_json()
+    if not data or 'url' not in data:
+        return jsonify({'error': 'Missing required field: url'}), 400
+
+    url = data['url']
+    if not url.strip():
+        return jsonify({'error': 'URL cannot be empty'}), 400
+
+    try:
+        downloader = get_youtube_downloader()
+        result = downloader.get_video_info(url)
+
+        return jsonify({
+            'success': result.success,
+            'title': result.title,
+            'duration': result.duration,
+            'main_artist': result.main_artist,
+            'featured_artists': result.featured_artists,
+            'is_cover': result.is_cover,
+            'original_artist': result.original_artist,
+            'song_title': result.song_title,
+            'thumbnail_url': result.thumbnail_url,
+            'video_id': result.video_id,
+            'error': result.error
+        })
+
+    except Exception as e:
+        logger.error(f"YouTube info failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/youtube/download', methods=['POST'])
+def youtube_download():
+    """Download audio from YouTube video with metadata.
+
+    Request (JSON):
+        url (str): YouTube video URL (required)
+        format (str): Audio format (wav, mp3, flac) - default: wav
+        sample_rate (int): Sample rate - default: 44100
+        run_diarization (bool): Run speaker diarization after download - default: false
+
+    Returns:
+        {
+            "success": true/false,
+            "audio_path": "/path/to/audio.wav",
+            "title": "Video Title",
+            "duration": 180.5,
+            "main_artist": "Artist Name",
+            "featured_artists": ["Artist 1", "Artist 2"],
+            "is_cover": false,
+            "video_id": "abc123",
+            "diarization_result": {...} (if run_diarization=true),
+            "error": null
+        }
+    """
+    if not YOUTUBE_DOWNLOADER_AVAILABLE:
+        return jsonify({'error': 'YouTube downloader not available. Install yt-dlp.'}), 503
+
+    data = request.get_json()
+    if not data or 'url' not in data:
+        return jsonify({'error': 'Missing required field: url'}), 400
+
+    url = data['url']
+    if not url.strip():
+        return jsonify({'error': 'URL cannot be empty'}), 400
+
+    audio_format = data.get('format', 'wav')
+    if audio_format not in ['wav', 'mp3', 'flac']:
+        return jsonify({'error': 'Invalid format. Must be wav, mp3, or flac'}), 400
+
+    sample_rate = data.get('sample_rate', 44100)
+    try:
+        sample_rate = int(sample_rate)
+        if sample_rate not in [16000, 22050, 44100, 48000]:
+            return jsonify({'error': 'Invalid sample_rate. Must be 16000, 22050, 44100, or 48000'}), 400
+    except (ValueError, TypeError):
+        return jsonify({'error': 'sample_rate must be an integer'}), 400
+
+    run_diarization = data.get('run_diarization', False)
+
+    try:
+        downloader = get_youtube_downloader()
+        result = downloader.download(url, audio_format=audio_format, sample_rate=sample_rate)
+
+        if not result.success:
+            return jsonify({
+                'success': False,
+                'error': result.error,
+                'title': result.title,
+                'video_id': result.video_id
+            }), 400
+
+        response = {
+            'success': True,
+            'audio_path': result.audio_path,
+            'title': result.title,
+            'duration': result.duration,
+            'main_artist': result.main_artist,
+            'featured_artists': result.featured_artists,
+            'is_cover': result.is_cover,
+            'original_artist': result.original_artist,
+            'song_title': result.song_title,
+            'thumbnail_url': result.thumbnail_url,
+            'video_id': result.video_id,
+            'error': None
+        }
+
+        # Optionally run diarization
+        if run_diarization and result.audio_path:
+            try:
+                from ..audio.speaker_diarization import SpeakerDiarizer
+                diarizer = SpeakerDiarizer()
+                diarization_result = diarizer.diarize(result.audio_path)
+                response['diarization_result'] = {
+                    'num_speakers': diarization_result.num_speakers,
+                    'segments': [
+                        {
+                            'speaker_id': seg.speaker_id,
+                            'start': seg.start,
+                            'end': seg.end,
+                            'duration': seg.duration
+                        }
+                        for seg in diarization_result.segments
+                    ]
+                }
+            except Exception as e:
+                logger.warning(f"Diarization failed: {e}")
+                response['diarization_error'] = str(e)
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"YouTube download failed: {e}")
+        return jsonify({'error': str(e)}), 500

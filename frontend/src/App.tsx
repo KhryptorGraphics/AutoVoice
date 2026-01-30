@@ -1,10 +1,11 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Music, History, Activity, Mic, HelpCircle, User, Users } from 'lucide-react'
+import { Music, History, Activity, Mic, HelpCircle, User, Users, Youtube } from 'lucide-react'
 import { ConversionHistoryPage } from './pages/ConversionHistoryPage'
 import { SystemStatusPage } from './pages/SystemStatusPage'
 import { KaraokePage } from './pages/KaraokePage'
 import { VoiceProfilePage } from './pages/VoiceProfilePage'
 import { DiarizationResultsPage } from './pages/DiarizationResultsPage'
+import { YouTubeDownloadPage } from './pages/YouTubeDownloadPage'
 import HelpPage from './pages/HelpPage'
 import clsx from 'clsx'
 
@@ -44,6 +45,7 @@ export default function App() {
     { to: '/', label: 'Convert', icon: Music },
     { to: '/karaoke', label: 'Karaoke', icon: Mic },
     { to: '/profiles', label: 'Profiles', icon: User },
+    { to: '/youtube', label: 'YouTube', icon: Youtube },
     { to: '/diarization', label: 'Diarization', icon: Users },
     { to: '/history', label: 'History', icon: History },
     { to: '/system', label: 'System', icon: Activity },
@@ -82,6 +84,7 @@ export default function App() {
           <Route path="/" element={<ConvertPage />} />
           <Route path="/karaoke" element={<KaraokePage />} />
           <Route path="/profiles" element={<VoiceProfilePage />} />
+          <Route path="/youtube" element={<YouTubeDownloadPage />} />
           <Route path="/diarization" element={<DiarizationResultsPage />} />
           <Route path="/history" element={<ConversionHistoryPage />} />
           <Route path="/system" element={<SystemStatusPage />} />

@@ -898,6 +898,36 @@ class ApiService {
       body: JSON.stringify({ similarity_threshold: similarityThreshold }),
     })
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // YouTube Methods
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async getYouTubeVideoInfo(url: string): Promise<YouTubeVideoInfo> {
+    return this.request<YouTubeVideoInfo>('/youtube/info', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    })
+  }
+
+  async downloadYouTubeAudio(
+    url: string,
+    options?: {
+      format?: 'wav' | 'mp3' | 'flac'
+      sample_rate?: number
+      run_diarization?: boolean
+    }
+  ): Promise<YouTubeDownloadResult> {
+    return this.request<YouTubeDownloadResult>('/youtube/download', {
+      method: 'POST',
+      body: JSON.stringify({
+        url,
+        format: options?.format ?? 'wav',
+        sample_rate: options?.sample_rate ?? 44100,
+        run_diarization: options?.run_diarization ?? false,
+      }),
+    })
+  }
 }
 
 // Diarization types
@@ -976,6 +1006,49 @@ export interface FilterSampleResult {
   num_segments: number
   purity: number
   status: string
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// YouTube Types
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface YouTubeVideoInfo {
+  success: boolean
+  title: string
+  duration: number
+  main_artist: string | null
+  featured_artists: string[]
+  is_cover: boolean
+  original_artist: string | null
+  song_title: string | null
+  thumbnail_url: string | null
+  video_id: string | null
+  error: string | null
+}
+
+export interface YouTubeDownloadResult {
+  success: boolean
+  audio_path: string | null
+  title: string
+  duration: number
+  main_artist: string | null
+  featured_artists: string[]
+  is_cover: boolean
+  original_artist: string | null
+  song_title: string | null
+  thumbnail_url: string | null
+  video_id: string | null
+  error: string | null
+  diarization_result?: {
+    num_speakers: number
+    segments: Array<{
+      speaker_id: string
+      start: number
+      end: number
+      duration: number
+    }>
+  }
+  diarization_error?: string
 }
 
 export const apiService = new ApiService()
