@@ -1,9 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle } from 'lucide-react'
+import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users } from 'lucide-react'
 import { apiService, VoiceProfile, TrainingJob, TrainingConfig, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType } from '../services/api'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { TrainingJobQueue } from '../components/TrainingJobQueue'
 import { LossCurveChart } from '../components/LossCurveChart'
+import { AddSongButton } from '../components/AddSongButton'
+import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
+import { TrainingSampleUpload } from '../components/TrainingSampleUpload'
 import clsx from 'clsx'
 
 // Training status badge component
@@ -56,7 +59,10 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>(DEFAULT_TRAINING_CONFIG)
   const [selectedJob, setSelectedJob] = useState<TrainingJob | null>(null)
   const [startingTraining, setStartingTraining] = useState(false)
-  const [activeTab, setActiveTab] = useState<'samples' | 'config' | 'jobs'>('samples')
+  const [activeTab, setActiveTab] = useState<'samples' | 'config' | 'jobs' | 'segments'>('samples')
+  const [showAdvancedUpload, setShowAdvancedUpload] = useState(false)
+  const [assignedSegments, setAssignedSegments] = useState<Array<{ type: string; segment_key: string; audio_path: string }>>([])
+  const [loadingSegments, setLoadingSegments] = useState(false)
 
   useEffect(() => {
     const fetchSamples = async () => {
@@ -71,6 +77,25 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     }
     fetchSamples()
   }, [profile.profile_id])
+
+  // Fetch assigned diarization segments when segments tab is active
+  useEffect(() => {
+    if (activeTab !== 'segments') return
+
+    const fetchSegments = async () => {
+      setLoadingSegments(true)
+      try {
+        const result = await apiService.getProfileSegments(profile.profile_id)
+        setAssignedSegments(result.diarization_assignments || [])
+      } catch (error) {
+        console.error('Failed to fetch segments:', error)
+        setAssignedSegments([])
+      } finally {
+        setLoadingSegments(false)
+      }
+    }
+    fetchSegments()
+  }, [profile.profile_id, activeTab])
 
   const handleDelete = async () => {
     if (!confirm(`Delete profile "${profile.name || profile.profile_id}"? This cannot be undone.`)) return
@@ -161,7 +186,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
 
       {/* Tab navigation */}
       <div className="flex gap-1 p-1 bg-gray-800 rounded-lg">
-        {(['samples', 'config', 'jobs'] as const).map(tab => (
+        {(['samples', 'segments', 'config', 'jobs'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -172,7 +197,9 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                 : 'text-gray-400 hover:text-white'
             )}
           >
-            {tab === 'samples' ? `Samples (${samples.length})` : tab === 'jobs' ? 'Training Jobs' : 'Config'}
+            {tab === 'samples' ? `Samples (${samples.length})` :
+             tab === 'segments' ? 'Diarized Segments' :
+             tab === 'jobs' ? 'Training Jobs' : 'Config'}
           </button>
         ))}
       </div>
@@ -182,17 +209,51 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
         <div className="bg-gray-800 rounded-lg p-6 space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold">Training Samples</h3>
-            <label className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer">
-              <Upload size={16} />
-              Upload Sample
-              <input
-                type="file"
-                accept="audio/*"
-                onChange={handleUploadSample}
-                className="hidden"
+            <div className="flex items-center gap-2">
+              <AddSongButton
+                profileId={profile.profile_id}
+                onSongAdded={() => {
+                  // Refresh samples after song is added and split
+                  apiService.listSamples(profile.profile_id).then(setSamples)
+                }}
               />
-            </label>
+              <button
+                onClick={() => setShowAdvancedUpload(!showAdvancedUpload)}
+                className={clsx(
+                  'flex items-center gap-2 px-4 py-2 rounded',
+                  showAdvancedUpload
+                    ? 'bg-purple-600 hover:bg-purple-700'
+                    : 'bg-gray-600 hover:bg-gray-500'
+                )}
+                title="Upload with speaker detection"
+              >
+                <Users size={16} />
+                Smart Upload
+              </button>
+              <label className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer">
+                <Upload size={16} />
+                Quick Upload
+                <input
+                  type="file"
+                  accept="audio/*"
+                  onChange={handleUploadSample}
+                  className="hidden"
+                />
+              </label>
+            </div>
           </div>
+
+          {/* Advanced upload with diarization */}
+          {showAdvancedUpload && (
+            <TrainingSampleUpload
+              profileId={profile.profile_id}
+              profileName={profile.name}
+              onSampleAdded={(sample) => {
+                setSamples(prev => [...prev, sample])
+                setShowAdvancedUpload(false)
+              }}
+            />
+          )}
           {loading ? (
             <div className="flex items-center gap-2 text-gray-400">
               <Loader2 className="animate-spin" size={16} />
@@ -248,13 +309,70 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
       )}
 
       {activeTab === 'jobs' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <TrainingJobQueue
-            profileId={profile.profile_id}
-            onJobSelect={setSelectedJob}
-          />
-          {selectedJob && (
-            <LossCurveChart job={selectedJob} />
+        <div className="space-y-4">
+          {/* Live Training Monitor - shown when a job is running */}
+          {selectedJob?.status === 'running' && (
+            <LiveTrainingMonitor
+              jobId={selectedJob.job_id}
+              profileId={profile.profile_id}
+              onComplete={() => {
+                // Refresh selected job to update status
+                apiService.getTrainingJob(selectedJob.job_id).then(setSelectedJob)
+              }}
+            />
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <TrainingJobQueue
+              profileId={profile.profile_id}
+              onJobSelect={setSelectedJob}
+            />
+            {selectedJob && selectedJob.status !== 'running' && (
+              <LossCurveChart job={selectedJob} />
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'segments' && (
+        <div className="bg-gray-800 rounded-lg p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold">Diarized Audio Segments</h3>
+            <p className="text-sm text-gray-400">
+              Segments assigned to this profile from speaker diarization
+            </p>
+          </div>
+
+          {loadingSegments ? (
+            <div className="flex items-center gap-2 text-gray-400">
+              <Loader2 className="animate-spin" size={16} />
+              Loading segments...
+            </div>
+          ) : assignedSegments.length === 0 ? (
+            <div className="text-center py-8">
+              <Users className="mx-auto text-gray-500 mb-3" size={48} />
+              <p className="text-gray-400 mb-2">No diarized segments assigned to this profile.</p>
+              <p className="text-sm text-gray-500">
+                Use the <a href="/diarization" className="text-blue-400 hover:underline">Diarization</a> page
+                to analyze multi-speaker audio and assign segments to profiles.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {assignedSegments.map((segment, idx) => (
+                <div key={idx} className="flex items-center justify-between p-3 bg-gray-750 rounded">
+                  <div className="flex items-center gap-3">
+                    <Users size={16} className="text-purple-400" />
+                    <div>
+                      <div className="text-sm">{segment.audio_path?.split('/').pop() || segment.segment_key}</div>
+                      <div className="text-xs text-gray-500">
+                        Type: {segment.type} · Key: {segment.segment_key}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -288,11 +406,8 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
     setError(null)
 
     try {
+      // Pass name as second parameter - backend will store it directly
       const profile = await apiService.createVoiceProfile(file, name || undefined)
-      if (name) {
-        await apiService.renameProfile(profile.profile_id, name)
-        profile.name = name
-      }
       onCreated(profile)
       setFile(null)
       setName('')

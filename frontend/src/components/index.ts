@@ -2,6 +2,11 @@
 export { TrainingConfigPanel } from './TrainingConfigPanel'
 export { TrainingJobQueue } from './TrainingJobQueue'
 export { LossCurveChart, LossCurveMini } from './LossCurveChart'
+export { TrainingSampleUpload } from './TrainingSampleUpload'
+
+// Diarization components
+export { DiarizationTimeline } from './DiarizationTimeline'
+export { SpeakerAssignmentPanel } from './SpeakerAssignmentPanel'
 
 // Inference components
 export { InferenceConfigPanel, PresetSelector } from './InferenceConfigPanel'

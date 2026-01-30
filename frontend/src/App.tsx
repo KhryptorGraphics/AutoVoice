@@ -1,9 +1,10 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Music, History, Activity, Mic, HelpCircle, User } from 'lucide-react'
+import { Music, History, Activity, Mic, HelpCircle, User, Users } from 'lucide-react'
 import { ConversionHistoryPage } from './pages/ConversionHistoryPage'
 import { SystemStatusPage } from './pages/SystemStatusPage'
 import { KaraokePage } from './pages/KaraokePage'
 import { VoiceProfilePage } from './pages/VoiceProfilePage'
+import { DiarizationResultsPage } from './pages/DiarizationResultsPage'
 import HelpPage from './pages/HelpPage'
 import clsx from 'clsx'
 
@@ -43,6 +44,7 @@ export default function App() {
     { to: '/', label: 'Convert', icon: Music },
     { to: '/karaoke', label: 'Karaoke', icon: Mic },
     { to: '/profiles', label: 'Profiles', icon: User },
+    { to: '/diarization', label: 'Diarization', icon: Users },
     { to: '/history', label: 'History', icon: History },
     { to: '/system', label: 'System', icon: Activity },
     { to: '/help', label: 'Help', icon: HelpCircle },
@@ -80,6 +82,7 @@ export default function App() {
           <Route path="/" element={<ConvertPage />} />
           <Route path="/karaoke" element={<KaraokePage />} />
           <Route path="/profiles" element={<VoiceProfilePage />} />
+          <Route path="/diarization" element={<DiarizationResultsPage />} />
           <Route path="/history" element={<ConversionHistoryPage />} />
           <Route path="/system" element={<SystemStatusPage />} />
           <Route path="/help" element={<HelpPage />} />

@@ -1,5 +1,6 @@
 const API_BASE = '/api/v1'
-const WS_BASE = `ws://${window.location.host}`
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const WS_BASE = `${WS_PROTOCOL}//${window.location.host}`
 
 // WebSocket event types
 export type WSEventType =
@@ -99,7 +100,9 @@ export interface TrainingJob {
 
 // Full training configuration with all LoRA/EWC parameters
 export interface TrainingConfig {
-  // LoRA configuration
+  // Training mode: 'lora' (fast, ~1MB checkpoint) or 'full' (from scratch, ~184MB, higher quality)
+  training_mode: 'lora' | 'full'
+  // LoRA configuration (only used when training_mode='lora')
   lora_rank: number
   lora_alpha: number
   lora_dropout: number
@@ -120,13 +123,14 @@ export interface TrainingConfig {
 
 // Default training config matching backend defaults
 export const DEFAULT_TRAINING_CONFIG: TrainingConfig = {
+  training_mode: 'lora',
   lora_rank: 8,
   lora_alpha: 16,
   lora_dropout: 0.1,
   lora_target_modules: ['q_proj', 'v_proj', 'content_encoder'],
   learning_rate: 1e-4,
   batch_size: 4,
-  epochs: 10,
+  epochs: 100,
   warmup_steps: 100,
   max_grad_norm: 1.0,
   use_ewc: true,
@@ -457,9 +461,10 @@ class ApiService {
     return this.request(`/convert/metrics/${jobId}`)
   }
 
-  async createVoiceProfile(audioFile: File, userId?: string): Promise<VoiceProfile> {
+  async createVoiceProfile(audioFile: File, name?: string, userId?: string): Promise<VoiceProfile> {
     const formData = new FormData()
-    formData.append('audio', audioFile)
+    formData.append('reference_audio', audioFile)
+    if (name) formData.append('name', name)
     if (userId) formData.append('user_id', userId)
 
     const response = await fetch(`${API_BASE}/voice/clone`, {
@@ -595,6 +600,69 @@ class ApiService {
 
   async deleteSample(profileId: string, sampleId: string): Promise<void> {
     await this.request(`/profiles/${profileId}/samples/${sampleId}`, { method: 'DELETE' })
+  }
+
+  // Song Upload with Auto-Split (Demucs vocal separation)
+  async uploadSongWithSplit(
+    profileId: string,
+    file: File,
+    onProgress?: (progress: number) => void
+  ): Promise<{ job_id: string; song_id?: string }> {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('profile_id', profileId)
+    formData.append('auto_split', 'true')
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable && onProgress) {
+          const progress = Math.round((event.loaded / event.total) * 100)
+          onProgress(progress)
+        }
+      })
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText)
+            resolve(response)
+          } catch {
+            reject(new Error('Invalid response format'))
+          }
+        } else {
+          try {
+            const error = JSON.parse(xhr.responseText)
+            reject(new Error(error.error || `Upload failed: ${xhr.status}`))
+          } catch {
+            reject(new Error(`Upload failed: ${xhr.status}`))
+          }
+        }
+      })
+
+      xhr.addEventListener('error', () => {
+        reject(new Error('Network error during upload'))
+      })
+
+      xhr.addEventListener('abort', () => {
+        reject(new Error('Upload aborted'))
+      })
+
+      xhr.open('POST', `${API_BASE}/profiles/${profileId}/songs`)
+      xhr.send(formData)
+    })
+  }
+
+  async getSeparationStatus(jobId: string): Promise<{
+    status: 'pending' | 'processing' | 'complete' | 'error'
+    progress: number
+    message?: string
+    error?: string
+    vocals_path?: string
+    instrumental_path?: string
+  }> {
+    return this.request(`/separation/status/${jobId}`)
   }
 
   // User Presets
@@ -734,9 +802,186 @@ class ApiService {
       method: 'DELETE',
     })
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Diarization Methods
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async diarizeAudio(file: File, numSpeakers?: number): Promise<DiarizationResult> {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (numSpeakers) {
+      formData.append('num_speakers', numSpeakers.toString())
+    }
+
+    const response = await fetch(`${API_BASE}/audio/diarize`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.error || 'Diarization failed')
+    }
+
+    return response.json()
+  }
+
+  async diarizeAudioPath(audioPath: string, numSpeakers?: number): Promise<DiarizationResult> {
+    return this.request<DiarizationResult>('/audio/diarize', {
+      method: 'POST',
+      body: JSON.stringify({ audio_path: audioPath, num_speakers: numSpeakers }),
+    })
+  }
+
+  async assignDiarizationSegment(
+    diarizationId: string,
+    segmentIndex: number,
+    profileId: string,
+    extractAudio: boolean = true
+  ): Promise<AssignSegmentResult> {
+    return this.request<AssignSegmentResult>('/audio/diarize/assign', {
+      method: 'POST',
+      body: JSON.stringify({
+        diarization_id: diarizationId,
+        segment_index: segmentIndex,
+        profile_id: profileId,
+        extract_audio: extractAudio,
+      }),
+    })
+  }
+
+  async getProfileSegments(profileId: string): Promise<ProfileSegmentsResult> {
+    return this.request<ProfileSegmentsResult>(`/profiles/${profileId}/segments`)
+  }
+
+  async autoCreateProfileFromDiarization(
+    diarizationId: string,
+    speakerId: string,
+    name: string,
+    userId?: string,
+    extractSegments: boolean = true
+  ): Promise<AutoCreateProfileResult> {
+    return this.request<AutoCreateProfileResult>('/profiles/auto-create', {
+      method: 'POST',
+      body: JSON.stringify({
+        diarization_id: diarizationId,
+        speaker_id: speakerId,
+        name,
+        user_id: userId,
+        extract_segments: extractSegments,
+      }),
+    })
+  }
+
+  async setSpeakerEmbedding(profileId: string, audioPath?: string, useSamples?: boolean): Promise<SpeakerEmbeddingResult> {
+    return this.request<SpeakerEmbeddingResult>(`/profiles/${profileId}/speaker-embedding`, {
+      method: 'POST',
+      body: JSON.stringify({
+        audio_path: audioPath,
+        use_samples: useSamples,
+      }),
+    })
+  }
+
+  async getSpeakerEmbedding(profileId: string): Promise<SpeakerEmbeddingStatus> {
+    return this.request<SpeakerEmbeddingStatus>(`/profiles/${profileId}/speaker-embedding`)
+  }
+
+  async filterSample(
+    profileId: string,
+    sampleId: string,
+    similarityThreshold: number = 0.7
+  ): Promise<FilterSampleResult> {
+    return this.request<FilterSampleResult>(`/profiles/${profileId}/samples/${sampleId}/filter`, {
+      method: 'POST',
+      body: JSON.stringify({ similarity_threshold: similarityThreshold }),
+    })
+  }
+}
+
+// Diarization types
+export interface DiarizationSegment {
+  start: number
+  end: number
+  speaker_id: string
+  confidence: number
+  duration: number
+}
+
+export interface DiarizationResult {
+  diarization_id: string
+  audio_duration: number
+  num_speakers: number
+  segments: DiarizationSegment[]
+  speaker_durations: Record<string, number>
+}
+
+export interface AssignSegmentResult {
+  status: string
+  profile_id: string
+  segment_index: number
+  extracted_path: string | null
+  segment: DiarizationSegment
+}
+
+export interface ProfileSegmentsResult {
+  profile_id: string
+  total_segments: number
+  total_duration: number
+  training_samples: Array<{
+    type: string
+    sample_id: string
+    vocals_path: string
+    duration: number
+    source_file: string
+    created_at: string
+  }>
+  diarization_assignments: Array<{
+    type: string
+    segment_key: string
+    audio_path: string
+  }>
+}
+
+export interface AutoCreateProfileResult {
+  profile_id: string
+  name: string
+  speaker_id: string
+  num_segments: number
+  total_duration: number
+  embedding_dim: number
+  status: string
+}
+
+export interface SpeakerEmbeddingResult {
+  profile_id: string
+  embedding_dim: number
+  source: string
+  status: string
+}
+
+export interface SpeakerEmbeddingStatus {
+  profile_id: string
+  has_embedding: boolean
+  embedding_dim: number | null
+}
+
+export interface FilterSampleResult {
+  sample_id: string
+  original_path: string
+  filtered_path: string
+  original_duration: number
+  filtered_duration: number
+  num_segments: number
+  purity: number
+  status: string
 }
 
 export const apiService = new ApiService()
+
+// Alias for convenience
+export const api = apiService
 
 // WebSocket Manager for real-time updates
 class WebSocketManager {

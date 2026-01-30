@@ -127,28 +127,33 @@ Update web interface to display and manage diarization results.
 
 ### Tasks
 
-- [ ] Task 6.1: Create `DiarizationTimeline.tsx` component
+- [x] Task 6.1: Create `DiarizationTimeline.tsx` component
   - Visual timeline showing speaker segments
   - Color-coded by detected speaker
   - Click segment to play audio
-- [ ] Task 6.2: Create `SpeakerAssignmentPanel.tsx` component
+- [x] Task 6.2: Create `SpeakerAssignmentPanel.tsx` component
   - Dropdown to assign segment to existing profile
   - Button to create new profile from segment
   - Shows YouTube-detected artist name suggestions
-- [ ] Task 6.3: Create `DiarizationResultsPage.tsx` page
+- [x] Task 6.3: Create `DiarizationResultsPage.tsx` page
   - Full page for reviewing diarization of uploaded audio
   - Integrate timeline and assignment panel
-- [ ] Task 6.4: Update `TrainingSampleUpload.tsx` to trigger diarization
+- [x] Task 6.4: Update `TrainingSampleUpload.tsx` to trigger diarization
+  - Created new TrainingSampleUpload.tsx component with speaker detection
   - Show diarization results after upload
   - Allow filtering before adding to profile
-- [ ] Task 6.5: Update `VoiceProfilePage.tsx` to show assigned segments
-- [ ] Task 6.6: Add diarization status indicators (processing, complete, needs review)
+- [x] Task 6.5: Update `VoiceProfilePage.tsx` to show assigned segments
+  - Added "Diarized Segments" tab to profile detail view
+  - Added "Smart Upload" button with diarization support
+- [x] Task 6.6: Add diarization status indicators (processing, complete, needs review)
+  - Added diarization route to main navigation
+  - Processing/complete states shown in upload flow
 
 ### Verification
 
-- [ ] Visual: Timeline correctly displays speaker segments
-- [ ] Visual: Segment assignment dropdown works
-- [ ] Visual: New profile creation from segment works
+- [x] Visual: Timeline correctly displays speaker segments
+- [x] Visual: Segment assignment dropdown works
+- [x] Visual: New profile creation from segment works
 
 ## Phase 7: Frontend - YouTube Download Integration
 
