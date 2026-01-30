@@ -13,6 +13,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROFILES_DIR = 'data/voice_profiles'
+DEFAULT_SAMPLES_DIR = 'data/samples'
 
 
 class ProfileNotFoundError(Exception):
@@ -20,12 +21,43 @@ class ProfileNotFoundError(Exception):
     pass
 
 
-class VoiceProfileStore:
-    """File-based voice profile storage."""
+class TrainingSample:
+    """Represents a training sample for progressive voice model improvement."""
 
-    def __init__(self, profiles_dir: str = DEFAULT_PROFILES_DIR):
+    def __init__(self, sample_id: str, vocals_path: str, instrumental_path: Optional[str] = None,
+                 source_file: Optional[str] = None, duration: float = 0.0,
+                 created_at: Optional[str] = None):
+        self.sample_id = sample_id
+        self.vocals_path = vocals_path
+        self.instrumental_path = instrumental_path
+        self.source_file = source_file
+        self.duration = duration
+        self.created_at = created_at or datetime.now(timezone.utc).isoformat()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'sample_id': self.sample_id,
+            'vocals_path': self.vocals_path,
+            'instrumental_path': self.instrumental_path,
+            'source_file': self.source_file,
+            'duration': self.duration,
+            'created_at': self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TrainingSample':
+        return cls(**data)
+
+
+class VoiceProfileStore:
+    """File-based voice profile storage with progressive training sample support."""
+
+    def __init__(self, profiles_dir: str = DEFAULT_PROFILES_DIR,
+                 samples_dir: str = DEFAULT_SAMPLES_DIR):
         self.profiles_dir = profiles_dir
+        self.samples_dir = samples_dir
         os.makedirs(profiles_dir, exist_ok=True)
+        os.makedirs(samples_dir, exist_ok=True)
 
     def _profile_path(self, profile_id: str) -> str:
         return os.path.join(self.profiles_dir, f"{profile_id}.json")
@@ -164,3 +196,303 @@ class VoiceProfileStore:
         if not self.exists(profile_id):
             return False
         return os.path.exists(self._lora_weights_path(profile_id))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Progressive Training Sample Management
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _samples_dir_for_profile(self, profile_id: str) -> str:
+        """Get the samples directory for a profile."""
+        return os.path.join(self.samples_dir, profile_id)
+
+    def add_training_sample(
+        self,
+        profile_id: str,
+        vocals_path: str,
+        instrumental_path: Optional[str] = None,
+        source_file: Optional[str] = None,
+        duration: float = 0.0,
+    ) -> TrainingSample:
+        """Add a training sample for progressive model improvement.
+
+        Each time vocals are separated from a song, they can be saved as a
+        training sample to improve the voice model through retraining.
+
+        Args:
+            profile_id: Voice profile ID
+            vocals_path: Path to extracted vocals WAV file
+            instrumental_path: Path to instrumental track (optional)
+            source_file: Original source filename for reference
+            duration: Duration of the vocals in seconds
+
+        Returns:
+            TrainingSample object with paths and metadata
+        """
+        if not self.exists(profile_id):
+            raise ProfileNotFoundError(f"Profile {profile_id} not found")
+
+        # Create sample directory structure
+        profile_samples_dir = self._samples_dir_for_profile(profile_id)
+        os.makedirs(profile_samples_dir, exist_ok=True)
+
+        # Generate sample ID based on count
+        existing_samples = self.list_training_samples(profile_id)
+        sample_num = len(existing_samples) + 1
+        sample_id = f"sample_{sample_num:03d}"
+        sample_dir = os.path.join(profile_samples_dir, sample_id)
+        os.makedirs(sample_dir, exist_ok=True)
+
+        # Copy/move vocals to permanent location
+        import shutil
+        dest_vocals = os.path.join(sample_dir, 'vocals.wav')
+        shutil.copy2(vocals_path, dest_vocals)
+
+        dest_instrumental = None
+        if instrumental_path and os.path.exists(instrumental_path):
+            dest_instrumental = os.path.join(sample_dir, 'instrumental.wav')
+            shutil.copy2(instrumental_path, dest_instrumental)
+
+        # Create sample metadata
+        sample = TrainingSample(
+            sample_id=sample_id,
+            vocals_path=dest_vocals,
+            instrumental_path=dest_instrumental,
+            source_file=source_file,
+            duration=duration,
+        )
+
+        # Save metadata
+        metadata_path = os.path.join(sample_dir, 'metadata.json')
+        with open(metadata_path, 'w') as f:
+            json.dump(sample.to_dict(), f, indent=2)
+
+        # Update profile with sample count
+        self._update_sample_count(profile_id)
+
+        logger.info(f"Added training sample {sample_id} to profile {profile_id}")
+        return sample
+
+    def list_training_samples(self, profile_id: str) -> List[TrainingSample]:
+        """List all training samples for a profile.
+
+        Args:
+            profile_id: Voice profile ID
+
+        Returns:
+            List of TrainingSample objects sorted by creation time
+        """
+        samples = []
+        profile_samples_dir = self._samples_dir_for_profile(profile_id)
+
+        if not os.path.exists(profile_samples_dir):
+            return samples
+
+        for sample_name in sorted(os.listdir(profile_samples_dir)):
+            sample_dir = os.path.join(profile_samples_dir, sample_name)
+            if not os.path.isdir(sample_dir):
+                continue
+
+            metadata_path = os.path.join(sample_dir, 'metadata.json')
+            if os.path.exists(metadata_path):
+                try:
+                    with open(metadata_path) as f:
+                        data = json.load(f)
+                    samples.append(TrainingSample.from_dict(data))
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"Failed to load sample metadata: {e}")
+
+        return samples
+
+    def get_all_vocals_paths(self, profile_id: str) -> List[str]:
+        """Get paths to all vocal samples for training.
+
+        Args:
+            profile_id: Voice profile ID
+
+        Returns:
+            List of paths to vocals WAV files
+        """
+        samples = self.list_training_samples(profile_id)
+        return [s.vocals_path for s in samples if os.path.exists(s.vocals_path)]
+
+    def get_total_training_duration(self, profile_id: str) -> float:
+        """Get total duration of all training samples in seconds.
+
+        Args:
+            profile_id: Voice profile ID
+
+        Returns:
+            Total duration in seconds
+        """
+        samples = self.list_training_samples(profile_id)
+        return sum(s.duration for s in samples)
+
+    def _update_sample_count(self, profile_id: str) -> None:
+        """Update the profile with current sample count and total duration."""
+        try:
+            profile = self.load(profile_id)
+            samples = self.list_training_samples(profile_id)
+            profile['training_sample_count'] = len(samples)
+            profile['total_training_duration'] = sum(s.duration for s in samples)
+
+            # Re-add embedding for save (since load includes it)
+            embedding = profile.pop('embedding', None)
+            if embedding is not None:
+                profile['embedding'] = embedding
+
+            self.save(profile)
+        except Exception as e:
+            logger.warning(f"Failed to update sample count: {e}")
+
+    def delete_training_sample(self, profile_id: str, sample_id: str) -> bool:
+        """Delete a specific training sample.
+
+        Args:
+            profile_id: Voice profile ID
+            sample_id: Sample ID to delete
+
+        Returns:
+            True if deleted, False if not found
+        """
+        sample_dir = os.path.join(self._samples_dir_for_profile(profile_id), sample_id)
+        if not os.path.exists(sample_dir):
+            return False
+
+        import shutil
+        shutil.rmtree(sample_dir)
+        self._update_sample_count(profile_id)
+        logger.info(f"Deleted training sample {sample_id} from profile {profile_id}")
+        return True
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Speaker Diarization & Embedding Methods
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _speaker_embedding_path(self, profile_id: str) -> str:
+        """Get path to speaker embedding file for diarization matching."""
+        return os.path.join(self.profiles_dir, f"{profile_id}_speaker_embedding.npy")
+
+    def save_speaker_embedding(
+        self,
+        profile_id: str,
+        embedding: np.ndarray,
+    ) -> None:
+        """Save speaker embedding for diarization matching.
+
+        Args:
+            profile_id: Voice profile ID
+            embedding: Speaker embedding (512-dim WavLM)
+
+        Raises:
+            ProfileNotFoundError: If profile does not exist
+        """
+        if not self.exists(profile_id):
+            raise ProfileNotFoundError(f"Profile {profile_id} not found")
+
+        # Ensure L2 normalization
+        norm = np.linalg.norm(embedding)
+        if norm > 0:
+            embedding = embedding / norm
+
+        emb_path = self._speaker_embedding_path(profile_id)
+        np.save(emb_path, embedding.astype(np.float32))
+        logger.info(f"Saved speaker embedding for profile {profile_id}")
+
+    def load_speaker_embedding(self, profile_id: str) -> Optional[np.ndarray]:
+        """Load speaker embedding for diarization matching.
+
+        Args:
+            profile_id: Voice profile ID
+
+        Returns:
+            Speaker embedding array or None if not set
+        """
+        emb_path = self._speaker_embedding_path(profile_id)
+        if os.path.exists(emb_path):
+            return np.load(emb_path)
+        return None
+
+    def get_all_speaker_embeddings(self) -> Dict[str, np.ndarray]:
+        """Load speaker embeddings for all profiles.
+
+        Returns:
+            Dictionary mapping profile_id to speaker embedding
+        """
+        embeddings = {}
+        for profile in self.list_profiles():
+            profile_id = profile.get('profile_id')
+            if profile_id:
+                emb = self.load_speaker_embedding(profile_id)
+                if emb is not None:
+                    embeddings[profile_id] = emb
+        return embeddings
+
+    def match_speaker_embedding(
+        self,
+        embedding: np.ndarray,
+        threshold: float = 0.7,
+    ) -> Optional[str]:
+        """Match a speaker embedding to existing profiles.
+
+        Args:
+            embedding: Speaker embedding to match (512-dim WavLM)
+            threshold: Cosine similarity threshold (0-1)
+
+        Returns:
+            Profile ID of best match, or None if no match above threshold
+        """
+        from auto_voice.audio.speaker_diarization import match_speaker_to_profile
+
+        profile_embeddings = self.get_all_speaker_embeddings()
+        return match_speaker_to_profile(embedding, profile_embeddings, threshold)
+
+    def create_profile_from_diarization(
+        self,
+        name: str,
+        speaker_embedding: np.ndarray,
+        user_id: str = "system",
+        audio_segments: Optional[List[str]] = None,
+    ) -> str:
+        """Create a new profile from diarization results.
+
+        Args:
+            name: Name for the new profile
+            speaker_embedding: Speaker embedding from diarization
+            user_id: User ID for the profile
+            audio_segments: Optional list of audio file paths to add as samples
+
+        Returns:
+            Profile ID of the created profile
+        """
+        # Create profile
+        profile_data = {
+            "name": name,
+            "user_id": user_id,
+            "created_from": "diarization",
+        }
+        profile_id = self.save(profile_data)
+
+        # Save speaker embedding
+        self.save_speaker_embedding(profile_id, speaker_embedding)
+
+        # Add audio segments as training samples
+        if audio_segments:
+            for audio_path in audio_segments:
+                if os.path.exists(audio_path):
+                    try:
+                        # Get duration using scipy
+                        from scipy.io import wavfile
+                        sr, data = wavfile.read(audio_path)
+                        duration = len(data) / sr
+
+                        self.add_training_sample(
+                            profile_id=profile_id,
+                            vocals_path=audio_path,
+                            duration=duration,
+                            source_file=os.path.basename(audio_path),
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to add segment {audio_path}: {e}")
+
+        logger.info(f"Created profile '{name}' ({profile_id}) from diarization")
+        return profile_id

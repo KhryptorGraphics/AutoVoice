@@ -4,9 +4,12 @@ These models represent the core data structures for persistent voice profiles
 and accumulated training samples used for continuous learning.
 """
 
+import base64
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
+
+import numpy as np
 from uuid import uuid4
 
 
@@ -21,6 +24,7 @@ class VoiceProfile:
         created: Timestamp when profile was created (auto-generated).
         samples_count: Number of training samples accumulated.
         model_version: Current model version trained for this profile.
+        speaker_embedding: Optional speaker embedding for diarization matching (512-dim WavLM).
     """
 
     user_id: str
@@ -29,6 +33,7 @@ class VoiceProfile:
     created: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     samples_count: int = 0
     model_version: str | None = None
+    speaker_embedding: Optional[np.ndarray] = None
 
     def increment_samples(self, count: int) -> None:
         """Increment the samples count by the given amount."""
@@ -38,9 +43,21 @@ class VoiceProfile:
         """Set the current model version."""
         self.model_version = version
 
+    def set_speaker_embedding(self, embedding: np.ndarray) -> None:
+        """Set the speaker embedding for diarization matching.
+
+        Args:
+            embedding: Speaker embedding (512-dim WavLM, L2 normalized).
+        """
+        # Ensure L2 normalization
+        norm = np.linalg.norm(embedding)
+        if norm > 0:
+            embedding = embedding / norm
+        self.speaker_embedding = embedding
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize profile to dictionary."""
-        return {
+        result = {
             "id": self.id,
             "user_id": self.user_id,
             "name": self.name,
@@ -48,6 +65,11 @@ class VoiceProfile:
             "samples_count": self.samples_count,
             "model_version": self.model_version,
         }
+        # Serialize embedding as base64-encoded bytes
+        if self.speaker_embedding is not None:
+            embedding_bytes = self.speaker_embedding.astype(np.float32).tobytes()
+            result["speaker_embedding"] = base64.b64encode(embedding_bytes).decode('ascii')
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "VoiceProfile":
@@ -59,6 +81,12 @@ class VoiceProfile:
                 created = created[:-1] + "+00:00"
             created = datetime.fromisoformat(created)
 
+        # Deserialize embedding from base64
+        speaker_embedding = None
+        if "speaker_embedding" in data and data["speaker_embedding"]:
+            embedding_bytes = base64.b64decode(data["speaker_embedding"])
+            speaker_embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
+
         return cls(
             id=data["id"],
             user_id=data["user_id"],
@@ -66,6 +94,7 @@ class VoiceProfile:
             created=created,
             samples_count=data.get("samples_count", 0),
             model_version=data.get("model_version"),
+            speaker_embedding=speaker_embedding,
         )
 
 
