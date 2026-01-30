@@ -700,6 +700,7 @@ def clone_voice():
         return jsonify({'error': 'Invalid file format'}), 400
 
     user_id = request.form.get('user_id')
+    name = request.form.get('name')
 
     tmp_file = None
     try:
@@ -711,7 +712,7 @@ def clone_voice():
 
         # COMMENT 1 FIX: Use local voice_cloner variable instead of current_app.voice_cloner
         result = voice_cloner.create_voice_profile(
-            audio=tmp_file.name, user_id=user_id
+            audio=tmp_file.name, user_id=user_id, name=name
         )
 
         # Comment 1: Explicitly whitelist fields to avoid duplicate keys and leakage
@@ -719,7 +720,7 @@ def clone_voice():
         response_data.pop('embedding', None)
         response_data['status'] = 'success'
         # Explicitly ensure these fields are included (already in result but explicit for clarity)
-        for field in ['profile_id', 'audio_duration', 'user_id', 'vocal_range', 'created_at']:
+        for field in ['profile_id', 'audio_duration', 'user_id', 'name', 'vocal_range', 'created_at']:
             if field not in response_data:
                 response_data[field] = result.get(field)
         return jsonify(response_data), 201
@@ -787,10 +788,15 @@ def get_voice_profiles():
     user_id = request.args.get('user_id')
     try:
         profiles = voice_cloner.list_voice_profiles(user_id=user_id)
-        # Omit large embedding fields
+        # Omit large embedding fields and normalize field names for frontend
         clean_profiles = []
         for profile in profiles:
             clean_profile = {k: v for k, v in profile.items() if k != 'embedding'}
+            # Normalize field names for frontend compatibility
+            if 'training_sample_count' in clean_profile:
+                clean_profile['sample_count'] = clean_profile.pop('training_sample_count')
+            elif 'sample_count' not in clean_profile:
+                clean_profile['sample_count'] = 0
             clean_profiles.append(clean_profile)
 
         return jsonify(clean_profiles)
@@ -1386,6 +1392,19 @@ def set_device_config():
 _training_jobs: Dict[str, Dict[str, Any]] = {}
 
 
+def _sanitize_job(job: dict) -> dict:
+    """Sanitize job dict to ensure valid JSON (no Infinity/NaN)."""
+    import math
+    sanitized = dict(job)
+    if sanitized.get('results'):
+        results = dict(sanitized['results'])
+        for key, val in results.items():
+            if isinstance(val, float) and (math.isinf(val) or math.isnan(val)):
+                results[key] = None
+        sanitized['results'] = results
+    return sanitized
+
+
 @api_bp.route('/training/jobs', methods=['GET'])
 def list_training_jobs():
     """List all training jobs, optionally filtered by profile."""
@@ -1396,6 +1415,8 @@ def list_training_jobs():
             jobs = [j for j in jobs if j.get('profile_id') == profile_id]
         # Sort by created_at descending
         jobs.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        # Sanitize for valid JSON
+        jobs = [_sanitize_job(j) for j in jobs]
         return jsonify(jobs)
     except Exception as e:
         logger.error(f"Error listing training jobs: {e}", exc_info=True)
@@ -1404,7 +1425,7 @@ def list_training_jobs():
 
 @api_bp.route('/training/jobs', methods=['POST'])
 def create_training_job():
-    """Create a new training job."""
+    """Create and start a new training job."""
     try:
         data = request.get_json()
         if not data:
@@ -1433,6 +1454,197 @@ def create_training_job():
         }
         _training_jobs[job_id] = job
         logger.info(f"Created training job {job_id} for profile {profile_id}")
+
+        # Start training in background
+        import threading
+        app = current_app._get_current_object()  # Get actual app object for thread context
+
+        def run_training():
+            import shutil
+            from pathlib import Path
+            import torch
+            try:
+                with app.app_context():  # Required for Flask context in thread
+                    from ..storage.voice_profiles import VoiceProfileStore
+                    from ..training.trainer import Trainer
+
+                    # Update status to running
+                    job['status'] = 'running'
+                    job['started_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+                    # Get sample audio paths
+                    store = VoiceProfileStore()
+                    training_samples = store.list_training_samples(profile_id)
+
+                    if not training_samples:
+                        raise ValueError(f"No training samples found for profile {profile_id}")
+
+                    # Create temporary training directory
+                    train_dir = Path(f"/tmp/autovoice_training/{job_id}")
+                    train_dir.mkdir(parents=True, exist_ok=True)
+
+                    sample_files = []
+                    for sample in training_samples:
+                        if sample.sample_id in sample_ids or not sample_ids:
+                            src_path = Path(sample.vocals_path)
+                            if not src_path.is_absolute():
+                                src_path = Path("/home/kp/repos/autovoice") / sample.vocals_path
+                            if src_path.exists():
+                                dst_path = train_dir / f"{sample.sample_id}.wav"
+                                shutil.copy2(src_path, dst_path)
+                                sample_files.append(str(dst_path))
+                                logger.info(f"Copied sample: {src_path} -> {dst_path}")
+
+                    if not sample_files:
+                        raise ValueError("No valid audio samples could be loaded")
+
+                    # Training configuration
+                    # Training mode: 'lora' (default, fast) or 'full' (from scratch, higher quality)
+                    training_mode = config.get('training_mode', 'lora')
+
+                    # Adjust defaults based on training mode
+                    if training_mode == 'full':
+                        # Full training needs more epochs and lower LR
+                        default_epochs = 500
+                        default_lr = 5e-5
+                    else:
+                        # LoRA fine-tuning is faster
+                        default_epochs = 100
+                        default_lr = 1e-4
+
+                    epochs = config.get('epochs', default_epochs)
+                    learning_rate = config.get('learning_rate', default_lr)
+                    batch_size = config.get('batch_size', 4)
+
+                    trainer_config = {
+                        'epochs': epochs,
+                        'learning_rate': learning_rate,
+                        'batch_size': batch_size,
+                        'checkpoint_dir': f"/home/kp/repos/autovoice/data/checkpoints/{profile_id}",
+                    }
+
+                    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+                    # Create the SVC decoder model for training
+                    # ContentVec encoder outputs 768-dim, PitchEncoder outputs 256-dim
+                    from ..models.svc_decoder import CoMoSVCDecoder
+                    model = CoMoSVCDecoder(
+                        content_dim=768,  # ContentVec 768-dim for better speaker disentanglement
+                        pitch_dim=256,    # Pitch embedding
+                        speaker_dim=256,  # Speaker embedding
+                        n_mels=100,       # Output mel bins
+                        hidden_dim=512,
+                        n_layers=8,
+                        device=device,
+                    )
+
+                    # Apply training mode
+                    if training_mode == 'lora':
+                        # LoRA: Parameter-efficient fine-tuning (~1MB checkpoint)
+                        lora_rank = config.get('lora_rank', 8)
+                        lora_alpha = config.get('lora_alpha', 16)
+                        lora_dropout = config.get('lora_dropout', 0.1)
+                        model.inject_lora(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
+                        logger.info(f"Training mode: LoRA (rank={lora_rank}, alpha={lora_alpha})")
+                    else:
+                        # Full: Train entire model from scratch (~184MB checkpoint)
+                        logger.info(f"Training mode: FULL (training all {sum(p.numel() for p in model.parameters())} parameters)")
+
+                    trainer = Trainer(model=model, config=trainer_config, device=device)
+                    logger.info(f"Training on device: {device}, epochs: {epochs}, model: CoMoSVCDecoder")
+
+                    # Set speaker embedding from training audio (required before training)
+                    trainer.set_speaker_embedding(str(train_dir))
+                    logger.info(f"Speaker embedding computed from {train_dir}")
+
+                    # Patch train to update progress
+                    original_train_epoch = trainer._train_epoch
+                    def patched_train_epoch(loader, epoch):
+                        loss = original_train_epoch(loader, epoch)
+                        progress = int(100 * (epoch + 1) / epochs)
+                        job['progress'] = progress
+                        job['results'] = job.get('results') or {}
+                        job['results']['current_loss'] = loss
+                        job['results']['current_epoch'] = epoch + 1
+
+                        # Emit WebSocket event (socketio from outer scope)
+                        try:
+                            from flask import current_app as ca
+                            socketio = ca.extensions.get('socketio')
+                            if socketio:
+                                socketio.emit('training_progress', {
+                                    'job_id': job_id,
+                                    'profile_id': profile_id,
+                                    'epoch': epoch + 1,
+                                    'total_epochs': epochs,
+                                    'step': epoch + 1,
+                                    'total_steps': epochs,
+                                    'loss': loss,
+                                    'learning_rate': learning_rate,
+                                })
+                        except Exception as emit_err:
+                            logger.warning(f"Failed to emit progress: {emit_err}")
+                        return loss
+
+                    trainer._train_epoch = patched_train_epoch
+
+                    # Run training
+                    trainer.train(str(train_dir))
+
+                    # Update job as completed
+                    job['status'] = 'completed'
+                    job['completed_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                    job['progress'] = 100
+                    # Convert Infinity to None for valid JSON
+                    best_loss = trainer.best_loss if trainer.best_loss != float('inf') else None
+                    job['results'] = {
+                        'final_loss': trainer.train_losses[-1] if trainer.train_losses else 0,
+                        'best_loss': best_loss,
+                        'epochs_completed': epochs,
+                        'checkpoint_path': str(trainer.checkpoint_dir / 'final.pth'),
+                    }
+
+                    # Emit completion event
+                    try:
+                        from flask import current_app as ca
+                        socketio = ca.extensions.get('socketio')
+                        if socketio:
+                            socketio.emit('training_complete', {
+                                'job_id': job_id,
+                                'profile_id': profile_id,
+                                'results': job['results'],
+                            })
+                    except Exception as emit_err:
+                        logger.warning(f"Failed to emit completion: {emit_err}")
+
+                    logger.info(f"Training job {job_id} completed successfully")
+
+                    # Cleanup temp directory
+                    shutil.rmtree(train_dir, ignore_errors=True)
+
+            except Exception as e:
+                logger.error(f"Training job {job_id} failed: {e}", exc_info=True)
+                job['status'] = 'failed'
+                job['error'] = str(e)
+
+                # Emit error event
+                try:
+                    with app.app_context():
+                        from flask import current_app as ca
+                        socketio = ca.extensions.get('socketio')
+                        if socketio:
+                            socketio.emit('training_error', {
+                                'job_id': job_id,
+                                'profile_id': profile_id,
+                                'error': str(e),
+                            })
+                except Exception as emit_err:
+                    logger.warning(f"Failed to emit error: {emit_err}")
+
+        training_thread = threading.Thread(target=run_training, daemon=True)
+        training_thread.start()
+        logger.info(f"Training job {job_id} started in background")
+
         return jsonify(job), 201
     except Exception as e:
         logger.error(f"Error creating training job: {e}", exc_info=True)
@@ -1445,7 +1657,7 @@ def get_training_job(job_id: str):
     job = _training_jobs.get(job_id)
     if not job:
         return jsonify({'error': 'Training job not found'}), 404
-    return jsonify(job)
+    return jsonify(_sanitize_job(job))
 
 
 @api_bp.route('/training/jobs/<job_id>/cancel', methods=['POST'])
@@ -1466,13 +1678,38 @@ def cancel_training_job(job_id: str):
 # SAMPLE MANAGEMENT ENDPOINTS
 # =============================================================================
 
-# In-memory storage for samples (TODO: persist to database)
+# In-memory storage for samples (fallback for samples not in VoiceProfileStore)
 _profile_samples: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
 @api_bp.route('/profiles/<profile_id>/samples', methods=['GET'])
 def list_samples(profile_id: str):
     """List all samples for a profile."""
+    from ..storage.voice_profiles import VoiceProfileStore
+    store = VoiceProfileStore()
+
+    # First try to get samples from VoiceProfileStore (persistent)
+    try:
+        training_samples = store.list_training_samples(profile_id)
+        if training_samples:
+            # Convert TrainingSample objects to API format matching frontend interface
+            samples = []
+            for ts in training_samples:
+                samples.append({
+                    'id': ts.sample_id,  # Frontend expects 'id' not 'sample_id'
+                    'sample_id': ts.sample_id,
+                    'profile_id': profile_id,
+                    'audio_path': ts.vocals_path,
+                    'duration_seconds': ts.duration,
+                    'sample_rate': 44100,  # Default, could be read from file
+                    'created': ts.created_at,
+                    'source_file': ts.source_file,
+                })
+            return jsonify(samples)
+    except Exception as e:
+        logger.warning(f"Failed to get samples from VoiceProfileStore: {e}")
+
+    # Fallback to in-memory storage
     samples = _profile_samples.get(profile_id, {})
     return jsonify(list(samples.values()))
 
@@ -1481,10 +1718,15 @@ def list_samples(profile_id: str):
 def upload_sample(profile_id: str):
     """Upload a new training sample for a profile."""
     try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
+        # Accept both 'file' and 'audio' field names for flexibility
+        file = None
+        if 'file' in request.files:
+            file = request.files['file']
+        elif 'audio' in request.files:
+            file = request.files['audio']
 
-        file = request.files['file']
+        if not file:
+            return jsonify({'error': 'No file provided (expected "file" or "audio" field)'}), 400
         if not file.filename:
             return jsonify({'error': 'No file selected'}), 400
 
@@ -1531,6 +1773,155 @@ def upload_sample(profile_id: str):
         return jsonify({'error': str(e)}), 500
 
 
+# In-memory storage for song separation jobs
+_separation_jobs: Dict[str, Dict] = {}
+
+
+@api_bp.route('/profiles/<profile_id>/songs', methods=['POST'])
+def upload_song(profile_id: str):
+    """Upload a song for vocal separation (uses Demucs to extract vocals for training)."""
+    try:
+        # Accept both 'file' and 'audio' field names
+        file = None
+        if 'file' in request.files:
+            file = request.files['file']
+        elif 'audio' in request.files:
+            file = request.files['audio']
+
+        if not file:
+            return jsonify({'error': 'No file provided (expected "file" or "audio" field)'}), 400
+
+        if not file.filename:
+            return jsonify({'error': 'No file selected'}), 400
+
+        if not allowed_file(file.filename):
+            return jsonify({'error': 'Invalid file type'}), 400
+
+        # Save file temporarily
+        filename = secure_filename(file.filename)
+        job_id = str(uuid.uuid4())
+        song_id = str(uuid.uuid4())
+
+        # Create upload directory
+        upload_dir = os.path.join(UPLOAD_FOLDER, 'songs', profile_id)
+        os.makedirs(upload_dir, exist_ok=True)
+
+        file_path = os.path.join(upload_dir, f"{song_id}_{filename}")
+        file.save(file_path)
+
+        # Check if auto_split is requested
+        auto_split = request.form.get('auto_split', 'true').lower() == 'true'
+
+        # Store job info
+        _separation_jobs[job_id] = {
+            'job_id': job_id,
+            'song_id': song_id,
+            'profile_id': profile_id,
+            'filename': filename,
+            'file_path': file_path,
+            'status': 'pending' if auto_split else 'complete',
+            'progress': 0,
+            'message': 'Queued for vocal separation' if auto_split else 'Uploaded without separation',
+            'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'vocals_path': None,
+            'instrumental_path': None,
+            'error': None
+        }
+
+        if auto_split:
+            # Start separation in background (simplified - in production use Celery/etc)
+            import threading
+            def run_separation():
+                try:
+                    _separation_jobs[job_id]['status'] = 'processing'
+                    _separation_jobs[job_id]['message'] = 'Separating vocals and instrumental...'
+                    _separation_jobs[job_id]['progress'] = 10
+
+                    # Use Demucs VocalSeparator
+                    import soundfile as sf
+                    import numpy as np
+                    from auto_voice.audio.separation import VocalSeparator
+
+                    output_dir = os.path.join(UPLOAD_FOLDER, 'separated', profile_id, song_id)
+                    os.makedirs(output_dir, exist_ok=True)
+
+                    _separation_jobs[job_id]['progress'] = 20
+                    _separation_jobs[job_id]['message'] = 'Loading audio...'
+
+                    # Load audio file
+                    audio, sr = sf.read(file_path)
+                    if audio.ndim > 1:
+                        audio = audio.T  # sf.read returns (samples, channels), need (channels, samples)
+
+                    _separation_jobs[job_id]['progress'] = 30
+                    _separation_jobs[job_id]['message'] = 'Running vocal separation (this may take a while)...'
+
+                    # Run separation
+                    separator = VocalSeparator()
+                    result = separator.separate(audio, sr)
+
+                    _separation_jobs[job_id]['progress'] = 80
+                    _separation_jobs[job_id]['message'] = 'Saving separated tracks...'
+
+                    # Save vocals and instrumental
+                    vocals_path = os.path.join(output_dir, 'vocals.wav')
+                    instrumental_path = os.path.join(output_dir, 'instrumental.wav')
+                    sf.write(vocals_path, result['vocals'], sr)
+                    sf.write(instrumental_path, result['instrumental'], sr)
+
+                    _separation_jobs[job_id]['vocals_path'] = vocals_path
+                    _separation_jobs[job_id]['instrumental_path'] = instrumental_path
+                    _separation_jobs[job_id]['status'] = 'complete'
+                    _separation_jobs[job_id]['progress'] = 100
+                    _separation_jobs[job_id]['message'] = 'Separation complete'
+
+                    # Auto-add vocals as training sample
+                    sample_id = str(uuid.uuid4())
+                    sample = {
+                        'sample_id': sample_id,
+                        'profile_id': profile_id,
+                        'filename': f"vocals_{filename}",
+                        'file_path': vocals_path,
+                        'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                        'duration': None,
+                        'metadata': {'source_song': song_id, 'source_file': filename}
+                    }
+                    if profile_id not in _profile_samples:
+                        _profile_samples[profile_id] = {}
+                    _profile_samples[profile_id][sample_id] = sample
+
+                    logger.info(f"Separation complete for song {song_id}, added sample {sample_id}")
+                except Exception as e:
+                    logger.error(f"Separation failed for job {job_id}: {e}", exc_info=True)
+                    _separation_jobs[job_id]['status'] = 'error'
+                    _separation_jobs[job_id]['error'] = str(e)
+                    _separation_jobs[job_id]['message'] = f'Separation failed: {str(e)}'
+
+            thread = threading.Thread(target=run_separation, daemon=True)
+            thread.start()
+
+        logger.info(f"Uploaded song {song_id} for profile {profile_id}, job {job_id}")
+        return jsonify({
+            'job_id': job_id,
+            'song_id': song_id,
+            'status': _separation_jobs[job_id]['status'],
+            'message': _separation_jobs[job_id]['message']
+        }), 202
+
+    except Exception as e:
+        logger.error(f"Error uploading song: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/separation/<job_id>/status', methods=['GET'])
+def get_separation_status(job_id: str):
+    """Get status of a vocal separation job."""
+    job = _separation_jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    return jsonify(job)
+
+
 @api_bp.route('/profiles/<profile_id>/samples/<sample_id>', methods=['GET'])
 def get_sample(profile_id: str, sample_id: str):
     """Get details of a specific sample."""
@@ -1556,6 +1947,225 @@ def delete_sample(profile_id: str, sample_id: str):
     del _profile_samples[profile_id][sample_id]
     logger.info(f"Deleted sample {sample_id} from profile {profile_id}")
     return '', 204
+
+
+# =============================================================================
+# DIARIZATION ENDPOINTS
+# =============================================================================
+
+@api_bp.route('/audio/diarize', methods=['POST'])
+def diarize_audio():
+    """Run speaker diarization on uploaded audio.
+
+    Accepts multipart file upload or JSON with audio_path.
+
+    Returns:
+        JSON with diarization results including speaker segments.
+    """
+    try:
+        from auto_voice.audio.speaker_diarization import SpeakerDiarizer
+
+        # Handle file upload or path
+        if 'file' in request.files:
+            file = request.files['file']
+            if not file.filename:
+                return jsonify({'error': 'No file selected'}), 400
+
+            # Save uploaded file temporarily
+            import tempfile
+            temp_dir = tempfile.mkdtemp()
+            audio_path = os.path.join(temp_dir, file.filename)
+            file.save(audio_path)
+        elif request.is_json:
+            data = request.get_json()
+            audio_path = data.get('audio_path')
+            if not audio_path or not os.path.exists(audio_path):
+                return jsonify({'error': 'audio_path not found'}), 400
+        else:
+            return jsonify({'error': 'Provide file upload or audio_path'}), 400
+
+        # Optional parameters
+        num_speakers = None
+        if request.is_json:
+            num_speakers = request.get_json().get('num_speakers')
+
+        # Run diarization
+        diarizer = SpeakerDiarizer()
+        result = diarizer.diarize(audio_path, num_speakers=num_speakers)
+
+        # Format response
+        response = {
+            'audio_duration': result.audio_duration,
+            'num_speakers': result.num_speakers,
+            'segments': [
+                {
+                    'start': seg.start,
+                    'end': seg.end,
+                    'speaker_id': seg.speaker_id,
+                    'duration': seg.duration,
+                    'confidence': seg.confidence,
+                }
+                for seg in result.segments
+            ],
+            'speaker_durations': {
+                speaker_id: result.get_speaker_total_duration(speaker_id)
+                for speaker_id in result.get_all_speaker_ids()
+            },
+        }
+
+        logger.info(f"Diarization complete: {result.num_speakers} speakers detected")
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Diarization error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/profiles/<profile_id>/samples/<sample_id>/filter', methods=['POST'])
+def filter_sample(profile_id: str, sample_id: str):
+    """Filter a training sample to only include target speaker vocals.
+
+    Uses speaker diarization to identify and extract only segments
+    matching the profile's speaker embedding.
+
+    Returns:
+        JSON with filtering results and paths to filtered audio.
+    """
+    try:
+        from auto_voice.audio.training_filter import TrainingDataFilter
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+        # Get sample
+        samples = _profile_samples.get(profile_id, {})
+        sample = samples.get(sample_id)
+        if not sample:
+            return jsonify({'error': 'Sample not found'}), 404
+
+        audio_path = sample.get('file_path')
+        if not audio_path or not os.path.exists(audio_path):
+            return jsonify({'error': 'Sample audio file not found'}), 404
+
+        # Get profile's speaker embedding
+        store = VoiceProfileStore()
+        embedding = store.load_speaker_embedding(profile_id)
+
+        if embedding is None:
+            return jsonify({
+                'error': 'Profile has no speaker embedding. Upload a sample first to create one.'
+            }), 400
+
+        # Optional parameters
+        data = request.get_json() or {}
+        similarity_threshold = data.get('similarity_threshold', 0.7)
+
+        # Run filtering
+        filter_obj = TrainingDataFilter()
+        output_path, metadata = filter_obj.filter_training_audio(
+            audio_path=audio_path,
+            target_embedding=embedding,
+            similarity_threshold=similarity_threshold,
+        )
+
+        # Update sample with filtered path
+        sample['filtered_path'] = str(output_path)
+        sample['filter_metadata'] = metadata
+
+        response = {
+            'sample_id': sample_id,
+            'original_path': audio_path,
+            'filtered_path': str(output_path),
+            'original_duration': metadata['original_duration'],
+            'filtered_duration': metadata['filtered_duration'],
+            'num_segments': metadata['num_segments'],
+            'purity': metadata['purity'],
+            'status': metadata['status'],
+        }
+
+        logger.info(f"Filtered sample {sample_id}: {metadata['filtered_duration']:.1f}s extracted")
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Filter error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/profiles/<profile_id>/speaker-embedding', methods=['POST'])
+def set_profile_speaker_embedding(profile_id: str):
+    """Set or update the speaker embedding for a profile.
+
+    Extracts speaker embedding from the provided audio file or
+    computes from existing training samples.
+
+    Request body:
+        - audio_path: Path to audio for embedding extraction
+        - OR use_samples: true to compute from existing samples
+    """
+    try:
+        from auto_voice.audio.speaker_diarization import SpeakerDiarizer
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+        store = VoiceProfileStore()
+        if not store.exists(profile_id):
+            return jsonify({'error': 'Profile not found'}), 404
+
+        data = request.get_json() or {}
+
+        if data.get('use_samples', False):
+            # Compute embedding from existing samples
+            samples = store.list_training_samples(profile_id)
+            if not samples:
+                return jsonify({'error': 'No training samples to compute embedding from'}), 400
+
+            # Use first sample for now
+            audio_path = samples[0].vocals_path
+        elif 'audio_path' in data:
+            audio_path = data['audio_path']
+            if not os.path.exists(audio_path):
+                return jsonify({'error': 'Audio file not found'}), 400
+        else:
+            return jsonify({'error': 'Provide audio_path or set use_samples=true'}), 400
+
+        # Extract embedding
+        diarizer = SpeakerDiarizer()
+        embedding = diarizer.extract_speaker_embedding(audio_path)
+
+        # Save embedding
+        store.save_speaker_embedding(profile_id, embedding)
+
+        logger.info(f"Set speaker embedding for profile {profile_id}")
+        return jsonify({
+            'profile_id': profile_id,
+            'embedding_dim': len(embedding),
+            'source': audio_path,
+            'status': 'success',
+        })
+
+    except Exception as e:
+        logger.error(f"Error setting speaker embedding: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/profiles/<profile_id>/speaker-embedding', methods=['GET'])
+def get_profile_speaker_embedding(profile_id: str):
+    """Check if profile has a speaker embedding."""
+    try:
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+        store = VoiceProfileStore()
+        if not store.exists(profile_id):
+            return jsonify({'error': 'Profile not found'}), 404
+
+        embedding = store.load_speaker_embedding(profile_id)
+
+        return jsonify({
+            'profile_id': profile_id,
+            'has_embedding': embedding is not None,
+            'embedding_dim': len(embedding) if embedding is not None else None,
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting speaker embedding: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 # =============================================================================
