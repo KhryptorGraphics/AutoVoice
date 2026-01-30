@@ -138,3 +138,63 @@ def profile_store(profiles_dir):
     """VoiceProfileStore instance."""
     from auto_voice.storage.voice_profiles import VoiceProfileStore
     return VoiceProfileStore(profiles_dir=profiles_dir)
+
+
+# Multi-speaker fixtures for diarization testing
+@pytest.fixture
+def multi_speaker_synthetic(tmp_path):
+    """Create synthetic multi-speaker audio (2 speakers, alternating)."""
+    from tests.fixtures import create_synthetic_multi_speaker
+
+    output_path = str(tmp_path / "multi_speaker_synthetic.wav")
+    fixture = create_synthetic_multi_speaker(
+        output_path=output_path,
+        durations=[
+            ("SPEAKER_00", 2.0),
+            ("SPEAKER_01", 2.0),
+            ("SPEAKER_00", 1.5),
+            ("SPEAKER_01", 1.5),
+        ],
+    )
+    return fixture
+
+
+@pytest.fixture
+def multi_speaker_three(tmp_path):
+    """Create synthetic multi-speaker audio with 3 speakers."""
+    from tests.fixtures import create_synthetic_multi_speaker
+
+    output_path = str(tmp_path / "multi_speaker_three.wav")
+    fixture = create_synthetic_multi_speaker(
+        output_path=output_path,
+        durations=[
+            ("SPEAKER_00", 2.0),
+            ("SPEAKER_01", 1.5),
+            ("SPEAKER_02", 2.0),
+            ("SPEAKER_00", 1.0),
+            ("SPEAKER_01", 1.5),
+        ],
+    )
+    return fixture
+
+
+@pytest.fixture
+def duet_fixture(tmp_path):
+    """Create duet fixture from real audio samples (Conor + William).
+
+    Returns None if quality samples are not available.
+    """
+    from tests.fixtures.multi_speaker_fixtures import create_duet_fixture
+
+    return create_duet_fixture(output_dir=str(tmp_path))
+
+
+@pytest.fixture
+def interview_fixture(tmp_path):
+    """Create interview-style fixture with longer speaker turns.
+
+    Returns None if quality samples are not available.
+    """
+    from tests.fixtures.multi_speaker_fixtures import create_interview_fixture
+
+    return create_interview_fixture(output_dir=str(tmp_path))
