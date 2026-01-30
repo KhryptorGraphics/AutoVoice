@@ -1993,27 +1993,43 @@ def diarize_audio():
         diarizer = SpeakerDiarizer()
         result = diarizer.diarize(audio_path, num_speakers=num_speakers)
 
+        # Generate diarization ID for later reference
+        diarization_id = str(uuid.uuid4())
+
+        # Format segments
+        segments = [
+            {
+                'start': seg.start,
+                'end': seg.end,
+                'speaker_id': seg.speaker_id,
+                'duration': seg.duration,
+                'confidence': seg.confidence,
+            }
+            for seg in result.segments
+        ]
+
         # Format response
         response = {
+            'diarization_id': diarization_id,
             'audio_duration': result.audio_duration,
             'num_speakers': result.num_speakers,
-            'segments': [
-                {
-                    'start': seg.start,
-                    'end': seg.end,
-                    'speaker_id': seg.speaker_id,
-                    'duration': seg.duration,
-                    'confidence': seg.confidence,
-                }
-                for seg in result.segments
-            ],
+            'segments': segments,
             'speaker_durations': {
                 speaker_id: result.get_speaker_total_duration(speaker_id)
                 for speaker_id in result.get_all_speaker_ids()
             },
         }
 
-        logger.info(f"Diarization complete: {result.num_speakers} speakers detected")
+        # Store for later reference (e.g., by assign/auto-create endpoints)
+        _diarization_results[diarization_id] = {
+            'audio_path': audio_path,
+            'audio_duration': result.audio_duration,
+            'num_speakers': result.num_speakers,
+            'segments': segments,
+            'created_at': time.time(),
+        }
+
+        logger.info(f"Diarization {diarization_id} complete: {result.num_speakers} speakers detected")
         return jsonify(response)
 
     except Exception as e:
@@ -2165,6 +2181,293 @@ def get_profile_speaker_embedding(profile_id: str):
 
     except Exception as e:
         logger.error(f"Error getting speaker embedding: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# In-memory storage for diarization results (cleared on restart)
+_diarization_results: Dict[str, Dict[str, Any]] = {}
+# In-memory storage for segment-to-profile assignments
+_segment_assignments: Dict[str, Dict[str, str]] = {}  # profile_id -> {segment_key -> audio_path}
+
+
+@api_bp.route('/audio/diarize/assign', methods=['POST'])
+def assign_diarization_segment():
+    """Assign a diarization segment to an existing profile.
+
+    This endpoint allows manual correction of speaker identification
+    by assigning a detected segment to the correct profile.
+
+    Request body:
+        - diarization_id: ID of the diarization result
+        - segment_index: Index of the segment to assign
+        - profile_id: Profile to assign the segment to
+        - extract_audio: (optional) Whether to extract audio (default: true)
+    """
+    try:
+        from auto_voice.audio.speaker_diarization import SpeakerDiarizer
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+
+        diarization_id = data.get('diarization_id')
+        segment_index = data.get('segment_index')
+        profile_id = data.get('profile_id')
+
+        if not all([diarization_id, segment_index is not None, profile_id]):
+            return jsonify({
+                'error': 'Required: diarization_id, segment_index, profile_id'
+            }), 400
+
+        # Get diarization result
+        diarization_data = _diarization_results.get(diarization_id)
+        if not diarization_data:
+            return jsonify({'error': 'Diarization result not found or expired'}), 404
+
+        segments = diarization_data.get('segments', [])
+        if segment_index < 0 or segment_index >= len(segments):
+            return jsonify({'error': f'Invalid segment_index: {segment_index}'}), 400
+
+        segment = segments[segment_index]
+
+        # Verify profile exists
+        store = VoiceProfileStore()
+        if not store.exists(profile_id):
+            return jsonify({'error': 'Profile not found'}), 404
+
+        # Extract audio for segment if requested
+        extract_audio = data.get('extract_audio', True)
+        extracted_path = None
+
+        if extract_audio:
+            audio_path = diarization_data.get('audio_path')
+            if audio_path and os.path.exists(audio_path):
+                diarizer = SpeakerDiarizer()
+
+                # Create diarization result object for extraction
+                from auto_voice.audio.speaker_diarization import DiarizationResult, SpeakerSegment
+                import numpy as np
+
+                seg_obj = SpeakerSegment(
+                    start=segment['start'],
+                    end=segment['end'],
+                    speaker_id=segment['speaker_id'],
+                    confidence=segment.get('confidence', 1.0),
+                )
+                temp_result = DiarizationResult(
+                    segments=[seg_obj],
+                    audio_duration=diarization_data.get('audio_duration', 0),
+                    num_speakers=1,
+                )
+
+                extracted_path = diarizer.extract_speaker_audio(
+                    audio_path=audio_path,
+                    diarization=temp_result,
+                    speaker_id=segment['speaker_id'],
+                )
+
+                # Add as training sample to profile
+                if extracted_path:
+                    from scipy.io import wavfile
+                    sr, audio_data = wavfile.read(str(extracted_path))
+                    duration = len(audio_data) / sr
+
+                    store.add_training_sample(
+                        profile_id=profile_id,
+                        vocals_path=str(extracted_path),
+                        duration=duration,
+                        source_file=f"diarization_{diarization_id}_seg{segment_index}",
+                    )
+
+        # Track assignment
+        segment_key = f"{diarization_id}_{segment_index}"
+        if profile_id not in _segment_assignments:
+            _segment_assignments[profile_id] = {}
+        _segment_assignments[profile_id][segment_key] = str(extracted_path) if extracted_path else ""
+
+        logger.info(f"Assigned segment {segment_index} from {diarization_id} to profile {profile_id}")
+        return jsonify({
+            'status': 'success',
+            'profile_id': profile_id,
+            'segment_index': segment_index,
+            'extracted_path': str(extracted_path) if extracted_path else None,
+            'segment': segment,
+        })
+
+    except Exception as e:
+        logger.error(f"Error assigning segment: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/profiles/<profile_id>/segments', methods=['GET'])
+def get_profile_segments(profile_id: str):
+    """Get all audio segments assigned to a profile.
+
+    Returns segments from diarization assignments and training samples.
+    """
+    try:
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+        store = VoiceProfileStore()
+        if not store.exists(profile_id):
+            return jsonify({'error': 'Profile not found'}), 404
+
+        # Get training samples
+        samples = store.list_training_samples(profile_id)
+        sample_segments = [
+            {
+                'type': 'training_sample',
+                'sample_id': s.sample_id,
+                'vocals_path': s.vocals_path,
+                'duration': s.duration,
+                'source_file': s.source_file,
+                'created_at': s.created_at,
+            }
+            for s in samples
+        ]
+
+        # Get diarization assignments
+        assignments = _segment_assignments.get(profile_id, {})
+        assignment_segments = [
+            {
+                'type': 'diarization_assignment',
+                'segment_key': key,
+                'audio_path': path,
+            }
+            for key, path in assignments.items()
+        ]
+
+        total_duration = sum(s.duration for s in samples)
+
+        return jsonify({
+            'profile_id': profile_id,
+            'total_segments': len(sample_segments) + len(assignment_segments),
+            'total_duration': total_duration,
+            'training_samples': sample_segments,
+            'diarization_assignments': assignment_segments,
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting profile segments: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/profiles/auto-create', methods=['POST'])
+def auto_create_profile_from_diarization():
+    """Create a new profile from diarization results.
+
+    Automatically creates a profile with speaker embedding extracted
+    from the diarized segments.
+
+    Request body:
+        - diarization_id: ID of the diarization result
+        - speaker_id: Speaker ID from diarization to use
+        - name: Name for the new profile
+        - user_id: (optional) User ID for the profile
+        - extract_segments: (optional) Add all segments as training samples (default: true)
+    """
+    try:
+        from auto_voice.audio.speaker_diarization import SpeakerDiarizer, DiarizationResult, SpeakerSegment
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
+        import numpy as np
+
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+
+        diarization_id = data.get('diarization_id')
+        speaker_id = data.get('speaker_id')
+        name = data.get('name')
+
+        if not all([diarization_id, speaker_id, name]):
+            return jsonify({
+                'error': 'Required: diarization_id, speaker_id, name'
+            }), 400
+
+        # Get diarization result
+        diarization_data = _diarization_results.get(diarization_id)
+        if not diarization_data:
+            return jsonify({'error': 'Diarization result not found or expired'}), 404
+
+        # Find segments for this speaker
+        segments = diarization_data.get('segments', [])
+        speaker_segments = [s for s in segments if s['speaker_id'] == speaker_id]
+
+        if not speaker_segments:
+            return jsonify({'error': f'No segments found for speaker {speaker_id}'}), 400
+
+        audio_path = diarization_data.get('audio_path')
+        if not audio_path or not os.path.exists(audio_path):
+            return jsonify({'error': 'Original audio not found'}), 400
+
+        # Extract speaker embedding from segments
+        diarizer = SpeakerDiarizer()
+
+        # Use the longest segment for embedding extraction
+        longest_segment = max(speaker_segments, key=lambda s: s['end'] - s['start'])
+        embedding = diarizer.extract_speaker_embedding(
+            audio_path=audio_path,
+            start=longest_segment['start'],
+            end=longest_segment['end'],
+        )
+
+        # Create profile
+        store = VoiceProfileStore()
+        user_id = data.get('user_id', 'system')
+
+        # Extract all segments as audio files if requested
+        audio_segments = []
+        extract_segments = data.get('extract_segments', True)
+
+        if extract_segments:
+            # Create DiarizationResult for extraction
+            seg_objects = [
+                SpeakerSegment(
+                    start=s['start'],
+                    end=s['end'],
+                    speaker_id=s['speaker_id'],
+                    confidence=s.get('confidence', 1.0),
+                )
+                for s in speaker_segments
+            ]
+            temp_result = DiarizationResult(
+                segments=seg_objects,
+                audio_duration=diarization_data.get('audio_duration', 0),
+                num_speakers=diarization_data.get('num_speakers', 1),
+            )
+
+            extracted_path = diarizer.extract_speaker_audio(
+                audio_path=audio_path,
+                diarization=temp_result,
+                speaker_id=speaker_id,
+            )
+            if extracted_path:
+                audio_segments.append(str(extracted_path))
+
+        profile_id = store.create_profile_from_diarization(
+            name=name,
+            speaker_embedding=embedding,
+            user_id=user_id,
+            audio_segments=audio_segments,
+        )
+
+        # Calculate total duration
+        total_duration = sum(s['end'] - s['start'] for s in speaker_segments)
+
+        logger.info(f"Auto-created profile '{name}' ({profile_id}) from diarization")
+        return jsonify({
+            'profile_id': profile_id,
+            'name': name,
+            'speaker_id': speaker_id,
+            'num_segments': len(speaker_segments),
+            'total_duration': total_duration,
+            'embedding_dim': len(embedding),
+            'status': 'success',
+        }), 201
+
+    except Exception as e:
+        logger.error(f"Error auto-creating profile: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

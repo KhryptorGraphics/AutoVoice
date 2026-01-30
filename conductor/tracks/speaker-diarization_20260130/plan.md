@@ -105,21 +105,21 @@ Add REST endpoints for diarization operations.
 
 ### Tasks
 
-- [ ] Task 5.1: Add `POST /api/v1/audio/diarize` endpoint
+- [x] Task 5.1: Add `POST /api/v1/audio/diarize` endpoint
   - Input: audio_path or upload
   - Output: diarization segments with speaker IDs
-- [ ] Task 5.2: Add `POST /api/v1/audio/diarize/assign` endpoint
+- [x] Task 5.2: Add `POST /api/v1/audio/diarize/assign` endpoint
   - Input: diarization_id, segment_id, profile_id
   - Assign segment to profile (manual correction)
-- [ ] Task 5.3: Add `GET /api/v1/profiles/{id}/segments` endpoint
+- [x] Task 5.3: Add `GET /api/v1/profiles/{id}/segments` endpoint
   - Return all audio segments assigned to profile
-- [ ] Task 5.4: Add `POST /api/v1/profiles/auto-create` endpoint
+- [x] Task 5.4: Add `POST /api/v1/profiles/auto-create` endpoint
   - Create profile from diarized segments
-- [ ] Task 5.5: Write API integration tests
+- [x] Task 5.5: Write API integration tests (18 tests in `tests/test_diarization_api.py`)
 
 ### Verification
 
-- [ ] Test: Full diarization → assignment → profile creation flow works via API
+- [x] Test: Full diarization → assignment → profile creation flow works via API
 
 ## Phase 6: Frontend - Diarization UI
 
