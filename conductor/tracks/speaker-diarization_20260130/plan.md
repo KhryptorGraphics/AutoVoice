@@ -162,15 +162,15 @@ Update YouTube download flow to use metadata and diarization.
 ### Tasks
 
 - [x] Task 7.1: Update YouTube download UI to show detected featured artists
-- [ ] Task 7.2: Add option to auto-create profiles for featured artists
-- [ ] Task 7.3: Show diarization progress during download processing
-- [ ] Task 7.4: Add "Filter to target artist only" toggle
-- [ ] Task 7.5: Update download history to show diarization status
+- [x] Task 7.2: Add option to auto-create profiles for featured artists
+- [x] Task 7.3: Show diarization progress during download processing
+- [x] Task 7.4: Add "Filter to target artist only" toggle
+- [x] Task 7.5: Update download history to show diarization status
 
 ### Verification
 
-- [ ] Visual: Featured artists detected and displayed during download
-- [ ] Visual: Auto-profile creation works from download flow
+- [x] Visual: Featured artists detected and displayed during download
+- [x] Visual: Auto-profile creation works from download flow
 
 ## Phase 8: End-to-End Testing
 

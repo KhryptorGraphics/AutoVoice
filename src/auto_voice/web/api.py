@@ -3023,6 +3023,7 @@ def youtube_download():
         return jsonify({'error': 'sample_rate must be an integer'}), 400
 
     run_diarization = data.get('run_diarization', False)
+    filter_to_main_artist = data.get('filter_to_main_artist', False)
 
     try:
         downloader = get_youtube_downloader()
@@ -3069,6 +3070,36 @@ def youtube_download():
                         for seg in diarization_result.segments
                     ]
                 }
+
+                # Filter to main artist only if requested
+                if filter_to_main_artist and diarization_result.num_speakers > 1:
+                    try:
+                        from ..audio.training_filter import TrainingDataFilter
+
+                        # Find the dominant speaker (most speaking time = main artist)
+                        speaker_durations = {}
+                        for seg in diarization_result.segments:
+                            speaker_durations[seg.speaker_id] = speaker_durations.get(seg.speaker_id, 0) + seg.duration
+                        main_speaker = max(speaker_durations, key=speaker_durations.get)
+
+                        # Extract only the main speaker's segments
+                        filtered_path = result.audio_path.replace('.wav', '_filtered.wav')
+                        filter_result = diarizer.extract_speaker_audio(
+                            result.audio_path,
+                            diarization_result.segments,
+                            main_speaker,
+                            filtered_path
+                        )
+
+                        if filter_result and os.path.exists(filtered_path):
+                            response['filtered_audio_path'] = filtered_path
+                            response['main_speaker_id'] = main_speaker
+                            response['filtered_duration'] = speaker_durations[main_speaker]
+                            logger.info(f"Filtered audio to main speaker {main_speaker}: {filtered_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to filter to main artist: {e}")
+                        response['filter_error'] = str(e)
+
             except Exception as e:
                 logger.warning(f"Diarization failed: {e}")
                 response['diarization_error'] = str(e)

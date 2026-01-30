@@ -916,6 +916,7 @@ class ApiService {
       format?: 'wav' | 'mp3' | 'flac'
       sample_rate?: number
       run_diarization?: boolean
+      filter_to_main_artist?: boolean
     }
   ): Promise<YouTubeDownloadResult> {
     return this.request<YouTubeDownloadResult>('/youtube/download', {
@@ -925,6 +926,7 @@ class ApiService {
         format: options?.format ?? 'wav',
         sample_rate: options?.sample_rate ?? 44100,
         run_diarization: options?.run_diarization ?? false,
+        filter_to_main_artist: options?.filter_to_main_artist ?? false,
       }),
     })
   }
