@@ -1,0 +1,337 @@
+{
+  "project": "AutoVoice",
+  "branchName": "ralph/sota-svc-improvements",
+  "description": "SOTA Singing Voice Conversion - Amphion-inspired architecture improvements",
+  "userStories": [
+    {
+      "id": "AV-001",
+      "title": "Fix remaining test failures",
+      "description": "Run full test suite and fix failures beyond the 231 model tests to reach >95% pass rate.",
+      "acceptanceCriteria": [
+        "Run: PYTHONNOUSERSITE=1 PYTHONPATH=src /home/kp/anaconda3/envs/autovoice-thor/bin/python -m pytest tests/ -v --tb=short",
+        ">95% of all tests pass",
+        "No import errors or missing dependency failures",
+        "All smoke tests pass"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "beads: AV-gmv. Tests at tests/*.py. All 231 tests pass (100%). Completed: 2026-01-23."
+    },
+    {
+      "id": "AV-002",
+      "title": "Add SSIM loss to training",
+      "description": "Implement differentiable Structural Similarity (SSIM) loss between predicted and target mel spectrograms in SoVitsSvc.compute_loss(). Amphion uses this for perceptual quality.",
+      "acceptanceCriteria": [
+        "SSIM loss function implemented (differentiable, window_size=11)",
+        "Added to SoVitsSvc.compute_loss() with configurable weight (default 0.5)",
+        "compute_loss returns 'ssim_loss' key in output dict",
+        "total_loss includes ssim contribution",
+        "Tests pass: pytest tests/test_models.py -v",
+        "Gradient flows through SSIM loss"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "beads: AV-3lx. File: src/auto_voice/models/so_vits_svc.py. Completed: 2026-01-23. SSIM loss with window_size=11, weight=0.5, gradient verified."
+    },
+    {
+      "id": "AV-003",
+      "title": "Mel-quantized F0 with UV embedding",
+      "description": "Replace the LSTM-based PitchEncoder with mel-scale quantized F0 (256 bins, 50-1100Hz) plus separate voiced/unvoiced embedding. Based on Amphion's approach.",
+      "acceptanceCriteria": [
+        "f0_to_coarse() function: Hz -> mel scale -> 256 bins",
+        "PitchEncoder uses nn.Embedding(256, output_size) instead of LSTM",
+        "UV embedding: nn.Embedding(2, output_size) for voiced/unvoiced flag",
+        "Output shape unchanged: [B, T, output_size]",
+        "Tests pass: pytest tests/test_models.py::TestPitchEncoder -v",
+        "Backward compatible with existing training pipeline"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "beads: AV-1q3. File: src/auto_voice/models/encoder.py. Completed: 2026-01-23. f0_to_coarse (mel-scale 256 bins), nn.Embedding + UV embed + residual path."
+    },
+    {
+      "id": "AV-004",
+      "title": "Download and integrate pretrained model weights",
+      "description": "Download HuBERT-soft and HiFiGAN pretrained checkpoints. Update scripts/download_pretrained_models.py. Verify models load correctly.",
+      "acceptanceCriteria": [
+        "HuBERT-soft checkpoint downloadable (hubert-soft-0d54a1f4.pt)",
+        "HiFiGAN checkpoint downloadable (hifigan_ljspeech.ckpt or similar)",
+        "scripts/download_pretrained_models.py updated with download URLs",
+        "ContentEncoder.load_pretrained() works with real weights",
+        "HiFiGANVocoder.load_pretrained() works with real weights",
+        "Test: model loads and produces non-random output"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "beads: AV-ge9. Completed: 2026-01-23. Downloaded hubert-soft-35d9f29f.pt (361MB) and generator_universal.pth.tar (53MB). Models load correctly. Script enhanced with Google Drive support."
+    },
+    {
+      "id": "AV-005",
+      "title": "ContentVec feature extraction",
+      "description": "Add ContentVec (arxiv:2204.09224) as content encoder option. Better speaker disentanglement than HuBERT. 256-dim output, 20ms frames.",
+      "acceptanceCriteria": [
+        "ContentVecEncoder class in models/encoder.py",
+        "Loads checkpoint_best_legacy_500.pt (fairseq format)",
+        "Extracts 256-dim speaker-disentangled features",
+        "ContentEncoder supports mode='contentvec' option",
+        "Frame resolution matches HuBERT (20ms)",
+        "Tests pass with ContentVec encoder",
+        "Research arxiv for latest ContentVec improvements (2024-2026)"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "beads: AV-87t. Completed: 2026-01-23. ContentVecEncoder class using HubertModel from transformers (lengyue233/content-vec-best). Layer 9 hidden states (768) projected to 256-dim. ContentEncoder supports encoder_backend='contentvec'. 15 new tests pass. Frame resolution 20ms matches HuBERT."
+    },
+    {
+      "id": "AV-006",
+      "title": "BigVGAN vocoder integration",
+      "description": "Replace HiFiGAN with BigVGAN (arxiv:2206.04658). Periodic activations (Snake), anti-aliased upsampling. Better singing generalization.",
+      "acceptanceCriteria": [
+        "BigVGANGenerator class in models/vocoder.py",
+        "Snake activation function implemented",
+        "Anti-aliased multi-period upsampling",
+        "BigVGANVocoder.synthesize(mel) produces audio",
+        "ModelManager supports BigVGAN as vocoder option",
+        "Pretrained weights loadable (bigvgan_24khz_100band)",
+        "Tests pass with BigVGAN vocoder",
+        "Research arxiv for BigVGAN v2 or latest improvements"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "beads: AV-7a5. Completed: 2026-01-23. BigVGANGenerator (112M config: 1536ch, [4,4,2,2,2,2] upsample, 100-band mel, 24kHz). SnakeBeta activation, Activation1d anti-aliasing, AMPBlock residual blocks. BigVGANVocoder high-level interface. ModelManager vocoder_type='bigvgan'. 38 new tests pass (282 total). Commit 2c72ac9."
+    },
+    {
+      "id": "AV-007",
+      "title": "Data augmentation pipeline",
+      "description": "Implement training data augmentation: pitch shift, formant shift, EQ, time stretch. Increases effective training data size.",
+      "acceptanceCriteria": [
+        "audio/augmentation.py with AugmentationPipeline class",
+        "Pitch shift: \u00b12 semitones (librosa)",
+        "Time stretch: \u00b110% speed variation",
+        "EQ: random bandpass emphasis/attenuation",
+        "Configurable per-augmentation probability",
+        "Integrated into VoiceDataset with augment=True option",
+        "Tests verify augmented audio is valid (finite, correct length)"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "beads: AV-2u7. File: src/auto_voice/audio/augmentation.py. Completed: 2026-01-23. AugmentationPipeline with pitch_shift, time_stretch, EQ. VoiceDataset augment=True."
+    },
+    {
+      "id": "AV-008",
+      "title": "Vocal separation with Demucs",
+      "description": "Integrate Demucs v4 for source separation in SingingConversionPipeline. Separate vocals from instrumentals before voice conversion.",
+      "acceptanceCriteria": [
+        "VocalSeparator class in audio/separation.py uses Demucs",
+        "separate(audio, sr) returns {'vocals': ..., 'instrumental': ...}",
+        "SingingConversionPipeline._separate_vocals() uses VocalSeparator",
+        "Demucs model loadable (htdemucs or similar)",
+        "SDR > 5dB for vocal separation quality",
+        "Fallback: raise RuntimeError if Demucs unavailable (no silent fallback)"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "beads: AV-1il. Completed: 2026-01-23. VocalSeparator uses demucs.pretrained.get_model('htdemucs') + apply_model. No fallback (RuntimeError on failure). Resamples to/from model's 44100Hz. Pipeline._separate_vocals() delegates to VocalSeparator. 31 tests (28 unit + 3 integration). 314 total tests pass."
+    },
+    {
+      "id": "AV-009",
+      "title": "Conformer encoder",
+      "description": "Replace linear projection in ContentEncoder with Conformer encoder (6 layers, multi-head attention + FFN + Conv1D). Captures long-range dependencies.",
+      "acceptanceCriteria": [
+        "ConformerEncoder in models/conformer.py",
+        "Multi-head self-attention (2-4 heads) with relative position encoding",
+        "Feed-forward: Conv1D with GELU activation",
+        "6 layers, configurable hidden_dim (default 384)",
+        "ContentEncoder can use Conformer instead of linear projection",
+        "Tests pass with Conformer encoder",
+        "Research latest Conformer variants (2024-2026)"
+      ],
+      "priority": 9,
+      "passes": true,
+      "notes": "beads: AV-0gj. Completed: 2026-01-23. 6-layer ConformerEncoder (384 hidden, 4 heads, kernel=31, dropout=0.1). ContentEncoder supports encoder_type='conformer'. Committed dc022c6."
+    },
+    {
+      "id": "AV-010",
+      "title": "Consistency distillation for fast inference",
+      "description": "Implement two-stage training: diffusion teacher then consistency student for 1-step inference. Based on CoMoSVC (arxiv:2401.01792).",
+      "acceptanceCriteria": [
+        "DiffusionDecoder in models/ (BiDilConv, 20 blocks)",
+        "EDM preconditioning (Karras noise schedule)",
+        "ConsistencyStudent model with EMA teacher (mu=0.95)",
+        "CTLoss_D for distillation training",
+        "Student produces comparable quality in 1 step",
+        "RealtimeVoiceConversionPipeline uses student model",
+        "Inference latency < 50ms per chunk"
+      ],
+      "priority": 10,
+      "passes": true,
+      "notes": "beads: AV-3ka. Completed: 2026-01-23. DiffusionDecoder (20 BiDilConv blocks, dilation [1..512]x2, EDM preconditioning sigma_data=0.5). ConsistencyStudent with EMA teacher (mu=0.95), KarrasNoiseSchedule. CTLoss_D distillation loss. RealtimeVoiceConversionPipeline.load_consistency_student() for 1-step inference. 42 tests pass, 356 total. Inference <50ms."
+    },
+    {
+      "id": "AV-011",
+      "title": "ModelManager backend configuration passthrough",
+      "description": "ModelManager.load() must accept encoder_backend, encoder_type, and conformer_config params and pass them to ContentEncoder(). Both SingingConversionPipeline and RealtimeVoiceConversionPipeline must pass config keys (vocoder_type, encoder_backend, encoder_type) through to load().",
+      "acceptanceCriteria": [
+        "ModelManager.load() accepts encoder_backend param (default 'hubert')",
+        "ModelManager.load() accepts encoder_type param (default 'linear')",
+        "ModelManager.load() accepts conformer_config dict param",
+        "ContentEncoder constructed with encoder_backend and encoder_type from load() args",
+        "SingingConversionPipeline._get_model_manager() passes vocoder_type from config to load()",
+        "SingingConversionPipeline._get_model_manager() passes encoder_backend from config to load()",
+        "SingingConversionPipeline._get_model_manager() passes encoder_type from config to load()",
+        "RealtimeVoiceConversionPipeline._get_model_manager() passes vocoder_type from config to load()",
+        "RealtimeVoiceConversionPipeline._get_model_manager() passes encoder_backend from config to load()",
+        "RealtimeVoiceConversionPipeline._get_model_manager() passes encoder_type from config to load()",
+        "Tests: ModelManager with hubert/linear, hubert/conformer, contentvec/linear, contentvec/conformer",
+        "Tests: ModelManager with vocoder_type hifigan and bigvgan",
+        "All existing tests still pass"
+      ],
+      "priority": 11,
+      "passes": true,
+      "notes": "Completed: 2026-01-23. ModelManager.load() accepts encoder_backend, encoder_type, conformer_config and passes to ContentEncoder. Both pipelines pass vocoder_type, encoder_backend, encoder_type, conformer_config from config. 40 tests in test_model_manager.py (all pass). 383 total tests pass. Commit a4711bf."
+    },
+    {
+      "id": "AV-012",
+      "title": "E2E pipeline integration with all backends",
+      "description": "End-to-end integration tests verifying the full pipeline works with BigVGAN vocoder, ContentVec encoder backend, Conformer encoder type, and consistency student. Tests should exercise convert_song() and realtime conversion with non-default backends.",
+      "acceptanceCriteria": [
+        "test_e2e_pipeline.py: test convert with BigVGAN vocoder via config",
+        "test_e2e_pipeline.py: test convert with ContentVec encoder backend",
+        "test_e2e_pipeline.py: test convert with Conformer encoder type",
+        "test_singing_pipeline.py: test convert_song() with vocoder_type='bigvgan' in config",
+        "test_realtime_pipeline.py: test realtime pipeline with consistency student loaded",
+        "All new tests produce valid audio output (non-NaN, correct shape)",
+        "All existing tests still pass"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": "Completed: 2026-01-23. TestE2EBackendIntegration: BigVGAN vocoder (100-band mel), ContentVec encoder, Conformer encoder. SingingPipeline: convert_song with vocoder_type='bigvgan'. RealtimePipeline: ConsistencyStudent 1-step inference. SoVitsSvc n_mels made configurable. 5 new tests pass, 388 total. Commit a20f6fc."
+    },
+    {
+      "id": "AV-013",
+      "title": "Full pipeline config validation and documentation",
+      "description": "Add config validation in ModelManager.__init__() for known configuration keys. Document all supported config keys in docstrings. Provide clear error messages referencing valid options when invalid config values are provided.",
+      "acceptanceCriteria": [
+        "ModelManager.__init__() validates vocoder_type if present in config (hifigan or bigvgan)",
+        "ModelManager.__init__() validates encoder_backend if present in config (hubert or contentvec)",
+        "ModelManager.__init__() validates encoder_type if present in config (linear or conformer)",
+        "Invalid config values raise RuntimeError with message listing valid options",
+        "ModelManager class docstring lists all supported config keys",
+        "load() docstring updated with new params",
+        "Tests: invalid vocoder_type raises RuntimeError",
+        "Tests: invalid encoder_backend raises RuntimeError",
+        "Tests: invalid encoder_type raises RuntimeError",
+        "All existing tests still pass"
+      ],
+      "priority": 13,
+      "passes": true,
+      "notes": "Completed: 2026-01-23. Config validation in __init__() for vocoder_type, encoder_backend, encoder_type. RuntimeError with valid options listed. Docstrings updated. 15 new validation tests."
+    },
+    {
+      "id": "AV-014",
+      "title": "Fix vocal separator integration test",
+      "description": "Fix test_vocal_separator.py::test_separation_produces_different_outputs which fails when HTDemucs model download times out or weights aren't cached on CUDA. Ensure graceful handling or proper test marking.",
+      "acceptanceCriteria": [
+        "test_separation_produces_different_outputs passes reliably",
+        "Integration tests marked with @pytest.mark.integration",
+        "Tests skip gracefully if Demucs model fails to load (pytest.importorskip or skip decorator)",
+        "All 403 tests pass (no regressions)",
+        "Unit tests for VocalSeparator still enforce no-fallback behavior"
+      ],
+      "priority": 14,
+      "passes": true,
+      "notes": "Integration tests marked @pytest.mark.integration. _load_demucs_separator helper skips gracefully on model load failure. Unit tests still enforce no-fallback. All 403 tests pass."
+    },
+    {
+      "id": "AV-015",
+      "title": "Training convergence validation (50+ epochs)",
+      "description": "Add a slow-marked test that trains SoVitsSvc for 50 epochs with augmented synthetic data, verifying loss decreases and speaker differentiation works. Research latest SVC training stability techniques.",
+      "acceptanceCriteria": [
+        "tests/test_training_convergence.py exists with @pytest.mark.slow tests",
+        "Test trains SoVitsSvc for 50 epochs with synthetic 2-speaker data",
+        "Verify loss decreases: moving avg of last 10 epochs < moving avg of first 10",
+        "Verify speaker differentiation: 2 speakers trained, outputs have cosine similarity < 0.5",
+        "Uses AugmentationPipeline for training data augmentation",
+        "Learning rate warmup schedule implemented (linear warmup 5 epochs)",
+        "All existing tests still pass",
+        "Research: latest SVC training convergence techniques (2024-2026)"
+      ],
+      "priority": 15,
+      "passes": true,
+      "notes": "128-dim mean-only speaker embedding (L2-normalized). Training convergence verified: loss decreases over 50 epochs, speaker cosine similarity well below 0.5 threshold."
+    },
+    {
+      "id": "AV-016",
+      "title": "ONNX export for inference models",
+      "description": "Create src/auto_voice/export/onnx_export.py with export functions for ContentEncoder, SoVitsSvc, and BigVGANGenerator. Support dynamic batch/sequence axes. Verify ONNX output matches PyTorch within tolerance.",
+      "acceptanceCriteria": [
+        "src/auto_voice/export/__init__.py exists",
+        "src/auto_voice/export/onnx_export.py exists with export functions",
+        "export_content_encoder(model, path) exports with dynamic batch/sequence axes",
+        "export_sovits(model, path) exports flow decoder with dynamic axes",
+        "export_bigvgan(model, path) exports mel->audio with dynamic time dimension",
+        "Verification: ONNX model output matches PyTorch within 1e-4 tolerance",
+        "Tests in tests/test_onnx_export.py verify export and inference parity",
+        "All existing tests still pass",
+        "Research: ONNX opset for group_norm, snake activation, flow operations"
+      ],
+      "priority": 16,
+      "passes": true,
+      "notes": "Exports ContentEncoder projection, SoVitsSvc inference path (flow reverse), BigVGAN vocoder. Opset 17, dynamic batch/sequence/time axes. Weight_norm removal handled gracefully for PyTorch 2.11+ parametrized modules. 12 tests verify export+parity."
+    },
+    {
+      "id": "AV-017",
+      "title": "TensorRT optimization for Jetson Thor",
+      "description": "Create src/auto_voice/export/tensorrt_engine.py with TRT engine builder for FP16 inference on Jetson Thor (SM 11.0). Engine caching, INT8 calibration option, latency benchmarking.",
+      "acceptanceCriteria": [
+        "src/auto_voice/export/tensorrt_engine.py exists with TRTEngineBuilder class",
+        "build_engine(onnx_path, fp16=True) builds TRT engine from ONNX",
+        "Engine caching: save/load serialized engines from disk",
+        "FP16 inference as primary mode",
+        "INT8 calibration support (optional, with calibration dataset)",
+        "Latency benchmark method: target <20ms per inference call",
+        "Tests in tests/test_tensorrt.py (marked @pytest.mark.tensorrt)",
+        "All existing tests still pass",
+        "Research: TensorRT 10 best practices for audio models, dynamic shapes, SM 11.0"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "AV-018",
+      "title": "Web API backend configuration",
+      "description": "Extend Flask API to accept vocoder_type, encoder_backend, encoder_type in convert requests. Add GET /api/v1/models endpoint. WebSocket realtime supports consistency_model flag.",
+      "acceptanceCriteria": [
+        "POST /api/v1/convert/song accepts vocoder_type, encoder_backend, encoder_type in body",
+        "Config params passed through to SingingConversionPipeline",
+        "GET /api/v1/models returns available backends and their status",
+        "WebSocket /ws/realtime supports consistency_model flag for 1-step mode",
+        "Invalid backend values return 400 with valid options listed",
+        "Tests in tests/test_web_api.py for backend config endpoints",
+        "All existing tests still pass"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "AV-019",
+      "title": "GPU memory profiling and optimization",
+      "description": "Profile peak GPU memory for full pipeline inference. Implement torch.cuda.amp for inference, add memory monitoring to ModelManager. Target <8GB GPU memory with all backends loaded.",
+      "acceptanceCriteria": [
+        "ModelManager tracks peak and current GPU memory usage",
+        "ModelManager.get_memory_stats() returns dict with peak_mb, current_mb, allocated_mb",
+        "torch.cuda.amp autocast wrapper for inference paths",
+        "SingingConversionPipeline.convert_song() uses amp context when available",
+        "Memory stays under 8GB with all backends loaded (test with mock if no GPU)",
+        "Tests in tests/test_gpu_memory.py (marked @pytest.mark.cuda)",
+        "All existing tests still pass",
+        "Research: memory-efficient inference, gradient checkpointing, model offloading"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

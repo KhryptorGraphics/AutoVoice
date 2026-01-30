@@ -1,0 +1,140 @@
+"""Shared test fixtures for AutoVoice."""
+import os
+import sys
+import tempfile
+import shutil
+
+import numpy as np
+import pytest
+
+# Add src to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+
+@pytest.fixture
+def sample_audio():
+    """Generate a simple sine wave audio sample."""
+    sr = 22050
+    duration = 5.0  # seconds
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    # 440Hz sine wave with some harmonics
+    audio = 0.5 * np.sin(2 * np.pi * 440 * t) + 0.3 * np.sin(2 * np.pi * 880 * t)
+    audio = audio.astype(np.float32)
+    return audio, sr
+
+
+@pytest.fixture
+def sample_audio_file(sample_audio, tmp_path):
+    """Create a temporary audio file."""
+    import soundfile as sf
+    audio, sr = sample_audio
+    path = str(tmp_path / "test_audio.wav")
+    sf.write(path, audio, sr)
+    return path
+
+
+@pytest.fixture
+def short_audio():
+    """Very short audio (1 second) for edge case testing."""
+    sr = 16000
+    t = np.linspace(0, 1.0, sr, endpoint=False)
+    audio = 0.5 * np.sin(2 * np.pi * 220 * t).astype(np.float32)
+    return audio, sr
+
+
+@pytest.fixture
+def short_audio_file(short_audio, tmp_path):
+    """Create a short audio file (below minimum duration for cloning)."""
+    import soundfile as sf
+    audio, sr = short_audio
+    path = str(tmp_path / "short_audio.wav")
+    sf.write(path, audio, sr)
+    return path
+
+
+@pytest.fixture
+def profiles_dir(tmp_path):
+    """Temporary directory for voice profiles."""
+    d = tmp_path / "voice_profiles"
+    d.mkdir()
+    return str(d)
+
+
+@pytest.fixture
+def flask_app():
+    """Create a test Flask app with ML components disabled."""
+    from auto_voice.web.app import create_app
+    app, socketio = create_app(config={
+        'TESTING': True,
+        'singing_conversion_enabled': False,
+        'voice_cloning_enabled': False,
+    })
+    return app
+
+
+@pytest.fixture
+def flask_app_full():
+    """Create a test Flask app with ML components enabled."""
+    from auto_voice.web.app import create_app
+    app, socketio = create_app(config={'TESTING': True})
+    return app
+
+
+@pytest.fixture
+def client(flask_app):
+    """Flask test client without ML components."""
+    return flask_app.test_client()
+
+
+@pytest.fixture
+def client_full(flask_app_full):
+    """Flask test client with ML components."""
+    return flask_app_full.test_client()
+
+
+@pytest.fixture
+def voice_cloner(profiles_dir):
+    """VoiceCloner instance with temp profile storage."""
+    from auto_voice.inference.voice_cloner import VoiceCloner
+    import torch
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return VoiceCloner(device=device, profiles_dir=profiles_dir)
+
+
+@pytest.fixture
+def singing_pipeline(voice_cloner):
+    """SingingConversionPipeline with ModelManager pre-loaded (random weights)."""
+    from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+    from auto_voice.inference.model_manager import ModelManager
+    from auto_voice.models.so_vits_svc import SoVitsSvc
+    import torch
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    pipeline = SingingConversionPipeline(
+        device=device, voice_cloner=voice_cloner,
+        config={'speaker_id': 'default'}
+    )
+
+    # Pre-load ModelManager with random-weight models for testing
+    mm = ModelManager(device=device, config={'speaker_id': 'default'})
+    mm.load()  # Random weights
+    model = SoVitsSvc()
+    model.to(device)
+    mm._sovits_models['default'] = model
+    pipeline._model_manager = mm
+
+    return pipeline
+
+
+@pytest.fixture
+def audio_processor():
+    """AudioProcessor instance."""
+    from auto_voice.audio.processor import AudioProcessor
+    return AudioProcessor(sample_rate=22050)
+
+
+@pytest.fixture
+def profile_store(profiles_dir):
+    """VoiceProfileStore instance."""
+    from auto_voice.storage.voice_profiles import VoiceProfileStore
+    return VoiceProfileStore(profiles_dir=profiles_dir)

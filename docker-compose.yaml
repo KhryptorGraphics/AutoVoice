@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: .
+      target: production
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./models/pretrained:/app/models/pretrained:ro
+      - ./data:/app/data
+    environment:
+      - LOG_LEVEL=info
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

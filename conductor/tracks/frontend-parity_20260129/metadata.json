@@ -1,0 +1,27 @@
+{
+  "id": "frontend-parity_20260129",
+  "title": "Frontend-Backend Parity & Granular Controls",
+  "type": "feature",
+  "status": "in_progress",
+  "created": "2026-01-29T19:15:00Z",
+  "updated": "2026-01-30T04:00:00Z",
+  "phases": {
+    "total": 12,
+    "completed": 7
+  },
+  "tasks": {
+    "total": 127,
+    "completed": 71
+  },
+  "current_phase": 8,
+  "tools": [
+    "claude-flow v3.0.0-alpha.185",
+    "playwright",
+    "react-query"
+  ],
+  "dependencies": [
+    "sota-pipeline_20260124",
+    "live-karaoke_20260124",
+    "voice-profile-training_20260124"
+  ]
+}

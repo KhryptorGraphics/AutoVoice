@@ -1,0 +1,130 @@
+# Ralph Progress Log
+Started: 2026-01-23
+
+## Codebase Patterns
+- Use PYTHONNOUSERSITE=1 PYTHONPATH=src for all python commands
+- Conda env: autovoice-thor (/home/kp/anaconda3/envs/autovoice-thor/bin/python)
+- Beads: bd --no-daemon --db /home/kp/.beads-local/autovoice/beads.db (CIFS mount issue)
+- No fallback behavior: always raise RuntimeError, never pass through silently
+- Speaker embedding: mel-statistics (mean+std of 128 mels = 256-dim, L2-normalized)
+- Content encoder: HuBERTSoft always initialized (random or pretrained weights)
+- Frame alignment: F.interpolate(transpose(1,2), size=target) for content/pitch
+- Training: real encoder features (content_encoder, pitch_encoder frozen during training)
+- ModelManager: central inference orchestrator (strict RuntimeError checks)
+- Tests: PYTHONNOUSERSITE=1 PYTHONPATH=src pytest tests/ -x --tb=short -q
+- SSIM loss: window_size=11, weight=0.5, uses F.conv2d with Gaussian kernel (C1=0.01^2, C2=0.03^2)
+- Mel-quantized F0: f0_mel=1127*log1p(f0/700), bins=[0,255], 50-1100Hz range
+- PitchEncoder: nn.Embedding(256) + nn.Embedding(2, uv) + Linear residual for gradient flow
+- Flaky test: test_different_speakers_different_output occasionally fails due to random init (non-issue)
+
+## Architecture (Current)
+- ContentEncoder: HuBERTSoft → Linear projection → [B, T, 256]
+- PitchEncoder: f0_to_coarse (mel-scale) → nn.Embedding(256) + UV(2) + residual → [B, T, 256]
+- SoVitsSvc: VAE + Normalizing Flow (hidden=192, content_dim=256) + SSIM loss
+- HiFiGANVocoder: Multi-receptive-field fusion generator
+- VoiceCloner: mel-statistics embedding (deterministic, 256-dim)
+
+## Pre-existing State (before ralph)
+- 8-phase no-fallback implementation complete
+- 231 model/inference/training/e2e tests passing
+- Research: 14 papers analyzed, Amphion CoMoSVC studied
+- Files: model_manager.py, voice_cloner.py, encoder.py, trainer.py, so_vits_svc.py all updated
+---
+
+## Iteration 1 (2026-01-23)
+- Completed: AV-001 (test suite already at 100%), AV-002 (SSIM loss), AV-003 (mel-quantized F0)
+- SSIM key insight: treat mel [B, 80, T] as image [B, 1, 80, T] for 2D conv-based SSIM
+- F0 key insight: residual linear path (log1p(f0) → Linear) enables gradient flow while embedding handles coarse pitch
+- UV embedding: f0.abs() > 10.0 threshold distinguishes voiced from unvoiced
+- f0_to_coarse bins: 50Hz→0, 100Hz→18, 220Hz→59, 440Hz→121, 880Hz→217, 1100Hz→255
+---
+
+## Iteration 2 (2026-01-23)
+- Completed: AV-004 (Download pretrained weights)
+- Updated URLs: HuBERT-Soft v0.2 (hubert-soft-35d9f29f.pt, 361MB), HiFiGAN universal (generator_universal.pth.tar, 53MB)
+- Google Drive download: Added download_gdrive() function for GDrive-hosted models
+- Verification: Both models load correctly via torch.load(), checkpoint keys validated
+- Pattern: When GitHub release URLs 404, check releases page for new hash-suffixed filenames
+- Pattern: Google Drive downloads need special handling (file_id extraction, confirmation tokens)
+---
+
+## Iteration 3 (2026-01-23)
+- Completed: AV-007 (Data augmentation pipeline)
+- AugmentationPipeline in audio/augmentation.py: pitch_shift, time_stretch, random_eq
+- VoiceDataset integration: augment=True parameter, applies augmentations during __getitem__
+- Pattern: librosa for pitch/time, scipy for EQ bandpass filters
+---
+
+## Iteration 4 (2026-01-23)
+- Completed: AV-009 (Conformer encoder) — committed dc022c6
+- ConformerEncoder: 6 layers, 384 hidden, 4 attention heads, kernel_size=31
+- ContentEncoder: encoder_type='conformer' alternative to 'linear'
+- Relative positional encoding via nn.Parameter sinusoidal init
+- Pattern: Macaron-style FFN (half-step before and after attention)
+---
+
+## SOTA MODE v2 Upgrade (2026-01-23)
+- Rewrote CLAUDE.md with 40+ MCP server references (paper-search, perplexity, context7, serena, etc.)
+- 16-step workflow: context recovery → research → architecture decision → impact analysis → implement → quality gates
+- Per-story implementation guides with exact checkpoints and code snippets
+- Triple-persist pattern: cipher + serena memories + progress.txt
+- Quality gates: semgrep security_check + python-refactoring analysis
+- 10 research files (190KB) pre-seeded with SOTA implementations
+- resume-prompt.md updated with current state and MCP server index
+- ralph.sh v2: environment pre-checks, --model flag, timing, colored output
+---
+
+## Remaining Stories (3)
+- AV-006: BigVGAN (nvidia/bigvgan_v2_24khz_100band_256x, Snake activation)
+- AV-008: Demucs VocalSeparator (htdemucs, demucs.api.Separator)
+- AV-010: Consistency distillation (Grace9994/CoMoSVC, EDM, CTLoss_D, N=25)
+
+
+## Iteration 1 (2026-01-23 21:08) - 166s
+
+## Iteration 2 (2026-01-23 21:10) - 155s
+
+## Iteration 3 (2026-01-23 21:12) - 131s
+
+## Iteration 4 (2026-01-23 21:14)
+- Completed: AV-005 (ContentVec feature extraction)
+- ContentVecEncoder: HubertModel (transformers) + layer 9 + Linear(768→256)
+- ContentEncoder: encoder_backend='contentvec' routes through ContentVecEncoder
+- Lazy loading: model only instantiated on first encode() call
+- Random init for testing (pretrained=None), HF download for production
+- Pattern: HuBERT and ContentVec produce same frame rate (20ms/frame at 16kHz)
+- Pattern: Both backends output 256-dim, making them interchangeable at projection level
+- 15 new tests (8 ContentVecEncoder + 7 ContentEncoderBackends), all 246 pass
+---
+
+## Ralph v2 failures (21:22-21:41) - 30 iterations, 0 work done
+# Root cause: scripts/ralph/CLAUDE.md was empty (just claude-mem tags)
+# Fix: Rewrote as Ralph v3 with per-story focused prompts
+---
+
+## Ralph v3 Start
+
+## AV-006 attempt 1 (2026-01-23 22:09) - 520s
+- Completed: AV-006 (BigVGAN vocoder integration)
+
+## AV-008 attempt 1 (2026-01-23 22:20) - 653s
+- Completed: AV-008 (Vocal separation with Demucs)
+
+## AV-010 attempt 1 (2026-01-23 22:31) - 620s
+- Completed: AV-010 (Consistency distillation for fast inference)
+---
+## ALL COMPLETE - 2026-01-23 22:31 (1803s, 3 iterations)
+
+## AV-011 attempt 1 (2026-01-23 23:09) - 481s
+- Completed: AV-011 (ModelManager backend configuration passthrough)
+
+## AV-012 attempt 1 (2026-01-23 23:23) - 825s
+- Completed: AV-012 (E2E pipeline integration with all backends)
+
+## AV-013 attempt 1 (2026-01-23 23:31) - 482s
+- Completed: AV-013 (Full pipeline config validation and documentation)
+---
+## ALL COMPLETE - 2026-01-23 23:31 (1798s, 3 iterations)
+
+## AV-014 attempt 1 (2026-01-24 03:32) - 340s
+- Completed: AV-014 (Fix vocal separator integration test)

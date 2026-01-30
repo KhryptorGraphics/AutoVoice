@@ -1,0 +1,36 @@
+# GPU and Server Configuration
+server:
+  host: 0.0.0.0
+  port: 5000
+  workers: 1
+  debug: false
+
+gpu:
+  device: cuda:0
+  compute_capability: "11.0"
+  arch: sm_110
+  max_memory_fraction: 0.9
+  enable_cuda_kernels: true
+
+audio:
+  sample_rate: 22050
+  hop_length: 512
+  n_fft: 2048
+  win_length: 2048
+  n_mels: 80
+
+models:
+  pretrained_dir: models/pretrained
+  sovits_checkpoint: sovits5.0_main_1500.pth
+  hifigan_checkpoint: hifigan_ljspeech.ckpt
+  hubert_checkpoint: hubert-soft-0d54a1f4.pt
+
+voice_conversion:
+  singing_conversion_enabled: true
+  voice_cloning_enabled: true
+
+job_manager:
+  enabled: true
+  max_workers: 4
+  ttl_seconds: 3600
+  in_progress_ttl_seconds: 7200

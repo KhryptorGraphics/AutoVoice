@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Data & Models (large files)
+data/
+models/pretrained/
+*.ckpt
+*.pth
+*.pt
+*.bin
+
+# Logs
+logs/
+*.log
+
+# Temp
+.tmp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# CUDA build
+*.o
+*.so
+
+# Misc
+.serena/
+.claude-flow/
+.kilocode/
+.roo/
+.swarm/
+.beads/
+checkpoints/

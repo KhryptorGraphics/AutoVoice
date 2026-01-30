@@ -1,0 +1,24 @@
+{
+  "id": "voice-profile-training_20260124",
+  "title": "Voice Profile & Continuous Training",
+  "type": "feature",
+  "status": "in_progress",
+  "created": "2026-01-24T21:15:00Z",
+  "updated": "2026-01-25T10:05:00Z",
+  "current_phase": 4,
+  "current_task": "4.9",
+  "phases": {
+    "total": 9,
+    "completed": 3
+  },
+  "tasks": {
+    "total": 66,
+    "completed": 24
+  },
+  "commits": [
+    "c645b7f - feat(profiles): VoiceProfile model with TDD",
+    "cc21cb1 - feat(profiles): PostgreSQL schema with migrations",
+    "9932fa1 - feat(profiles): REST API endpoints",
+    "3cee63b - feat(profiles): Training sample storage API"
+  ]
+}

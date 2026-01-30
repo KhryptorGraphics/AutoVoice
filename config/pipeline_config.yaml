@@ -1,0 +1,43 @@
+# Voice Conversion Pipeline Configuration
+presets:
+  draft:
+    description: "Fast preview, lower quality"
+    n_steps: 10
+    denoise_strength: 0.3
+    use_gpu_kernels: false
+  fast:
+    description: "Quick conversion, good quality"
+    n_steps: 20
+    denoise_strength: 0.5
+    use_gpu_kernels: true
+  balanced:
+    description: "Default - balance of speed and quality"
+    n_steps: 50
+    denoise_strength: 0.7
+    use_gpu_kernels: true
+  high:
+    description: "High quality, slower"
+    n_steps: 100
+    denoise_strength: 0.8
+    use_gpu_kernels: true
+  studio:
+    description: "Maximum quality"
+    n_steps: 200
+    denoise_strength: 0.9
+    use_gpu_kernels: true
+
+separation:
+  model: demucs
+  two_stems: true
+  segment_length: 10.0
+
+pitch:
+  method: crepe
+  hop_length: 512
+  fmin: 50
+  fmax: 1100
+
+speaker_encoder:
+  model: resemblyzer
+  min_audio_duration: 3.0
+  embedding_dim: 256

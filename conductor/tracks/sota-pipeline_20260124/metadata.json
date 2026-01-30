@@ -1,0 +1,16 @@
+{
+  "id": "sota-pipeline_20260124",
+  "title": "SOTA Pipeline Refactor",
+  "type": "refactor",
+  "status": "completed",
+  "created": "2026-01-24T15:45:00Z",
+  "updated": "2026-01-24T19:45:00Z",
+  "phases": {
+    "total": 10,
+    "completed": 10
+  },
+  "tasks": {
+    "total": 49,
+    "completed": 49
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "codebase-audit_20260130",
+  "title": "Comprehensive Codebase Audit & Remediation",
+  "type": "chore",
+  "status": "pending",
+  "created": "2026-01-30T04:30:00Z",
+  "updated": "2026-01-30T04:30:00Z",
+  "phases": {
+    "total": 10,
+    "completed": 0
+  },
+  "tasks": {
+    "total": 73,
+    "completed": 0
+  }
+}

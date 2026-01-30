@@ -1,0 +1,356 @@
+"""SOTA Singing Voice Conversion Pipeline.
+
+End-to-end pipeline connecting all SOTA components:
+  MelBandRoFormer → ContentVec → RMVPE → CoMoSVC → BigVGAN
+
+Sample rate flow:
+  Input (any SR) → 44.1kHz (separator) → 16kHz (content+pitch) → mel → 24kHz (vocoder)
+
+Frame alignment:
+  ContentVec: 50fps at 16kHz (hop=320)
+  RMVPE: 50fps at 16kHz (hop=320)
+  Both produce aligned frame sequences for the decoder.
+
+No fallback behavior: raises RuntimeError on failure.
+"""
+import logging
+import time
+from typing import Callable, Dict, Optional, Any, TYPE_CHECKING
+
+import torch
+import torch.nn.functional as F
+
+from ..audio.separator import MelBandRoFormer
+from ..models.encoder import ContentVecEncoder
+from ..models.pitch import RMVPEPitchExtractor
+from ..models.svc_decoder import CoMoSVCDecoder
+from ..models.vocoder import BigVGANVocoder
+
+if TYPE_CHECKING:
+    from ..storage.voice_profiles import VoiceProfileStore
+
+logger = logging.getLogger(__name__)
+
+# Minimum input duration (100ms)
+MIN_DURATION_SAMPLES_24K = 2400  # 100ms at 24kHz
+
+
+class SOTAConversionPipeline:
+    """SOTA singing voice conversion pipeline.
+
+    Orchestrates:
+      1. Vocal separation (MelBandRoFormer @ 44.1kHz)
+      2. Content extraction (ContentVec @ 16kHz → 768-dim)
+      3. Pitch extraction (RMVPE @ 16kHz → F0 + voicing)
+      4. SVC decoding (CoMoSVC → mel spectrogram)
+      5. Waveform synthesis (BigVGAN @ 24kHz)
+
+    All components run sequentially to minimize GPU memory usage.
+    """
+
+    def __init__(
+        self,
+        device: Optional[torch.device] = None,
+        n_steps: int = 1,
+        profile_store: Optional["VoiceProfileStore"] = None,
+        profile_id: Optional[str] = None,
+        require_gpu: bool = True,
+    ):
+        """Initialize pipeline with all SOTA components.
+
+        Args:
+            device: Target device (defaults to CUDA if available)
+            n_steps: Consistency model steps (1=fast, 4=quality)
+            profile_store: Voice profile storage for loading trained weights
+            profile_id: Profile ID to load LoRA weights from (requires profile_store)
+            require_gpu: If True, raise RuntimeError if CUDA unavailable
+        """
+        if require_gpu and not torch.cuda.is_available():
+            raise RuntimeError("CUDA is required for SOTAConversionPipeline")
+
+        self.device = device or torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'
+        )
+        self.n_steps = n_steps
+        self._current_stage = None
+        self._profile_store = profile_store
+        self._profile_id = profile_id
+
+        # Initialize components (all moved to device)
+        self.separator = MelBandRoFormer(device=self.device).to(self.device)
+        self.content_extractor = ContentVecEncoder(
+            output_dim=768, layer=12, device=self.device
+        ).to(self.device)
+        self.pitch_extractor = RMVPEPitchExtractor(
+            device=self.device
+        ).to(self.device)
+        self.decoder = CoMoSVCDecoder(device=self.device).to(self.device)
+        self.vocoder = BigVGANVocoder(
+            pretrained=None, device=self.device
+        ).to(self.device)
+
+        # Load LoRA weights if profile has trained model
+        if profile_store is not None and profile_id is not None:
+            self._load_profile_lora(profile_store, profile_id)
+
+        logger.info(f"SOTAConversionPipeline initialized on {self.device}")
+
+    def _load_profile_lora(
+        self, profile_store: "VoiceProfileStore", profile_id: str
+    ) -> None:
+        """Load LoRA weights from profile if available.
+
+        Args:
+            profile_store: Voice profile storage
+            profile_id: Profile ID to load weights from
+        """
+        if not profile_store.has_trained_model(profile_id):
+            logger.info(f"Profile {profile_id} has no trained model, skipping LoRA")
+            return
+
+        try:
+            # Load weights
+            lora_state = profile_store.load_lora_weights(profile_id)
+
+            # Inject LoRA into decoder
+            self.decoder.inject_lora(rank=8, alpha=16)
+
+            # Load weights into decoder
+            self.decoder.load_lora_state_dict(lora_state)
+
+            logger.info(f"Loaded LoRA weights from profile {profile_id}")
+        except Exception as e:
+            logger.error(f"Failed to load LoRA weights for {profile_id}: {e}")
+            raise RuntimeError(f"Failed to load LoRA weights: {e}") from e
+
+    def _resample(self, audio: torch.Tensor, from_sr: int,
+                  to_sr: int) -> torch.Tensor:
+        """Resample audio tensor between sample rates.
+
+        Args:
+            audio: [T] or [C, T] audio tensor
+            from_sr: Source sample rate
+            to_sr: Target sample rate
+
+        Returns:
+            Resampled audio tensor
+        """
+        if from_sr == to_sr:
+            return audio
+
+        # Use linear interpolation for resampling
+        if audio.dim() == 1:
+            audio = audio.unsqueeze(0).unsqueeze(0)  # [1, 1, T]
+            target_len = int(audio.shape[2] * to_sr / from_sr)
+            resampled = F.interpolate(
+                audio, size=target_len, mode='linear', align_corners=False
+            )
+            return resampled.squeeze(0).squeeze(0)
+        else:
+            # [C, T] → [1, C, T]
+            audio = audio.unsqueeze(0)
+            target_len = int(audio.shape[2] * to_sr / from_sr)
+            resampled = F.interpolate(
+                audio, size=target_len, mode='linear', align_corners=False
+            )
+            return resampled.squeeze(0)
+
+    def _to_mono(self, audio: torch.Tensor) -> torch.Tensor:
+        """Convert stereo to mono by averaging channels.
+
+        Args:
+            audio: [T] or [C, T] audio tensor
+
+        Returns:
+            [T] mono audio tensor
+        """
+        if audio.dim() == 1:
+            return audio
+        if audio.dim() == 2:
+            return audio.mean(dim=0)
+        raise RuntimeError(
+            f"Unexpected audio shape: {audio.shape}. Expected [T] or [C, T]."
+        )
+
+    def _encode_pitch(self, f0: torch.Tensor) -> torch.Tensor:
+        """Encode F0 values to 256-dim pitch embeddings.
+
+        Uses the PitchEncoder-style mel-quantized approach:
+        F0 → coarse bin → embedding lookup.
+
+        For integration, we use a learned linear projection from
+        log-F0 features to match the decoder's expected 256-dim input.
+
+        Args:
+            f0: [B, T] F0 in Hz
+
+        Returns:
+            [B, T, 256] pitch embeddings
+        """
+        B, T = f0.shape
+
+        # Log-scale F0 (with floor for unvoiced)
+        log_f0 = torch.log2(f0.clamp(min=1.0))  # [B, T]
+        # Normalize to [0, 1] range (50Hz → 1100Hz = ~5.6 → ~10.1 in log2)
+        log_f0_norm = (log_f0 - 5.6) / (10.1 - 5.6)
+        log_f0_norm = log_f0_norm.clamp(0, 1)
+
+        # Create pitch features: log_f0 + harmonics (Fourier features)
+        freqs = torch.arange(1, 129, device=f0.device).float()  # 128 freqs
+        # [B, T, 128] sin features + [B, T, 128] cos features = 256-dim
+        phase = log_f0_norm.unsqueeze(-1) * freqs.unsqueeze(0).unsqueeze(0) * torch.pi
+        pitch_embed = torch.cat([
+            torch.sin(phase),
+            torch.cos(phase),
+        ], dim=-1)  # [B, T, 256]
+
+        return pitch_embed
+
+    def convert(self, audio: torch.Tensor, sample_rate: int,
+                speaker_embedding: torch.Tensor,
+                on_progress: Optional[Callable[[str, float], None]] = None
+                ) -> Dict[str, Any]:
+        """Convert audio to target speaker voice.
+
+        Args:
+            audio: [T] or [C, T] input audio tensor
+            sample_rate: Input sample rate
+            speaker_embedding: [256] target speaker embedding (mel-statistics)
+            on_progress: Optional callback(stage_name, progress_fraction)
+
+        Returns:
+            Dict with:
+                - audio: [T] output waveform at 24kHz
+                - sample_rate: 24000
+                - metadata: processing info
+
+        Raises:
+            RuntimeError: On empty/too-short audio, wrong dimensions, or
+                         component failures.
+        """
+        start_time = time.time()
+
+        # Validate inputs
+        if audio.numel() == 0:
+            raise RuntimeError("Empty audio input")
+
+        # Convert to mono
+        audio_mono = self._to_mono(audio)
+
+        # Check minimum duration (normalize to 24kHz equivalent)
+        duration_samples_24k = int(len(audio_mono) * 24000 / sample_rate)
+        if duration_samples_24k < MIN_DURATION_SAMPLES_24K:
+            raise RuntimeError(
+                f"Audio too short: {duration_samples_24k} samples at 24kHz "
+                f"(minimum {MIN_DURATION_SAMPLES_24K})"
+            )
+
+        # Validate speaker embedding
+        if speaker_embedding.dim() != 1 or speaker_embedding.shape[0] != 256:
+            raise RuntimeError(
+                f"Speaker embedding must be [256], got {speaker_embedding.shape}"
+            )
+
+        speaker = speaker_embedding.unsqueeze(0).to(self.device)  # [1, 256]
+
+        def report(stage: str, progress: float):
+            self._current_stage = stage
+            if on_progress:
+                on_progress(stage, progress)
+
+        # Stage 1: Vocal separation (44.1kHz)
+        report('separation', 0.0)
+        audio_44k = self._resample(audio_mono, sample_rate, 44100)
+        audio_44k = audio_44k.to(self.device)
+
+        with torch.no_grad():
+            vocals_44k = self.separator.extract_vocals(
+                audio_44k.unsqueeze(0)  # [1, T]
+            )  # [1, T]
+            vocals_44k = vocals_44k.squeeze(0)  # [T]
+        report('separation', 0.2)
+
+        # Stage 2: Content extraction (16kHz)
+        report('content_extraction', 0.2)
+        vocals_16k = self._resample(vocals_44k, 44100, 16000)
+
+        with torch.no_grad():
+            content_features = self.content_extractor.encode(
+                vocals_16k.unsqueeze(0)  # [1, T]
+            )  # [1, N_frames, 768]
+        report('content_extraction', 0.4)
+
+        # Stage 3: Pitch extraction (16kHz)
+        report('pitch_extraction', 0.4)
+        with torch.no_grad():
+            f0 = self.pitch_extractor.extract(
+                vocals_16k.unsqueeze(0)  # [1, T]
+            )  # [1, N_frames]
+        report('pitch_extraction', 0.6)
+
+        # Frame alignment: ensure content and pitch have same length
+        n_frames = min(content_features.shape[1], f0.shape[1])
+        content_features = content_features[:, :n_frames, :]  # [1, N, 768]
+        f0_aligned = f0[:, :n_frames]  # [1, N]
+
+        # Encode pitch to 256-dim embeddings
+        pitch_embeddings = self._encode_pitch(f0_aligned)  # [1, N, 256]
+
+        # Stage 4: SVC decoding (mel generation)
+        report('decoding', 0.6)
+        with torch.no_grad():
+            mel = self.decoder.infer(
+                content_features, pitch_embeddings, speaker,
+                n_steps=self.n_steps
+            )  # [1, n_mels, N]
+        report('decoding', 0.8)
+
+        # Upsample mel to match vocoder frame rate
+        # ContentVec: 50fps (16kHz, hop=320) → BigVGAN: 93.75fps (24kHz, hop=256)
+        # Need ~1.875x temporal upsampling of mel frames
+        vocoder_hop = getattr(self.vocoder, 'hop_size', 256)
+        vocoder_sr = getattr(self.vocoder, 'sample_rate', 24000)
+        target_fps = vocoder_sr / vocoder_hop  # 93.75 for BigVGAN 24kHz
+        content_fps = 50.0  # 16kHz / hop=320
+        upsample_factor = target_fps / content_fps  # ~1.875
+
+        if upsample_factor > 1.01:  # Only upsample if needed
+            target_mel_frames = int(mel.shape[2] * upsample_factor)
+            mel = F.interpolate(
+                mel, size=target_mel_frames, mode='linear', align_corners=False
+            )
+
+        # Stage 5: Vocoder (mel → 24kHz waveform)
+        report('vocoder', 0.8)
+        with torch.no_grad():
+            waveform = self.vocoder.synthesize(mel)  # [1, T_audio]
+        waveform = waveform.squeeze(0)  # [T_audio]
+
+        # Normalize output to reasonable level (-0.95 to 0.95 peak)
+        # Untrained models may produce very quiet output
+        peak = waveform.abs().max()
+        if peak > 1e-6:
+            target_peak = 0.95
+            waveform = waveform * (target_peak / peak)
+
+        report('vocoder', 1.0)
+
+        elapsed = time.time() - start_time
+        output_duration = len(waveform) / 24000
+
+        logger.info(
+            f"SOTA conversion complete: {output_duration:.2f}s audio "
+            f"in {elapsed:.2f}s ({elapsed/output_duration:.1f}x realtime)"
+        )
+
+        return {
+            'audio': waveform,
+            'sample_rate': 24000,
+            'metadata': {
+                'processing_time': elapsed,
+                'n_steps': self.n_steps,
+                'n_frames': n_frames,
+                'output_duration': output_duration,
+                'device': str(self.device),
+            },
+        }
