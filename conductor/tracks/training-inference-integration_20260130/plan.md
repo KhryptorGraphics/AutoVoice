@@ -68,17 +68,17 @@ Update REST API to support trained model selection.
 
 ### Tasks
 
-- [ ] Task 4.1: Add GET /api/v1/profiles/{id}/model endpoint
-- [ ] Task 4.2: Update POST /api/v1/convert/song to accept profile_id
-- [ ] Task 4.3: Add pipeline parameter (realtime/quality) to conversion endpoint
-- [ ] Task 4.4: Return appropriate error if adapter missing
-- [ ] Task 4.5: Add model availability status to profile response
+- [x] Task 4.1: Add GET /api/v1/profiles/{id}/model endpoint (with AdapterManager)
+- [x] Task 4.2: Update POST /api/v1/convert/song to use AdapterManager validation
+- [x] Task 4.3: Pipeline parameter already supported (realtime/quality/quality_seedvc)
+- [x] Task 4.4: Return 404 with clear error if adapter missing
+- [x] Task 4.5: Add has_trained_model to profile list and detail responses
 
 ### Verification
 
-- [ ] API correctly loads specified adapter
-- [ ] Error responses are clear and actionable
-- [ ] Profile response shows training status
+- [x] API uses AdapterManager for unified adapter access
+- [x] Error responses include clear messages (404 for missing adapter)
+- [x] Profile responses show has_trained_model status
 
 ## Phase 5: Web UI Updates
 
