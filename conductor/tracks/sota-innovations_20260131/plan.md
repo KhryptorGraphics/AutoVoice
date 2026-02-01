@@ -66,9 +66,11 @@ Enable 2-step high-quality inference using R-VC's shortcut flow matching techniq
 
 ### Tasks
 
-- [ ] Task 2.1: Research R-VC shortcut flow matching implementation
-  - Read paper 2506.01014 in detail
-  - Understand conditioning on step size during training
+- [x] Task 2.1: Research R-VC shortcut flow matching implementation ✅
+  - Read paper 2506.01014 (arXiv:2506.01014)
+  - Documented in `shortcut-flow-matching-research.md`
+  - Key finding: Condition on step size `d` during training
+  - Self-consistency loss enables 2-step inference (2.83x speedup)
 
 - [ ] Task 2.2: Implement shortcut flow matching in DiT decoder
   - Modify `DiTCFMDecoder` to support shortcut mode
