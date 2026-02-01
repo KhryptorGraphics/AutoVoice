@@ -72,10 +72,12 @@ Enable 2-step high-quality inference using R-VC's shortcut flow matching techniq
   - Key finding: Condition on step size `d` during training
   - Self-consistency loss enables 2-step inference (2.83x speedup)
 
-- [ ] Task 2.2: Implement shortcut flow matching in DiT decoder
-  - Modify `DiTCFMDecoder` to support shortcut mode
-  - Add `shortcut_steps` parameter (default: 2)
-  - Condition network on desired step size
+- [x] Task 2.2: Implement shortcut flow matching in DiT decoder ✅
+  - Created `modules/shortcut_flow_matching.py` wrapper
+  - Adds `StepSizeEmbedder` (similar to TimestepEmbedder)
+  - Implements dual-objective training (70% FM, 30% SC)
+  - Supports configurable n_timesteps (1, 2, 5, 10+)
+  - Tests pass: 6/6 smoke tests ✅
 
 - [ ] Task 2.3: Add diffusion adversarial post-training
   - Implement adversarial training loss
