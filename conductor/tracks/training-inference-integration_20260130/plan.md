@@ -10,6 +10,12 @@
 
 Integrate the training pipeline with inference pipelines so trained voice models work seamlessly in both REALTIME and QUALITY modes.
 
+**Cross-Track Dependencies (2026-02-01):**
+- **AdapterBridge:** ✅ Enhanced by `sota-innovations_20260131` Phase 8 (Seed-VC reference audio mapping)
+- **MeanVC Pipeline:** ✅ NEW OPTION from `sota-innovations_20260131` Phase 4 (realtime_meanvc)
+- **Seed-VC Pipeline:** ✅ NEW OPTION from `sota-innovations_20260131` Phase 1 (quality_seedvc)
+- **Shortcut Flow:** ✅ AVAILABLE from `sota-innovations_20260131` Phase 2 (2-step inference speedup)
+
 ## Phase 1: Adapter Loading Infrastructure
 
 Create unified adapter loading that works across all pipelines.

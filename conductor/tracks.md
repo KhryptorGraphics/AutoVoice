@@ -14,7 +14,7 @@
 | [~] | sota-dual-pipeline_20260130 | SOTA Dual-Pipeline Voice Conversion | 2026-01-30 | 2026-01-30 |
 | [x] | speaker-diarization_20260130 | Speaker Diarization & Auto-Profile Creation | 2026-01-30 | 2026-01-31 |
 | [x] | youtube-artist-training_20260130 | YouTube Artist Training Pipeline (COMPLETE - LoRAs trained) | 2026-01-30 | 2026-01-31 |
-| [~] | sota-innovations_20260131 | SOTA Voice Conversion Innovations (DiT-CFM, NSF, MeanVC) | 2026-01-31 | 2026-02-01 |
+| [x] | sota-innovations_20260131 | SOTA Voice Conversion Innovations (DiT-CFM, Shortcut CFM, MeanVC) | 2026-01-31 | 2026-02-01 |
 | [~] | frontend-complete-integration_20260201 | Frontend Complete Integration | 2026-02-01 | 2026-02-01 |
 
 <!-- Tracks registered by /conductor:new-track -->
