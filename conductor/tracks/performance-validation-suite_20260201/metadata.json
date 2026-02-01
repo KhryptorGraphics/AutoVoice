@@ -1,0 +1,43 @@
+{
+  "id": "performance-validation-suite_20260201",
+  "title": "Performance Validation Suite",
+  "type": "test",
+  "priority": "P1",
+  "status": "pending",
+  "created": "2026-02-01T10:00:00Z",
+  "updated": "2026-02-01T10:00:00Z",
+  "phases": {
+    "total": 7,
+    "completed": 0
+  },
+  "tasks": {
+    "total": 35,
+    "completed": 0
+  },
+  "benchmarks": {
+    "pipelines": ["realtime", "quality", "quality_seedvc", "realtime_meanvc"],
+    "metrics": ["RTF", "latency", "GPU_memory", "MCD", "speaker_similarity"]
+  },
+  "dependencies": {
+    "upstream": [
+      "sota-innovations_20260131-phase4-meanvc",
+      "sota-innovations_20260131-phase2-shortcut"
+    ],
+    "downstream": [
+      "sla-commitments",
+      "user-documentation",
+      "optimization-priorities"
+    ]
+  },
+  "effort": {
+    "size": "medium",
+    "duration_days": 2.5,
+    "complexity": "low"
+  },
+  "blocking": {
+    "deployment": false,
+    "user_facing": false,
+    "critical": true,
+    "sla": true
+  }
+}

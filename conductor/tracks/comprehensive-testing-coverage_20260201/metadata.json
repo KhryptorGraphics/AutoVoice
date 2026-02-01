@@ -1,0 +1,39 @@
+{
+  "id": "comprehensive-testing-coverage_20260201",
+  "title": "Comprehensive Testing Coverage",
+  "type": "test",
+  "priority": "P0",
+  "status": "pending",
+  "created": "2026-02-01T10:00:00Z",
+  "updated": "2026-02-01T10:00:00Z",
+  "phases": {
+    "total": 6,
+    "completed": 0
+  },
+  "tasks": {
+    "total": 43,
+    "completed": 0
+  },
+  "coverage": {
+    "current": "5%",
+    "target": "80%",
+    "untested_modules": 73
+  },
+  "dependencies": {
+    "upstream": [],
+    "downstream": [
+      "production-deployment",
+      "ci-cd-integration"
+    ]
+  },
+  "effort": {
+    "size": "large",
+    "duration_days": 4.5,
+    "complexity": "medium"
+  },
+  "blocking": {
+    "deployment": true,
+    "user_facing": false,
+    "critical": true
+  }
+}
