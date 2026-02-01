@@ -9,6 +9,14 @@
 
 Integrate all new backend capabilities into the frontend UI. This track runs in parallel with three other tracks and must coordinate to expose features as they become available.
 
+**Cross-Track Dependencies (2026-02-01):**
+- **training-inference-integration:** ✅ COMPLETE - AdapterManager + API ready for UI integration
+- **sota-innovations Phase 1:** ✅ COMPLETE - Seed-VC pipeline (`quality_seedvc`)
+- **sota-innovations Phase 2:** ✅ COMPLETE - Shortcut flow (can add `quality_shortcut` UI option)
+- **sota-innovations Phase 4:** ✅ COMPLETE - MeanVC streaming (`realtime_meanvc` option)
+- **sota-innovations Phase 8:** ✅ COMPLETE - LoRA bridge (seamless adapter usage)
+- **sota-innovations Phase 9:** ⏭️ PARTIAL - PipelineSelector has `quality_seedvc`, needs `realtime_meanvc` + `quality_shortcut`
+
 ## Phase 1: Voice Profile Enhancements
 
 Add trained model indicators and selection to voice profiles.
@@ -31,9 +39,15 @@ Add trained model indicators and selection to voice profiles.
 
 Upgrade pipeline selector with new options and descriptions.
 
+**Available from sota-innovations (2026-02-01):**
+- ✅ `quality_seedvc` - Seed-VC DiT-CFM (44.1kHz, 0.5-0.6x RT, maximum quality)
+- ✅ `realtime_meanvc` - MeanVC streaming (16kHz, <100ms chunks, CPU-optimized)
+- ✅ `quality_shortcut` - 2-step inference (2.83x faster than 10-step, 92%+ quality)
+
 ### Tasks
 
-- [ ] Task 2.1: Add new pipeline types to PipelineSelector (shortcut, meanvc)
+- [ ] Task 2.1: Add new pipeline types to PipelineSelector (realtime_meanvc, quality_shortcut)
+  - Note: `quality_seedvc` already added in sota-innovations Phase 9
 - [ ] Task 2.2: Show quality/speed tradeoffs in pipeline descriptions
 - [ ] Task 2.3: Add benchmark comparison tooltip or modal
 - [ ] Task 2.4: Remember user's preferred pipeline in localStorage
