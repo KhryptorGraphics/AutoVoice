@@ -372,7 +372,8 @@ class RealtimeVoiceConverter:
         sr: int,
         speaker_embedding: np.ndarray,
         pitch_shift: float = 0.0,
-        callback=None
+        callback=None,
+        progress_callback=None
     ) -> np.ndarray:
         """Convert audio with streaming (chunk-by-chunk) for low latency.
 
@@ -382,6 +383,7 @@ class RealtimeVoiceConverter:
             speaker_embedding: Target speaker [256]
             pitch_shift: Semitone shift
             callback: Optional callback(chunk) for streaming output
+            progress_callback: Optional callback(progress, status) for progress updates
 
         Returns:
             Converted audio
@@ -399,6 +401,10 @@ class RealtimeVoiceConverter:
 
         total_samples = audio_tensor.size(0)
         output_chunks = []
+
+        # Progress tracking
+        if progress_callback:
+            progress_callback(0.0, "Starting conversion...")
 
         # Process in chunks with overlap
         pos = 0
@@ -445,8 +451,16 @@ class RealtimeVoiceConverter:
             if callback:
                 callback(output.cpu().numpy())
 
+            # Report progress
+            if progress_callback and chunk_idx % 10 == 0:
+                progress = pos / total_samples
+                progress_callback(progress, f"Converting... {pos}/{total_samples} samples")
+
             pos += self.chunk_samples - self.overlap_samples
             chunk_idx += 1
+
+        if progress_callback:
+            progress_callback(1.0, "Complete!")
 
         return np.concatenate(output_chunks)
 
@@ -455,7 +469,8 @@ class RealtimeVoiceConverter:
         audio: np.ndarray,
         sr: int,
         speaker_embedding: np.ndarray,
-        pitch_shift: float = 0.0
+        pitch_shift: float = 0.0,
+        progress_callback=None
     ) -> Tuple[np.ndarray, int]:
         """Convert full audio file (non-streaming).
 
@@ -464,6 +479,7 @@ class RealtimeVoiceConverter:
             sr: Sample rate
             speaker_embedding: Target speaker embedding
             pitch_shift: Pitch shift in semitones
+            progress_callback: Optional callback(progress, status) for progress updates
 
         Returns:
             (converted_audio, output_sample_rate)
@@ -471,7 +487,10 @@ class RealtimeVoiceConverter:
         logger.info(f"Converting {len(audio)/sr:.1f}s audio (non-streaming)...")
         start_time = time.time()
 
-        converted = self.convert_streaming(audio, sr, speaker_embedding, pitch_shift)
+        converted = self.convert_streaming(
+            audio, sr, speaker_embedding, pitch_shift,
+            progress_callback=progress_callback
+        )
 
         elapsed = time.time() - start_time
         rtf = elapsed / (len(audio) / sr)

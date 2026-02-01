@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users } from 'lucide-react'
+import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award } from 'lucide-react'
 import { apiService, VoiceProfile, TrainingJob, TrainingConfig, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType } from '../services/api'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { TrainingJobQueue } from '../components/TrainingJobQueue'
@@ -186,8 +186,17 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
           </div>
         </div>
         <div className="bg-gray-800 rounded-lg p-4">
-          <div className="text-gray-400 text-sm">Model Version</div>
-          <div className="text-2xl font-bold">{profile.model_version || 'Base'}</div>
+          <div className="text-gray-400 text-sm">Model Status</div>
+          <div className="text-2xl font-bold">
+            {profile.has_trained_model ? (
+              <span className="flex items-center gap-2 text-green-400">
+                <Award size={20} />
+                Ready
+              </span>
+            ) : (
+              'Base'
+            )}
+          </div>
         </div>
         <div className="bg-gray-800 rounded-lg p-4">
           <div className="text-gray-400 text-sm">Quality Score</div>
@@ -636,6 +645,12 @@ export function VoiceProfilePage() {
                 </div>
               </div>
               <div className="flex items-center gap-4">
+                {profile.has_trained_model && (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs font-medium">
+                    <Award size={12} />
+                    Trained
+                  </span>
+                )}
                 <TrainingStatusBadge status={profile.training_status} />
                 {profile.quality_score && (
                   <div className="text-sm">

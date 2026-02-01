@@ -470,12 +470,19 @@ export function KaraokePage() {
                     className="w-full p-3 bg-gray-700 rounded-lg"
                   >
                     <option value="">Select a profile...</option>
-                    {voiceProfiles.map((profile) => (
-                      <option key={profile.profile_id} value={profile.profile_id}>
-                        {profile.name || profile.profile_id} ({profile.sample_count} samples)
-                      </option>
-                    ))}
+                    {voiceProfiles
+                      .filter((profile) => profile.has_trained_model)
+                      .map((profile) => (
+                        <option key={profile.profile_id} value={profile.profile_id}>
+                          {profile.name || profile.profile_id} ({profile.sample_count} samples)
+                        </option>
+                      ))}
                   </select>
+                  {voiceProfiles.filter((p) => p.has_trained_model).length === 0 && (
+                    <p className="text-xs text-yellow-400">
+                      No trained profiles available. Please train a profile first on the Voice Profiles page.
+                    </p>
+                  )}
                   <p className="text-xs text-gray-500">
                     Your singing during this session will be captured and added to the selected profile for continuous learning.
                   </p>

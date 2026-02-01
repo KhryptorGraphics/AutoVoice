@@ -110,12 +110,12 @@ export class AudioStreamingClient {
    *
    * @param songId - ID of the uploaded song
    * @param voiceModelId - ID of the voice model to use
-   * @param pipelineType - 'realtime' for low-latency karaoke or 'quality' for high-fidelity
+   * @param pipelineType - Pipeline type for voice conversion
    */
   async startSession(
     songId: string,
     voiceModelId: string,
-    pipelineType: 'realtime' | 'quality' = 'realtime'
+    pipelineType: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' = 'realtime'
   ): Promise<{ session_id: string }> {
     if (!this.socket?.connected) {
       throw new Error('Not connected to server');

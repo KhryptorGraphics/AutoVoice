@@ -616,7 +616,7 @@ class ApiService {
       vocal_volume?: number
       instrumental_volume?: number
       pitch_shift?: number
-      pipeline_type?: 'realtime' | 'quality'
+      pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc'
       adapter_type?: 'hq' | 'nvfp4'
     }
   ): Promise<{ job_id: string }> {

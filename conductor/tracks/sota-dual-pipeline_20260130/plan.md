@@ -9,6 +9,12 @@
 
 Implement two voice conversion pipelines and integrate them into the web UI. Phase 1 creates the realtime pipeline (already started), Phase 2 creates the quality pipeline with Seed-VC, Phase 3 adds HQ-SVC enhancement, Phase 4 integrates SmoothSinger concepts, Phase 5 adds web UI controls.
 
+**Cross-Track Dependencies (2026-02-01):**
+- **Phase 2 (Seed-VC):** ✅ UNBLOCKED - Seed-VC integrated in `sota-innovations_20260131` Phase 1
+- **MeanVC Alternative:** ✅ AVAILABLE - MeanVC streaming pipeline from `sota-innovations_20260131` Phase 4
+- **Shortcut Flow:** ✅ AVAILABLE - 2-step inference option from `sota-innovations_20260131` Phase 2
+- **LoRA Bridge:** ✅ AVAILABLE - AdapterBridge working from `sota-innovations_20260131` Phase 8
+
 ## Phase 1: Realtime Pipeline
 
 Low-latency pipeline for karaoke using ContentVec + RMVPE + HiFiGAN.
@@ -33,6 +39,8 @@ Low-latency pipeline for karaoke using ContentVec + RMVPE + HiFiGAN.
 
 High-quality pipeline using Seed-VC with whisper-base and BigVGAN.
 
+**Note (2026-02-01):** Seed-VC integration completed in `sota-innovations_20260131` Phase 1. This phase verification should reference the SeedVCPipeline implementation.
+
 ### Tasks
 
 - [x] Task 2.1: Create scripts/quality_pipeline.py scaffold
@@ -49,6 +57,7 @@ High-quality pipeline using Seed-VC with whisper-base and BigVGAN.
 - [x] Output sample rate is 44.1kHz (achieved 44100Hz)
 - [ ] Speaker similarity > 0.85 (MCD < 250) - requires metric calculation
 - [x] Pitch tracking preserved accurately (F0 conditioning enabled)
+- [x] **Cross-track verification:** PipelineFactory includes `quality_seedvc` (from sota-innovations Phase 1)
 
 ## Phase 3: HQ-SVC Enhancement (Optional)
 
