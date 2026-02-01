@@ -1,0 +1,16 @@
+{
+  "id": "speaker-diarization_20260130",
+  "title": "Speaker Diarization & Auto-Profile Creation",
+  "type": "feature",
+  "status": "complete",
+  "created": "2026-01-30T19:15:00Z",
+  "updated": "2026-01-30T21:30:00Z",
+  "phases": {
+    "total": 9,
+    "completed": 9
+  },
+  "tasks": {
+    "total": 44,
+    "completed": 44
+  }
+}

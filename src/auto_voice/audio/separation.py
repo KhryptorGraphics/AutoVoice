@@ -121,16 +121,26 @@ class VocalSeparator:
             resampler = torchaudio.transforms.Resample(sr, model_sr).to(self.device)
             audio_tensor = resampler(audio_tensor)
 
-        # Apply model with optional segment size
+        # Clear GPU cache before processing
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+        # Apply model with optional segment size for memory-efficient processing
         apply_kwargs = {}
         if self.segment is not None:
             apply_kwargs['segment'] = self.segment
+            # Let demucs use its default overlap (0.25) - don't override
 
         with torch.no_grad():
             sources = self._apply_model(
                 self._model, audio_tensor, **apply_kwargs
             )
         # sources shape: (batch, n_sources, channels, samples)
+
+        # Clear GPU cache after processing
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
 
         # Extract vocals
         source_names = list(self._model.sources)

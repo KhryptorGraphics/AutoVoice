@@ -1,0 +1,82 @@
+{
+  "track_id": "sota-innovations_20260131",
+  "name": "SOTA Voice Conversion Innovations",
+  "description": "Implement cutting-edge SOTA innovations from academic research (2024-2026) including DiT-CFM decoders, shortcut flow matching, NSF harmonic modeling, MeanVC streaming, and vocoder improvements",
+  "status": "in_progress",
+  "created": "2026-01-31",
+  "updated": "2026-01-31",
+  "priority": "P0",
+  "tags": ["sota", "dit", "flow-matching", "nsf", "vocoder", "streaming", "research"],
+  "dependencies": ["sota-dual-pipeline_20260130"],
+  "research_source": "docs/sota-svc-research-2025.md",
+  "key_papers": [
+    "Seed-VC (2411.09943)",
+    "R-VC (2506.01014)",
+    "SiFiSinger (2410.12536)",
+    "MeanVC (2510.08392)",
+    "HQ-SVC (2511.08496)",
+    "FreeSVC (2501.05586)",
+    "Pupu-Vocoder (2512.20211)"
+  ],
+  "innovations": {
+    "dit_cfm": {
+      "source": "Seed-VC",
+      "benefit": "In-context learning for fine-grained timbre",
+      "priority": "P0"
+    },
+    "shortcut_flow": {
+      "source": "R-VC",
+      "benefit": "2-step high-quality inference",
+      "priority": "P1"
+    },
+    "nsf": {
+      "source": "SiFiSinger/R2-SVC",
+      "benefit": "Better singing naturalness",
+      "priority": "P1"
+    },
+    "mean_flows": {
+      "source": "MeanVC",
+      "benefit": "Single-step streaming",
+      "priority": "P1"
+    },
+    "anti_aliasing": {
+      "source": "Pupu-Vocoder",
+      "benefit": "Eliminate aliasing artifacts",
+      "priority": "P2"
+    },
+    "ecapa2": {
+      "source": "FreeSVC",
+      "benefit": "Better zero-shot generalization",
+      "priority": "P3"
+    }
+  },
+  "target_metrics": {
+    "speaker_similarity": ">= 0.94",
+    "mcd": "<= 3.9",
+    "inference_steps_quality": "2-10",
+    "inference_steps_realtime": "1",
+    "rtf_realtime": "< 0.5",
+    "chunk_latency_ms": "< 100",
+    "output_sample_rate": 44100
+  },
+  "model_downloads": [
+    "DiT_seed_v2_uvit_whisper_base_f0_44k",
+    "bigvgan_v2_44khz_128band",
+    "whisper-base",
+    "campplus_cn_common",
+    "ecapa2_voxceleb"
+  ],
+  "phases": [
+    {"id": 1, "name": "DiT-CFM Quality Decoder", "priority": "P0", "tasks": 7},
+    {"id": 2, "name": "Shortcut Flow Matching", "priority": "P1", "tasks": 4},
+    {"id": 3, "name": "NSF Integration", "priority": "P1", "tasks": 4},
+    {"id": 4, "name": "MeanVC Streaming", "priority": "P1", "tasks": 5},
+    {"id": 5, "name": "Vocoder Upgrades", "priority": "P2", "tasks": 3},
+    {"id": 6, "name": "Robustness Enhancements", "priority": "P2", "tasks": 3},
+    {"id": 7, "name": "ECAPA2 Speaker Encoder", "priority": "P3", "tasks": 3},
+    {"id": 8, "name": "LoRA Adapter Bridge", "priority": "P1", "tasks": 3},
+    {"id": 9, "name": "Web UI Integration", "priority": "P0", "tasks": 3},
+    {"id": 10, "name": "Testing & Benchmarks", "priority": "P0", "tasks": 4}
+  ],
+  "total_tasks": 39
+}

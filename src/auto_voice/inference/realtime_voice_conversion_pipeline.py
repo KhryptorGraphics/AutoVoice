@@ -7,11 +7,14 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Optional, Dict, Callable, Any
+from pathlib import Path
+from typing import Optional, Dict, Callable, Any, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
+
+from ..models.adapter_manager import AdapterManager, AdapterManagerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,12 @@ class RealtimeVoiceConversionPipeline:
         self._latency_samples: deque = deque(maxlen=100)
         self._chunks_processed = 0
 
+        # Speaker management
+        self._current_speaker_id: Optional[str] = None
+        self._adapter_manager = AdapterManager(
+            AdapterManagerConfig(device=str(self.device))
+        )
+
         logger.info(f"RealtimeVoiceConversion initialized: "
                     f"chunk={self.chunk_size}, sr={self.sample_rate}, "
                     f"device={self.device}")
@@ -90,6 +99,70 @@ class RealtimeVoiceConversionPipeline:
         with self._lock:
             self._target_embedding = np.asarray(embedding, dtype=np.float32)
         logger.info("Target voice updated")
+
+    def set_speaker(
+        self,
+        profile_id: str,
+        profiles_dir: Union[str, Path] = "data/voice_profiles",
+    ) -> None:
+        """Switch to a different speaker by profile ID.
+
+        Loads the speaker embedding from the profile and sets it as the target.
+        This provides API consistency with SOTAConversionPipeline.
+
+        Args:
+            profile_id: UUID of the voice profile.
+            profiles_dir: Directory containing voice profile JSON files.
+
+        Raises:
+            FileNotFoundError: If profile doesn't exist.
+            ValueError: If profile has no speaker embedding.
+        """
+        import json
+
+        if profile_id == self._current_speaker_id:
+            logger.debug(f"Speaker {profile_id} already set, skipping")
+            return
+
+        profiles_path = Path(profiles_dir)
+        profile_file = profiles_path / f"{profile_id}.json"
+
+        if not profile_file.exists():
+            raise FileNotFoundError(f"Profile not found: {profile_id}")
+
+        with open(profile_file) as f:
+            profile_data = json.load(f)
+
+        # Get speaker embedding from profile
+        embedding_data = profile_data.get("speaker_embedding")
+        if embedding_data is None:
+            raise ValueError(f"Profile {profile_id} has no speaker embedding")
+
+        embedding = np.array(embedding_data, dtype=np.float32)
+
+        # Set the target voice
+        self.set_target_voice(embedding)
+        self._current_speaker_id = profile_id
+
+        logger.info(f"Switched to speaker: {profile_id}")
+
+    def get_current_speaker(self) -> Optional[str]:
+        """Get the currently loaded speaker profile ID.
+
+        Returns:
+            Profile ID of current speaker, or None if using raw embedding.
+        """
+        return self._current_speaker_id
+
+    def clear_speaker(self) -> None:
+        """Clear the current speaker, stopping voice conversion.
+
+        After calling this, audio will pass through unchanged.
+        """
+        with self._lock:
+            self._target_embedding = None
+            self._current_speaker_id = None
+        logger.info("Speaker cleared")
 
     def start(self, on_output: Optional[Callable] = None,
               on_error: Optional[Callable] = None):

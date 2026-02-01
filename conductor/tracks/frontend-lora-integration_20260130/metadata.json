@@ -1,0 +1,21 @@
+{
+  "id": "frontend-lora-integration_20260130",
+  "title": "Frontend LoRA Integration & Pipeline Selection",
+  "type": "feature",
+  "status": "in_progress",
+  "created": "2026-01-30T19:10:00Z",
+  "updated": "2026-01-30T19:10:00Z",
+  "phases": {
+    "total": 5,
+    "completed": 0
+  },
+  "tasks": {
+    "total": 20,
+    "completed": 0
+  },
+  "orchestration": {
+    "type": "claude-flow-swarm",
+    "agents": ["training", "backend", "frontend", "testing", "quality"],
+    "oom_protection": true
+  }
+}

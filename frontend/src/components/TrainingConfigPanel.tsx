@@ -171,26 +171,84 @@ export function TrainingConfigPanel({ config, onChange, disabled }: TrainingConf
         </button>
       </div>
 
+      {/* Training Mode Selector */}
+      <div className="space-y-2">
+        <label className="text-sm text-gray-400 flex items-center gap-1">
+          Training Mode
+          <span title="LoRA: Fast fine-tuning (~1MB). Full: Train from scratch for higher quality (~184MB, needs 1+ hour of audio)." className="cursor-help">
+            <Info size={12} className="text-gray-500" />
+          </span>
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => {
+              onChange({
+                ...config,
+                training_mode: 'lora',
+                epochs: config.epochs > 200 ? 100 : config.epochs,
+                learning_rate: 1e-4,
+              })
+            }}
+            disabled={disabled}
+            className={clsx(
+              'p-3 rounded-lg border-2 transition-all text-left',
+              config.training_mode === 'lora'
+                ? 'border-blue-500 bg-blue-500/10'
+                : 'border-gray-600 hover:border-gray-500',
+              disabled && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            <div className="font-medium">LoRA Fine-tune</div>
+            <div className="text-xs text-gray-400 mt-1">Fast • ~1MB • 1-10 min audio</div>
+          </button>
+          <button
+            onClick={() => {
+              onChange({
+                ...config,
+                training_mode: 'full',
+                epochs: config.epochs < 200 ? 500 : config.epochs,
+                learning_rate: 5e-5,
+              })
+            }}
+            disabled={disabled}
+            className={clsx(
+              'p-3 rounded-lg border-2 transition-all text-left',
+              config.training_mode === 'full'
+                ? 'border-purple-500 bg-purple-500/10'
+                : 'border-gray-600 hover:border-gray-500',
+              disabled && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            <div className="font-medium">Full Training</div>
+            <div className="text-xs text-gray-400 mt-1">Higher quality • ~184MB • 1+ hour audio</div>
+          </button>
+        </div>
+      </div>
+
       {/* Always visible: key parameters */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <SliderInput
-          label="LoRA Rank"
-          value={config.lora_rank}
-          onChange={v => update('lora_rank', v)}
-          min={1}
-          max={64}
-          step={1}
-          tooltip="Higher rank = more capacity but slower training (4-16 typical)"
-          disabled={disabled}
-        />
+        {config.training_mode === 'lora' && (
+          <SliderInput
+            label="LoRA Rank"
+            value={config.lora_rank}
+            onChange={v => update('lora_rank', v)}
+            min={1}
+            max={64}
+            step={1}
+            tooltip="Higher rank = more capacity but slower training (4-16 typical)"
+            disabled={disabled}
+          />
+        )}
         <SliderInput
           label="Epochs"
           value={config.epochs}
           onChange={v => update('epochs', v)}
           min={1}
-          max={100}
-          step={1}
-          tooltip="Number of training passes through the data"
+          max={config.training_mode === 'full' ? 1000 : 200}
+          step={config.training_mode === 'full' ? 10 : 1}
+          tooltip={config.training_mode === 'full'
+            ? "Full training typically needs 300-500+ epochs"
+            : "Number of training passes through the data"}
           disabled={disabled}
         />
       </div>
@@ -198,7 +256,8 @@ export function TrainingConfigPanel({ config, onChange, disabled }: TrainingConf
       {/* Expandable advanced settings */}
       {expanded && (
         <div className="space-y-6 pt-4 border-t border-gray-700">
-          {/* LoRA Settings */}
+          {/* LoRA Settings (only show for LoRA mode) */}
+          {config.training_mode === 'lora' && (
           <div>
             <h4 className="text-sm font-medium text-gray-300 mb-3">LoRA Parameters</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -248,6 +307,7 @@ export function TrainingConfigPanel({ config, onChange, disabled }: TrainingConf
               </div>
             </div>
           </div>
+          )}
 
           {/* Training Parameters */}
           <div>

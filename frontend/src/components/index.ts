@@ -13,6 +13,11 @@ export { InferenceConfigPanel, PresetSelector } from './InferenceConfigPanel'
 export { SeparationConfigPanel } from './SeparationConfigPanel'
 export { PitchConfigPanel } from './PitchConfigPanel'
 
+// Adapter selection components
+export { AdapterSelector, AdapterDropdown, AdapterBadge } from './AdapterSelector'
+export { QualityComparisonPanel } from './QualityComparisonPanel'
+export { QualityMetricsDashboard } from './QualityMetricsDashboard'
+
 // System monitoring components
 export { GPUMonitor } from './GPUMonitor'
 export { GPUMetricsPanel } from './GPUMetricsPanel'
@@ -43,6 +48,12 @@ export { DebugPanel } from './DebugPanel'
 export type { LogLevel } from './DebugPanel'
 export { SystemConfigPanel } from './SystemConfigPanel'
 export { NotificationSettings } from './NotificationSettings'
+
+// Speaker identification components
+export { default as TrackListPanel } from './TrackListPanel'
+export { default as SpeakerIdentificationPanel } from './SpeakerIdentificationPanel'
+export { default as FeaturedArtistCard } from './FeaturedArtistCard'
+export { default as ExtractionPanel } from './ExtractionPanel'
 
 // Accessibility & UI components
 export { Tooltip } from './Tooltip'

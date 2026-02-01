@@ -25,6 +25,7 @@ from ..models.encoder import ContentVecEncoder
 from ..models.pitch import RMVPEPitchExtractor
 from ..models.svc_decoder import CoMoSVCDecoder
 from ..models.vocoder import BigVGANVocoder
+from ..models.adapter_manager import AdapterManager, AdapterManagerConfig
 
 if TYPE_CHECKING:
     from ..storage.voice_profiles import VoiceProfileStore
@@ -75,6 +76,12 @@ class SOTAConversionPipeline:
         self._current_stage = None
         self._profile_store = profile_store
         self._profile_id = profile_id
+        self._current_speaker_id: Optional[str] = None
+
+        # Initialize adapter manager for dynamic speaker switching
+        self._adapter_manager = AdapterManager(
+            AdapterManagerConfig(device=str(self.device))
+        )
 
         # Initialize components (all moved to device)
         self.separator = MelBandRoFormer(device=self.device).to(self.device)
@@ -118,10 +125,73 @@ class SOTAConversionPipeline:
             # Load weights into decoder
             self.decoder.load_lora_state_dict(lora_state)
 
+            self._current_speaker_id = profile_id
             logger.info(f"Loaded LoRA weights from profile {profile_id}")
         except Exception as e:
             logger.error(f"Failed to load LoRA weights for {profile_id}: {e}")
             raise RuntimeError(f"Failed to load LoRA weights: {e}") from e
+
+    def set_speaker(self, profile_id: str) -> None:
+        """Dynamically switch to a different speaker by loading their LoRA adapter.
+
+        This method allows changing the target voice after pipeline initialization
+        without recreating the entire pipeline.
+
+        Args:
+            profile_id: UUID of the voice profile to switch to.
+
+        Raises:
+            FileNotFoundError: If no adapter exists for the profile.
+            RuntimeError: If adapter loading fails.
+        """
+        if profile_id == self._current_speaker_id:
+            logger.debug(f"Speaker {profile_id} already loaded, skipping")
+            return
+
+        # Check if adapter exists
+        if not self._adapter_manager.has_adapter(profile_id):
+            raise FileNotFoundError(
+                f"No trained adapter found for profile: {profile_id}"
+            )
+
+        try:
+            # Load adapter from cache or disk
+            adapter_state = self._adapter_manager.load_adapter(profile_id)
+
+            # Ensure decoder has LoRA layers injected
+            if not hasattr(self.decoder, 'lora_adapters') or not self.decoder.lora_adapters:
+                self.decoder.inject_lora(rank=8, alpha=16)
+
+            # Apply adapter weights to decoder
+            self._adapter_manager.apply_adapter(self.decoder, adapter_state)
+
+            self._current_speaker_id = profile_id
+            logger.info(f"Switched to speaker: {profile_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to set speaker {profile_id}: {e}")
+            raise RuntimeError(f"Failed to switch speaker: {e}") from e
+
+    def get_current_speaker(self) -> Optional[str]:
+        """Get the currently loaded speaker profile ID.
+
+        Returns:
+            Profile ID of the current speaker, or None if no speaker loaded.
+        """
+        return self._current_speaker_id
+
+    def clear_speaker(self) -> None:
+        """Clear the current speaker adapter, reverting to base model.
+
+        This zeros out LoRA contributions without removing the LoRA layers.
+        """
+        if self._current_speaker_id is None:
+            logger.debug("No speaker loaded, nothing to clear")
+            return
+
+        self._adapter_manager.remove_adapter(self.decoder)
+        self._current_speaker_id = None
+        logger.info("Speaker cleared, reverted to base model")
 
     def _resample(self, audio: torch.Tensor, from_sr: int,
                   to_sr: int) -> torch.Tensor:

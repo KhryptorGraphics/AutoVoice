@@ -35,9 +35,11 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: bool = False) -
     # Register API blueprints
     from .api import api_bp
     from .karaoke_api import karaoke_bp
+    from .speaker_api import speaker_bp
     from auto_voice.profiles.api import profiles_bp
     app.register_blueprint(api_bp)
     app.register_blueprint(karaoke_bp)
+    app.register_blueprint(speaker_bp)
     app.register_blueprint(profiles_bp)
 
     # Register WebSocket namespaces

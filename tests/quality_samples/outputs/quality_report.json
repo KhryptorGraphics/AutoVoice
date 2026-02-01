@@ -5,8 +5,8 @@
     {
       "source_artist": "Conor Maynard",
       "target_artist": "William Singe",
-      "source_file": "/home/kp/repos/autovoice/tests/quality_samples/conor_maynard_pillowtalk.wav",
-      "output_file": "/home/kp/repos/autovoice/tests/quality_samples/outputs/conor_as_william.wav",
+      "source_file": "/home/kp/repo2/autovoice/tests/quality_samples/conor_maynard_pillowtalk.wav",
+      "output_file": "/home/kp/repo2/autovoice/tests/quality_samples/outputs/conor_as_william.wav",
       "duration_sec": 207.3774149659864,
       "inference_time_sec": 105.821604013443,
       "rtf": 0.5102850955625984,
@@ -18,8 +18,8 @@
     {
       "source_artist": "William Singe",
       "target_artist": "Conor Maynard",
-      "source_file": "/home/kp/repos/autovoice/tests/quality_samples/william_singe_pillowtalk.wav",
-      "output_file": "/home/kp/repos/autovoice/tests/quality_samples/outputs/william_as_conor.wav",
+      "source_file": "/home/kp/repo2/autovoice/tests/quality_samples/william_singe_pillowtalk.wav",
+      "output_file": "/home/kp/repo2/autovoice/tests/quality_samples/outputs/william_as_conor.wav",
       "duration_sec": 195.51201814058956,
       "inference_time_sec": 87.21523785591125,
       "rtf": 0.4460863259730467,

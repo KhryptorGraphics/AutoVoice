@@ -8,7 +8,9 @@ This module provides speaker diarization capabilities using:
 The pipeline identifies different speakers in audio and extracts their segments.
 """
 
+import gc
 import logging
+import psutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -21,6 +23,20 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist
 
 logger = logging.getLogger(__name__)
+
+
+def get_available_memory_gb() -> float:
+    """Get available system memory in GB."""
+    return psutil.virtual_memory().available / (1024 ** 3)
+
+
+def get_gpu_memory_gb() -> Tuple[float, float]:
+    """Get GPU memory (used, total) in GB. Returns (0, 0) if no GPU."""
+    if torch.cuda.is_available():
+        used = torch.cuda.memory_allocated() / (1024 ** 3)
+        total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        return used, total
+    return 0.0, 0.0
 
 
 @dataclass
@@ -72,6 +88,8 @@ class SpeakerDiarizer:
         model_name: str = "microsoft/wavlm-base-sv",
         min_segment_duration: float = 0.5,
         max_speakers: int = 10,
+        max_memory_gb: Optional[float] = None,
+        chunk_duration_sec: float = 60.0,
     ):
         """Initialize the speaker diarizer.
 
@@ -80,11 +98,22 @@ class SpeakerDiarizer:
             model_name: HuggingFace model for speaker embeddings.
             min_segment_duration: Minimum segment duration in seconds.
             max_speakers: Maximum number of speakers to detect.
+            max_memory_gb: Maximum memory to use (None = auto 80% of available).
+            chunk_duration_sec: Duration of audio chunks for memory-safe processing.
         """
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         self.model_name = model_name
         self.min_segment_duration = min_segment_duration
         self.max_speakers = max_speakers
+        self.chunk_duration_sec = chunk_duration_sec
+
+        # Memory management
+        if max_memory_gb is None:
+            self.max_memory_gb = get_available_memory_gb() * 0.8
+        else:
+            self.max_memory_gb = max_memory_gb
+
+        logger.info(f"Memory limit set to {self.max_memory_gb:.1f} GB")
 
         # Lazy load model
         self._model = None
@@ -102,6 +131,55 @@ class SpeakerDiarizer:
             self._model = WavLMForXVector.from_pretrained(self.model_name).to(self.device)
             self._model.eval()
             logger.info("Speaker embedding model loaded")
+
+    def _check_memory(self, warn_threshold: float = 0.9) -> bool:
+        """Check if memory usage is within limits.
+
+        Args:
+            warn_threshold: Fraction of max_memory_gb to warn at.
+
+        Returns:
+            True if memory is OK, False if approaching limit.
+        """
+        available = get_available_memory_gb()
+        if available < self.max_memory_gb * (1 - warn_threshold):
+            logger.warning(f"Low memory: {available:.1f} GB available")
+            return False
+        return True
+
+    def _cleanup_memory(self):
+        """Force garbage collection and clear CUDA cache."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.debug("Memory cleanup completed")
+
+    def _get_audio_chunks(
+        self,
+        audio_duration: float,
+        chunk_duration: Optional[float] = None,
+    ) -> List[Tuple[float, float]]:
+        """Split audio into memory-safe chunks.
+
+        Args:
+            audio_duration: Total audio duration in seconds.
+            chunk_duration: Chunk duration (uses self.chunk_duration_sec if None).
+
+        Returns:
+            List of (start_time, end_time) tuples for each chunk.
+        """
+        chunk_dur = chunk_duration or self.chunk_duration_sec
+        chunks = []
+        start = 0.0
+
+        while start < audio_duration:
+            end = min(start + chunk_dur, audio_duration)
+            if end - start >= self.min_segment_duration:
+                chunks.append((start, end))
+            start = end
+
+        logger.info(f"Split {audio_duration:.1f}s audio into {len(chunks)} chunks")
+        return chunks
 
     def _load_audio(self, audio_path: Union[str, Path]) -> Tuple[torch.Tensor, int]:
         """Load audio file and resample to 16kHz.
@@ -305,13 +383,15 @@ class SpeakerDiarizer:
         waveform: torch.Tensor,
         sample_rate: int,
         segments: List[Tuple[float, float]],
+        batch_size: int = 10,
     ) -> List[np.ndarray]:
-        """Extract embeddings for multiple segments.
+        """Extract embeddings for multiple segments with memory-safe batching.
 
         Args:
             waveform: Audio waveform.
             sample_rate: Sample rate.
             segments: List of (start, end) tuples.
+            batch_size: Number of segments to process before memory cleanup.
 
         Returns:
             List of embeddings.
@@ -320,8 +400,18 @@ class SpeakerDiarizer:
 
         embeddings = []
         waveform_np = waveform.numpy()
+        total_segments = len(segments)
 
-        for start, end in segments:
+        for i, (start, end) in enumerate(segments):
+            # Memory check and cleanup every batch_size segments
+            if i > 0 and i % batch_size == 0:
+                self._cleanup_memory()
+                if not self._check_memory():
+                    logger.warning(
+                        f"Memory pressure at segment {i}/{total_segments}, "
+                        "continuing with cleanup"
+                    )
+
             start_sample = int(start * sample_rate)
             end_sample = int(end * sample_rate)
             segment_waveform = waveform_np[start_sample:end_sample]
@@ -350,6 +440,12 @@ class SpeakerDiarizer:
             # L2 normalize
             embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
             embeddings.append(embedding)
+
+            # Clear intermediate tensors
+            del inputs, outputs
+
+        # Final cleanup
+        self._cleanup_memory()
 
         return embeddings
 
@@ -447,6 +543,7 @@ class SpeakerDiarizer:
         num_speakers: Optional[int] = None,
         segment_duration: float = 1.5,
         overlap: float = 0.5,
+        use_chunked_processing: Optional[bool] = None,
     ) -> DiarizationResult:
         """Perform speaker diarization on an audio file.
 
@@ -455,6 +552,7 @@ class SpeakerDiarizer:
             num_speakers: Number of speakers if known (improves accuracy).
             segment_duration: Duration of analysis segments in seconds.
             overlap: Overlap ratio between segments.
+            use_chunked_processing: Force chunked processing (None = auto based on duration).
 
         Returns:
             DiarizationResult with speaker segments and embeddings.
@@ -462,10 +560,29 @@ class SpeakerDiarizer:
         audio_path = Path(audio_path)
         logger.info(f"Starting diarization for: {audio_path}")
 
+        # Check initial memory
+        available_mem = get_available_memory_gb()
+        logger.info(f"Available memory: {available_mem:.1f} GB (limit: {self.max_memory_gb:.1f} GB)")
+
         # Load audio
         waveform, sample_rate = self._load_audio(audio_path)
         audio_duration = len(waveform) / sample_rate
         logger.info(f"Audio duration: {audio_duration:.2f}s")
+
+        # Decide whether to use chunked processing
+        # Rule: use chunks if audio > 2 minutes or memory is tight
+        if use_chunked_processing is None:
+            use_chunked_processing = (
+                audio_duration > 120.0 or
+                available_mem < self.max_memory_gb * 0.5
+            )
+
+        if use_chunked_processing:
+            logger.info(f"Using chunked processing for {audio_duration:.1f}s audio")
+            return self._diarize_chunked(
+                waveform, sample_rate, audio_duration, audio_path,
+                num_speakers, segment_duration, overlap
+            )
 
         # Detect voice activity
         speech_regions = self._detect_voice_activity(waveform, sample_rate)
@@ -528,6 +645,118 @@ class SpeakerDiarizer:
         )
 
         logger.info(f"Diarization complete: {len(speaker_segments)} segments, "
+                   f"{detected_speakers} speakers")
+
+        # Cleanup
+        self._cleanup_memory()
+
+        return result
+
+    def _diarize_chunked(
+        self,
+        waveform: torch.Tensor,
+        sample_rate: int,
+        audio_duration: float,
+        audio_path: Path,
+        num_speakers: Optional[int],
+        segment_duration: float,
+        overlap: float,
+    ) -> DiarizationResult:
+        """Diarize long audio in memory-safe chunks.
+
+        Processes audio in chunks, extracts embeddings, then clusters globally.
+        """
+        # Get audio chunks
+        chunks = self._get_audio_chunks(audio_duration)
+
+        all_segments = []
+        all_embeddings = []
+
+        for chunk_idx, (chunk_start, chunk_end) in enumerate(chunks):
+            logger.info(f"Processing chunk {chunk_idx + 1}/{len(chunks)}: "
+                       f"{chunk_start:.1f}s - {chunk_end:.1f}s")
+
+            # Extract chunk waveform
+            start_sample = int(chunk_start * sample_rate)
+            end_sample = int(chunk_end * sample_rate)
+            chunk_waveform = waveform[start_sample:end_sample]
+
+            # Detect voice activity in chunk
+            speech_regions = self._detect_voice_activity(chunk_waveform, sample_rate)
+
+            if not speech_regions:
+                logger.debug(f"No speech in chunk {chunk_idx + 1}")
+                self._cleanup_memory()
+                continue
+
+            # Segment chunk
+            chunk_segments = self._segment_audio_fixed(
+                chunk_waveform, sample_rate, segment_duration, overlap
+            )
+
+            # Extract embeddings for this chunk
+            chunk_embeddings = self._extract_segment_embeddings(
+                chunk_waveform, sample_rate, chunk_segments
+            )
+
+            # Adjust segment times to global timeline
+            for (seg_start, seg_end), emb in zip(chunk_segments, chunk_embeddings):
+                global_start = chunk_start + seg_start
+                global_end = chunk_start + seg_end
+                all_segments.append((global_start, global_end))
+                all_embeddings.append(emb)
+
+            # Cleanup between chunks
+            del chunk_waveform, chunk_segments, chunk_embeddings
+            self._cleanup_memory()
+
+        if not all_embeddings:
+            logger.warning("No speech detected in entire audio")
+            return DiarizationResult(
+                segments=[],
+                num_speakers=0,
+                audio_duration=audio_duration,
+            )
+
+        # Global clustering of all embeddings
+        logger.info(f"Clustering {len(all_embeddings)} embeddings globally")
+        labels = self._cluster_embeddings(all_embeddings, num_speakers)
+        detected_speakers = len(set(labels)) - (1 if 0 in labels else 0)
+        logger.info(f"Detected {detected_speakers} speakers")
+
+        # Create speaker segments
+        speaker_segments = []
+        for (start, end), label, embedding in zip(all_segments, labels, all_embeddings):
+            if embedding is not None and label > 0:
+                speaker_segments.append(SpeakerSegment(
+                    start=start,
+                    end=end,
+                    speaker_id=f"SPEAKER_{label - 1:02d}",
+                    embedding=embedding,
+                    confidence=0.8,
+                ))
+
+        # Merge adjacent segments
+        speaker_segments = self._merge_adjacent_segments(speaker_segments)
+
+        # Compute average embedding per speaker
+        speaker_embeddings = {}
+        for speaker_id in set(s.speaker_id for s in speaker_segments):
+            speaker_embs = [s.embedding for s in speaker_segments
+                          if s.speaker_id == speaker_id and s.embedding is not None]
+            if speaker_embs:
+                avg_embedding = np.mean(speaker_embs, axis=0)
+                avg_embedding = avg_embedding / (np.linalg.norm(avg_embedding) + 1e-8)
+                speaker_embeddings[speaker_id] = avg_embedding
+
+        result = DiarizationResult(
+            segments=speaker_segments,
+            num_speakers=detected_speakers,
+            audio_duration=audio_duration,
+            speaker_embeddings=speaker_embeddings,
+        )
+
+        logger.info(f"Chunked diarization complete: {len(speaker_segments)} segments, "
                    f"{detected_speakers} speakers")
 
         return result

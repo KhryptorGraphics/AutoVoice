@@ -1,29 +1,46 @@
-"""YouTube metadata parsing for featured artist detection.
+"""YouTube metadata parsing and fetching for featured artist detection.
 
 This module parses YouTube video titles and descriptions to identify:
 - Main artist performing the song
 - Featured/collaborating artists (ft., feat., vs., with, &, x patterns)
 - Cover song detection and original artist identification
+
+It also provides yt-dlp integration for fetching metadata from YouTube.
+
+Usage:
+    from auto_voice.audio.youtube_metadata import YouTubeMetadataFetcher
+
+    fetcher = YouTubeMetadataFetcher()
+    metadata = fetcher.fetch_metadata("dQw4w9WgXcQ")
+    featured = parse_featured_artists(metadata.title)
 """
 
 import re
+import json
+import logging
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+logger = logging.getLogger(__name__)
 
 
 # Patterns that indicate featured artists (case insensitive)
+# Note: patterns stop at ( [ ] | , & - to avoid capturing song titles
 FEATURED_PATTERNS = [
     # "ft." or "ft " - most common
-    r'\bft\.?\s+([^(\[\]|]+?)(?:\s*[(\[\]|,&]|$)',
+    r'\bft\.?\s+([^(\[\]|,&-]+?)(?:\s*[(\[\]|,&-]|$)',
     # "feat." or "feat "
-    r'\bfeat\.?\s+([^(\[\]|]+?)(?:\s*[(\[\]|,&]|$)',
+    r'\bfeat\.?\s+([^(\[\]|,&-]+?)(?:\s*[(\[\]|,&-]|$)',
     # "featuring"
-    r'\bfeaturing\s+([^(\[\]|]+?)(?:\s*[(\[\]|,&]|$)',
+    r'\bfeaturing\s+([^(\[\]|,&-]+?)(?:\s*[(\[\]|,&-]|$)',
     # "with" - but not "mixed with" or "produced with"
-    r'(?<!mixed\s)(?<!produced\s)\bwith\s+([^(\[\]|]+?)(?:\s*[(\[\]|,&]|$)',
+    r'(?<!mixed\s)(?<!produced\s)\bwith\s+([^(\[\]|,&-]+?)(?:\s*[(\[\]|,&-]|$)',
     # "vs." or "vs" - battle/mashup
-    r'\bvs\.?\s+([^(\[\]|-]+?)(?:\s*[(\[\]|-]|$)',
+    r'\bvs\.?\s+([^(\[\]|,&-]+?)(?:\s*[(\[\]|,&-]|$)',
     # "&" between artists (after main artist extraction)
-    r'\s+&\s+([^(\[\]|-]+?)(?:\s*[(\[\]|-]|$)',
+    r'\s+&\s+([^(\[\]|,&-]+?)(?:\s*[(\[\]|,&-]|$)',
     # "x" collaboration (space x space)
     r'\s+x\s+([^(\[\]|-]+?)(?:\s*[(\[\]|-]|$)',
 ]
@@ -275,3 +292,261 @@ def parse_youtube_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
         'original_artist': original_artist,
         'song_title': song_title,
     }
+
+
+# ============================================================================
+# YouTube Metadata Fetcher (yt-dlp integration)
+# ============================================================================
+
+@dataclass
+class VideoMetadata:
+    """YouTube video metadata."""
+    video_id: str
+    title: str
+    channel: str
+    upload_date: str
+    duration_sec: float
+    description: Optional[str] = None
+
+
+class YouTubeMetadataFetcher:
+    """Fetch YouTube video metadata using yt-dlp."""
+
+    def __init__(self, yt_dlp_path: str = 'yt-dlp'):
+        """Initialize the fetcher.
+
+        Args:
+            yt_dlp_path: Path to yt-dlp executable
+        """
+        self.yt_dlp_path = yt_dlp_path
+
+    def fetch_metadata(self, video_id: str) -> Optional[VideoMetadata]:
+        """Fetch metadata for a YouTube video.
+
+        Args:
+            video_id: YouTube video ID (e.g., dQw4w9WgXcQ)
+
+        Returns:
+            VideoMetadata or None if fetch failed
+        """
+        url = f"https://www.youtube.com/watch?v={video_id}"
+
+        try:
+            result = subprocess.run(
+                [
+                    self.yt_dlp_path,
+                    '--dump-json',
+                    '--no-download',
+                    '--no-playlist',
+                    url
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode != 0:
+                logger.error(f"yt-dlp failed for {video_id}: {result.stderr}")
+                return None
+
+            data = json.loads(result.stdout)
+
+            return VideoMetadata(
+                video_id=video_id,
+                title=data.get('title', ''),
+                channel=data.get('channel', data.get('uploader', '')),
+                upload_date=data.get('upload_date', ''),
+                duration_sec=float(data.get('duration', 0)),
+                description=data.get('description'),
+            )
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout fetching metadata for {video_id}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse yt-dlp output for {video_id}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching metadata for {video_id}: {e}")
+            return None
+
+    def extract_video_id_from_filename(self, filename: str) -> Optional[str]:
+        """Extract YouTube video ID from a filename.
+
+        Expected format: {video_id}_vocals.wav or {video_id}.wav
+
+        Args:
+            filename: Filename or path
+
+        Returns:
+            Video ID or None
+        """
+        # Get just the filename without extension
+        stem = Path(filename).stem
+
+        # Remove common suffixes
+        stem = re.sub(r'_vocals$', '', stem)
+        stem = re.sub(r'_diarization$', '', stem)
+        stem = re.sub(r'_isolated$', '', stem)
+        stem = re.sub(r'_SPEAKER_\d+$', '', stem)
+
+        # YouTube video IDs are 11 characters, alphanumeric plus - and _
+        # Check if remaining stem looks like a video ID
+        if re.match(r'^[a-zA-Z0-9_-]{11}$', stem):
+            return stem
+
+        # Try to extract from longer strings
+        match = re.search(r'([a-zA-Z0-9_-]{11})', stem)
+        if match:
+            return match.group(1)
+
+        return None
+
+    def fetch_metadata_for_directory(
+        self,
+        directory: Path,
+        file_pattern: str = '*_vocals.wav',
+    ) -> Dict[str, VideoMetadata]:
+        """Fetch metadata for all video IDs found in a directory.
+
+        Args:
+            directory: Directory to scan
+            file_pattern: Glob pattern for files
+
+        Returns:
+            Dict mapping video_id to VideoMetadata
+        """
+        results = {}
+        seen_ids = set()
+
+        for file_path in directory.glob(file_pattern):
+            video_id = self.extract_video_id_from_filename(file_path.name)
+            if video_id and video_id not in seen_ids:
+                seen_ids.add(video_id)
+                metadata = self.fetch_metadata(video_id)
+                if metadata:
+                    results[video_id] = metadata
+                    logger.info(f"Fetched metadata for {video_id}: {metadata.title}")
+
+        return results
+
+
+def populate_database_from_files(
+    artist_name: str,
+    separated_dir: Path,
+    diarized_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Populate the database with track metadata from extracted files.
+
+    Args:
+        artist_name: Artist name (e.g., "conor_maynard")
+        separated_dir: Directory with separated vocals
+        diarized_dir: Directory with diarization JSONs
+
+    Returns:
+        Statistics dict
+    """
+    from ..db.operations import upsert_track, add_featured_artist
+
+    fetcher = YouTubeMetadataFetcher()
+    stats = {
+        'tracks_processed': 0,
+        'tracks_with_metadata': 0,
+        'featured_artists_found': 0,
+        'errors': [],
+    }
+
+    if diarized_dir is None:
+        diarized_dir = Path(f'data/diarized_youtube/{artist_name}')
+
+    # Find all vocal files
+    vocal_files = list(separated_dir.glob('*_vocals.wav')) + list(separated_dir.glob('*.wav'))
+    seen_ids = set()
+
+    for vocal_file in vocal_files:
+        video_id = fetcher.extract_video_id_from_filename(vocal_file.name)
+        if not video_id or video_id in seen_ids:
+            continue
+
+        seen_ids.add(video_id)
+        stats['tracks_processed'] += 1
+
+        # Find corresponding diarization file
+        diarization_path = None
+        for pattern in [f'{video_id}_diarization.json', f'{video_id}_vocals_diarization.json']:
+            candidate = diarized_dir / pattern
+            if candidate.exists():
+                diarization_path = str(candidate)
+                break
+
+        # Fetch YouTube metadata
+        metadata = fetcher.fetch_metadata(video_id)
+
+        if metadata:
+            stats['tracks_with_metadata'] += 1
+
+            # Upsert track
+            upsert_track(
+                track_id=video_id,
+                title=metadata.title,
+                channel=metadata.channel,
+                upload_date=metadata.upload_date,
+                duration_sec=metadata.duration_sec,
+                artist_name=artist_name,
+                vocals_path=str(vocal_file),
+                diarization_path=diarization_path,
+            )
+
+            # Parse and add featured artists
+            featured = parse_featured_artists(metadata.title, metadata.description)
+            for artist in featured:
+                add_featured_artist(
+                    track_id=video_id,
+                    name=artist,
+                    pattern_matched='title',
+                )
+                stats['featured_artists_found'] += 1
+                logger.info(f"Found featured artist '{artist}' in '{metadata.title}'")
+        else:
+            # Still add track without YouTube metadata
+            upsert_track(
+                track_id=video_id,
+                artist_name=artist_name,
+                vocals_path=str(vocal_file),
+                diarization_path=diarization_path,
+            )
+            stats['errors'].append(f"Could not fetch metadata for {video_id}")
+
+    return stats
+
+
+if __name__ == '__main__':
+    import argparse
+
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+    parser = argparse.ArgumentParser(description='Fetch YouTube metadata for tracks')
+    parser.add_argument('--artist', help='Artist name')
+    parser.add_argument('--separated-dir', type=Path, help='Directory with separated vocals')
+    parser.add_argument('--test-id', help='Test with a single video ID')
+    parser.add_argument('--test-title', help='Test parsing a title')
+
+    args = parser.parse_args()
+
+    fetcher = YouTubeMetadataFetcher()
+
+    if args.test_id:
+        metadata = fetcher.fetch_metadata(args.test_id)
+        if metadata:
+            print(f"Title: {metadata.title}")
+            print(f"Channel: {metadata.channel}")
+            print(f"Duration: {metadata.duration_sec}s")
+            featured = parse_featured_artists(metadata.title, metadata.description)
+            print(f"Featured artists: {featured}")
+    elif args.test_title:
+        featured = parse_featured_artists(args.test_title)
+        print(f"Featured artists: {featured}")
+    elif args.artist:
+        separated_dir = args.separated_dir or Path(f'data/separated_youtube/{args.artist}')
+        stats = populate_database_from_files(args.artist, separated_dir)
+        print(f"\nStats: {stats}")

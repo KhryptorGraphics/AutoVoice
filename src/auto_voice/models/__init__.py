@@ -6,6 +6,10 @@ from .consistency import (
     DiffusionDecoder, ConsistencyStudent, CTLoss_D, EDMLoss,
     KarrasNoiseSchedule, ResidualBlock, DiffusionStepEmbedding,
 )
+from .svc_decoder import CoMoSVCDecoder, BiDilConv, FiLMConditioning
+from .smoothsinger_decoder import (
+    SmoothSingerDecoder, MultiResolutionBlock, DualBranchFusion,
+)
 
 __all__ = [
     'ContentEncoder',
@@ -21,4 +25,10 @@ __all__ = [
     'KarrasNoiseSchedule',
     'ResidualBlock',
     'DiffusionStepEmbedding',
+    'CoMoSVCDecoder',
+    'BiDilConv',
+    'FiLMConditioning',
+    'SmoothSingerDecoder',
+    'MultiResolutionBlock',
+    'DualBranchFusion',
 ]

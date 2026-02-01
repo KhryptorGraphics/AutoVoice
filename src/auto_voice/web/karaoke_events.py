@@ -226,6 +226,7 @@ class KaraokeNamespace(Namespace):
                 - speaker_embedding: Optional base64-encoded embedding
                 - profile_id: Optional voice profile ID for sample collection
                 - collect_samples: Optional bool to enable training sample collection
+                - pipeline_type: 'realtime' for low-latency or 'quality' for high-fidelity (default: realtime)
         """
         from flask import request
 
@@ -234,6 +235,12 @@ class KaraokeNamespace(Namespace):
         vocals_path = data.get('vocals_path')
         instrumental_path = data.get('instrumental_path')
         client_id = request.sid
+
+        # Pipeline selection (realtime for karaoke, quality/quality_seedvc for offline)
+        pipeline_type = data.get('pipeline_type', 'realtime')
+        if pipeline_type not in ('realtime', 'quality', 'quality_seedvc'):
+            pipeline_type = 'realtime'  # Default to realtime for live karaoke
+        logger.info(f"Session using pipeline_type: {pipeline_type}")
 
         # Sample collection settings (requires explicit consent)
         profile_id = data.get('profile_id')
@@ -250,8 +257,10 @@ class KaraokeNamespace(Namespace):
                 session_id=session_id,
                 song_id=song_id,
                 vocals_path=vocals_path or '',
-                instrumental_path=instrumental_path or ''
+                instrumental_path=instrumental_path or '',
             )
+            # Store user's requested pipeline type for reference/logging
+            session._user_pipeline_preference = pipeline_type
 
             # Set speaker embedding if provided
             if 'speaker_embedding' in data:

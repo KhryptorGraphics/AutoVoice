@@ -220,9 +220,30 @@ export function YouTubeDownloadPage() {
     if (!downloadResult?.audio_path || !selectedProfileId) return
 
     try {
-      // For now, we would need to create an endpoint to add an existing file as a sample
-      // This is a placeholder - the actual implementation would use a new API endpoint
-      alert(`TODO: Add ${downloadResult.audio_path} to profile ${selectedProfileId}`)
+      const response = await fetch(`/api/v1/profiles/${selectedProfileId}/samples/from-path`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audio_path: downloadResult.audio_path,
+          metadata: {
+            title: downloadResult.title,
+            video_id: downloadResult.video_id,
+            main_artist: downloadResult.main_artist,
+            featured_artists: downloadResult.featured_artists,
+          },
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || 'Failed to add to profile')
+      }
+
+      const sample = await response.json()
+      alert(`Added "${downloadResult.title}" as sample ${sample.sample_id} to profile`)
+
+      // Refresh profiles to update sample count
+      await loadProfiles()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add to profile')
     }

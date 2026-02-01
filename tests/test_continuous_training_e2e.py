@@ -269,7 +269,7 @@ class TestContinuousTrainingE2E:
         mm.load()
 
         # Create a fresh model for inference
-        model = SoVitsSvc().to(device)
+        model = SoVitsSvc({'content_dim': 768, 'pitch_dim': 768}).to(device)
         mm._sovits_models['e2e-test'] = model
 
         # Generate source song for conversion
@@ -364,7 +364,7 @@ class TestContinuousTrainingE2E:
         from auto_voice.training.trainer import Trainer
 
         # Create base model
-        model = SoVitsSvc().to(device)
+        model = SoVitsSvc({'content_dim': 768, 'pitch_dim': 768}).to(device)
 
         # Generate training data
         train_dir = temp_storage / "incremental_training"
@@ -438,7 +438,7 @@ class TestGPUMemoryManagement:
         from auto_voice.models.so_vits_svc import SoVitsSvc
         from auto_voice.training.trainer import Trainer
 
-        model = SoVitsSvc().to(device)
+        model = SoVitsSvc({'content_dim': 768, 'pitch_dim': 768}).to(device)
 
         # Create minimal training data (min 3.0s required by VoiceCloner)
         train_dir = temp_storage / "mem_test"
@@ -479,7 +479,7 @@ class TestGPUMemoryManagement:
         from auto_voice.models.so_vits_svc import SoVitsSvc
         from auto_voice.training.gpu_enforcement import verify_model_on_gpu, verify_tensor_on_gpu
 
-        model = SoVitsSvc().to(device)
+        model = SoVitsSvc({'content_dim': 768, 'pitch_dim': 768}).to(device)
 
         # Verify model is on GPU
         verify_model_on_gpu(model, "SoVitsSvc")

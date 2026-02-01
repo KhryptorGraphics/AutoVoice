@@ -1,0 +1,16 @@
+{
+  "id": "browser-automation-testing_20260130",
+  "title": "Browser Automation Testing",
+  "type": "chore",
+  "status": "in_progress",
+  "created": "2026-01-30T08:30:00Z",
+  "updated": "2026-01-30T08:30:00Z",
+  "phases": {
+    "total": 7,
+    "completed": 2
+  },
+  "tasks": {
+    "total": 34,
+    "completed": 11
+  }
+}

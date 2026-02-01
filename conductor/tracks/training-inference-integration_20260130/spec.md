@@ -1,120 +1,74 @@
-# Training-to-Inference Integration
+# Specification: Training-to-Inference Integration
 
 **Track ID:** training-inference-integration_20260130
+**Type:** Feature
 **Created:** 2026-01-30
-**Priority:** High
+**Status:** Active
 
-## Problem Statement
+## Summary
 
-The voice swap quality test produces high-pitched ringing noise instead of converted vocals because:
-1. The SOTA inference pipeline (SOTAConversionPipeline) initializes all neural network components with **random weights**
-2. The training pipeline (LoRA fine-tuning, TrainingJobManager) exists but is **not connected** to inference
-3. There's no mechanism to train models from singer samples and load those weights during conversion
+Complete the training pipeline integration so that trained voice models can be immediately used for inference in both the REALTIME and QUALITY pipelines. Ensure LoRA adapters from training are compatible with both pipeline architectures.
 
-## Current Architecture Gap
+## Context
 
-```
-[Audio Samples] → [TrainingJobManager] → [LoRA Fine-tuning] → [Trained Weights] → ???
-                                                                        ↓
-                                                                  NOT CONNECTED
-                                                                        ↓
-[Voice Profile] → [SOTAConversionPipeline] → [Random Weights] → [Noise Output]
-```
+AutoVoice trains voice models using LoRA adapters on the So-VITS-SVC architecture. These trained adapters need to work seamlessly with:
+1. The existing SOTA conversion pipeline
+2. The new REALTIME_PIPELINE (ContentVec + HiFiGAN)
+3. The new QUALITY_PIPELINE (Seed-VC + BigVGAN)
 
-## Desired Architecture
+Current state:
+- LoRA adapters exist: data/trained_models/{profile_id}_adapter.pt
+- Training produces 256-dim speaker embeddings
+- Inference pipelines expect speaker embeddings in same format
 
-```
-[Audio Samples] → [TrainingJobManager] → [LoRA Fine-tuning] → [Trained Weights]
-                                                                        ↓
-                                                              [Profile Storage]
-                                                                        ↓
-[Voice Profile] → [SOTAConversionPipeline] → [Load Weights] → [Quality Output]
-```
+## User Story
 
-## Requirements
-
-### 1. Model Weight Storage
-- Store trained LoRA adapter weights per voice profile
-- Include model version tracking (created in Phase 4)
-- Support loading specific versions for A/B comparison
-
-### 2. Training Trigger Flow
-- Given: Audio file(s) for a singer
-- Action: Automatically register as training samples, create training job
-- Output: Trained LoRA adapters for decoder components
-
-### 3. Inference Weight Loading
-- SOTAConversionPipeline must accept a profile_id
-- Load trained LoRA weights for that profile's model
-- Apply LoRA adapters to decoder during inference
-
-### 4. Voice Swap Test Integration
-- Test should: create profile → add samples → train → convert
-- Verify output is actual voice conversion, not noise
-- Measure quality metrics on trained conversion
-
-## Existing Components to Connect
-
-| Component | Location | Status |
-|-----------|----------|--------|
-| VoiceCloner | `inference/voice_cloner.py` | Creates profiles with embeddings |
-| TrainingJobManager | `training/job_manager.py` | Creates/runs training jobs |
-| LoRAAdapter | `training/fine_tuning.py` | LoRA fine-tuning implementation |
-| ModelVersionManager | `training/model_versioning.py` | Tracks model versions |
-| CoMoSVCDecoder | `models/svc_decoder.py` | Decoder (needs LoRA injection) |
-| SOTAConversionPipeline | `inference/sota_pipeline.py` | Main inference (needs weight loading) |
+As a user who has trained a voice model, I want my trained model to be immediately available for inference in any conversion mode, so that I can convert songs using my custom voice without manual steps.
 
 ## Acceptance Criteria
 
-1. `create_voice_profile(audio)` also triggers training job creation
-2. `TrainingJobManager.run_job()` produces saved LoRA weights
-3. `SOTAConversionPipeline.convert(profile_id=X)` loads trained weights
-4. Voice swap test produces audible voice conversion (not noise)
-5. Quality metrics show meaningful values (not NaN or extreme outliers)
+- [ ] Trained LoRA adapters load correctly in REALTIME_PIPELINE
+- [ ] Trained LoRA adapters load correctly in QUALITY_PIPELINE
+- [ ] Speaker embeddings are compatible between training and inference
+- [ ] Training completion triggers model availability update
+- [ ] Web UI shows trained models in voice selector dropdown
+- [ ] Conversion API accepts profile_id and loads correct adapter
+- [ ] Graceful error handling when adapter file is missing/corrupt
 
-## Web Interface Integration
+## Dependencies
 
-### Seamless User Flow
-1. **Upload Audio** → Profile created + training auto-triggered
-2. **Training Progress** → Real-time status via WebSocket (TrainingJobQueue component)
-3. **Model Ready** → UI notification when training complete
-4. **Convert Song** → Automatically uses trained model for that profile
-
-### API Endpoints
-- `POST /api/v1/profiles` - Create profile AND trigger training
-- `GET /api/v1/profiles/{id}/model/status` - Check if model is trained
-- `POST /api/v1/convert/song` - Uses trained model if available
-
-### Frontend Components
-- `VoiceProfilePage.tsx` - Show training status per profile
-- `TrainingJobQueue.tsx` - Real-time training progress
-- `ConversionPage.tsx` - Warn if profile has no trained model
-
-### WebSocket Events
-- `training.started` - Training job began
-- `training.progress` - Epoch/loss updates
-- `training.completed` - Model ready for inference
-- `training.failed` - Training error with details
+- Voice profile system: data/voice_profiles/
+- Training pipeline: src/auto_voice/training/
+- LoRA adapters: data/trained_models/
+- SOTA pipelines: scripts/realtime_pipeline.py, scripts/quality_pipeline.py
 
 ## Out of Scope
 
-- Real-time training during karaoke sessions (existing continuous learning handles this)
-- Multi-GPU training
-- External model download/hosting
+- Retraining existing models
+- Model quantization during training
+- Multi-GPU training distribution
 
-## Files to Modify
+## Technical Notes
 
-### Backend
-1. `src/auto_voice/training/fine_tuning.py` - Add weight saving to profile storage
-2. `src/auto_voice/inference/sota_pipeline.py` - Add LoRA loading from profile
-3. `src/auto_voice/models/svc_decoder.py` - Add LoRA injection points
-4. `src/auto_voice/web/api.py` - Auto-trigger training on profile creation
-5. `src/auto_voice/inference/voice_cloner.py` - Connect to TrainingJobManager
+### Adapter Format
+```python
+{
+    'lora_weights': OrderedDict,  # LoRA parameters
+    'speaker_embedding': np.ndarray,  # [256] L2-normalized
+    'config': {
+        'rank': int,
+        'alpha': float,
+        'target_modules': List[str]
+    }
+}
+```
 
-### Frontend
-6. `frontend/src/pages/VoiceProfilePage.tsx` - Show model training status
-7. `frontend/src/components/TrainingJobQueue.tsx` - Real-time progress display
-8. `frontend/src/services/api.ts` - Add model status endpoints
+### Integration Points
+1. `VoiceCloner.load_adapter(profile_id)` - Load trained adapter
+2. `pipeline.set_speaker(profile_id)` - Apply adapter to pipeline
+3. `GET /api/v1/profiles/{id}/model` - Check model availability
+4. `POST /api/v1/convert/song` - Use trained model for conversion
 
-### Tests
-9. `tests/quality_samples/run_voice_swap_test.py` - Add training step before conversion
+---
+
+_Generated by Conductor._

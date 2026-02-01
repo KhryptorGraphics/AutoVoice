@@ -1,0 +1,6 @@
+# Large model files
+*.pth
+*.pth.tar
+*.pt
+*.safetensors
+models/

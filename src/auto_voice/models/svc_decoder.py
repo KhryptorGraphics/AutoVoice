@@ -322,7 +322,7 @@ class CoMoSVCDecoder(nn.Module):
         return mel_pred
 
     def forward(self, content: torch.Tensor, pitch: torch.Tensor,
-                speaker: torch.Tensor) -> torch.Tensor:
+                speaker: torch.Tensor, spec: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Forward pass: generate mel from content + pitch + speaker.
 
         Single-step consistency model inference (default mode).
@@ -331,11 +331,51 @@ class CoMoSVCDecoder(nn.Module):
             content: [B, T, content_dim] content features from ContentVec
             pitch: [B, T, pitch_dim] pitch embeddings from PitchEncoder
             speaker: [B, speaker_dim] speaker embedding (L2-normalized)
+            spec: [B, freq, T] optional spectrogram (unused, for trainer compatibility)
 
         Returns:
             [B, n_mels, T] predicted mel spectrogram
         """
+        # Note: spec is ignored - included for trainer API compatibility
         return self.infer(content, pitch, speaker, n_steps=1)
+
+    def compute_loss(self, outputs: torch.Tensor, target_mel: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Compute training loss for consistency model.
+
+        Uses L1 reconstruction loss with optional L2 regularization.
+
+        Args:
+            outputs: [B, n_mels, T] predicted mel spectrogram
+            target_mel: [B, 80, T_target] ground truth mel (80 bins from dataset)
+
+        Returns:
+            Dict with 'total_loss', 'reconstruction_loss' keys
+        """
+        # Align dimensions - target_mel may have different n_mels (80 vs 100)
+        # and different temporal resolution
+        if outputs.shape[1] != target_mel.shape[1]:
+            # Interpolate outputs to match target n_mels
+            outputs = F.interpolate(outputs, size=target_mel.shape[2], mode='linear', align_corners=False)
+            # Use only first 80 mel bins if target has 80
+            if target_mel.shape[1] < outputs.shape[1]:
+                outputs = outputs[:, :target_mel.shape[1], :]
+
+        if outputs.shape[2] != target_mel.shape[2]:
+            outputs = F.interpolate(outputs, size=target_mel.shape[2], mode='linear', align_corners=False)
+
+        # L1 reconstruction loss
+        recon_loss = F.l1_loss(outputs, target_mel)
+
+        # L2 regularization loss (small weight)
+        l2_loss = F.mse_loss(outputs, target_mel) * 0.1
+
+        total_loss = recon_loss + l2_loss
+
+        return {
+            'total_loss': total_loss,
+            'reconstruction_loss': recon_loss,
+            'l2_loss': l2_loss,
+        }
 
     def infer(self, content: torch.Tensor, pitch: torch.Tensor,
               speaker: torch.Tensor, n_steps: int = 1) -> torch.Tensor:

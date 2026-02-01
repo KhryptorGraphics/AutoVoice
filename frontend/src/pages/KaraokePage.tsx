@@ -32,12 +32,18 @@ import {
 import { getAudioStreamingClient, type StreamingStats } from '../services/audioStreaming';
 import { apiService, VoiceProfile } from '../services/api';
 import { AudioDeviceSelector } from '../components/AudioDeviceSelector';
+import { PipelineSelector, type PipelineType } from '../components/PipelineSelector';
+import { AdapterDropdown } from '../components/AdapterSelector';
+import { AdapterType } from '../services/api';
 
 type Stage = 'upload' | 'separating' | 'ready' | 'performing';
 
 export function KaraokePage() {
   // Stage management
   const [stage, setStage] = useState<Stage>('upload');
+
+  // Pipeline selection (realtime for low-latency, quality for high-fidelity)
+  const [pipeline, setPipeline] = useState<PipelineType>('realtime');
 
   // Song state
   const [uploadedSong, setUploadedSong] = useState<UploadedSong | null>(null);
@@ -59,6 +65,7 @@ export function KaraokePage() {
   const [voiceProfiles, setVoiceProfiles] = useState<VoiceProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [collectTrainingSamples, setCollectTrainingSamples] = useState(false);
+  const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null);
 
   // Streaming state
   const [streamingStats, setStreamingStats] = useState<StreamingStats>({
@@ -252,7 +259,8 @@ export function KaraokePage() {
     try {
       const client = getAudioStreamingClient();
       await client.connect();
-      await client.startSession(uploadedSong.song_id, selectedModel);
+      // Pass pipeline type: 'realtime' for live karaoke, 'quality' for high-fidelity
+      await client.startSession(uploadedSong.song_id, selectedModel, pipeline);
       await client.startStreaming();
       setStage('performing');
     } catch (error) {
@@ -381,6 +389,17 @@ export function KaraokePage() {
       {/* Stage: Ready / Performing */}
       {(stage === 'ready' || stage === 'performing') && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Pipeline Selection */}
+          <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
+            <PipelineSelector
+              value={pipeline}
+              onChange={setPipeline}
+              disabled={stage === 'performing'}
+              showDescription={true}
+              size="md"
+            />
+          </div>
+
           {/* Voice Model Selection */}
           <div className="bg-gray-800 rounded-lg p-6">
             <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
@@ -399,6 +418,23 @@ export function KaraokePage() {
                 </option>
               ))}
             </select>
+
+            {/* Adapter Selection */}
+            {selectedProfileId && (
+              <div className="mb-4">
+                <label className="text-sm text-gray-400 mb-2 block">LoRA Adapter</label>
+                <AdapterDropdown
+                  profileId={selectedProfileId}
+                  value={selectedAdapter}
+                  onChange={setSelectedAdapter}
+                  disabled={stage === 'performing'}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  {selectedAdapter === 'nvfp4' ? 'Fast (recommended for live)' : 'High quality'}
+                </p>
+              </div>
+            )}
+
             <button
               onClick={handleExtractVoice}
               disabled={isExtracting || stage === 'performing'}

@@ -1,0 +1,31 @@
+{
+  "id": "sota-dual-pipeline_20260130",
+  "title": "SOTA Dual-Pipeline Voice Conversion",
+  "type": "feature",
+  "status": "in_progress",
+  "created": "2026-01-30T11:15:00Z",
+  "updated": "2026-01-30T11:15:00Z",
+  "phases": {
+    "total": 6,
+    "completed": 0
+  },
+  "tasks": {
+    "total": 30,
+    "completed": 1
+  },
+  "research": {
+    "smoothsinger": "https://arxiv.org/html/2506.21478v1",
+    "seed_vc": "https://github.com/Plachtaa/seed-vc",
+    "hq_svc": "https://github.com/ShawnPi233/HQ-SVC"
+  },
+  "dependencies": {
+    "models": [
+      "models/seed-vc/",
+      "models/hq-svc/"
+    ],
+    "data": [
+      "data/voice_profiles/",
+      "data/separated/"
+    ]
+  }
+}

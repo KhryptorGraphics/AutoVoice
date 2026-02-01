@@ -1,0 +1,372 @@
+# Claude-Flow Smart Swarm Orchestration Configuration
+# AutoVoice Parallel Agent Coordination
+# Generated: 2026-01-31
+
+# Global swarm settings
+global:
+  topology: hierarchical-mesh
+  memory_backend: beads+cipher
+  parallel_limit: 10
+  gpu_aware: true
+  tdd_mode: strict
+  project_root: /home/kp/repo2/autovoice
+
+  # Neural-aware configuration (1500 patterns trained)
+  neural:
+    enabled: true
+    target_accuracy: 98.5
+    pattern_types:
+      - coordination
+      - testing
+      - api
+      - debugging
+      - refactoring
+      - performance
+      - security
+    sona_coordinator: active
+    quantization: int8
+    embedding_model: all-MiniLM-L6-v2
+
+# Context files injected into all agents
+shared_context:
+  product: conductor/product.md
+  tech_stack: conductor/tech-stack.md
+  workflow: conductor/workflow.md
+  claude_rules: CLAUDE.md
+  prompt: PROMPT.md
+
+# Queen coordinator configuration
+queen:
+  name: autovoice-queen
+  context_files:
+    - conductor/product.md
+    - conductor/tech-stack.md
+    - CLAUDE.md
+    - PROMPT.md
+  memory_systems:
+    - cipher    # Cross-session memory
+    - beads     # Task tracking
+  responsibilities:
+    - task_dispatch
+    - progress_monitoring
+    - cross_swarm_coordination
+    - conflict_resolution
+
+# Swarm definitions
+swarms:
+  # ============================================
+  # SWARM 1: SOTA Dual-Pipeline (P0 Critical)
+  # ============================================
+  sota-dual-pipeline:
+    track: conductor/tracks/sota-dual-pipeline_20260130
+    priority: P0
+    dependencies: []
+    context_files:
+      - src/auto_voice/inference/*.py
+      - src/auto_voice/models/*.py
+      - conductor/tracks/sota-dual-pipeline_20260130/spec.md
+      - conductor/tracks/sota-dual-pipeline_20260130/plan.md
+
+    agents:
+      # Phase 1: Research (Parallel)
+      seed-vc-researcher:
+        type: researcher
+        responsibility: "Research Seed-VC architecture, download models"
+        parallel: true
+        phase: 1
+        outputs:
+          - models/seed-vc/
+          - docs/seed-vc-architecture.md
+
+      hq-svc-researcher:
+        type: researcher
+        responsibility: "Research HQ-SVC enhancement patterns"
+        parallel: true
+        phase: 1
+        outputs:
+          - models/hq-svc/
+          - docs/hq-svc-patterns.md
+
+      smoothsinger-researcher:
+        type: researcher
+        responsibility: "Research SmoothSinger frequency innovations"
+        parallel: true
+        phase: 1
+        outputs:
+          - docs/smoothsinger-concepts.md
+
+      # Phase 2: Implementation (After research)
+      seed-vc-implementer:
+        type: developer
+        responsibility: "Implement Seed-VC pipeline code"
+        parallel: false
+        phase: 2
+        depends_on: [seed-vc-researcher]
+        context_files:
+          - src/auto_voice/inference/sota_pipeline.py
+        outputs:
+          - src/auto_voice/inference/seed_vc_pipeline.py
+          - tests/test_seed_vc_pipeline.py
+
+      hq-svc-implementer:
+        type: developer
+        responsibility: "Implement HQ-SVC wrapper"
+        parallel: false
+        phase: 2
+        depends_on: [hq-svc-researcher]
+        outputs:
+          - src/auto_voice/inference/hq_svc_wrapper.py
+          - tests/test_hq_svc_wrapper.py
+
+      smoothsinger-implementer:
+        type: developer
+        responsibility: "Implement SmoothSinger concepts"
+        parallel: false
+        phase: 2
+        depends_on: [smoothsinger-researcher]
+        outputs:
+          - src/auto_voice/models/smoothsinger_decoder.py
+
+      # Phase 3: Integration
+      pipeline-orchestrator:
+        type: architect
+        responsibility: "Build unified API across pipelines"
+        parallel: false
+        phase: 3
+        depends_on: [seed-vc-implementer, hq-svc-implementer, smoothsinger-implementer]
+        outputs:
+          - src/auto_voice/inference/pipeline_orchestrator.py
+          - src/auto_voice/web/api.py  # Update
+
+      # Phase 4: Quality & Frontend
+      quality-assessor:
+        type: tester
+        responsibility: "Implement automated quality metrics"
+        parallel: true
+        phase: 4
+        outputs:
+          - src/auto_voice/evaluation/quality_metrics.py
+          - tests/test_quality_metrics.py
+
+      frontend-integrator:
+        type: developer
+        responsibility: "Add UI pipeline selection"
+        parallel: false
+        phase: 4
+        depends_on: [pipeline-orchestrator]
+        context_files:
+          - frontend/src/pages/*.tsx
+          - frontend/src/components/*.tsx
+        outputs:
+          - frontend/src/components/PipelineSelector.tsx
+
+      # Continuous: TDD
+      test-writer:
+        type: tester
+        responsibility: "TDD tests for all components"
+        parallel: true
+        continuous: true
+        phase: 0  # Runs throughout
+        outputs:
+          - tests/test_*.py
+
+  # ============================================
+  # SWARM 2: Training-Inference Integration (P1)
+  # ============================================
+  training-inference:
+    track: conductor/tracks/training-inference-integration_20260130
+    priority: P1
+    dependencies:
+      - swarm: sota-dual-pipeline
+        phase: 2  # Wait for pipeline implementation
+    context_files:
+      - src/auto_voice/training/*.py
+      - src/auto_voice/models/adapter_manager.py
+      - conductor/tracks/training-inference-integration_20260130/spec.md
+      - conductor/tracks/training-inference-integration_20260130/plan.md
+
+    agents:
+      adapter-validator:
+        type: tester
+        responsibility: "Ensure adapter format compatibility"
+        parallel: true
+        phase: 1
+        outputs:
+          - tests/test_adapter_format.py
+
+      pipeline-connector:
+        type: developer
+        responsibility: "Connect adapters to both pipelines"
+        parallel: false
+        phase: 2
+        depends_on: [adapter-validator]
+        outputs:
+          - src/auto_voice/inference/adapter_loader.py
+
+      api-integrator:
+        type: developer
+        responsibility: "REST API for model selection"
+        parallel: true
+        phase: 2
+        context_files:
+          - src/auto_voice/web/api.py
+        outputs:
+          - src/auto_voice/web/api.py  # Update
+
+      frontend-ui:
+        type: developer
+        responsibility: "Profile badges, adapter info display"
+        parallel: true
+        phase: 2
+        context_files:
+          - frontend/src/pages/VoiceProfilePage.tsx
+        outputs:
+          - frontend/src/components/AdapterBadge.tsx
+
+      e2e-tester:
+        type: tester
+        responsibility: "End-to-end training to conversion flow"
+        parallel: false
+        phase: 3
+        depends_on: [pipeline-connector, api-integrator, frontend-ui]
+        outputs:
+          - tests/test_training_inference_e2e.py
+
+  # ============================================
+  # SWARM 3: YouTube Artist Training (P1)
+  # ============================================
+  youtube-artist:
+    track: conductor/tracks/youtube-artist-training_20260130
+    priority: P1
+    dependencies: []  # Can run independently
+    context_files:
+      - src/auto_voice/youtube/*.py
+      - src/auto_voice/audio/*.py
+      - src/auto_voice/audio/speaker_diarization.py
+      - conductor/tracks/youtube-artist-training_20260130/spec.md
+
+    agents:
+      # Phase 1: Discovery & Download (Parallel)
+      channel-scraper:
+        type: researcher
+        responsibility: "yt-dlp channel discovery"
+        parallel: true
+        phase: 1
+        outputs:
+          - data/youtube/channel_metadata/
+
+      connor-downloader:
+        type: worker
+        responsibility: "Download Connor Maynard audio"
+        parallel: true
+        phase: 1
+        rate_limit: 4  # Max concurrent downloads
+        outputs:
+          - data/youtube/connor_maynard/
+
+      william-downloader:
+        type: worker
+        responsibility: "Download William Singe audio"
+        parallel: true
+        phase: 1
+        rate_limit: 4
+        outputs:
+          - data/youtube/william_singe/
+
+      # Phase 2: Processing (Parallel per artist)
+      demucs-processor:
+        type: worker
+        responsibility: "Batch vocal separation"
+        parallel: true
+        phase: 2
+        depends_on: [connor-downloader, william-downloader]
+        gpu_required: true
+        outputs:
+          - data/separated/connor/
+          - data/separated/william/
+
+      # Phase 3: Diarization (Parallel)
+      diarization-runner:
+        type: worker
+        responsibility: "Speaker identification"
+        parallel: true
+        phase: 3
+        depends_on: [demucs-processor]
+        gpu_required: true
+        memory_limit: 4GB  # Per chunk
+        outputs:
+          - data/diarization/connor/
+          - data/diarization/william/
+
+      profile-matcher:
+        type: developer
+        responsibility: "Match segments to profiles"
+        parallel: false
+        phase: 3
+        depends_on: [diarization-runner]
+        outputs:
+          - data/voice_profiles/connor/samples/
+          - data/voice_profiles/william/samples/
+
+      # Phase 4: Training (Parallel)
+      connor-trainer:
+        type: worker
+        responsibility: "Train Connor LoRA"
+        parallel: true
+        phase: 4
+        depends_on: [profile-matcher]
+        gpu_required: true
+        memory_limit: 16GB
+        outputs:
+          - data/trained_models/connor_adapter.pt
+
+      william-trainer:
+        type: worker
+        responsibility: "Train William LoRA"
+        parallel: true
+        phase: 4
+        depends_on: [profile-matcher]
+        gpu_required: true
+        memory_limit: 16GB
+        outputs:
+          - data/trained_models/william_adapter.pt
+
+      # Phase 5: Validation
+      quality-validator:
+        type: tester
+        responsibility: "Conversion quality tests"
+        parallel: false
+        phase: 5
+        depends_on: [connor-trainer, william-trainer]
+        outputs:
+          - tests/quality_samples/outputs/
+
+# Verification configuration
+verification:
+  per_swarm:
+    sota-dual-pipeline:
+      - "pytest tests/test_*_pipeline.py -v"
+      - "pytest tests/test_quality_metrics.py -v"
+      - "speaker_similarity > 0.85"
+
+    training-inference:
+      - "pytest tests/test_adapter_*.py -v"
+      - "pytest tests/test_training_inference_e2e.py -v"
+
+    youtube-artist:
+      - "ls data/youtube/*/metadata.json | wc -l > 400"
+      - "diarization_accuracy > 0.95"
+      - "pytest tests/test_youtube_pipeline.py -v"
+
+  cross_swarm:
+    - "pytest tests/test_full_pipeline_e2e.py -v"
+    - "/conductor:status"
+
+# Memory sharing configuration
+memory:
+  cipher:
+    namespace: autovoice
+    ttl: 7d
+  beads:
+    project: autovoice
+    auto_sync: true

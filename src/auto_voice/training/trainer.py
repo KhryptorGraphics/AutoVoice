@@ -97,6 +97,24 @@ class Trainer:
         self.checkpoint_dir = Path(self.config.get('checkpoint_dir', 'checkpoints'))
         self.gradient_clip = self.config.get('gradient_clip', 1.0)
 
+        self.global_step = 0
+        self.current_epoch = 0
+        self.best_loss = float('inf')
+        self.train_losses: List[float] = []
+
+        # Shared encoders for feature extraction (frozen during training)
+        # Use ContentVec backend with 768-dim output for best quality
+        from ..models.encoder import ContentEncoder, PitchEncoder
+        self.content_encoder = ContentEncoder(
+            output_size=768,  # 768-dim ContentVec for superior speaker disentanglement
+            encoder_backend='contentvec',
+            device=self.device
+        ).to(self.device)
+        self.pitch_encoder = PitchEncoder(output_size=768).to(self.device)  # Match 768-dim
+        self.speaker_embedding: Optional[torch.Tensor] = None
+        self.sample_rate = self.config.get('sample_rate', 22050)
+
+        # Optimizer with proper weight decay
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=self.lr,
             betas=(0.8, 0.99), weight_decay=0.01,
@@ -105,18 +123,6 @@ class Trainer:
             self.optimizer, gamma=0.999,
         )
 
-        self.global_step = 0
-        self.current_epoch = 0
-        self.best_loss = float('inf')
-        self.train_losses: List[float] = []
-
-        # Shared encoders for feature extraction (frozen during training)
-        from ..models.encoder import ContentEncoder, PitchEncoder
-        self.content_encoder = ContentEncoder(device=self.device).to(self.device)
-        self.pitch_encoder = PitchEncoder().to(self.device)
-        self.speaker_embedding: Optional[torch.Tensor] = None
-        self.sample_rate = self.config.get('sample_rate', 22050)
-
     def train(self, train_dir: str, val_dir: Optional[str] = None,
               resume_from: Optional[str] = None):
         """Run training loop."""
@@ -124,9 +130,12 @@ class Trainer:
             self.load_checkpoint(resume_from)
 
         train_dataset = VoiceDataset(train_dir, segment_length=32768)
+        # drop_last=False when dataset < batch_size to ensure training can proceed
+        actual_batch_size = min(self.batch_size, len(train_dataset))
         train_loader = DataLoader(
-            train_dataset, batch_size=self.batch_size,
-            shuffle=True, num_workers=4, pin_memory=True, drop_last=True,
+            train_dataset, batch_size=actual_batch_size,
+            shuffle=True, num_workers=4, pin_memory=True,
+            drop_last=(len(train_dataset) >= self.batch_size),
         )
 
         val_loader = None
@@ -179,7 +188,7 @@ class Trainer:
             with torch.no_grad():
                 content = self.content_encoder.extract_features(
                     audio, sr=self.sample_rate
-                )  # [B, N, 256]
+                )  # [B, N, 768]
                 pitch = self.pitch_encoder(f0)  # [B, T, 256]
 
             # Align to mel frame count
@@ -191,6 +200,9 @@ class Trainer:
                 pitch.transpose(1, 2), size=n_mel_frames, mode='linear',
                 align_corners=False
             ).transpose(1, 2)
+
+            # Content is now 768-dim natively for best quality
+            # [B, N, 768] from ContentVec, [B, N, 768] from PitchEncoder
 
             # Speaker embedding (same for all batches of this speaker)
             if self.speaker_embedding is None:
@@ -205,6 +217,14 @@ class Trainer:
             outputs = self.model(content, pitch, speaker, spec=spec)
             losses = self.model.compute_loss(outputs, mel)
             loss = losses['total_loss']
+
+            # Skip NaN/Inf losses to prevent gradient explosion
+            if torch.isnan(loss) or torch.isinf(loss):
+                logger.warning(f"Step {self.global_step}: Skipping NaN/Inf loss")
+                continue
+
+            # Clamp large losses to prevent gradient explosion
+            loss = torch.clamp(loss, max=1e6)
 
             loss.backward()
             if self.gradient_clip > 0:
@@ -248,6 +268,8 @@ class Trainer:
                     align_corners=False
                 ).transpose(1, 2)
 
+                # Content is 768-dim natively for best quality
+
                 if self.speaker_embedding is None:
                     raise RuntimeError("Speaker embedding not set.")
                 speaker = self.speaker_embedding.unsqueeze(0).expand(audio.shape[0], -1)
@@ -261,36 +283,76 @@ class Trainer:
         return total_loss / max(n_batches, 1)
 
     def save_checkpoint(self, path: Optional[str] = None):
-        """Save training checkpoint."""
+        """Save training checkpoint.
+
+        If model has LoRA injected, saves only LoRA weights (~2MB).
+        Otherwise saves full model weights.
+        """
         if path is None:
             path = self.checkpoint_dir / 'latest.pth'
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        checkpoint = {
-            'model': self.model.state_dict(),
-            'optimizer': self.optimizer.state_dict(),
-            'scheduler': self.scheduler.state_dict(),
-            'global_step': self.global_step,
-            'current_epoch': self.current_epoch,
-            'best_loss': self.best_loss,
-            'config': self.config,
-        }
-        torch.save(checkpoint, str(path))
-        logger.info(f"Checkpoint saved: {path}")
+        # Check if model has LoRA injected (CoMoSVCDecoder)
+        has_lora = getattr(self.model, '_lora_injected', False)
+
+        if has_lora:
+            # Save only LoRA adapter weights (small file ~2MB)
+            lora_state = self.model.get_lora_state_dict()
+            checkpoint = {
+                'lora_state': lora_state,
+                'global_step': self.global_step,
+                'current_epoch': self.current_epoch,
+                'best_loss': self.best_loss,
+                'config': self.config,
+                'is_lora': True,
+            }
+            torch.save(checkpoint, str(path))
+            size_kb = path.stat().st_size / 1024
+            logger.info(f"LoRA checkpoint saved: {path} ({size_kb:.1f} KB)")
+        else:
+            # Save full model checkpoint
+            checkpoint = {
+                'model': self.model.state_dict(),
+                'optimizer': self.optimizer.state_dict(),
+                'scheduler': self.scheduler.state_dict(),
+                'global_step': self.global_step,
+                'current_epoch': self.current_epoch,
+                'best_loss': self.best_loss,
+                'config': self.config,
+                'is_lora': False,
+            }
+            torch.save(checkpoint, str(path))
+            logger.info(f"Full checkpoint saved: {path}")
 
     def load_checkpoint(self, path: str):
-        """Load training checkpoint."""
+        """Load training checkpoint.
+
+        Handles both LoRA-only checkpoints and full model checkpoints.
+        """
         path = Path(path)
         if not path.exists():
             logger.warning(f"Checkpoint not found: {path}")
             return
 
         checkpoint = torch.load(str(path), map_location=self.device, weights_only=False)
-        self.model.load_state_dict(checkpoint['model'])
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
-        if 'scheduler' in checkpoint:
-            self.scheduler.load_state_dict(checkpoint['scheduler'])
+
+        if checkpoint.get('is_lora', False):
+            # Load LoRA weights into model (model must have LoRA injected)
+            if not getattr(self.model, '_lora_injected', False):
+                raise RuntimeError("Checkpoint is LoRA but model doesn't have LoRA injected")
+            self.model.load_lora_state_dict(checkpoint['lora_state'])
+            logger.info(f"Loaded LoRA checkpoint from {path}")
+        else:
+            # Load full model state
+            self.model.load_state_dict(checkpoint['model'])
+            # Legacy checkpoints may have content_proj - ignore it (now using 768-dim natively)
+            if 'optimizer' in checkpoint:
+                self.optimizer.load_state_dict(checkpoint['optimizer'])
+            if 'scheduler' in checkpoint:
+                self.scheduler.load_state_dict(checkpoint['scheduler'])
+            logger.info(f"Loaded full checkpoint from {path}")
+
         self.global_step = checkpoint.get('global_step', 0)
         self.current_epoch = checkpoint.get('current_epoch', 0)
         self.best_loss = checkpoint.get('best_loss', float('inf'))
@@ -327,3 +389,7 @@ class Trainer:
         embedding = cloner.create_speaker_embedding([str(f) for f in audio_files])
         self.speaker_embedding = torch.from_numpy(embedding).float().to(self.device)
         logger.info(f"Speaker embedding set from {len(audio_files)} files")
+
+
+# Alias for backwards compatibility
+VoiceTrainer = Trainer

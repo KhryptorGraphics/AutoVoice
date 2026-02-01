@@ -1,176 +1,138 @@
-# AutoVoice - SOTA Singing Voice Conversion
+# AutoVoice Master Development Orchestrator
 
-## Platform Target
-- **GPU**: NVIDIA Thor (Blackwell, SM 11.0, Compute Capability 11.0)
-- **CUDA**: 13.0 (V13.0.48)
-- **JetPack**: 7.2 (R38.4.0)
-- **Architecture**: aarch64
-- **Python**: 3.12.12
-- **PyTorch**: 2.11.0.dev20260113+cu130
-- **Conda Env**: autovoice-thor
+## Sprint: Complete SOTA Voice Conversion System + Training Workflow
 
-## Project Description
-GPU-accelerated SOTA singing voice conversion system. Converts any song to a target voice
-while preserving pitch, timing, and expression. Architecture based on So-VITS-SVC with
-Amphion CoMoSVC-inspired improvements.
+### Ultimate Goal
+William Singe and Conor Maynard voice swaps: each artist singing in the style and talent of the other on each other's instrumental tracks.
 
-## Current State (2026-01-23)
-- 8-phase no-fallback implementation COMPLETE
-- 231 model/inference/training tests passing
-- ModelManager orchestrates: HuBERT→content, pyin→pitch, mel-stats→speaker, SoVitsSvc→mel, HiFiGAN→audio
-- Research: 14 papers analyzed, Amphion architecture studied
-- Beads: 11 tasks created (3 P1, 4 P2, 2 P3, 1 epic)
+### Objectives
 
-## Environment Setup
+1. **Dual SOTA Pipelines** - REALTIME (low-latency) + QUALITY (high-fidelity)
+2. **Web Interface** - Pipeline selection for conversion and live karaoke modes
+3. **Progressive Training UI** - Live loss curves, audio previews, evaluation metrics
+4. **Pillowtalk Training** - Start with Pillowtalk covers for both artists
+5. **Voice Swap Evaluation** - User listens and evaluates quality together with system metrics
+6. **Final Conversions** - William→Conor and Conor→William on each other's songs
+
+### Memory Systems (Compaction-Resistant Stack)
+
+| System | Status | Command to Query |
+|--------|--------|------------------|
+| **Cipher** | Active | `mcp__cipher__ask_cipher "AutoVoice status"` |
+| **Beads** | Active | `bd list` / `bd ready` |
+| **Conductor** | Active | `cat conductor/tracks.md` |
+| **Serena** | Manual | `.serena/memories/sota-dual-pipeline-2026-01-30.md` |
+| **PROMPT.md** | This file | `cat PROMPT.md` |
+| **ORCHESTRATOR.md** | Active | `cat ORCHESTRATOR.md` |
+
+### Orchestration Stack
+
+```
+RALPH (top-level workflow)
+    ↓
+BEADS (task management: bd list, bd ready, bd close)
+    ↓
+CONDUCTOR (track planning: conductor/tracks/{track_id}/)
+    ↓
+CLAUDE-FLOW SWARMS (parallel execution)
+```
+
+### Active Beads Tasks
+
+**Epic AV-55x: SOTA Dual-Pipeline Voice Conversion**
+- [x] AV-5k7 (P1): Complete REALTIME_PIPELINE - scripts/realtime_pipeline.py
+- [~] AV-u6e (P1): Create QUALITY_PIPELINE with Seed-VC
+- [ ] AV-508 (P2): Add HQ-SVC enhancement (blocked by AV-u6e)
+- [ ] AV-8k8 (P2): Implement SmoothSinger concepts (blocked by AV-u6e)
+- [ ] AV-d11 (P1): Add Web UI pipeline selector
+
+**Epic AV-2xb: Training-to-Inference Integration**
+- [ ] AV-v7p (P1): Create AdapterManager for unified adapter loading
+
+**Epic AV-by1: End-to-End Voice Training & Swap Workflow**
+- [ ] AV-4kd (P1): Download Pillowtalk covers for William and Conor
+- [ ] AV-v32 (P1): Progressive training web UI with live loss display
+- [ ] AV-t32 (P1): Voice quality evaluation system
+- [ ] AV-3is (P1): Train William voice model on Pillowtalk (blocked)
+- [ ] AV-952 (P1): Train Conor voice model on Pillowtalk (blocked)
+- [ ] AV-0wn (P1): Final voice swap: William singing as Conor (blocked)
+- [ ] AV-tq1 (P1): Final voice swap: Conor singing as William (blocked)
+
+### Implementation Order (Dependency-Driven)
+
+**Phase 1: Infrastructure** (can run in parallel)
+1. AV-u6e: Create `scripts/quality_pipeline.py` with Seed-VC
+2. AV-v7p: Create `src/auto_voice/models/adapter_manager.py`
+3. AV-4kd: Download Pillowtalk covers
+4. AV-v32: Progressive training web UI
+5. AV-t32: Voice quality evaluation system
+6. AV-d11: Web UI pipeline selector
+
+**Phase 2: Training** (after Phase 1)
+7. AV-3is: Train William on Pillowtalk
+8. AV-952: Train Conor on Pillowtalk
+
+**Phase 3: Final Voice Swaps** (after Phase 2)
+9. AV-0wn: William→Conor conversion
+10. AV-tq1: Conor→William conversion
+
+### Artist Test Profiles
+
+- **William Singe**: `7da05140-1303-40c6-95d9-5b6e2c3624df`
+- **Conor Maynard**: `9679a6ec-e6e2-43c4-b64e-1f004fed34f9`
+
+### Architecture
+
+**REALTIME_PIPELINE** (scripts/realtime_pipeline.py) - COMPLETE
+```
+ContentVec → RMVPE → Simple Decoder → HiFiGAN
+(16kHz)     (pitch)   (transformer)   (22kHz)
+Target: <100ms latency for karaoke
+```
+
+**QUALITY_PIPELINE** (scripts/quality_pipeline.py) - IN PROGRESS
+```
+Whisper → Seed-VC DiT → BigVGAN → HQ-SVC (optional)
+(16kHz)   (CFM 44kHz)   (44kHz)   (enhancement)
+Target: >0.85 speaker similarity
+```
+
+### Commands
+
 ```bash
-conda activate autovoice-thor
-export PYTHONNOUSERSITE=1
-export PYTHONPATH=src
-export CUDA_HOME=/usr/local/cuda-13.0
-export TORCH_CUDA_ARCH_LIST="11.0"
+# Environment
+cd /home/kp/repo2/autovoice
 PYTHON=/home/kp/anaconda3/envs/autovoice-thor/bin/python
-PYTEST="$PYTHON -m pytest"
+PYTHONNOUSERSITE=1 PYTHONPATH=src $PYTHON <script>
+
+# Beads task management
+bd list                           # All tasks
+bd ready                          # Unblocked tasks
+bd update AV-XXX --status in_progress  # Claim
+bd close AV-XXX --force --reason "..."  # Complete
+
+# Run tests
+PYTHONNOUSERSITE=1 PYTHONPATH=src $PYTHON -m pytest tests/ -x --tb=short -q
+
+# Conductor
+cat conductor/tracks.md           # View tracks
+cat conductor/tracks/{track_id}/plan.md  # View plan
+
+# Master orchestrator
+claude-flow swarm "Complete AutoVoice tasks" --strategy development --background --monitor --testing --parallel --max-agents 8
 ```
 
-## Beads Task Management
-```bash
-# CRITICAL: Repo on CIFS mount. Always use --no-daemon.
-BD="bd --no-daemon --db /home/kp/.beads-local/autovoice/beads.db"
-$BD list                                    # Show all tasks
-$BD update AV-xxx --status in_progress      # Start work
-$BD close AV-xxx --force --reason "done"    # Complete task
-```
+### Completion Criteria
 
-## Cross-Compaction Context Protocol
-**MANDATORY before each task:**
-```python
-TaskCreate(
-    subject="[AV-xxx] Working on: [description]",
-    description="Context: [what was done before, what's needed, key files]\n"
-                "Beads: $BD list output\n"
-                "Next: [specific next steps]",
-    activeForm="[Present participle]"
-)
-```
-**On completion:** TaskUpdate(status="completed")
-
-This ensures ralph-loop maintains context across automatic summarization.
+- [ ] Both pipelines (REALTIME + QUALITY) working
+- [ ] Web UI pipeline selector on Convert and Karaoke pages
+- [ ] Progressive training UI with live loss curves
+- [ ] Voice quality evaluation system (>0.85 speaker similarity)
+- [ ] William and Conor trained on Pillowtalk
+- [ ] User evaluation of training quality
+- [ ] Final voice swaps: William↔Conor on each other's songs
+- [ ] All 15 beads tasks closed
 
 ---
-
-## Ralph Orchestrator Loop
-
-### Loop Structure
-```
-WHILE tasks remain:
-  1. $BD list → find highest priority open task
-  2. $BD update AV-xxx --status in_progress
-  3. TaskCreate with full context
-  4. IF task needs research:
-     a. Search arxiv for latest papers (2024-2026)
-     b. Read relevant Amphion code at /home/kp/repo2/Amphion/
-     c. Save findings to academic-research/
-  5. Implement the feature/fix
-  6. Run tests: $PYTEST tests/ -x --tb=short -q
-  7. Fix any failures
-  8. $BD close AV-xxx --force --reason "[summary]"
-  9. TaskUpdate(status="completed")
-  10. Save context to Serena memory (mcp__serena__write_memory)
-```
-
-### Phase 1: Stability (P1 - Do First)
-| ID | Task | Key Files |
-|----|------|-----------|
-| AV-gmv | Fix remaining test failures | tests/*.py |
-| AV-ge9 | Download pretrained weights | models/pretrained/, scripts/ |
-| AV-3lx | SSIM loss for training | models/so_vits_svc.py |
-| AV-1q3 | Mel-quantized F0 + UV embedding | models/encoder.py |
-
-### Phase 2: Quality (P2)
-| ID | Task | Key Files |
-|----|------|-----------|
-| AV-87t | ContentVec features | models/encoder.py |
-| AV-7a5 | BigVGAN vocoder | models/vocoder.py |
-| AV-2u7 | Data augmentation | audio/augmentation.py (NEW) |
-| AV-1il | Vocal separation (Demucs) | audio/separation.py |
-
-### Phase 3: Speed (P3)
-| ID | Task | Key Files |
-|----|------|-----------|
-| AV-0gj | Conformer encoder | models/conformer.py (NEW) |
-| AV-3ka | Consistency distillation | models/consistency.py (NEW) |
-
----
-
-## Architecture
-
-### Source Structure
-```
-src/auto_voice/
-  inference/
-    model_manager.py         # Central inference orchestrator
-    singing_conversion_pipeline.py
-    voice_cloner.py          # Mel-stats speaker embedding
-    realtime_voice_conversion_pipeline.py
-  models/
-    encoder.py               # ContentEncoder, PitchEncoder, HuBERTSoft
-    vocoder.py               # HiFiGANVocoder, HiFiGANGenerator
-    so_vits_svc.py           # SoVitsSvc, FlowDecoder
-  audio/
-    processor.py             # AudioProcessor
-    effects.py               # Pitch shift, volume
-    separation.py            # Vocal separation
-  evaluation/metrics.py      # Pitch RMSE, speaker similarity
-  web/
-    app.py                   # create_app() factory
-    api.py                   # REST endpoints
-    job_manager.py           # Async job processing
-  training/trainer.py        # Trainer with real encoder features
-  gpu/                       # GPU memory management
-  monitoring/                # Prometheus metrics
-  storage/                   # Voice profiles
-```
-
-### Research Resources
-```
-academic-research/
-  bibliography.md            # 14 papers with arxiv IDs and relevance
-  amphion-analysis.md        # Amphion CoMoSVC deep-dive
-/home/kp/repo2/Amphion/      # Reference implementation
-  models/svc/comosvc/        # Consistency model SVC
-  modules/encoder/           # Condition encoder (multi-modal)
-  modules/diffusion/         # BiDilConv diffusion decoder
-  utils/f0.py                # F0 extraction utilities
-```
-
-## API Contracts (from existing api.py)
-1. `VoiceCloner.create_voice_profile(audio, user_id)` → dict
-2. `SingingConversionPipeline.convert_song(song_path, target_profile_id, ...)` → dict
-3. `JobManager.create_job(file_path, profile_id, settings)` → job_id
-4. `GET /health` → 200 with component status
-5. `POST /api/v1/voice/clone` → voice profile
-6. `POST /api/v1/convert/song` → conversion job
-
-## Test Commands
-```bash
-# Quick validation
-$PYTEST tests/ -x --tb=short -q
-# Full suite
-$PYTEST tests/ -v --tb=short
-# Specific areas
-$PYTEST tests/test_models.py tests/test_model_manager.py -v
-$PYTEST tests/ -m smoke -v
-$PYTEST tests/ -m "not slow" -v
-```
-
-## Success Criteria
-- [ ] >95% test pass rate across all test files
-- [ ] Training loss decreases over 50+ epochs with real features
-- [ ] Different speakers produce measurably different outputs
-- [ ] Pretrained weights loaded (HuBERT, vocoder)
-- [ ] Realtime pipeline <50ms per chunk
-- [ ] Vocal separation functional
-- [ ] SSIM loss improves perceptual quality
-- [ ] Mel-quantized F0 preserves pitch accuracy
-- [ ] ContentVec improves speaker disentanglement
-- [ ] BigVGAN improves audio quality vs HiFiGAN
+Last Updated: 2026-01-30 11:35 CST
+Master Orchestrator: Ralph → Beads → Conductor → Claude-flow swarms

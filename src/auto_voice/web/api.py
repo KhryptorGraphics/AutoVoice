@@ -158,6 +158,8 @@ def convert_song():
         pitch_shift (float): Pitch shift in semitones [-12 to 12] (optional)
         return_stems (bool): Return separate vocal/instrumental stems (optional)
         output_quality (str): 'draft', 'fast', 'balanced', 'high', 'studio' (optional)
+        adapter_type (str): LoRA adapter to use: 'hq' (high-quality) or 'nvfp4' (fast) (optional)
+        pipeline_type (str): 'realtime' for low-latency (<100ms) or 'quality' for high-fidelity (optional, default: quality)
 
     Returns:
         ASYNC MODE: HTTP 202 + JSON with job_id and status 'queued'
@@ -270,10 +272,40 @@ def convert_song():
     preset = preset_map.get(output_quality, 'balanced')
     logger.info(f'Selected preset: {preset} for quality: {output_quality}')
 
+    # Adapter type selection (hq or nvfp4)
+    adapter_type = get_param(
+        settings_data, 'adapter_type', 'adapter_type', None,
+        lambda v: v in ['hq', 'nvfp4', None], type_hint='str'
+    )
+
+    # If no adapter_type specified, use profile's selected adapter or default to hq if available
+    if adapter_type is None:
+        adapter_type = profile.get('selected_adapter')
+        if adapter_type is None:
+            # Default: prefer hq > nvfp4
+            from pathlib import Path
+            base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
+            if (base_dir / 'hq' / f"{profile_id}_hq_lora.pt").exists():
+                adapter_type = 'hq'
+            elif (base_dir / 'nvfp4' / f"{profile_id}_nvfp4_lora.pt").exists():
+                adapter_type = 'nvfp4'
+
+    logger.info(f'Using adapter type: {adapter_type}')
+
+    # Pipeline type selection
+    # - realtime: Low-latency for live karaoke (<100ms)
+    # - quality: CoMoSVC with 30-step diffusion (24kHz)
+    # - quality_seedvc: DiT-CFM with 5-10 step flow matching (44kHz SOTA)
+    pipeline_type = get_param(
+        settings_data, 'pipeline_type', 'pipeline_type', 'quality',
+        lambda v: v in ['realtime', 'quality', 'quality_seedvc'], type_hint='str'
+    )
+    logger.info(f'Using pipeline type: {pipeline_type}')
+
     # Sample rate from config
     sample_rate = current_app.app_config.get('audio', {}).get('sample_rate', 22050)
 
-    logger.info(f"Converting song with profile {profile_id}, preset={preset}, stems={return_stems}")
+    logger.info(f"Converting song with profile {profile_id}, preset={preset}, stems={return_stems}, pipeline={pipeline_type}")
 
     tmp_file = None
     job_manager = getattr(current_app, 'job_manager', None)
@@ -299,7 +331,9 @@ def convert_song():
                 'instrumental_volume': instrumental_volume,
                 'pitch_shift': pitch_shift,
                 'return_stems': return_stems,
-                'preset': preset
+                'preset': preset,
+                'adapter_type': adapter_type,
+                'pipeline_type': pipeline_type,
             }
             job_id = job_manager.create_job(tmp_file.name, profile_id, settings_dict)
 
@@ -323,16 +357,57 @@ def convert_song():
             }, ), 202
         elif singing_pipeline:
             # Fallback to synchronous processing
-            logger.info("JobManager unavailable, using synchronous processing")
-            result = singing_pipeline.convert_song(
-                song_path=tmp_file.name,
-                target_profile_id=profile_id,
-                vocal_volume=vocal_volume,
-                instrumental_volume=instrumental_volume,
-                pitch_shift=pitch_shift,
-                return_stems=return_stems,
-                preset=preset
-            )
+            logger.info(f"JobManager unavailable, using synchronous processing with {pipeline_type} pipeline")
+
+            # Route to appropriate pipeline based on pipeline_type
+            if pipeline_type == 'realtime':
+                # Use RealtimePipeline for low-latency conversion
+                from ..inference.pipeline_factory import PipelineFactory
+                factory = PipelineFactory.get_instance()
+                realtime_pipeline = factory.get_pipeline('realtime')
+
+                # Load audio for realtime pipeline
+                import librosa
+                audio, sr = librosa.load(tmp_file.name, sr=16000, mono=True)
+
+                # Get speaker embedding from profile
+                speaker_embedding = profile.get('embedding')
+                if speaker_embedding is None:
+                    return jsonify({
+                        'error': 'Profile missing speaker embedding for realtime conversion'
+                    }), 400
+
+                # Convert using realtime pipeline
+                import numpy as np
+                if isinstance(speaker_embedding, list):
+                    speaker_embedding = np.array(speaker_embedding, dtype=np.float32)
+
+                realtime_pipeline.set_speaker_embedding(speaker_embedding)
+                output_audio = realtime_pipeline.convert(audio, sr)
+
+                # Package result in same format as singing_pipeline
+                result = {
+                    'mixed_audio': output_audio,
+                    'sample_rate': realtime_pipeline.output_sample_rate,
+                    'duration': len(output_audio) / realtime_pipeline.output_sample_rate,
+                    'metadata': {
+                        'pipeline': 'realtime',
+                        'profile_id': profile_id,
+                    },
+                    'stems': {},  # Realtime doesn't do separation
+                }
+            else:
+                # Use SOTA quality pipeline (default)
+                result = singing_pipeline.convert_song(
+                    song_path=tmp_file.name,
+                    target_profile_id=profile_id,
+                    vocal_volume=vocal_volume,
+                    instrumental_volume=instrumental_volume,
+                    pitch_shift=pitch_shift,
+                    return_stems=return_stems,
+                    preset=preset,
+                    adapter_type=adapter_type,
+                )
 
             # Comment 2: Defensive validation of pipeline result
             if not isinstance(result, dict):
@@ -898,6 +973,218 @@ def delete_voice_profile(profile_id):
             'error': 'Temporary service unavailability during profile deletion',
             'message': str(e) if current_app.debug else None
         }), 503
+
+
+@api_bp.route('/voice/profiles/<profile_id>/adapters', methods=['GET'])
+def get_profile_adapters(profile_id):
+    """Get available LoRA adapters for a voice profile.
+
+    Returns:
+        JSON with list of available adapters and their metadata:
+        - adapters: list of adapter objects with type, path, size, loss, epochs
+        - selected: currently selected adapter type (default: 'hq' if available, else 'nvfp4')
+    """
+    from pathlib import Path
+    import torch
+
+    # Check if profile exists
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if voice_cloner is None:
+        return jsonify({'error': 'Voice cloning service unavailable'}), 503
+
+    try:
+        profile = voice_cloner.load_voice_profile(profile_id)
+        if profile is None:
+            return jsonify({'error': 'Voice profile not found', 'profile_id': profile_id}), 404
+    except Exception:
+        return jsonify({'error': 'Voice profile not found', 'profile_id': profile_id}), 404
+
+    # Scan for adapters
+    base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
+    adapters = []
+
+    adapter_types = ['hq', 'nvfp4']
+    for adapter_type in adapter_types:
+        adapter_dir = base_dir / adapter_type
+        adapter_file = adapter_dir / f"{profile_id}_{adapter_type}_lora.pt"
+
+        if adapter_file.exists():
+            try:
+                # Load metadata without full weights
+                ckpt = torch.load(adapter_file, map_location='cpu', weights_only=False)
+                adapters.append({
+                    'type': adapter_type,
+                    'path': str(adapter_file),
+                    'size_kb': adapter_file.stat().st_size / 1024,
+                    'epochs': ckpt.get('epoch', 0) + 1,
+                    'loss': ckpt.get('loss', None),
+                    'precision': ckpt.get('precision', 'fp16' if adapter_type == 'hq' else 'nvfp4'),
+                    'config': ckpt.get('config', {}),
+                })
+            except Exception as e:
+                logger.warning(f"Failed to load adapter metadata {adapter_file}: {e}")
+
+    # Determine selected adapter (prefer hq > nvfp4)
+    selected = None
+    if any(a['type'] == 'hq' for a in adapters):
+        selected = 'hq'
+    elif any(a['type'] == 'nvfp4' for a in adapters):
+        selected = 'nvfp4'
+
+    return jsonify({
+        'profile_id': profile_id,
+        'adapters': adapters,
+        'selected': selected,
+        'count': len(adapters),
+    })
+
+
+@api_bp.route('/voice/profiles/<profile_id>/adapter/select', methods=['POST'])
+def select_profile_adapter(profile_id):
+    """Select which LoRA adapter to use for voice conversion.
+
+    Request body:
+        - adapter_type: 'hq' or 'nvfp4'
+
+    Returns:
+        JSON confirming the selection.
+    """
+    from pathlib import Path
+
+    data = request.get_json() or {}
+    adapter_type = data.get('adapter_type')
+
+    if adapter_type not in ['hq', 'nvfp4']:
+        return jsonify({
+            'error': 'Invalid adapter_type',
+            'message': "Must be 'hq' or 'nvfp4'"
+        }), 400
+
+    # Check if adapter exists
+    base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
+    adapter_file = base_dir / adapter_type / f"{profile_id}_{adapter_type}_lora.pt"
+
+    if not adapter_file.exists():
+        return jsonify({
+            'error': 'Adapter not found',
+            'message': f"No {adapter_type} adapter exists for profile {profile_id}"
+        }), 404
+
+    # Store selection in profile metadata
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if voice_cloner is None:
+        return jsonify({'error': 'Voice cloning service unavailable'}), 503
+
+    try:
+        # Update profile with selected adapter
+        profile = voice_cloner.load_voice_profile(profile_id)
+        if profile is None:
+            return jsonify({'error': 'Voice profile not found'}), 404
+
+        # Store adapter preference
+        profile['selected_adapter'] = adapter_type
+        voice_cloner.save_voice_profile(profile_id, profile)
+
+        return jsonify({
+            'success': True,
+            'profile_id': profile_id,
+            'selected_adapter': adapter_type,
+            'adapter_path': str(adapter_file),
+        })
+    except Exception as e:
+        logger.error(f"Failed to select adapter: {e}", exc_info=True)
+        return jsonify({'error': 'Failed to select adapter', 'message': str(e)}), 500
+
+
+@api_bp.route('/voice/profiles/<profile_id>/adapter/metrics', methods=['GET'])
+def get_adapter_metrics(profile_id):
+    """Get detailed metrics for all adapters of a voice profile.
+
+    Returns:
+        JSON with comprehensive adapter metrics including:
+        - training metrics (epochs, loss, learning rate)
+        - model architecture (rank, layers, parameters)
+        - performance estimates (inference speed, memory usage)
+    """
+    from pathlib import Path
+    import torch
+    from datetime import datetime
+
+    # Check if profile exists
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if voice_cloner is None:
+        return jsonify({'error': 'Voice cloning service unavailable'}), 503
+
+    try:
+        profile = voice_cloner.load_voice_profile(profile_id)
+        if profile is None:
+            return jsonify({'error': 'Voice profile not found', 'profile_id': profile_id}), 404
+    except Exception:
+        return jsonify({'error': 'Voice profile not found', 'profile_id': profile_id}), 404
+
+    base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
+    metrics = {}
+
+    for adapter_type in ['hq', 'nvfp4']:
+        adapter_file = base_dir / adapter_type / f"{profile_id}_{adapter_type}_lora.pt"
+
+        if not adapter_file.exists():
+            continue
+
+        try:
+            ckpt = torch.load(adapter_file, map_location='cpu', weights_only=False)
+            config = ckpt.get('config', {})
+
+            # Calculate parameter count from LoRA state
+            lora_state = ckpt.get('lora_state', {})
+            param_count = sum(t.numel() for t in lora_state.values())
+
+            # File stats
+            stat = adapter_file.stat()
+
+            metrics[adapter_type] = {
+                # Training metrics
+                'epochs': ckpt.get('epoch', 0) + 1,
+                'loss': ckpt.get('loss'),
+                'precision': ckpt.get('precision', 'fp16' if adapter_type == 'hq' else 'nvfp4'),
+                'trained_on': ckpt.get('trained_on'),
+
+                # Architecture
+                'architecture': {
+                    'input_dim': config.get('input_dim', 768),
+                    'hidden_dim': config.get('hidden_dim', 1024 if adapter_type == 'hq' else 512),
+                    'output_dim': config.get('output_dim', 768),
+                    'num_layers': config.get('num_layers', 6 if adapter_type == 'hq' else 4),
+                    'lora_rank': config.get('lora_rank', 128 if adapter_type == 'hq' else 32),
+                    'lora_alpha': config.get('lora_alpha', 256.0 if adapter_type == 'hq' else 64.0),
+                },
+
+                # Size and parameters
+                'file_size_kb': stat.st_size / 1024,
+                'parameter_count': param_count,
+                'parameter_count_formatted': f"{param_count / 1e6:.2f}M" if param_count > 1e6 else f"{param_count / 1e3:.1f}K",
+
+                # File metadata
+                'file_path': str(adapter_file),
+                'modified_time': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+
+                # Performance estimates (rough)
+                'performance': {
+                    'relative_quality': 'high' if adapter_type == 'hq' else 'good',
+                    'relative_speed': 'normal' if adapter_type == 'hq' else 'fast',
+                    'memory_estimate_mb': param_count * 4 / (1024 * 1024) * 2,  # FP32 with gradients
+                }
+            }
+        except Exception as e:
+            logger.warning(f"Failed to load metrics for {adapter_file}: {e}")
+
+    return jsonify({
+        'profile_id': profile_id,
+        'profile_name': profile.get('name', 'Unknown'),
+        'adapters': metrics,
+        'adapter_count': len(metrics),
+        'recommended': 'hq' if 'hq' in metrics else 'nvfp4' if 'nvfp4' in metrics else None,
+    })
 
 
 @api_bp.route('/voice/profiles/<profile_id>/training-status', methods=['GET'])
@@ -1497,7 +1784,7 @@ def create_training_job():
                         if sample.sample_id in sample_ids or not sample_ids:
                             src_path = Path(sample.vocals_path)
                             if not src_path.is_absolute():
-                                src_path = Path("/home/kp/repos/autovoice") / sample.vocals_path
+                                src_path = Path("/home/kp/repo2/autovoice") / sample.vocals_path
                             if src_path.exists():
                                 dst_path = train_dir / f"{sample.sample_id}.wav"
                                 shutil.copy2(src_path, dst_path)
@@ -1529,7 +1816,7 @@ def create_training_job():
                         'epochs': epochs,
                         'learning_rate': learning_rate,
                         'batch_size': batch_size,
-                        'checkpoint_dir': f"/home/kp/repos/autovoice/data/checkpoints/{profile_id}",
+                        'checkpoint_dir': f"/home/kp/repo2/autovoice/data/checkpoints/{profile_id}",
                     }
 
                     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1779,6 +2066,132 @@ def upload_sample(profile_id: str):
         return jsonify(sample), 201
     except Exception as e:
         logger.error(f"Error uploading sample: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/profiles/<profile_id>/samples/from-path', methods=['POST'])
+def add_sample_from_path(profile_id: str):
+    """Add a training sample from an existing file path on the server.
+
+    This performs vocal separation using Demucs to extract only the vocals,
+    which is what we want for voice training. The instrumental track is also
+    saved for reference.
+
+    Request JSON:
+        audio_path: Path to the audio file on the server
+        metadata: Optional metadata dict
+        skip_separation: If true, skip vocal separation (default: false)
+    """
+    try:
+        data = request.get_json() or {}
+        audio_path = data.get('audio_path')
+        skip_separation = data.get('skip_separation', False)
+
+        if not audio_path:
+            return jsonify({'error': 'audio_path is required'}), 400
+
+        if not os.path.exists(audio_path):
+            return jsonify({'error': f'File not found: {audio_path}'}), 404
+
+        # Generate sample ID
+        sample_id = str(uuid.uuid4())
+        filename = os.path.basename(audio_path)
+        base_name = os.path.splitext(filename)[0]
+
+        # Create upload directory if needed
+        upload_dir = os.path.join(UPLOAD_FOLDER, 'samples', profile_id)
+        os.makedirs(upload_dir, exist_ok=True)
+
+        # Get metadata from request
+        metadata = data.get('metadata', {})
+        metadata['source'] = 'youtube_download'
+        metadata['original_path'] = audio_path
+
+        if skip_separation:
+            # Skip vocal separation - just copy the file as-is
+            dest_path = os.path.join(upload_dir, f"{sample_id}_{filename}")
+            import shutil
+            shutil.copy2(audio_path, dest_path)
+            logger.info(f"Added sample without separation: {dest_path}")
+        else:
+            # Run vocal separation using Demucs
+            logger.info(f"Running vocal separation on: {audio_path}")
+
+            # Load audio
+            if not SOUNDFILE_AVAILABLE:
+                return jsonify({'error': 'soundfile not available for audio loading'}), 500
+
+            audio, sr = soundfile.read(audio_path)
+            if audio.ndim > 1:
+                # Stereo - keep as is for separation
+                audio = audio.T  # (channels, samples) for separator
+            logger.info(f"Loaded audio: {audio.shape}, sr={sr}")
+
+            # Initialize vocal separator with small chunks to prevent OOM
+            # segment=10 means process in 10-second chunks - conservative for long files
+            from auto_voice.audio.separation import VocalSeparator
+
+            # Clear GPU memory before starting
+            if TORCH_AVAILABLE:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+            # Use 10s segments for safety (prevents OOM on 122GB GPU with long files)
+            separator = VocalSeparator(segment=10.0)
+
+            # Separate vocals and instrumental
+            duration_sec = len(audio) / sr if audio.ndim == 1 else audio.shape[-1] / sr
+            logger.info(f"Starting vocal separation ({duration_sec:.1f}s audio, 10s segments)...")
+            result = separator.separate(audio.T if audio.ndim > 1 else audio, sr)
+            vocals = result['vocals']
+            instrumental = result['instrumental']
+
+            logger.info(f"Separation complete: vocals={vocals.shape}, instrumental={instrumental.shape}")
+
+            # Save vocals as the training sample
+            vocals_filename = f"{sample_id}_{base_name}_vocals.wav"
+            dest_path = os.path.join(upload_dir, vocals_filename)
+            soundfile.write(dest_path, vocals, sr)
+            logger.info(f"Saved vocals to: {dest_path}")
+
+            # Also save instrumental for reference
+            instrumental_filename = f"{sample_id}_{base_name}_instrumental.wav"
+            instrumental_path = os.path.join(upload_dir, instrumental_filename)
+            soundfile.write(instrumental_path, instrumental, sr)
+            logger.info(f"Saved instrumental to: {instrumental_path}")
+
+            # Update metadata with separation info
+            metadata['separated'] = True
+            metadata['instrumental_path'] = instrumental_path
+            filename = vocals_filename
+
+        # Calculate duration
+        duration = None
+        if SOUNDFILE_AVAILABLE:
+            try:
+                info = soundfile.info(dest_path)
+                duration = info.duration
+            except Exception as e:
+                logger.warning(f"Could not get duration: {e}")
+
+        sample = {
+            'sample_id': sample_id,
+            'profile_id': profile_id,
+            'filename': filename,
+            'file_path': dest_path,
+            'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'duration': duration,
+            'metadata': metadata
+        }
+
+        if profile_id not in _profile_samples:
+            _profile_samples[profile_id] = {}
+        _profile_samples[profile_id][sample_id] = sample
+
+        logger.info(f"Added sample {sample_id} (vocals) from path for profile {profile_id}")
+        return jsonify(sample), 201
+    except Exception as e:
+        logger.error(f"Error adding sample from path: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 

@@ -107,10 +107,15 @@ export class AudioStreamingClient {
 
   /**
    * Start a karaoke session.
+   *
+   * @param songId - ID of the uploaded song
+   * @param voiceModelId - ID of the voice model to use
+   * @param pipelineType - 'realtime' for low-latency karaoke or 'quality' for high-fidelity
    */
   async startSession(
     songId: string,
-    voiceModelId: string
+    voiceModelId: string,
+    pipelineType: 'realtime' | 'quality' = 'realtime'
   ): Promise<{ session_id: string }> {
     if (!this.socket?.connected) {
       throw new Error('Not connected to server');
@@ -119,7 +124,11 @@ export class AudioStreamingClient {
     return new Promise((resolve, reject) => {
       this.socket!.emit(
         'start_session',
-        { song_id: songId, voice_model_id: voiceModelId },
+        {
+          song_id: songId,
+          voice_model_id: voiceModelId,
+          pipeline_type: pipelineType,
+        },
         (response: { session_id?: string; error?: string }) => {
           if (response.error) {
             reject(new Error(response.error));

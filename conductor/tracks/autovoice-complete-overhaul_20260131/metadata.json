@@ -1,0 +1,50 @@
+{
+  "name": "autovoice-complete-overhaul",
+  "created": "2026-01-31T12:35:00Z",
+  "updated": "2026-01-31T19:50:00Z",
+  "status": "in_progress",
+  "priority": "P0",
+  "description": "Fix SOTA pipeline, implement timing alignment, train comprehensive LoRAs, and complete web UI integration",
+  "phases": [
+    {"id": 0, "name": "Pipeline Architecture Analysis", "status": "complete"},
+    {"id": 0.5, "name": "Speaker-Isolated Vocal Extraction", "status": "complete"},
+    {"id": 1, "name": "Seed-VC Zero-Shot Conversion", "status": "complete"},
+    {"id": 1.5, "name": "Vocal Alignment System (DTW + Pitch)", "status": "pending", "critical": true},
+    {"id": 2, "name": "Critical Integration", "status": "pending"},
+    {"id": 3, "name": "LoRA Retraining (Comprehensive)", "status": "pending", "critical": true},
+    {"id": 4, "name": "Web UI Integration", "status": "pending"},
+    {"id": 5, "name": "Quality & Testing", "status": "pending"}
+  ],
+  "training_data": {
+    "conor_maynard": {
+      "primary_profile_id": "6154b814-6bdc-4a3d-8b75-8ef2e3e9a0aa",
+      "files": 380,
+      "duration_minutes": 613.8,
+      "speakers_detected": 4,
+      "path": "data/training_vocals/conor_maynard"
+    },
+    "william_singe": {
+      "primary_profile_id": "ed65e4a9-602c-4cc0-be7b-001d371c809c",
+      "files": 264,
+      "duration_minutes": 386.1,
+      "speakers_detected": 4,
+      "path": "data/training_vocals/william_singe"
+    }
+  },
+  "featured_artists": {
+    "6154b814-6bdc-4a3d-8b75-8ef2e3e9a0aa": {"name": "Conor Maynard (Primary)", "files": 47, "duration_min": 272.8},
+    "2e264203-eef0-4a35-8477-14f1af05ca05": {"name": "Conor Featured SPEAKER_00", "files": 90, "duration_min": 326.9},
+    "090c9bfa-cbbe-4d35-9dc8-c885b927b340": {"name": "Conor Featured SPEAKER_02", "files": 6, "duration_min": 37.4},
+    "ed65e4a9-602c-4cc0-be7b-001d371c809c": {"name": "William Singe (Primary)", "files": 49, "duration_min": 248.5},
+    "a32a19c7-7655-4bb2-ba5b-129a9f2b5da9": {"name": "William Featured SPEAKER_01", "files": 36, "duration_min": 118.3},
+    "1b7a7b94-88d4-43aa-b412-831ffa09452f": {"name": "William Featured SPEAKER_02", "files": 8, "duration_min": 32.9}
+  },
+  "dependencies": [],
+  "methodology": {
+    "self_healing_loop": true,
+    "memory_updates": ["cipher", "serena", "beads"],
+    "output_assessment": true,
+    "runs_forever": true,
+    "web_ui_required": true
+  }
+}

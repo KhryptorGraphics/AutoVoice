@@ -81,6 +81,59 @@ export interface TrainingStatus {
   training_status: TrainingStatusType
 }
 
+// Adapter types for LoRA model selection
+export type AdapterType = 'hq' | 'nvfp4'
+
+export interface Adapter {
+  type: AdapterType
+  path: string
+  size_kb: number
+  epochs: number
+  loss: number | null
+  precision: string
+  config: Record<string, unknown>
+}
+
+export interface AdapterListResponse {
+  profile_id: string
+  adapters: Adapter[]
+  selected: AdapterType | null
+  count: number
+}
+
+export interface AdapterMetrics {
+  epochs: number
+  loss: number | null
+  precision: string
+  trained_on: string | null
+  architecture: {
+    input_dim: number
+    hidden_dim: number
+    output_dim: number
+    num_layers: number
+    lora_rank: number
+    lora_alpha: number
+  }
+  file_size_kb: number
+  parameter_count: number
+  parameter_count_formatted: string
+  file_path: string
+  modified_time: string
+  performance: {
+    relative_quality: string
+    relative_speed: string
+    memory_estimate_mb: number
+  }
+}
+
+export interface AdapterMetricsResponse {
+  profile_id: string
+  profile_name: string
+  adapters: Record<AdapterType, AdapterMetrics>
+  adapter_count: number
+  recommended: AdapterType | null
+}
+
 export interface TrainingJob {
   job_id: string
   profile_id: string
@@ -499,6 +552,25 @@ class ApiService {
     return this.request(`/voice/profiles/${profileId}/training-status`)
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Adapter Methods (LoRA model selection)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async getProfileAdapters(profileId: string): Promise<AdapterListResponse> {
+    return this.request(`/voice/profiles/${profileId}/adapters`)
+  }
+
+  async selectAdapter(profileId: string, adapterType: AdapterType): Promise<{ status: string; selected: AdapterType }> {
+    return this.request(`/voice/profiles/${profileId}/adapter/select`, {
+      method: 'POST',
+      body: JSON.stringify({ adapter_type: adapterType }),
+    })
+  }
+
+  async getAdapterMetrics(profileId: string): Promise<AdapterMetricsResponse> {
+    return this.request(`/voice/profiles/${profileId}/adapter/metrics`)
+  }
+
   // Training Jobs
   async listTrainingJobs(profileId?: string): Promise<TrainingJob[]> {
     const params = profileId ? `?profile_id=${profileId}` : ''
@@ -544,6 +616,8 @@ class ApiService {
       vocal_volume?: number
       instrumental_volume?: number
       pitch_shift?: number
+      pipeline_type?: 'realtime' | 'quality'
+      adapter_type?: 'hq' | 'nvfp4'
     }
   ): Promise<{ job_id: string }> {
     const formData = new FormData()
@@ -553,6 +627,8 @@ class ApiService {
     if (settings?.vocal_volume != null) formData.append('vocal_volume', String(settings.vocal_volume))
     if (settings?.instrumental_volume != null) formData.append('instrumental_volume', String(settings.instrumental_volume))
     if (settings?.pitch_shift != null) formData.append('pitch_shift', String(settings.pitch_shift))
+    if (settings?.pipeline_type) formData.append('pipeline_type', settings.pipeline_type)
+    if (settings?.adapter_type) formData.append('adapter_type', settings.adapter_type)
 
     const response = await fetch(`${API_BASE}/convert/song`, {
       method: 'POST',

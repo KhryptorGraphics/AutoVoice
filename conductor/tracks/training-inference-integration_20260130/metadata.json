@@ -3,17 +3,22 @@
   "title": "Training-to-Inference Integration",
   "type": "feature",
   "status": "pending",
-  "created": "2026-01-30T03:45:00Z",
-  "updated": "2026-01-30T03:45:00Z",
-  "current_phase": 1,
-  "current_task": "1.1",
+  "created": "2026-01-30T11:20:00Z",
+  "updated": "2026-01-30T11:20:00Z",
   "phases": {
-    "total": 8,
+    "total": 6,
     "completed": 0
   },
   "tasks": {
-    "total": 48,
+    "total": 26,
     "completed": 0
   },
-  "commits": []
+  "dependencies": {
+    "tracks": ["sota-dual-pipeline_20260130"],
+    "files": [
+      "src/auto_voice/training/",
+      "data/trained_models/",
+      "data/voice_profiles/"
+    ]
+  }
 }

@@ -1,0 +1,15 @@
+{
+  "track_id": "youtube-artist-training_20260130",
+  "title": "YouTube Artist Training Pipeline",
+  "created": "2026-01-30",
+  "status": "not_started",
+  "priority": "P1",
+  "description": "Download all YouTube videos from Connor Maynard and William Singe, extract vocals via diarization, train LoRA voice models with OOM protection",
+  "dependencies": [
+    "speaker-diarization_20260130",
+    "training-inference-integration_20260130"
+  ],
+  "estimated_phases": 6,
+  "estimated_tasks": 24,
+  "tags": ["youtube", "training", "lora", "diarization", "connor-maynard", "william-singe"]
+}

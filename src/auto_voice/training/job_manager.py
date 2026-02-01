@@ -597,9 +597,124 @@ class TrainingJobManager:
                 f"Job {job_id} is not in pending state (current: {job.status})"
             )
 
-        # TODO: Implement actual training execution in Task 4.4
-        # This will integrate with the fine-tuning pipeline
-        logger.info(f"Would execute job {job_id} (not yet implemented)")
+        # Mark job as running
+        job.start()
+        self._save_jobs()
+        self._emit_started_event(job)
+        logger.info(f"Starting training job {job_id}")
+
+        try:
+            import threading
+            import shutil
+            from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+            # Get sample audio paths
+            store = VoiceProfileStore()
+            training_samples = store.list_training_samples(job.profile_id)
+
+            if not training_samples:
+                raise ValueError(f"No training samples found for profile {job.profile_id}")
+
+            # Create temporary training directory with audio files
+            train_dir = Path(f"/tmp/autovoice_training/{job_id}")
+            train_dir.mkdir(parents=True, exist_ok=True)
+
+            sample_files = []
+            for sample in training_samples:
+                if sample.sample_id in job.sample_ids or not job.sample_ids:
+                    src_path = Path(sample.vocals_path)
+                    if not src_path.is_absolute():
+                        src_path = Path("/home/kp/repo2/autovoice") / sample.vocals_path
+                    if src_path.exists():
+                        dst_path = train_dir / f"{sample.sample_id}.wav"
+                        shutil.copy2(src_path, dst_path)
+                        sample_files.append(str(dst_path))
+                        logger.info(f"Copied sample: {src_path} -> {dst_path}")
+
+            if not sample_files:
+                raise ValueError("No valid audio samples could be loaded")
+
+            # Run training in background thread to not block
+            def run_training():
+                try:
+                    from auto_voice.training.trainer import Trainer
+
+                    # Configure trainer
+                    config = {
+                        'epochs': job.config.epochs if job.config else 100,
+                        'learning_rate': job.config.learning_rate if job.config else 1e-4,
+                        'batch_size': job.config.batch_size if job.config else 4,
+                        'checkpoint_dir': f"/home/kp/repo2/autovoice/data/checkpoints/{job.profile_id}",
+                    }
+
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                    trainer = Trainer(config=config, device=device)
+                    logger.info(f"Training on device: {device}")
+
+                    # Monkey-patch to emit progress events
+                    original_train_epoch = trainer._train_epoch
+                    def patched_train_epoch(loader, epoch):
+                        loss = original_train_epoch(loader, epoch)
+                        progress = int(100 * (epoch + 1) / config['epochs'])
+                        job.update_progress(progress)
+                        job.results = job.results or {}
+                        job.results['current_loss'] = loss
+                        job.results['current_epoch'] = epoch
+                        self._save_jobs()
+
+                        # Emit WebSocket event
+                        if self._socketio:
+                            self._socketio.emit('training_progress', {
+                                'job_id': job_id,
+                                'profile_id': job.profile_id,
+                                'epoch': epoch + 1,
+                                'total_epochs': config['epochs'],
+                                'step': epoch + 1,
+                                'total_steps': config['epochs'],
+                                'loss': loss,
+                                'learning_rate': config['learning_rate'],
+                            })
+                        return loss
+
+                    trainer._train_epoch = patched_train_epoch
+
+                    # Run training
+                    trainer.train(str(train_dir))
+
+                    # Get results
+                    results = {
+                        'final_loss': trainer.train_losses[-1] if trainer.train_losses else 0,
+                        'best_loss': trainer.best_loss,
+                        'epochs_completed': config['epochs'],
+                        'checkpoint_path': str(trainer.checkpoint_dir / 'final.pth'),
+                    }
+
+                    # Mark as completed
+                    job.complete(results)
+                    self._save_jobs()
+                    self._emit_completed_event(job)
+                    logger.info(f"Training job {job_id} completed successfully")
+
+                    # Cleanup temp directory
+                    shutil.rmtree(train_dir, ignore_errors=True)
+
+                except Exception as e:
+                    logger.error(f"Training job {job_id} failed: {e}", exc_info=True)
+                    job.fail(str(e))
+                    self._save_jobs()
+                    self._emit_failed_event(job)
+
+            # Start training in background
+            training_thread = threading.Thread(target=run_training, daemon=True)
+            training_thread.start()
+            logger.info(f"Training job {job_id} started in background thread")
+
+        except Exception as e:
+            logger.error(f"Failed to start training job {job_id}: {e}", exc_info=True)
+            job.fail(str(e))
+            self._save_jobs()
+            self._emit_failed_event(job)
+            raise
 
     def _mark_job_completed(self, job_id: str, results: Optional[Dict[str, Any]] = None) -> None:
         """Mark a job as completed (internal method for testing).

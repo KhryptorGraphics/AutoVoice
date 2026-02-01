@@ -193,8 +193,11 @@ class RMVPEPitchExtractor(nn.Module):
         Returns:
             [B, 1, n_mels, N_frames] mel spectrogram
         """
+        # Preserve input dtype for FP16 compatibility
+        input_dtype = audio.dtype
+
         # STFT
-        window = torch.hann_window(self.win_length, device=audio.device)
+        window = torch.hann_window(self.win_length, device=audio.device, dtype=input_dtype)
         stft = torch.stft(
             audio, n_fft=self.n_fft, hop_length=self.hop_size,
             win_length=self.win_length, window=window,
@@ -206,7 +209,10 @@ class RMVPEPitchExtractor(nn.Module):
         if self._mel_basis is None or self._mel_basis.device != audio.device:
             self._mel_basis = self._create_mel_filterbank(audio.device)
 
-        mel = torch.matmul(self._mel_basis, magnitude)  # [B, n_mels, N_frames]
+        # Ensure mel basis matches input dtype
+        mel_basis = self._mel_basis.to(dtype=input_dtype)
+
+        mel = torch.matmul(mel_basis, magnitude)  # [B, n_mels, N_frames]
         mel = torch.log(mel.clamp(min=1e-5))
 
         return mel.unsqueeze(1)  # [B, 1, n_mels, N_frames]

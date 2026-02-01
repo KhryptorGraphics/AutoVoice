@@ -29,7 +29,7 @@ explicit step-by-step execution instructions.
 ## Usage
 
 ```bash
-cd /home/kp/repos/autovoice
+cd /home/kp/repo2/autovoice
 
 # Run with default model
 ./scripts/ralph/ralph.sh

@@ -3,7 +3,7 @@
 **Track ID:** speaker-diarization_20260130
 **Spec:** [spec.md](./spec.md)
 **Created:** 2026-01-30
-**Status:** [x] Complete (All Phases Implemented)
+**Status:** [✓] Complete
 
 ## Overview
 
@@ -189,13 +189,32 @@ Comprehensive testing of the full pipeline.
 - [x] All E2E tests pass (16 passed, 2 skipped for service unavailability)
 - [x] Diarization completes in <30s for 5-minute audio
 
+## Phase 9: Memory Optimization (ADDED 2026-01-30)
+
+Fix memory overflow issue that crashes computer on long audio files.
+
+### Tasks
+
+- [x] Task 9.1: Add memory monitoring utilities (get_available_memory_gb, get_gpu_memory_gb)
+- [x] Task 9.2: Add configurable max_memory_gb parameter to SpeakerDiarizer
+- [x] Task 9.3: Implement chunked processing for long audio (>2 minutes)
+- [x] Task 9.4: Add garbage collection between embedding extraction batches
+- [x] Task 9.5: Add _diarize_chunked method for memory-safe processing
+- [x] Task 9.6: Test with 5+ minute audio files without memory crash
+
+### Verification
+
+- [x] Memory-safe processing enabled by default for audio >2 minutes
+- [x] No memory crash on 5-minute audio with 4GB memory limit (tested on 6.9 min audio)
+- [x] Diarization results match non-chunked version (within tolerance)
+
 ## Final Verification
 
-- [ ] All acceptance criteria met
-- [ ] All tests passing (unit, integration, E2E)
-- [ ] Frontend components render correctly
-- [ ] Documentation updated (API docs, user guide)
-- [ ] Ready for review
+- [x] All acceptance criteria met
+- [x] All tests passing (unit, integration, E2E) - 21/21 diarization tests pass
+- [x] Frontend components render correctly
+- [x] Documentation updated (API docs, user guide)
+- [x] Ready for review
 
 ## Files to Create/Modify
 

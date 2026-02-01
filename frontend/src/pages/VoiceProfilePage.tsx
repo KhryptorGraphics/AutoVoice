@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users } from 'lucide-react'
-import { apiService, VoiceProfile, TrainingJob, TrainingConfig, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType } from '../services/api'
+import { apiService, VoiceProfile, TrainingJob, TrainingConfig, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType } from '../services/api'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { TrainingJobQueue } from '../components/TrainingJobQueue'
 import { LossCurveChart } from '../components/LossCurveChart'
 import { AddSongButton } from '../components/AddSongButton'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { TrainingSampleUpload } from '../components/TrainingSampleUpload'
+import { AdapterSelector } from '../components/AdapterSelector'
 import clsx from 'clsx'
 
 // Training status badge component
@@ -59,10 +60,12 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>(DEFAULT_TRAINING_CONFIG)
   const [selectedJob, setSelectedJob] = useState<TrainingJob | null>(null)
   const [startingTraining, setStartingTraining] = useState(false)
-  const [activeTab, setActiveTab] = useState<'samples' | 'config' | 'jobs' | 'segments'>('samples')
+  const [activeTab, setActiveTab] = useState<'samples' | 'adapters' | 'config' | 'jobs' | 'segments'>('samples')
   const [showAdvancedUpload, setShowAdvancedUpload] = useState(false)
   const [assignedSegments, setAssignedSegments] = useState<Array<{ type: string; segment_key: string; audio_path: string }>>([])
   const [loadingSegments, setLoadingSegments] = useState(false)
+  const [adapters, setAdapters] = useState<AdapterListResponse | null>(null)
+  const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null)
 
   useEffect(() => {
     const fetchSamples = async () => {
@@ -76,6 +79,16 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
       }
     }
     fetchSamples()
+  }, [profile.profile_id])
+
+  // Fetch adapters on mount
+  useEffect(() => {
+    apiService.getProfileAdapters(profile.profile_id)
+      .then(data => {
+        setAdapters(data)
+        setSelectedAdapter(data.selected)
+      })
+      .catch(err => console.error('Failed to fetch adapters:', err))
   }, [profile.profile_id])
 
   // Fetch assigned diarization segments when segments tab is active
@@ -186,7 +199,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
 
       {/* Tab navigation */}
       <div className="flex gap-1 p-1 bg-gray-800 rounded-lg">
-        {(['samples', 'segments', 'config', 'jobs'] as const).map(tab => (
+        {(['samples', 'adapters', 'segments', 'config', 'jobs'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -198,6 +211,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
             )}
           >
             {tab === 'samples' ? `Samples (${samples.length})` :
+             tab === 'adapters' ? `Adapters (${adapters?.count ?? 0})` :
              tab === 'segments' ? 'Diarized Segments' :
              tab === 'jobs' ? 'Training Jobs' : 'Config'}
           </button>
@@ -284,6 +298,33 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {activeTab === 'adapters' && (
+        <div className="bg-gray-800 rounded-lg p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold">LoRA Adapters</h3>
+            <p className="text-sm text-gray-400">
+              Select the adapter type for voice conversion
+            </p>
+          </div>
+
+          <AdapterSelector
+            profileId={profile.profile_id}
+            value={selectedAdapter}
+            onChange={(newAdapter) => setSelectedAdapter(newAdapter)}
+            showMetrics={true}
+            size="lg"
+          />
+
+          <div className="mt-6 p-4 bg-gray-750 rounded-lg">
+            <h4 className="text-sm font-medium text-gray-300 mb-2">About Adapters</h4>
+            <div className="text-sm text-gray-400 space-y-2">
+              <p><strong className="text-violet-300">High Quality (HQ)</strong>: 5M+ parameters, best fidelity for song conversion. Uses full precision for maximum quality.</p>
+              <p><strong className="text-yellow-300">Fast (nvfp4)</strong>: 4-bit quantized, 7x faster inference with ~20MB memory. Ideal for real-time karaoke.</p>
+            </div>
+          </div>
         </div>
       )}
 

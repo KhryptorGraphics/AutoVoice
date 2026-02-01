@@ -101,6 +101,7 @@ class ModelManager:
         from ..models.vocoder import HiFiGANVocoder, BigVGANVocoder
 
         self._content_encoder = ContentEncoder(
+            output_size=768,  # 768-dim for best quality (ContentVec native)
             device=self.device,
             encoder_backend=encoder_backend,
             encoder_type=encoder_type,
@@ -110,7 +111,7 @@ class ModelManager:
             self._content_encoder._load_hubert(hubert_path)
         self._content_encoder.to(self.device)
 
-        self._pitch_encoder = PitchEncoder().to(self.device)
+        self._pitch_encoder = PitchEncoder(output_size=768).to(self.device)  # Match 768-dim
 
         if vocoder_type == 'bigvgan':
             self._vocoder = BigVGANVocoder(device=self.device)
