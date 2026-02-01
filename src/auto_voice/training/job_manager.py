@@ -678,8 +678,19 @@ class TrainingJobManager:
 
                     trainer._train_epoch = patched_train_epoch
 
+                    # Set speaker embedding before training
+                    trainer.set_speaker_embedding(str(train_dir))
+
                     # Run training
                     trainer.train(str(train_dir))
+
+                    # Save adapter and speaker embedding to correct location
+                    # Task 3.1: Verify training output format matches adapter spec
+                    adapter_saved = self._save_trained_adapter(
+                        trainer=trainer,
+                        profile_id=job.profile_id,
+                        job_id=job_id,
+                    )
 
                     # Get results
                     results = {
@@ -687,11 +698,15 @@ class TrainingJobManager:
                         'best_loss': trainer.best_loss,
                         'epochs_completed': config['epochs'],
                         'checkpoint_path': str(trainer.checkpoint_dir / 'final.pth'),
+                        'adapter_path': adapter_saved.get('adapter_path') if adapter_saved else None,
+                        'embedding_path': adapter_saved.get('embedding_path') if adapter_saved else None,
                     }
 
                     # Mark as completed
                     job.complete(results)
                     self._save_jobs()
+
+                    # Task 3.3: Emit training_complete event with profile_id
                     self._emit_completed_event(job)
                     logger.info(f"Training job {job_id} completed successfully")
 
