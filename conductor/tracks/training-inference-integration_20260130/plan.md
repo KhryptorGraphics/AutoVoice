@@ -51,15 +51,16 @@ Update training to produce compatible adapters.
 
 ### Tasks
 
-- [ ] Task 3.1: Verify training output format matches adapter spec
-- [ ] Task 3.2: Add post-training validation step
-- [ ] Task 3.3: Emit training_complete event with profile_id
-- [ ] Task 3.4: Update training job to save adapter in correct location
+- [x] Task 3.1: Verify training output format (256-dim embedding + LoRA adapter)
+- [x] Task 3.2: Add post-training validation step (validate with AdapterManager)
+- [x] Task 3.3: Emit training_complete event with profile_id (already implemented)
+- [x] Task 3.4: Save adapter to data/trained_models/ with correct naming
 
 ### Verification
 
-- [ ] Newly trained adapters load in both pipelines
-- [ ] Training completion triggers availability update
+- [x] Newly trained adapters save in correct format and location
+- [x] Training completion emits event with profile_id
+- [ ] End-to-end test: train new profile -> load in both pipelines
 
 ## Phase 4: API Integration
 
