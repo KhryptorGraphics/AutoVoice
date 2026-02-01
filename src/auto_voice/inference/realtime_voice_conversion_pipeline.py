@@ -107,44 +107,49 @@ class RealtimeVoiceConversionPipeline:
     ) -> None:
         """Switch to a different speaker by profile ID.
 
-        Loads the speaker embedding from the profile and sets it as the target.
+        Loads the speaker embedding from the profile .npy file and sets it as the target.
         This provides API consistency with SOTAConversionPipeline.
 
         Args:
             profile_id: UUID of the voice profile.
-            profiles_dir: Directory containing voice profile JSON files.
+            profiles_dir: Directory containing voice profile .npy files.
 
         Raises:
-            FileNotFoundError: If profile doesn't exist.
-            ValueError: If profile has no speaker embedding.
+            FileNotFoundError: If profile embedding doesn't exist.
+            ValueError: If embedding has invalid shape or normalization.
         """
-        import json
-
         if profile_id == self._current_speaker_id:
             logger.debug(f"Speaker {profile_id} already set, skipping")
             return
 
         profiles_path = Path(profiles_dir)
-        profile_file = profiles_path / f"{profile_id}.json"
+        embedding_path = profiles_path / f"{profile_id}.npy"
 
-        if not profile_file.exists():
-            raise FileNotFoundError(f"Profile not found: {profile_id}")
+        if not embedding_path.exists():
+            raise FileNotFoundError(
+                f"No speaker embedding found for profile: {profile_id}"
+            )
 
-        with open(profile_file) as f:
-            profile_data = json.load(f)
+        # Load and validate embedding
+        embedding = np.load(embedding_path)
+        if embedding.shape != (256,):
+            raise ValueError(
+                f"Invalid embedding shape: {embedding.shape}, expected (256,)"
+            )
 
-        # Get speaker embedding from profile
-        embedding_data = profile_data.get("speaker_embedding")
-        if embedding_data is None:
-            raise ValueError(f"Profile {profile_id} has no speaker embedding")
-
-        embedding = np.array(embedding_data, dtype=np.float32)
+        # Verify L2 normalization (should be ~1.0)
+        norm = np.linalg.norm(embedding)
+        if abs(norm - 1.0) > 0.01:
+            logger.warning(
+                f"Speaker embedding not L2-normalized (norm={norm:.4f}), normalizing"
+            )
+            embedding = embedding / norm
 
         # Set the target voice
         self.set_target_voice(embedding)
         self._current_speaker_id = profile_id
 
-        logger.info(f"Switched to speaker: {profile_id}")
+        logger.info(f"Switched to speaker: {profile_id} (embedding loaded)")
 
     def get_current_speaker(self) -> Optional[str]:
         """Get the currently loaded speaker profile ID.

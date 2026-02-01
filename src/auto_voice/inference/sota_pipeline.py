@@ -77,6 +77,7 @@ class SOTAConversionPipeline:
         self._profile_store = profile_store
         self._profile_id = profile_id
         self._current_speaker_id: Optional[str] = None
+        self._speaker_embedding: Optional[torch.Tensor] = None
 
         # Initialize adapter manager for dynamic speaker switching
         self._adapter_manager = AdapterManager(
@@ -135,13 +136,14 @@ class SOTAConversionPipeline:
         """Dynamically switch to a different speaker by loading their LoRA adapter.
 
         This method allows changing the target voice after pipeline initialization
-        without recreating the entire pipeline.
+        without recreating the entire pipeline. Loads both the LoRA adapter weights
+        and the 256-dim speaker embedding from the profile.
 
         Args:
             profile_id: UUID of the voice profile to switch to.
 
         Raises:
-            FileNotFoundError: If no adapter exists for the profile.
+            FileNotFoundError: If no adapter or embedding exists for the profile.
             RuntimeError: If adapter loading fails.
         """
         if profile_id == self._current_speaker_id:
@@ -165,8 +167,38 @@ class SOTAConversionPipeline:
             # Apply adapter weights to decoder
             self._adapter_manager.apply_adapter(self.decoder, adapter_state)
 
+            # Load speaker embedding from .npy file
+            from pathlib import Path
+            import numpy as np
+
+            profiles_dir = Path(self._adapter_manager.config.profiles_dir)
+            embedding_path = profiles_dir / f"{profile_id}.npy"
+
+            if not embedding_path.exists():
+                raise FileNotFoundError(
+                    f"No speaker embedding found for profile: {profile_id}"
+                )
+
+            # Load and validate embedding
+            embedding = np.load(embedding_path)
+            if embedding.shape != (256,):
+                raise ValueError(
+                    f"Invalid embedding shape: {embedding.shape}, expected (256,)"
+                )
+
+            # Verify L2 normalization (should be ~1.0)
+            norm = np.linalg.norm(embedding)
+            if abs(norm - 1.0) > 0.01:
+                logger.warning(
+                    f"Speaker embedding not L2-normalized (norm={norm:.4f}), normalizing"
+                )
+                embedding = embedding / norm
+
+            # Convert to tensor and move to device
+            self._speaker_embedding = torch.from_numpy(embedding).to(self.device)
+
             self._current_speaker_id = profile_id
-            logger.info(f"Switched to speaker: {profile_id}")
+            logger.info(f"Switched to speaker: {profile_id} (embedding loaded)")
 
         except Exception as e:
             logger.error(f"Failed to set speaker {profile_id}: {e}")
@@ -180,16 +212,26 @@ class SOTAConversionPipeline:
         """
         return self._current_speaker_id
 
+    def get_speaker_embedding(self) -> Optional[torch.Tensor]:
+        """Get the currently loaded speaker embedding.
+
+        Returns:
+            [256] speaker embedding tensor, or None if no speaker loaded.
+        """
+        return self._speaker_embedding
+
     def clear_speaker(self) -> None:
         """Clear the current speaker adapter, reverting to base model.
 
-        This zeros out LoRA contributions without removing the LoRA layers.
+        This zeros out LoRA contributions without removing the LoRA layers
+        and clears the stored speaker embedding.
         """
         if self._current_speaker_id is None:
             logger.debug("No speaker loaded, nothing to clear")
             return
 
         self._adapter_manager.remove_adapter(self.decoder)
+        self._speaker_embedding = None
         self._current_speaker_id = None
         logger.info("Speaker cleared, reverted to base model")
 
