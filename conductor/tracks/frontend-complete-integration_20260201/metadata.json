@@ -1,0 +1,27 @@
+{
+  "id": "frontend-complete-integration_20260201",
+  "title": "Frontend Complete Integration",
+  "type": "feature",
+  "status": "in_progress",
+  "created": "2026-02-01T10:30:00Z",
+  "updated": "2026-02-01T10:30:00Z",
+  "phases": {
+    "total": 6,
+    "completed": 0
+  },
+  "tasks": {
+    "total": 26,
+    "completed": 0
+  },
+  "dependencies": {
+    "tracks": [
+      "training-inference-integration_20260130",
+      "sota-dual-pipeline_20260130",
+      "sota-innovations_20260131"
+    ],
+    "files": [
+      "frontend/src/",
+      "src/auto_voice/web/api.py"
+    ]
+  }
+}
