@@ -731,6 +731,148 @@ class TrainingJobManager:
             self._emit_failed_event(job)
             raise
 
+    def _save_trained_adapter(
+        self,
+        trainer: Any,
+        profile_id: str,
+        job_id: str,
+    ) -> Dict[str, str]:
+        """Save trained adapter and speaker embedding to correct location.
+
+        Tasks 3.1-3.4: Save adapter in correct format, validate, and prepare for inference.
+
+        Args:
+            trainer: Trainer instance with trained model
+            profile_id: Voice profile ID
+            job_id: Training job ID
+
+        Returns:
+            Dict with 'adapter_path' and 'embedding_path'
+
+        Raises:
+            RuntimeError: If adapter cannot be saved or validated
+        """
+        import numpy as np
+        from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
+
+        try:
+            # Task 3.4: Save adapter to data/trained_models/
+            trained_models_dir = Path("/home/kp/repo2/autovoice/data/trained_models")
+            trained_models_dir.mkdir(parents=True, exist_ok=True)
+
+            # Check if model has LoRA injected
+            has_lora = getattr(trainer.model, '_lora_injected', False)
+            if not has_lora:
+                logger.warning(
+                    f"Model does not have LoRA injected for job {job_id}. "
+                    "Saving full model checkpoint instead."
+                )
+                # Save full model as fallback
+                full_checkpoint_path = trained_models_dir / f"{profile_id}_full_model.pt"
+                torch.save(trainer.model.state_dict(), full_checkpoint_path)
+                logger.info(f"Saved full model checkpoint: {full_checkpoint_path}")
+
+                # Still need speaker embedding
+                if trainer.speaker_embedding is None:
+                    raise RuntimeError("Trainer has no speaker embedding set")
+
+                embedding_np = trainer.speaker_embedding.cpu().numpy()
+
+                # Verify and normalize embedding
+                norm = np.linalg.norm(embedding_np)
+                if abs(norm - 1.0) > 0.01:
+                    logger.warning(f"Normalizing speaker embedding (norm={norm:.4f})")
+                    embedding_np = embedding_np / norm
+
+                embedding_path = trained_models_dir / f"{profile_id}_embedding.npy"
+                np.save(embedding_path, embedding_np)
+                logger.info(f"Saved speaker embedding: {embedding_path}")
+
+                return {
+                    'adapter_path': str(full_checkpoint_path),
+                    'embedding_path': str(embedding_path),
+                }
+
+            # Task 3.1: Extract LoRA adapter weights
+            lora_state = trainer.model.get_lora_state_dict()
+
+            # Save adapter with correct naming: {profile_id}_adapter.pt
+            adapter_path = trained_models_dir / f"{profile_id}_adapter.pt"
+            torch.save(lora_state, adapter_path)
+            size_kb = adapter_path.stat().st_size / 1024
+            logger.info(f"Saved LoRA adapter: {adapter_path} ({size_kb:.1f} KB)")
+
+            # Task 3.1: Save speaker embedding as .npy
+            if trainer.speaker_embedding is None:
+                raise RuntimeError("Trainer has no speaker embedding set")
+
+            embedding_np = trainer.speaker_embedding.cpu().numpy()
+
+            # Verify embedding format (256-dim, L2-normalized)
+            if embedding_np.shape != (256,):
+                raise RuntimeError(
+                    f"Invalid speaker embedding shape: {embedding_np.shape}, expected (256,)"
+                )
+
+            norm = np.linalg.norm(embedding_np)
+            if abs(norm - 1.0) > 0.01:
+                logger.warning(f"Normalizing speaker embedding (norm={norm:.4f})")
+                embedding_np = embedding_np / norm
+
+            embedding_path = trained_models_dir / f"{profile_id}_embedding.npy"
+            np.save(embedding_path, embedding_np)
+            logger.info(f"Saved speaker embedding: {embedding_path}")
+
+            # Also save embedding to voice_profiles directory for pipeline compatibility
+            import shutil
+            profiles_dir = Path("/home/kp/repo2/autovoice/data/voice_profiles")
+            profiles_dir.mkdir(parents=True, exist_ok=True)
+            profile_embedding_path = profiles_dir / f"{profile_id}.npy"
+            shutil.copy2(embedding_path, profile_embedding_path)
+            logger.info(f"Copied embedding to profiles: {profile_embedding_path}")
+
+            # Task 3.2: Post-training validation
+            logger.info(f"Validating saved adapter for profile {profile_id}")
+
+            # Use AdapterManager to validate the saved adapter can be loaded
+            adapter_manager = AdapterManager(AdapterManagerConfig(
+                adapters_dir=str(trained_models_dir),
+                profiles_dir="/home/kp/repo2/autovoice/data/voice_profiles",
+            ))
+
+            # Try loading the adapter to verify it's valid
+            loaded_state = adapter_manager.load_adapter(profile_id, use_cache=False)
+
+            # Verify non-empty
+            if not loaded_state:
+                raise RuntimeError("Loaded adapter state is empty")
+
+            # Verify contains expected keys
+            expected_keys = ['lora_A', 'lora_B']
+            has_expected = any(
+                any(key in param_name for key in expected_keys)
+                for param_name in loaded_state.keys()
+            )
+            if not has_expected:
+                logger.warning(
+                    f"Adapter may not contain expected LoRA structure. "
+                    f"Keys: {list(loaded_state.keys())[:5]}"
+                )
+
+            logger.info(
+                f"Adapter validation successful: {len(loaded_state)} parameters, "
+                f"{sum(p.numel() for p in loaded_state.values())} total elements"
+            )
+
+            return {
+                'adapter_path': str(adapter_path),
+                'embedding_path': str(embedding_path),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to save trained adapter for {profile_id}: {e}", exc_info=True)
+            raise RuntimeError(f"Adapter save failed: {e}") from e
+
     def _mark_job_completed(self, job_id: str, results: Optional[Dict[str, Any]] = None) -> None:
         """Mark a job as completed (internal method for testing).
 
