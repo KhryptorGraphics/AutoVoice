@@ -278,19 +278,27 @@ def convert_song():
         lambda v: v in ['hq', 'nvfp4', None], type_hint='str'
     )
 
-    # If no adapter_type specified, use profile's selected adapter or default to hq if available
+    # Task 4.2: Check for trained adapter using AdapterManager
+    from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
+    adapter_manager = AdapterManager(AdapterManagerConfig())
+
+    # Task 4.4: Return error if adapter missing for profile
+    if not adapter_manager.has_adapter(profile_id):
+        logger.warning(f"No trained adapter found for profile {profile_id}")
+        return jsonify({
+            'error': 'No trained model available',
+            'message': f'Profile {profile_id} does not have a trained model. Please train the model first.',
+            'profile_id': profile_id
+        }), 404
+
+    # If no adapter_type specified, use profile's selected adapter or default to unified adapter
     if adapter_type is None:
         adapter_type = profile.get('selected_adapter')
         if adapter_type is None:
-            # Default: prefer hq > nvfp4
-            from pathlib import Path
-            base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
-            if (base_dir / 'hq' / f"{profile_id}_hq_lora.pt").exists():
-                adapter_type = 'hq'
-            elif (base_dir / 'nvfp4' / f"{profile_id}_nvfp4_lora.pt").exists():
-                adapter_type = 'nvfp4'
+            # Default: use unified adapter (new format)
+            adapter_type = 'unified'
 
-    logger.info(f'Using adapter type: {adapter_type}')
+    logger.info(f'Using adapter type: {adapter_type} for profile {profile_id}')
 
     # Pipeline type selection
     # - realtime: Low-latency for live karaoke (<100ms)
@@ -872,6 +880,15 @@ def get_voice_profiles():
     user_id = request.args.get('user_id')
     try:
         profiles = voice_cloner.list_voice_profiles(user_id=user_id)
+
+        # Task 4.5: Initialize AdapterManager once for all profiles
+        from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
+        try:
+            adapter_manager = AdapterManager(AdapterManagerConfig())
+        except Exception as e:
+            logger.warning(f"Failed to initialize AdapterManager: {e}")
+            adapter_manager = None
+
         # Omit large embedding fields and normalize field names for frontend
         clean_profiles = []
         for profile in profiles:
@@ -881,6 +898,20 @@ def get_voice_profiles():
                 clean_profile['sample_count'] = clean_profile.pop('training_sample_count')
             elif 'sample_count' not in clean_profile:
                 clean_profile['sample_count'] = 0
+
+            # Task 4.5: Add model availability status
+            if adapter_manager:
+                try:
+                    pid = clean_profile.get('profile_id')
+                    if pid:
+                        clean_profile['has_trained_model'] = adapter_manager.has_adapter(pid)
+                    else:
+                        clean_profile['has_trained_model'] = False
+                except Exception:
+                    clean_profile['has_trained_model'] = False
+            else:
+                clean_profile['has_trained_model'] = False
+
             clean_profiles.append(clean_profile)
 
         return jsonify(clean_profiles)
@@ -916,6 +947,21 @@ def get_voice_profile(profile_id):
 
         # Omit large embedding field
         clean_profile = {k: v for k, v in profile.items() if k != 'embedding'}
+
+        # Task 4.5: Add model availability status
+        from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
+        try:
+            adapter_manager = AdapterManager(AdapterManagerConfig())
+            has_model = adapter_manager.has_adapter(profile_id)
+            adapter_path = adapter_manager.get_adapter_path(profile_id) if has_model else None
+
+            clean_profile['has_trained_model'] = has_model
+            if adapter_path:
+                clean_profile['adapter_path'] = str(adapter_path)
+        except Exception as e:
+            logger.warning(f"Failed to check adapter for {profile_id}: {e}")
+            clean_profile['has_trained_model'] = False
+
         return jsonify(clean_profile)
     except ProfileNotFoundError:
         logger.info(f"Voice profile not found via exception: {profile_id}")
@@ -1037,6 +1083,115 @@ def get_profile_adapters(profile_id):
         'selected': selected,
         'count': len(adapters),
     })
+
+
+@api_bp.route('/voice/profiles/<profile_id>/model', methods=['GET'])
+def get_profile_model(profile_id):
+    """Get trained model information for a voice profile.
+
+    Task 4.1: Returns unified model info using AdapterManager.
+
+    Returns:
+        JSON with:
+        - has_model: bool - whether trained adapter exists
+        - adapter_path: str - path to adapter file (if exists)
+        - adapter_info: dict - adapter metadata (rank, alpha, etc)
+        - embedding_path: str - path to speaker embedding
+        - embedding_shape: tuple - embedding dimensions
+        - created_at: str - adapter creation timestamp
+    """
+    from pathlib import Path
+    from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
+
+    # Task 4.4: Validate profile_id format
+    if not profile_id or len(profile_id) != 36:
+        return jsonify({
+            'error': 'Invalid profile ID format',
+            'message': 'Profile ID must be a valid UUID (36 characters)'
+        }), 400
+
+    # Check if profile exists
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if voice_cloner is None:
+        return jsonify({'error': 'Voice cloning service unavailable'}), 503
+
+    try:
+        profile = voice_cloner.load_voice_profile(profile_id)
+        if profile is None:
+            return jsonify({
+                'error': 'Voice profile not found',
+                'profile_id': profile_id
+            }), 404
+    except Exception as e:
+        logger.warning(f"Profile {profile_id} not found: {e}")
+        return jsonify({
+            'error': 'Voice profile not found',
+            'profile_id': profile_id
+        }), 404
+
+    # Use AdapterManager to check for trained model
+    try:
+        adapter_manager = AdapterManager(AdapterManagerConfig())
+
+        # Check if adapter exists
+        has_model = adapter_manager.has_adapter(profile_id)
+
+        if not has_model:
+            # Task 4.4: Clear error when no adapter
+            return jsonify({
+                'profile_id': profile_id,
+                'has_model': False,
+                'message': 'No trained model available for this profile',
+            }), 404
+
+        # Get adapter info
+        adapter_info = adapter_manager.get_adapter_info(profile_id)
+        adapter_path = adapter_manager.get_adapter_path(profile_id)
+
+        # Check embedding
+        embedding_path = Path(adapter_manager.config.profiles_dir) / f"{profile_id}.npy"
+        embedding_exists = embedding_path.exists()
+        embedding_shape = None
+
+        if embedding_exists:
+            import numpy as np
+            try:
+                embedding = np.load(embedding_path)
+                embedding_shape = embedding.shape
+            except Exception as e:
+                logger.warning(f"Failed to load embedding shape: {e}")
+
+        # Get file timestamps
+        created_at = None
+        if adapter_path and adapter_path.exists():
+            import datetime
+            created_at = datetime.datetime.fromtimestamp(
+                adapter_path.stat().st_mtime
+            ).isoformat()
+
+        return jsonify({
+            'profile_id': profile_id,
+            'has_model': True,
+            'adapter_path': str(adapter_path) if adapter_path else None,
+            'adapter_info': {
+                'rank': adapter_info.rank if adapter_info else None,
+                'alpha': adapter_info.alpha if adapter_info else None,
+                'sample_count': adapter_info.sample_count if adapter_info else None,
+                'training_epochs': adapter_info.training_epochs if adapter_info else None,
+                'loss_final': adapter_info.loss_final if adapter_info else None,
+                'profile_name': adapter_info.profile_name if adapter_info else None,
+            },
+            'embedding_path': str(embedding_path) if embedding_exists else None,
+            'embedding_shape': list(embedding_shape) if embedding_shape is not None else None,
+            'created_at': created_at,
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting model info for {profile_id}: {e}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to retrieve model information',
+            'message': str(e)
+        }), 500
 
 
 @api_bp.route('/voice/profiles/<profile_id>/adapter/select', methods=['POST'])
