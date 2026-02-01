@@ -35,8 +35,8 @@ Integrate AdapterManager into both pipelines.
 
 - [x] Task 2.1: Add set_speaker(profile_id) to RealtimeVoiceConverter
 - [x] Task 2.2: Add set_speaker(profile_id) to SOTAConversionPipeline (QualityVoiceConverter)
-- [ ] Task 2.3: Modify decoder to accept speaker embedding from adapter
-- [ ] Task 2.4: Ensure embedding format matches (256-dim, L2-normalized)
+- [x] Task 2.3: Modify pipelines to load speaker embedding from adapter .npy files
+- [x] Task 2.4: Ensure embedding format matches (256-dim, L2-normalized with validation)
 - [ ] Task 2.5: Test conversion with William/Conor adapters
 
 ### Verification
