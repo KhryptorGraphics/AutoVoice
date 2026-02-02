@@ -5,11 +5,21 @@ from .onnx_export import (
     export_sovits,
     export_bigvgan,
 )
-from .tensorrt_engine import (
-    LatencyStats,
-    ShapeProfile,
-    TRTEngineBuilder,
-)
+
+# TensorRT is optional - only import if available
+try:
+    from .tensorrt_engine import (
+        LatencyStats,
+        ShapeProfile,
+        TRTEngineBuilder,
+    )
+    _TENSORRT_AVAILABLE = True
+except ImportError:
+    # TensorRT not available - define placeholder classes
+    LatencyStats = None
+    ShapeProfile = None
+    TRTEngineBuilder = None
+    _TENSORRT_AVAILABLE = False
 
 __all__ = [
     'export_content_encoder',

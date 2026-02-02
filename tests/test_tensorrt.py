@@ -18,16 +18,30 @@ from auto_voice.export.onnx_export import (
     export_content_encoder,
     export_sovits,
 )
-from auto_voice.export.tensorrt_engine import (
-    LatencyStats,
-    ShapeProfile,
-    TRTEngineBuilder,
-)
+
+# Check if TensorRT is available
+try:
+    import tensorrt as trt
+    from auto_voice.export.tensorrt_engine import (
+        LatencyStats,
+        ShapeProfile,
+        TRTEngineBuilder,
+    )
+    TENSORRT_AVAILABLE = True
+except ImportError:
+    TENSORRT_AVAILABLE = False
+    LatencyStats = None
+    ShapeProfile = None
+    TRTEngineBuilder = None
+
 from auto_voice.models.encoder import ContentEncoder
 from auto_voice.models.so_vits_svc import SoVitsSvc
 from auto_voice.models.vocoder import BigVGANGenerator
 
-pytestmark = pytest.mark.tensorrt
+pytestmark = [
+    pytest.mark.tensorrt,
+    pytest.mark.skipif(not TENSORRT_AVAILABLE, reason="TensorRT not installed")
+]
 
 # TRT builds introduce small numerical differences vs ONNX/PyTorch
 FP32_TOLERANCE = 5e-3
