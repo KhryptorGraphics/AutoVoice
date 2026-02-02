@@ -41,14 +41,25 @@ export type WSEventHandler<T = unknown> = (event: WSEvent<T>) => void
 
 export interface ConversionRecord {
   id: string
-  status: 'queued' | 'processing' | 'complete' | 'error' | 'cancelled'
+  status: 'queued' | 'processing' | 'complete' | 'completed' | 'error' | 'cancelled'
   created_at: string
+  started_at?: string
   completed_at?: string
   input_file: string
   profile_id: string
   preset: string
   duration?: number
   error?: string
+  // Pipeline and adapter info
+  pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
+  adapter_type?: 'hq' | 'nvfp4' | 'unified'
+  // Quality metrics
+  processing_time_seconds?: number
+  rtf?: number  // Real-time factor (processing_time / audio_duration)
+  audio_duration_seconds?: number
+  // Output URLs
+  output_url?: string
+  download_url?: string
   // Additional fields used by ConversionHistoryPage
   timestamp?: Date
   isFavorite?: boolean
@@ -408,6 +419,30 @@ export const DEFAULT_PITCH_CONFIG: PitchConfig = {
   use_gpu: true,
 }
 
+// Conversion job response (from POST /convert/song)
+export interface ConversionJobResponse {
+  status: 'queued' | 'processing'
+  job_id: string
+  websocket_room?: string
+  message?: string
+  // When sync processing is used, result may be inline
+  output_url?: string
+  download_url?: string
+}
+
+// Extended conversion status (from GET /convert/status/{job_id})
+export interface ConversionStatusExtended extends ConversionRecord {
+  // Timing info
+  started_at?: string
+  processing_time_seconds?: number
+  // Quality metrics
+  rtf?: number
+  audio_duration_seconds?: number
+  // Pipeline info used
+  pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
+  adapter_type?: 'hq' | 'nvfp4' | 'unified'
+}
+
 // CUDA kernel metrics
 export interface KernelMetric {
   name: string
@@ -443,6 +478,49 @@ export interface SystemInfo {
   status?: string
 }
 
+// Custom error classes for better error handling
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public statusCode: number,
+    public code?: string,
+    public details?: Record<string, unknown>
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+export class ConversionError extends ApiError {
+  constructor(
+    message: string,
+    statusCode: number,
+    public errorType: 'missing_adapter' | 'invalid_profile' | 'pipeline_error' | 'audio_error' | 'unknown',
+    details?: Record<string, unknown>
+  ) {
+    super(message, statusCode, errorType, details)
+    this.name = 'ConversionError'
+  }
+
+  static fromResponse(error: { error: string; code?: string; details?: Record<string, unknown> }, status: number): ConversionError {
+    const message = error.error || 'Conversion failed'
+    let errorType: ConversionError['errorType'] = 'unknown'
+
+    // Detect error type from message or code
+    if (message.includes('adapter') || message.includes('model not found')) {
+      errorType = 'missing_adapter'
+    } else if (message.includes('profile') || message.includes('Profile not found')) {
+      errorType = 'invalid_profile'
+    } else if (message.includes('pipeline') || message.includes('Pipeline')) {
+      errorType = 'pipeline_error'
+    } else if (message.includes('audio') || message.includes('Audio')) {
+      errorType = 'audio_error'
+    }
+
+    return new ConversionError(message, status, errorType, error.details)
+  }
+}
+
 class ApiService {
   private async request<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${API_BASE}${path}`, {
@@ -451,7 +529,12 @@ class ApiService {
     })
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: response.statusText }))
-      throw new Error(error.error || `HTTP ${response.status}`)
+      throw new ApiError(
+        error.error || `HTTP ${response.status}`,
+        response.status,
+        error.code,
+        error.details
+      )
     }
     return response.json()
   }
@@ -616,10 +699,10 @@ class ApiService {
       vocal_volume?: number
       instrumental_volume?: number
       pitch_shift?: number
-      pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc'
+      pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
       adapter_type?: 'hq' | 'nvfp4'
     }
-  ): Promise<{ job_id: string }> {
+  ): Promise<ConversionJobResponse> {
     const formData = new FormData()
     formData.append('audio', audioFile)
     formData.append('profile_id', profileId)
@@ -634,7 +717,12 @@ class ApiService {
       method: 'POST',
       body: formData,
     })
-    if (!response.ok) throw new Error(`Conversion failed: ${response.status}`)
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: `Conversion failed: ${response.status}` }))
+      throw ConversionError.fromResponse(errorData, response.status)
+    }
+
     return response.json()
   }
 

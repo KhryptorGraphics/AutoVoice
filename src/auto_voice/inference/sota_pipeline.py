@@ -26,6 +26,7 @@ from ..models.pitch import RMVPEPitchExtractor
 from ..models.svc_decoder import CoMoSVCDecoder
 from ..models.vocoder import BigVGANVocoder
 from ..models.adapter_manager import AdapterManager, AdapterManagerConfig
+from ..models.hq_adapter_bridge import HQLoRAAdapterBridge, AdapterBridgeConfig
 
 if TYPE_CHECKING:
     from ..storage.voice_profiles import VoiceProfileStore
@@ -84,6 +85,13 @@ class SOTAConversionPipeline:
             AdapterManagerConfig(device=str(self.device))
         )
 
+        # Initialize HQ adapter bridge for trained HQ LoRA adapters
+        # HQ adapters use a different architecture (standalone MLP vs layer-injection)
+        self._hq_adapter_bridge = HQLoRAAdapterBridge(
+            AdapterBridgeConfig(device=str(self.device))
+        )
+        self._use_hq_adapter = False  # Flag to indicate if HQ adapter is active
+
         # Initialize components (all moved to device)
         self.separator = MelBandRoFormer(device=self.device).to(self.device)
         self.content_extractor = ContentVecEncoder(
@@ -139,6 +147,8 @@ class SOTAConversionPipeline:
         without recreating the entire pipeline. Loads both the LoRA adapter weights
         and the 256-dim speaker embedding from the profile.
 
+        Prefers HQ adapters (standalone MLP) over layer-injection adapters when available.
+
         Args:
             profile_id: UUID of the voice profile to switch to.
 
@@ -150,24 +160,17 @@ class SOTAConversionPipeline:
             logger.debug(f"Speaker {profile_id} already loaded, skipping")
             return
 
-        # Check if adapter exists
-        if not self._adapter_manager.has_adapter(profile_id):
+        # Check for HQ adapter first (preferred)
+        has_hq_adapter = self._hq_adapter_bridge.has_adapter(profile_id)
+        has_standard_adapter = self._adapter_manager.has_adapter(profile_id)
+
+        if not has_hq_adapter and not has_standard_adapter:
             raise FileNotFoundError(
                 f"No trained adapter found for profile: {profile_id}"
             )
 
         try:
-            # Load adapter from cache or disk
-            adapter_state = self._adapter_manager.load_adapter(profile_id)
-
-            # Ensure decoder has LoRA layers injected
-            if not hasattr(self.decoder, 'lora_adapters') or not self.decoder.lora_adapters:
-                self.decoder.inject_lora(rank=8, alpha=16)
-
-            # Apply adapter weights to decoder
-            self._adapter_manager.apply_adapter(self.decoder, adapter_state)
-
-            # Load speaker embedding from .npy file
+            # Load speaker embedding first (needed for both adapter types)
             from pathlib import Path
             import numpy as np
 
@@ -196,6 +199,25 @@ class SOTAConversionPipeline:
 
             # Convert to tensor and move to device
             self._speaker_embedding = torch.from_numpy(embedding).to(self.device)
+
+            # Prefer HQ adapter if available
+            if has_hq_adapter:
+                # Load HQ adapter (standalone MLP architecture)
+                self._hq_adapter_bridge.load_adapter(profile_id)
+                self._use_hq_adapter = True
+                logger.info(f"Loaded HQ adapter for speaker: {profile_id}")
+            else:
+                # Fall back to standard layer-injection adapter
+                adapter_state = self._adapter_manager.load_adapter(profile_id)
+
+                # Ensure decoder has LoRA layers injected
+                if not hasattr(self.decoder, 'lora_adapters') or not self.decoder.lora_adapters:
+                    self.decoder.inject_lora(rank=8, alpha=16)
+
+                # Apply adapter weights to decoder
+                self._adapter_manager.apply_adapter(self.decoder, adapter_state)
+                self._use_hq_adapter = False
+                logger.info(f"Loaded standard adapter for speaker: {profile_id}")
 
             self._current_speaker_id = profile_id
             logger.info(f"Switched to speaker: {profile_id} (embedding loaded)")
@@ -230,7 +252,13 @@ class SOTAConversionPipeline:
             logger.debug("No speaker loaded, nothing to clear")
             return
 
-        self._adapter_manager.remove_adapter(self.decoder)
+        # Clear HQ adapter if it was used
+        if self._use_hq_adapter:
+            self._hq_adapter_bridge.clear()
+            self._use_hq_adapter = False
+        else:
+            self._adapter_manager.remove_adapter(self.decoder)
+
         self._speaker_embedding = None
         self._current_speaker_id = None
         logger.info("Speaker cleared, reverted to base model")
@@ -404,6 +432,15 @@ class SOTAConversionPipeline:
         n_frames = min(content_features.shape[1], f0.shape[1])
         content_features = content_features[:, :n_frames, :]  # [1, N, 768]
         f0_aligned = f0[:, :n_frames]  # [1, N]
+
+        # Apply HQ adapter transformation if active
+        # HQ adapters transform content features before the decoder
+        if self._use_hq_adapter and self._hq_adapter_bridge.get_current_adapter() is not None:
+            content_features = self._hq_adapter_bridge.transform(
+                content_features,
+                speaker_embedding  # Pass speaker for conditioning
+            )
+            logger.debug("Applied HQ adapter transformation to content features")
 
         # Encode pitch to 256-dim embeddings
         pitch_embeddings = self._encode_pitch(f0_aligned)  # [1, N, 256]

@@ -1,0 +1,504 @@
+{
+  "info": {
+    "name": "AutoVoice API",
+    "description": "GPU-accelerated singing voice conversion and TTS system",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0.0"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000",
+      "type": "string"
+    },
+    {
+      "key": "api_version",
+      "value": "v1",
+      "type": "string"
+    },
+    {
+      "key": "job_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "profile_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Conversion",
+      "item": [
+        {
+          "name": "Convert Song",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "song",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "profile_id",
+                  "value": "{{profile_id}}",
+                  "type": "text"
+                },
+                {
+                  "key": "vocal_volume",
+                  "value": "1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "instrumental_volume",
+                  "value": "0.9",
+                  "type": "text"
+                },
+                {
+                  "key": "pitch_shift",
+                  "value": "0",
+                  "type": "text"
+                },
+                {
+                  "key": "output_quality",
+                  "value": "balanced",
+                  "type": "text",
+                  "description": "draft | fast | balanced | high | studio"
+                },
+                {
+                  "key": "pipeline_type",
+                  "value": "quality_seedvc",
+                  "type": "text",
+                  "description": "realtime | quality | quality_seedvc"
+                },
+                {
+                  "key": "adapter_type",
+                  "value": "unified",
+                  "type": "text",
+                  "description": "hq | nvfp4 | unified"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/convert/song",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "convert", "song"]
+            },
+            "description": "Convert a song to target voice profile. Returns job_id for async processing."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Job Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/convert/status/{{job_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "convert", "status", "{{job_id}}"]
+            },
+            "description": "Poll for conversion job status"
+          },
+          "response": []
+        },
+        {
+          "name": "Download Result",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/convert/download/{{job_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "convert", "download", "{{job_id}}"]
+            },
+            "description": "Download completed conversion result"
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel Job",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/convert/cancel/{{job_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "convert", "cancel", "{{job_id}}"]
+            },
+            "description": "Cancel a queued or running conversion job"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Conversion Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/convert/metrics/{{job_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "convert", "metrics", "{{job_id}}"]
+            },
+            "description": "Get quality metrics for completed conversion"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Voice Profiles",
+      "item": [
+        {
+          "name": "Create Voice Profile",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "name",
+                  "value": "My Artist",
+                  "type": "text"
+                },
+                {
+                  "key": "samples",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "samples",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "samples",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/voice/clone",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "voice", "clone"]
+            },
+            "description": "Create voice profile from audio samples (minimum 3 samples)"
+          },
+          "response": []
+        },
+        {
+          "name": "List Voice Profiles",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/voice/profiles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "voice", "profiles"]
+            },
+            "description": "Get all available voice profiles"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Voice Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/voice/profiles/{{profile_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "voice", "profiles", "{{profile_id}}"]
+            },
+            "description": "Get details for a specific voice profile"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Voice Profile",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/voice/profiles/{{profile_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "voice", "profiles", "{{profile_id}}"]
+            },
+            "description": "Delete a voice profile and all associated data"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Profile Adapters",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/voice/profiles/{{profile_id}}/adapters",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "voice", "profiles", "{{profile_id}}", "adapters"]
+            },
+            "description": "List available adapters for profile"
+          },
+          "response": []
+        },
+        {
+          "name": "Select Adapter",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"adapter_type\": \"unified\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/voice/profiles/{{profile_id}}/adapter/select",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "voice", "profiles", "{{profile_id}}", "adapter", "select"]
+            },
+            "description": "Select active adapter for profile"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Training",
+      "item": [
+        {
+          "name": "List Training Jobs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/training/jobs",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "training", "jobs"]
+            },
+            "description": "Get all training jobs"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Training Job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"profile_id\": \"{{profile_id}}\",\n  \"epochs\": 100,\n  \"batch_size\": 8,\n  \"learning_rate\": 0.0001,\n  \"adapter_type\": \"unified\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/training/jobs",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "training", "jobs"]
+            },
+            "description": "Start training job for voice profile"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Training Job Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/training/jobs/{{job_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "training", "jobs", "{{job_id}}"]
+            },
+            "description": "Get status of specific training job"
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel Training Job",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/training/jobs/{{job_id}}/cancel",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "training", "jobs", "{{job_id}}", "cancel"]
+            },
+            "description": "Cancel a running training job"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Audio Processing",
+      "item": [
+        {
+          "name": "Speaker Diarization",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "audio",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "num_speakers",
+                  "value": "",
+                  "type": "text",
+                  "description": "Optional: Expected number of speakers"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/audio/diarize",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "audio", "diarize"]
+            },
+            "description": "Detect and separate multiple speakers"
+          },
+          "response": []
+        },
+        {
+          "name": "Assign Speakers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"job_id\": \"diarize_123\",\n  \"assignments\": {\n    \"SPEAKER_00\": \"profile_host\",\n    \"SPEAKER_01\": \"profile_guest\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/audio/diarize/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "audio", "diarize", "assign"]
+            },
+            "description": "Assign detected speakers to profiles"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "YouTube",
+      "item": [
+        {
+          "name": "Get YouTube Info",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://www.youtube.com/watch?v=dQw4w9WgXcQ\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/youtube/info",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "youtube", "info"]
+            },
+            "description": "Fetch metadata for YouTube video"
+          },
+          "response": []
+        },
+        {
+          "name": "Download YouTube Audio",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://www.youtube.com/watch?v=dQw4w9WgXcQ\",\n  \"profile_id\": \"{{profile_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/youtube/download",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "youtube", "download"]
+            },
+            "description": "Download and process YouTube audio"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "System",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "health"]
+            },
+            "description": "Check system health and component status"
+          },
+          "response": []
+        },
+        {
+          "name": "GPU Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/gpu/metrics",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "gpu", "metrics"]
+            },
+            "description": "Get GPU utilization and memory metrics"
+          },
+          "response": []
+        },
+        {
+          "name": "System Info",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/system/info",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "system", "info"]
+            },
+            "description": "Get system information"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,37 +1,141 @@
+version: '3.8'
+
 services:
   backend:
     build:
       context: .
+      dockerfile: Dockerfile
       target: production
+    image: autovoice:latest
+    container_name: autovoice-backend
+    restart: unless-stopped
+
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+    env_file:
+      - .env
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - SECRET_KEY=${SECRET_KEY:-autovoice-dev-key}
+      - CUDA_VISIBLE_DEVICES=0
+      - MAX_WORKERS=${MAX_WORKERS:-4}
+
     ports:
-      - "5000:5000"
+      - "${HOST_PORT:-10001}:5000"
+
     volumes:
       - ./models/pretrained:/app/models/pretrained:ro
-      - ./data:/app/data
-    environment:
-      - LOG_LEVEL=info
-      - CUDA_VISIBLE_DEVICES=0
+      - autovoice-profiles:/app/data/voice_profiles
+      - autovoice-uploads:/app/data/uploads
+      - autovoice-outputs:/app/data/outputs
+      - autovoice-logs:/app/logs
+      - ./config:/app/config:ro
+
     deploy:
       resources:
+        limits:
+          memory: 32G
         reservations:
+          memory: 8G
           devices:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    restart: unless-stopped
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/v1/health"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
+      start_period: 60s
+
+    networks:
+      - autovoice-net
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile.frontend
+    image: autovoice-frontend:latest
+    container_name: autovoice-frontend
+    restart: unless-stopped
     ports:
-      - "3000:80"
+      - "${FRONTEND_PORT:-3000}:80"
     depends_on:
       backend:
         condition: service_healthy
+    networks:
+      - autovoice-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: autovoice-prometheus
     restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "${PROMETHEUS_PORT:-10002}:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - autovoice-net
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: autovoice-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-10003}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - autovoice-net
+    profiles:
+      - monitoring
+    depends_on:
+      - prometheus
+
+volumes:
+  autovoice-profiles:
+    name: autovoice-profiles
+  autovoice-uploads:
+    name: autovoice-uploads
+  autovoice-outputs:
+    name: autovoice-outputs
+  autovoice-logs:
+    name: autovoice-logs
+  prometheus-data:
+    name: autovoice-prometheus-data
+  grafana-data:
+    name: autovoice-grafana-data
+
+networks:
+  autovoice-net:
+    name: autovoice-net
+    driver: bridge

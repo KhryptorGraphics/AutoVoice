@@ -236,9 +236,9 @@ class KaraokeNamespace(Namespace):
         instrumental_path = data.get('instrumental_path')
         client_id = request.sid
 
-        # Pipeline selection (realtime for karaoke, quality/quality_seedvc for offline)
+        # Pipeline selection (realtime/realtime_meanvc for karaoke, quality/quality_seedvc/quality_shortcut for offline)
         pipeline_type = data.get('pipeline_type', 'realtime')
-        if pipeline_type not in ('realtime', 'quality', 'quality_seedvc'):
+        if pipeline_type not in ('realtime', 'quality', 'quality_seedvc', 'realtime_meanvc', 'quality_shortcut'):
             pipeline_type = 'realtime'  # Default to realtime for live karaoke
         logger.info(f"Session using pipeline_type: {pipeline_type}")
 

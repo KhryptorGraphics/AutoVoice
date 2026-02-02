@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Clock, Download, Play, Trash2, Music, Star, Search, Filter, FileText } from 'lucide-react'
 import { ConversionRecord } from '../services/api'
+import { PipelineBadge, type PipelineType } from '../components/PipelineSelector'
+import { AdapterBadge } from '../components/AdapterSelector'
 
 interface FilterOptions {
   timeRange: 'all' | 'today' | 'week' | 'month'
@@ -285,6 +287,25 @@ export function ConversionHistoryPage() {
                         Voice: {item.targetVoice ?? 'Unknown'} • Duration: {formatDuration(item.duration ?? 0)} • Quality:{' '}
                         <span className="font-medium">{item.quality ?? 'N/A'}</span>
                       </p>
+                      {/* Pipeline and adapter badges */}
+                      <div className="flex items-center gap-2 mt-1">
+                        {item.pipeline_type && (
+                          <PipelineBadge pipeline={item.pipeline_type as PipelineType} />
+                        )}
+                        {item.adapter_type && item.adapter_type !== 'unified' && (
+                          <AdapterBadge adapterType={item.adapter_type as 'hq' | 'nvfp4'} />
+                        )}
+                        {item.rtf !== undefined && (
+                          <span className="text-xs text-gray-500">
+                            RTF: {item.rtf.toFixed(2)}x
+                          </span>
+                        )}
+                        {item.processing_time_seconds !== undefined && (
+                          <span className="text-xs text-gray-500">
+                            Processed in {item.processing_time_seconds.toFixed(1)}s
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-gray-400 mt-1">{formatDate(item.timestamp ?? new Date(item.created_at))}</p>
                     </div>
                   </div>

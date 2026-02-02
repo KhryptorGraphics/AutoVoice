@@ -1,0 +1,30 @@
+{
+  "track_id": "nsf-harmonic-modeling_20260201",
+  "title": "Neural Source Filter (NSF) Harmonic Modeling",
+  "status": "not_started",
+  "priority": "P1",
+  "created": "2026-02-01",
+  "updated": "2026-02-01",
+  "category": "quality-upgrade",
+  "estimated_complexity": "medium",
+  "dependencies": [
+    "sota-dual-pipeline_20260130",
+    "sota-innovations_20260131"
+  ],
+  "research_papers": [
+    "SiFiSinger (ICASSP 2024)",
+    "R2-SVC (arXiv:2510.20677)",
+    "FIRNet (2024)"
+  ],
+  "key_innovations": [
+    "Explicit harmonic/noise separation",
+    "Mcep decoupling for pitch accuracy",
+    "Differentiable F0 and mcep losses",
+    "Better singing naturalness and vibrato preservation"
+  ],
+  "target_metrics": {
+    "pitch_rmse": "≤ 15 cents",
+    "harmonic_coherence": "≥ 0.90",
+    "naturalness_mos": "≥ 4.0"
+  }
+}

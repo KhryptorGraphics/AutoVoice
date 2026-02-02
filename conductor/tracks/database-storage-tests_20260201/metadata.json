@@ -1,0 +1,15 @@
+{
+  "track_id": "database-storage-tests_20260201",
+  "title": "Database and Storage Tests",
+  "created": "2026-02-01",
+  "updated": "2026-02-01",
+  "status": "pending",
+  "priority": "P1",
+  "estimated_days": 1.5,
+  "dependencies": [],
+  "blocks": [
+    "coverage-report-generation_20260201"
+  ],
+  "agents_assigned": [],
+  "completion_percentage": 0
+}

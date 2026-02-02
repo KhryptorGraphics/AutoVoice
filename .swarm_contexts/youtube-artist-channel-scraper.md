@@ -1,0 +1,1420 @@
+
+# Agent Assignment
+================================================================================
+Swarm: youtube-artist
+Agent: channel-scraper
+Type: researcher
+Phase: 1
+Track: conductor/tracks/youtube-artist-training_20260130
+GPU Required: False
+Dependencies: None
+
+## Responsibility
+yt-dlp channel discovery
+
+## Expected Outputs
+- data/youtube/channel_metadata/
+
+## Workflow Rules
+1. Follow TDD: Write tests FIRST, then implement
+2. Report progress: Update beads tasks (`bd update <id> --status in_progress`)
+3. Share discoveries: Write to cipher memory for cross-agent learning
+4. No fallback behavior: Raise errors, never pass silently
+5. Atomic commits: One feature per commit, run tests before committing
+
+================================================================================
+
+# Injected Context
+# Agent Context Injection
+# Files: 25 (18 summarized)
+# Tokens: ~12,352 / 50,000 budget
+# Priority breakdown: 7 critical, 0 important, 18 reference
+
+============================================================
+# CLAUDE.md
+============================================================
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+AutoVoice is a GPU-accelerated singing voice conversion and TTS system built with PyTorch, CUDA kernels, and Flask. It converts songs to a target voice while preserving pitch and timing, using the So-VITS-SVC architecture.
+
+## Build & Development Commands
+
+### Platform (Jetson Thor)
+```bash
+# Active conda environment (ALWAYS use this)
+PYTHON=/home/kp/anaconda3/envs/autovoice-thor/bin/python
+
+# Run any python command (PYTHONNOUSERSITE prevents system package contamination)
+PYTHONNOUSERSITE=1 PYTHONPATH=src $PYTHON <script.py>
+
+# Run tests
+PYTHONNOUSERSITE=1 PYTHONPATH=src $PYTHON -m pytest tests/ -x --tb=short -q
+```
+
+### Environment Setup
+```bash
+# Create conda environment
+conda create -n autovoice python=3.12 -y && conda activate autovoice
+
+# Install PyTorch with CUDA (REQUIRED FIRST)
+pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Build CUDA extensions
+pip install -e .
+```
+
+### Running the Application
+```bash
+# Start server (Flask + SocketIO)
+python main.py --host 0.0.0.0 --port 5000
+
+# With Docker
+docker-compose up
+```
+
+### Testing
+```bash
+# Run complete test suite
+./run_tests.sh all
+
+# Quick smoke tests (< 30s)
+./run_tests.sh smoke
+
+# Fast tests (excludes slow)
+./run_tests.sh fast
+
+# With coverage report
+./run_tests.sh coverage
+
+# Run specific test file
+pytest tests/test_voice_conversion.py -v
+
+# Run by marker
+pytest tests/ -m cuda -v
+pytest tests/ -m "not slow" -v
+```
+
+### Code Quality
+```bash
+black src/ tests/
+isort src/ tests/
+mypy src/auto_voice
+```
+
+### Key Scripts
+- `scripts/setup_pytorch_env.sh` - Automated PyTorch/CUDA setup
+- `scripts/build_and_test.sh` - Build and verify
+- `scripts/verify_bindings.py` - Verify CUDA extension build
+- `scripts/download_pretrained_models.py` - Download model weights
+
+## Architecture
+
+### Source Structure (`src/`)
+```
+auto_voice/
+  inference/           # Voice conversion pipeline (So-VITS-SVC)
+    singing_conversion_pipeline.py  # Main conversion entry point
+    voice_cloner.py                 # Speaker encoder/profile creation
+    realtime_voice_conversion_pipeline.py
+  models/              # Neural network architectures
+    encoder.py         # Content/pitch encoders
+    vocoder.py         # HiFiGAN vocoder
+  audio/               # Audio processing utilities
+  evaluation/          # Quality metrics (pitch RMSE, speaker similarity)
+  web/                 # Flask API + SocketIO handlers
+    app.py             # create_app() factory
+    api.py             # REST endpoints
+  training/            # Training pipeline
+  gpu/                 # GPU memory management
+  monitoring/          # Prometheus metrics
+cuda_kernels/          # Custom CUDA kernels (.cu files)
+```
+
+### Key Classes
+- `SingingConversionPipeline` - Main voice conversion class (`inference/singing_conversion_pipeline.py`)
+- `VoiceCloner` - Creates voice profiles from audio samples (`inference/voice_cloner.py`)
+- `create_app()` - Flask app factory (`web/app.py`)
+
+### Frontend (`frontend/`)
+React + TypeScript + Vite + Tailwind CSS
+```bash
+cd frontend && npm install && npm run dev
+```
+
+### API Endpoints
+- `GET /health` - Health check with component status
+- `POST /api/v1/voice/clone` - Create voice profile
+- `POST /api/v1/convert/song` - Convert song to target voice
+- `GET /api/v1/convert/status/{id}` - Check conversion status
+- WebSocket events for real-time progress
+
+## Test Markers
+Tests use pytest markers defined in `pytest.ini`:
+- `smoke` - Fast validation
+- `cuda` - Requires GPU
+- `slow` / `very_slow` - Long-running tests
+- `integration` - Component interaction tests
+- `performance` - Benchmarks
+- `tensorrt` - TensorRT-specific tests
+
+## Configuration
+- `config/gpu_config.yaml` - GPU and server settings
+- `config/logging_config.yaml` - Logging configuration
+- Environment variables: `LOG_LEVEL`, `LOG_FORMAT`, `CUDA_VISIBLE_DEVICES`
+
+## Pre-trained Models
+Located in `models/pretrained/`:
+- `sovits5.0_main_1500.pth` - Main So-VITS model
+- `hifigan_ljspeech.ckpt` - HiFiGAN vocoder
+- `hubert-soft-0d54a1f4.pt` - HuBERT feature extractor
+
+## File Organization Rules
+- Source code: `/src`
+- Tests: `/tests`
+- Documentation: `/docs`
+- Scripts: `/scripts`
+- Configuration: `/config`
+- Examples: `/examples`
+
+## Critical Coding Rules
+- No fallback behavior: Always raise RuntimeError, never pass through silently
+- Speaker embedding: mel-statistics (mean+std of 128 mels = 256-dim, L2-normalized)
+- Frame alignment: F.interpolate(transpose(1,2), size=target) for content/pitch
+- PYTHONNOUSERSITE=1 always set for python commands
+- Tests must verify real behavior (shapes, non-NaN, correct types)
+- Atomic commits: one feature per commit, always run full test suite first
+
+============================================================
+# PROMPT.md
+============================================================
+# AutoVoice Master Development Orchestrator
+
+## Sprint: Complete SOTA Voice Conversion System + Training Workflow
+
+### Ultimate Goal
+William Singe and Conor Maynard voice swaps: each artist singing in the style and talent of the other on each other's instrumental tracks.
+
+**Song Conversion Mode:**
+- One artist's voice sings another's song **EXACTLY** as the original artist sang it
+- **Pitch Correct**: Match original pitch contour exactly
+- **Singing Abilities Matched**: Transfer vibrato, dynamics, articulation
+- **Synced to Instrumental**: Perfect alignment with backing track
+
+**Live Karaoke Mode:**
+- Auto-morph user's live singing to match original artist's performance
+- **Multiple Audio Outputs (Configurable)**:
+  - **Audience Output**: Converted vocals + instrumental for speakers
+  - **Headphone Output**: Original song for user to sing along with
+- User can practice matching original artist's timing/pitch while audience hears converted voice
+
+### Objectives
+
+1. **Dual SOTA Pipelines** - REALTIME (low-latency) + QUALITY (high-fidelity)
+2. **Web Interface** - Pipeline selection for conversion and live karaoke modes
+3. **Progressive Training UI** - Live loss curves, audio previews, evaluation metrics
+4. **Pillowtalk Training** - Start with Pillowtalk covers for both artists
+5. **Voice Swap Evaluation** - User listens and evaluates quality together with system metrics
+6. **Final Conversions** - William→Conor and Conor→William on each other's songs
+
+### Memory Systems (Compaction-Resistant Stack)
+
+| System | Status | Command to Query |
+|--------|--------|------------------|
+| **Cipher** | Active | `mcp__cipher__ask_cipher "AutoVoice status"` |
+| **Beads** | Active | `bd list` / `bd ready` |
+| **Conductor** | Active | `cat conductor/tracks.md` |
+| **Serena** | Manual | `.serena/memories/sota-dual-pipeline-2026-01-30.md` |
+| **PROMPT.md** | This file | `cat PROMPT.md` |
+| **ORCHESTRATOR.md** | Active | `cat ORCHESTRATOR.md` |
+
+### Orchestration Stack
+
+```
+RALPH (top-level workflow)
+    ↓
+BEADS (task management: bd list, bd ready, bd close)
+    ↓
+CONDUCTOR (track planning: conductor/tracks/{track_id}/)
+    ↓
+CLAUDE-FLOW SWARMS (parallel execution)
+```
+
+### Active Beads Tasks
+
+**Epic AV-55x: SOTA Dual-Pipeline Voice Conversion**
+- [x] AV-5k7 (P1): Complete REALTIME_PIPELINE - scripts/realtime_pipeline.py
+- [~] AV-u6e (P1): Create QUALITY_PIPELINE with Seed-VC
+- [ ] AV-508 (P2): Add HQ-SVC enhancement (blocked by AV-u6e)
+- [ ] AV-8k8 (P2): Implement SmoothSinger concepts (blocked by AV-u6e)
+- [ ] AV-d11 (P1): Add Web UI pipeline selector
+
+**Epic AV-2xb: Training-to-Inference Integration**
+- [ ] AV-v7p (P1): Create AdapterManager for unified adapter loading
+
+**Epic AV-by1: End-to-End Voice Training & Swap Workflow**
+- [ ] AV-4kd (P1): Download Pillowtalk covers for William and Conor
+- [ ] AV-v32 (P1): Progressive training web UI with live loss display
+- [ ] AV-t32 (P1): Voice quality evaluation system
+- [ ] AV-3is (P1): Train William voice model on Pillowtalk (blocked)
+- [ ] AV-952 (P1): Train Conor voice model on Pillowtalk (blocked)
+- [ ] AV-0wn (P1): Final voice swap: William singing as Conor (blocked)
+- [ ] AV-tq1 (P1): Final voice swap: Conor singing as William (blocked)
+
+### Implementation Order (Dependency-Driven)
+
+**Phase 1: Infrastructure** (can run in parallel)
+1. AV-u6e: Create `scripts/quality_pipeline.py` with Seed-VC
+2. AV-v7p: Create `src/auto_voice/models/adapter_manager.py`
+3. AV-4kd: Download Pillowtalk covers
+4. AV-v32: Progressive training web UI
+5. AV-t32: Voice quality evaluation system
+6. AV-d11: Web UI pipeline selector
+
+**Phase 2: Training** (after Phase 1)
+7. AV-3is: Train William on Pillowtalk
+8. AV-952: Train Conor on Pillowtalk
+
+**Phase 3: Final Voice Swaps** (after Phase 2)
+9. AV-0wn: William→Conor conversion
+10. AV-tq1: Conor→William conversion
+
+### Artist Test Profiles
+
+- **William Singe**: `7da05140-1303-40c6-95d9-5b6e2c3624df`
+- **Conor Maynard**: `9679a6ec-e6e2-43c4-b64e-1f004fed34f9`
+
+### Architecture
+
+**REALTIME_PIPELINE** (scripts/realtime_pipeline.py) - COMPLETE
+```
+ContentVec → RMVPE → Simple Decoder → HiFiGAN
+(16kHz)     (pitch)   (transformer)   (22kHz)
+Target: <100ms latency for karaoke
+```
+
+**QUALITY_PIPELINE** (scripts/quality_pipeline.py) - IN PROGRESS
+```
+Whisper → Seed-VC DiT → BigVGAN → HQ-SVC (optional)
+(16kHz)   (CFM 44kHz)   (44kHz)   (enhancement)
+Target: >0.85 speaker similarity
+```
+
+### Commands
+
+```bash
+# Environment
+cd /home/kp/repo2/autovoice
+PYTHON=/home/kp/anaconda3/envs/autovoice-thor/bin/python
+PYTHONNOUSERSITE=1 PYTHONPATH=src $PYTHON <script>
+
+# Beads task management
+bd list                           # All tasks
+bd ready                          # Unblocked tasks
+bd update AV-XXX --status in_progress  # Claim
+bd close AV-XXX --force --reason "..."  # Complete
+
+# Run tests
+PYTHONNOUSERSITE=1 PYTHONPATH=src $PYTHON -m pytest tests/ -x --tb=short -q
+
+# Conductor
+cat conductor/tracks.md           # View tracks
+cat conductor/tracks/{track_id}/plan.md  # View plan
+
+# Master orchestrator
+claude-flow swarm "Complete AutoVoice tasks" --strategy development --background --monitor --testing --parallel --max-agents 8
+```
+
+### Completion Criteria
+
+- [ ] Both pipelines (REALTIME + QUALITY) working
+- [ ] Web UI pipeline selector on Convert and Karaoke pages
+- [ ] Progressive training UI with live loss curves
+- [ ] Voice quality evaluation system (>0.85 speaker similarity)
+- [ ] William and Conor trained on Pillowtalk
+- [ ] User evaluation of training quality
+- [ ] Final voice swaps: William↔Conor on each other's songs
+- [ ] All 15 beads tasks closed
+
+---
+Last Updated: 2026-01-30 11:35 CST
+Master Orchestrator: Ralph → Beads → Conductor → Claude-flow swarms
+
+============================================================
+# product.md
+============================================================
+# Product Definition
+
+## Project Name
+
+AutoVoice
+
+## Description
+
+GPU-accelerated singing voice conversion and TTS system that converts songs to a target voice while preserving pitch and timing, using the So-VITS-SVC architecture.
+
+## Problem Statement
+
+Existing voice conversion tools can't preserve pitch and timing during voice swap. Current solutions either require expensive cloud APIs with latency, or produce output that loses the musical qualities of the original performance.
+
+## Target Users
+
+Music producers and audio engineers who need high-quality vocal transformation for production work.
+
+## Key Goals
+
+1. **Real-time inference on edge hardware (Jetson Thor)** - Sub-100ms latency voice conversion running entirely on-device
+2. **Production-quality vocal output preserving musicality** - Output indistinguishable from the original singer's performance quality
+3. **Simple API for integration into DAWs and production tools** - Easy-to-use REST/WebSocket API for third-party integration
+4. **End-to-end voice cloning pipeline** - Input a song, extract the vocal track, train a model on the user's voice from training data, replace the artist's voice with the user's voice, giving the user the singing ability of the artist in the song
+
+## Core Workflow
+
+1. User provides a song (input audio)
+2. System extracts/separates the vocal track
+3. User provides training data of their own voice
+4. System trains a voice model on the user's voice
+5. System converts the extracted vocal to the user's voice
+6. Output: the song with the user's voice, preserving the original artist's pitch and timing
+
+============================================================
+# tech-stack.md
+============================================================
+# Tech Stack
+
+## Platform
+
+- **Hardware**: NVIDIA Jetson Thor (aarch64)
+- **GPU**: SM 11.0 (sm_110)
+- **CUDA**: 13.0
+- **TensorRT**: 10.13.3.9
+
+## Languages
+
+| Language | Version | Purpose |
+|----------|---------|---------|
+| Python | 3.12 | Backend, ML pipeline, inference |
+| TypeScript | 5.x | Frontend UI |
+| CUDA C++ | 13.0 | Custom GPU kernels |
+
+## Backend
+
+| Component | Technology | Notes |
+|-----------|-----------|-------|
+| Web framework | Flask + SocketIO | Existing web UI and WebSocket progress |
+| ML API | FastAPI | Planned: async inference endpoints |
+| ML framework | PyTorch 2.11+ | Model training and inference |
+| Inference | TensorRT 10.x | Optimized engine execution |
+| ONNX | ONNX Runtime | Intermediate format, model validation |
+| Task queue | (TBD) | For async training/conversion jobs |
+
+## Frontend
+
+| Component | Technology |
+|-----------|-----------|
+| Framework | React + Next.js |
+| Styling | Tailwind CSS |
+| Build | (Vite currently, migrating to Next.js) |
+
+## Database
+
+| Database | Purpose |
+|----------|---------|
+| PostgreSQL | User accounts, voice profiles, job history |
+| MySQL | Existing hosted services (non-destructive) |
+
+## Infrastructure
+
+| Component | Technology |
+|-----------|-----------|
+| Deployment | Jetson Thor (on-device) |
+| Containerization | Docker + docker-compose |
+| Environment | Conda (autovoice-thor) |
+| Package management | pip + conda |
+
+## Key Dependencies
+
+- **So-VITS-SVC**: Core voice conversion architecture
+- **HiFiGAN / BigVGAN**: Neural vocoder for waveform generation
+- **HuBERT**: Content feature extraction
+- **Vocal Separator**: Source separation for extracting vocals from songs
+
+## SOTA Techniques (Target)
+
+| Area | SOTA Approach | Status |
+|------|--------------|--------|
+| Voice conversion | So-VITS-SVC v2 / RVC v2 / DDSP-SVC | Current: So-VITS-SVC |
+| Content extraction | HuBERT / ContentVec / WavLM | Current: HuBERT |
+| Vocoder | BigVGAN v2 / Vocos / HiFi-GAN v2 | Current: BigVGAN |
+| Pitch extraction | CREPE / RMVPE / FCN-F0 | Evaluate |
+| Source separation | HTDemucs v4 / BS-RoFormer | Evaluate |
+| Speaker embedding | ECAPA-TDNN / WeSpeaker / ReDimNet | Evaluate |
+| Training | AdamW + cosine annealing + mel loss + multi-resolution STFT | Evaluate |
+| Inference | TensorRT FP16 + dynamic batching + streaming | In progress |
+| Quantization | INT8 calibration / FP8 (SM 11.0) / nvfp4 | Planned |
+
+When implementing any component, research the current SOTA first. The table above is a starting point — check recent papers and benchmarks before committing to an approach.
+
+## Environment Isolation
+
+- PYTHONNOUSERSITE=1 always set (prevents system package contamination)
+- Dedicated conda environment per project
+- Never mix system and conda packages
+- CUDA packages built from source (never fallback to pip wheels)
+
+============================================================
+# workflow.md
+============================================================
+# Workflow
+
+## TDD Policy
+
+**Strict** - Tests are required before implementation.
+
+- Write failing test first (red)
+- Implement minimum code to pass (green)
+- Refactor while keeping tests green (refactor)
+- No code merges without passing test coverage
+- Tests must verify real behavior (shapes, non-NaN, correct types, actual outputs)
+
+## Commit Strategy
+
+**Descriptive messages** - No strict format required, but messages should clearly describe what changed and why. The existing conventional commit format (feat:, fix:) is acceptable but not enforced.
+
+## Code Review
+
+**Required for all changes** - Every PR must be reviewed before merge. For AI-assisted development, this means running the full test suite and verifying integration before committing.
+
+## Verification Checkpoints
+
+**After each task completion** - Verify every individual task before moving on. Deep integration verification is required to ensure the code is written and integrated correctly for the project. This includes:
+
+1. Unit tests pass for the new code
+2. Integration tests pass (existing tests don't break)
+3. The feature actually works in context (not just in isolation)
+4. Code follows project conventions (CLAUDE.md rules)
+5. No silent fallback behavior introduced
+
+## Task Lifecycle
+
+1. **Define** - Clearly specify what the task accomplishes
+2. **Research** - Use academic MCP servers to find SOTA approaches:
+   - `paper-search` — Search across arXiv, PubMed, Semantic Scholar, Google Scholar
+   - `arxiv-advanced` — Deep-dive into specific arXiv papers, download and read full text
+   - `semantic-scholar-citations` — Trace citation graphs to find foundational and recent work
+   - Focus: find current best architectures, loss functions, training recipes, and benchmarks
+   - Output: document chosen approach with paper references before implementing
+3. **Test** - Write failing tests that define success criteria
+4. **Implement** - Write minimum code to pass tests, using SOTA techniques
+5. **Verify** - Run full test suite, check integration
+6. **Review** - Deep verification of correctness and integration
+7. **Commit** - Only after all checks pass
+
+## Critical Rules (from CLAUDE.md)
+
+- No fallback behavior: Always raise RuntimeError, never pass through silently
+- Speaker embedding: mel-statistics (mean+std of 128 mels = 256-dim, L2-normalized)
+- Frame alignment: F.interpolate(transpose(1,2), size=target) for content/pitch
+- PYTHONNOUSERSITE=1 always set for python commands
+- Atomic commits: one feature per commit, always run full test suite first
+
+============================================================
+# CLAUDE.md
+============================================================
+<claude-mem-context>
+# Recent Activity
+
+<!-- This section is auto-generated by claude-mem. Edit content outside the tags. -->
+
+*No recent activity*
+</claude-mem-context>
+============================================================
+# spec.md
+============================================================
+# Spec: YouTube Artist Training Pipeline
+
+**Track ID:** youtube-artist-training_20260130
+**Created:** 2026-01-30
+**Priority:** P1
+**Status:** [ ] Not Started
+
+## Overview
+
+Automated pipeline to download all music videos from Connor Maynard and William Singe YouTube channels, extract vocals using speaker diarization, add segments to their voice profiles, and train LoRA models with OOM protection.
+
+## Target Artists
+
+1. **Connor Maynard**
+   - YouTube Channel: Conor Maynard
+   - Genre: Pop covers, original songs
+   - Expected videos: 200+
+
+2. **William Singe**
+   - YouTube Channel: William Singe
+   - Genre: R&B/Pop covers
+   - Expected videos: 300+
+
+## Pipeline Stages
+
+### Stage 1: YouTube Discovery & Download
+- Use yt-dlp to list all videos from each channel
+- Download audio only (best quality AAC/MP3)
+- Store metadata (title, duration, upload date)
+- Skip non-music content (vlogs, shorts)
+
+### Stage 2: Audio Separation
+- Run Demucs HTDemucs to separate vocals from instrumentals
+- Save isolated vocal tracks
+- Discard instrumentals (or save for karaoke)
+
+### Stage 3: Speaker Diarization
+- Run WavLM-based diarization on each vocal track
+- Identify featured artists vs main artist
+- Extract segments by speaker
+- Use chunked processing for memory safety
+
+### Stage 4: Profile Matching
+- Match speaker embeddings to existing Connor/William profiles
+- Create profiles if they don't exist
+- Add matched segments as training samples
+- Store embedding metadata
+
+### Stage 5: LoRA Training
+- Train separate LoRA adapters for each artist
+- Max settings: rank=16, alpha=32, epochs=50
+- OOM protection: gradient checkpointing, mixed precision
+- Memory monitoring: abort if >90% GPU memory
+
+## Acceptance Criteria
+
+1. [ ] All music videos downloaded from both channels
+2. [ ] Vocals separated with <10% bleed
+3. [ ] Diarization identifies correct speaker >95% accuracy
+4. [ ] Connor profile has >4 hours of clean vocals
+5. [ ] William profile has >4 hours of clean vocals
+6. [ ] LoRA training completes without OOM
+7. [ ] Voice conversion produces recognizable output
+
+## Technical Requirements
+
+- yt-dlp for YouTube download
+- Demucs for separation
+- WavLM for diarization
+- Memory-safe chunked processing
+- Parallel download with rate limiting
+- Progress tracking via beads
+
+## OOM Prevention
+
+- Max 4GB GPU memory per diarization chunk
+- Gradient checkpointing for training
+- Mixed precision (fp16/bf16)
+- Batch size auto-reduction on OOM
+- Memory monitoring hooks
+
+============================================================
+# youtube/__init__.py [SUMMARIZED]
+============================================================
+"""YouTube integration for voice training data collection."""
+
+from channel_scraper import VideoMetadata, YouTubeChannelScraper, scrape_artist_channel
+from downloader import DownloadResult, YouTubeDownloader, download_artist_videos, download_artist_videos_async
+============================================================
+# youtube/downloader.py [SUMMARIZED]
+============================================================
+"""YouTube audio downloader with parallel processing.
+
+Downloads audio from YouTube videos with rate limiting and progress tracking."""
+
+import asyncio
+import logging
+import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Callable
+from channel_scraper import VideoMetadata
+
+class DownloadResult:
+    """Result of a download operation."""
+
+class YouTubeDownloader:
+    """Downloads audio from YouTube videos with parallel processing."""
+    def __init__(self, output_dir: Path, max_workers: int = 4, rate_limit: float = 1.0):
+        """Initialize downloader...."""
+        ...
+    def _wait_rate_limit(self):
+        """Wait if needed to respect rate limit...."""
+        ...
+    def download_audio(self, video_id: str, title: str = '') -> DownloadResult:
+        """Download audio from a single video...."""
+        ...
+    def download_batch(self, videos: List[VideoMetadata], progress_callback: Optional[Callable[[int, int, DownloadResult], None]] = None) -> List[DownloadResult]:
+        """Download audio from multiple videos in parallel...."""
+        ...
+
+def download_artist_videos(artist_key: str, output_subdir: str = None, max_videos: int = 500, max_workers: int = 4) -> List[DownloadResult]:
+    """Convenience function to download all music videos for an artist...."""
+    ...
+
+async def download_artist_videos_async(artist_key: str, output_subdir: str = None, max_videos: int = 500, max_workers: int = 4) -> List[DownloadResult]:
+    """Async wrapper for download_artist_videos...."""
+    ...
+============================================================
+# youtube/channel_scraper.py [SUMMARIZED]
+============================================================
+"""YouTube channel scraper using yt-dlp.
+
+Discovers and filters videos from artist channels for training data collection."""
+
+import json
+import logging
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
+class VideoMetadata:
+    """Metadata for a YouTube video."""
+    def is_music(self) -> bool:
+        """Heuristic check if video is likely music content...."""
+        ...
+    def is_solo_artist(self) -> bool:
+        """Check if the primary artist is solo (not a collaboration)...."""
+        ...
+    def is_valid_for_training(self) -> bool:
+        """Check if video is suitable for voice training...."""
+        ...
+
+class YouTubeChannelScraper:
+    """Scrapes video metadata from YouTube channels using yt-dlp."""
+    def __init__(self, output_dir: Optional[Path] = None):
+        """Initialize scraper...."""
+        ...
+    def get_channel_videos(self, channel_url: str, max_videos: int = 1000, music_only: bool = True, solo_only: bool = True) -> List[VideoMetadata]:
+        """Get all video metadata from a channel...."""
+        ...
+    def save_metadata(self, videos: List[VideoMetadata], artist_name: str) -> Path:
+        """Save video metadata to JSON file...."""
+        ...
+    def load_metadata(self, artist_name: str) -> List[VideoMetadata]:
+        """Load cached video metadata...."""
+        ...
+
+def scrape_artist_channel(artist_key: str, max_videos: int = 1000, solo_only: bool = True) -> List[VideoMetadata]:
+    """Convenience function to scrape known artist channel...."""
+    ...
+============================================================
+# audio/multi_artist_separator.py [SUMMARIZED]
+============================================================
+"""Multi-Artist Separation and Profile Routing.
+
+Phase 5 of LoRA Lifecycle Management:
+- Demucs vocal separation
+- Pyannote/WavLM diarization for speaker segments
+- WavLM embedding extraction per segment
+- Cluster by speaker similarity (0.85 threshold)
+- Match clusters to known profiles
+- Create profiles for unknown artists
+
+Cross-Context Dependencies:
+- speaker-diarization_20260130: WavLM embeddings (256-dim), speaker diarization
+- training-inference-integration_20260130: AdapterManager, JobManager
+- voice-profile-training_20260124: VoiceProfileStore
+- sota-dual-pipeline_20260130: Demucs separation
+
+Ultimate Goal:
+Voice-to-voice conversion where one artist sings another's song EXACTLY as the
+original artist sang it - pitch correct, singing abilities matched, synced to instrumental."""
+
+import json
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+import numpy
+import torch
+
+class ArtistSegment:
+    """A segment of audio belonging to a specific artist."""
+    def duration(self) -> float:
+        ...
+
+class SeparationResult:
+    """Result of multi-artist separation."""
+
+class MultiArtistSeparator:
+    """Separates multi-artist tracks and routes to voice profiles.
+
+Pipeline:
+1. Demucs vocal/instrumental separation
+2. WavLM speaker diarization
+3. Cluster embeddings by similarity
+4. Match to existing pro..."""
+    def __init__(self, profiles_dir: Path = ..., device: str = 'cuda', auto_create_profiles: bool = True, auto_queue_training: bool = True):
+        """Initialize the multi-artist separator...."""
+        ...
+    def _load_separator(self):
+        """Lazy load Demucs vocal separator...."""
+        ...
+    def _load_diarizer(self):
+        """Lazy load speaker diarizer...."""
+        ...
+    def _load_identifier(self):
+        """Lazy load voice identifier...."""
+        ...
+    def _load_job_manager(self):
+        """Lazy load training job manager...."""
+        ...
+    def separate_vocals(self, audio: np.ndarray, sample_rate: int) -> Tuple[np.ndarray, np.ndarray]:
+# ... (truncated)
+============================================================
+# audio/diarization_extractor.py [SUMMARIZED]
+============================================================
+"""Diarization-based speaker extraction for multi-artist vocal tracks.
+
+This module extracts speaker-isolated vocal tracks from diarized audio:
+- Each speaker gets a FULL-LENGTH track where they are audible and others are SILENCED
+- Automatically creates voice profiles for each detected speaker
+- Enables per-artist voice conversion with later remixing
+
+Workflow:
+1. Load diarization JSON (speaker segments with timestamps)
+2. Load separated vocals WAV
+3. For EACH speaker detected:
+   - Create full-length track with only that speaker audible
+   - Create/update voice profile for that speaker
+   - Save to profile's training data directory
+4. Expose via web interface for training"""
+
+import json
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
+import uuid
+import numpy
+import librosa
+import soundfile
+
+class SpeakerSegment:
+    """A segment of audio belonging to a single speaker."""
+    def duration(self) -> float:
+        ...
+
+class ExtractionResult:
+    """Result of extracting speaker-isolated tracks."""
+
+class SpeakerExtractionInfo:
+    """Information about a single speaker's extraction."""
+
+class DiarizationExtractor:
+    """Extract speaker-isolated vocal tracks from diarized audio.
+
+For each detected speaker, creates a full-length track where:
+- That speaker's segments are audible
+- All other speakers are silenced (zero ..."""
+    def __init__(self, fade_ms: float = 10.0, min_segment_duration: float = 0.5, profiles_dir: Optional[Path] = None, training_vocals_dir: Optional[Path] = None):
+        """Initialize the extractor...."""
+        ...
+    def load_diarization(self, json_path: Path) -> Tuple[str, List[SpeakerSegment]]:
+        """Load diarization results from JSON file...."""
+        ...
+    def get_speaker_durations(self, segments: List[SpeakerSegment]) -> Dict[str, float]:
+        """Calculate total speaking duration for each speaker...."""
+        ...
+    def identify_primary_speaker(self, segments: List[SpeakerSegment]) -> Optional[str]:
+        """Identify the primary speaker (longest total speaking time)...."""
+        ...
+    def extract_speaker_track(self, audio: np.ndarray, sr: int, segments: List[SpeakerSegment], target_speaker: str) -> np.ndarray:
+        """Create a full-length track with only target speaker audible...."""
+        ...
+    def get_or_create_profile(self, artist_name: str, speaker_id: str, is_primary: bool) -> str:
+# ... (truncated)
+============================================================
+# audio/technique_detector.py [SUMMARIZED]
+============================================================
+"""Vocal technique detection for singing voice analysis.
+
+Implements detection of singing techniques:
+- Vibrato: periodic pitch modulation (typically 4-7 Hz, ±20-50 cents)
+- Melisma: rapid pitch transitions across multiple notes
+
+Phase 5: Advanced Vocal Technique Preservation
+- Task 5.2: Vibrato detector (frequency modulation analysis)
+- Task 5.4: Melisma detector (rapid pitch transitions)
+- Task 5.6: Technique-aware pitch extraction"""
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+import numpy
+import torch
+
+class VibratoSegment:
+    """A segment of audio containing vibrato."""
+
+class VibratoResult:
+    """Result of vibrato detection."""
+
+class MelismaSegment:
+    """A segment of audio containing melisma/vocal run."""
+
+class MelismaResult:
+    """Result of melisma detection."""
+
+class PitchExtractionResult:
+    """Result of technique-aware pitch extraction."""
+
+class TechniqueFlags:
+    """Flags for passing technique information through the pipeline."""
+    def has_vibrato(self) -> bool:
+        """Check if any frames are flagged as vibrato...."""
+        ...
+    def has_melisma(self) -> bool:
+        """Check if any frames are flagged as melisma...."""
+        ...
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization...."""
+        ...
+    def from_dict(cls, data: Dict[str, Any]) -> 'TechniqueFlags':
+        """Create from dictionary...."""
+        ...
+
+class VibratoDetector:
+    """Detect vibrato in audio using frequency modulation analysis.
+
+Vibrato is characterized by:
+- Periodic pitch modulation at 4-7 Hz
+- Depth of ±20-50 cents (sometimes up to 100 cents)
+- Consistent rate a..."""
+    def __init__(self, sample_rate: int = 16000, frame_size: int = 512, hop_size: int = 128, min_rate: float = 4.0, max_rate: float = 8.0, min_depth_cents: float = 15.0):
+        """Initialize vibrato detector...."""
+        ...
+    def _extract_f0(self, audio: np.ndarray) -> np.ndarray:
+        """Extract F0 contour from audio using autocorrelation...."""
+        ...
+# ... (truncated)
+============================================================
+# audio/youtube_metadata.py [SUMMARIZED]
+============================================================
+"""YouTube metadata parsing and fetching for featured artist detection.
+
+This module parses YouTube video titles and descriptions to identify:
+- Main artist performing the song
+- Featured/collaborating artists (ft., feat., vs., with, &, x patterns)
+- Cover song detection and original artist identification
+
+It also provides yt-dlp integration for fetching metadata from YouTube.
+
+Usage:
+    from auto_voice.audio.youtube_metadata import YouTubeMetadataFetcher
+
+    fetcher = YouTubeMetadataFetcher()
+    metadata = fetcher.fetch_metadata("dQw4w9WgXcQ")
+    featured = parse_featured_artists(metadata.title)"""
+
+import re
+import json
+import logging
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+FEATURED_PATTERNS = ['\\bft\\.?\\s+([^(\\[\\]|,&-]+?)(?:\\s*[(\\[\\]|,...
+PAREN_FEATURED_PATTERNS = ['\\(ft\\.?\\s+([^)]+)\\)', '\\(feat\\.?\\s+([^)]+...
+EXCLUDE_PATTERNS = ['\\bprod\\.?\\s+(?:by\\s+)?', '\\bproduced\\s+by\...
+COVER_PATTERNS = ['\\(([^)]+)\\s+cover\\)', '\\bcover\\s+of\\s+([^(...
+DESCRIPTION_FEATURED_PATTERNS = ['featuring\\s+(?:vocals?\\s+by\\s+)?([^.!\\n]+)',...
+
+def _clean_artist_name(name: str) -> str:
+    """Clean and normalize an artist name...."""
+    ...
+
+def _split_multiple_artists(artist_str: str) -> List[str]:
+    """Split a string containing multiple artists separated by , & and...."""
+    ...
+
+def _is_producer_credit(text: str) -> bool:
+    """Check if text is a producer credit rather than a featured artist...."""
+    ...
+
+def parse_featured_artists(title: str, description: Optional[str] = None) -> List[str]:
+    """Parse featured artists from YouTube video title and description...."""
+    ...
+
+def extract_main_artist(title: str) -> Optional[str]:
+    """Extract the main artist from a YouTube video title...."""
+    ...
+
+def detect_cover_song(title: str, description: Optional[str] = None) -> tuple[bool, Optional[str]]:
+    """Detect if a video is a cover song and identify the original artist...."""
+    ...
+
+def parse_youtube_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse YouTube video metadata to extract artist information...."""
+    ...
+
+class VideoMetadata:
+    """YouTube video metadata."""
+
+# ... (truncated)
+============================================================
+# audio/file_organizer.py [SUMMARIZED]
+============================================================
+"""File organizer for speaker-identified vocal files.
+
+This module re-organizes extracted vocal files from UUID-based directories
+to named artist directories after speaker identification and clustering.
+
+Usage:
+    from auto_voice.audio.file_organizer import organize_by_identified_artist
+
+    stats = organize_by_identified_artist()"""
+
+import json
+import logging
+import os
+import shutil
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+
+class FileOrganizer:
+    """Re-organize vocal files by identified artist name."""
+    def __init__(self, training_vocals_dir: Optional[Path] = None, voice_profiles_dir: Optional[Path] = None):
+        """Initialize the file organizer...."""
+        ...
+    def get_cluster_assignments(self) -> Dict[str, Dict[str, Any]]:
+        """Get cluster assignments from database...."""
+        ...
+    def find_profile_for_tracks(self, track_ids: List[str], speaker_id: str) -> Optional[str]:
+        """Find the profile UUID used for a specific speaker in tracks...."""
+        ...
+    def normalize_artist_name(self, name: str) -> str:
+        """Normalize artist name for use as directory name...."""
+        ...
+    def organize_by_cluster(self, dry_run: bool = True) -> Dict[str, Any]:
+        """Re-organize files based on cluster assignments...."""
+        ...
+    def create_speaker_profiles_json(self, artist_name: str, dry_run: bool = True) -> Dict[str, Any]:
+        """Create speaker_profiles.json for an artist directory...."""
+        ...
+    def generate_all_profiles(self, dry_run: bool = True) -> Dict[str, Any]:
+        """Generate speaker_profiles.json for all artist directories...."""
+        ...
+
+def organize_by_identified_artist(dry_run: bool = True) -> Dict[str, Any]:
+    """Run full organization pipeline...."""
+    ...
+============================================================
+# audio/effects.py [SUMMARIZED]
+============================================================
+"""Audio effects - pitch shifting, volume adjustment."""
+
+import logging
+import numpy
+
+def pitch_shift(audio: np.ndarray, sr: int, n_steps: float) -> np.ndarray:
+    """Shift pitch by n_steps semitones...."""
+    ...
+
+def volume_adjust(audio: np.ndarray, gain: float) -> np.ndarray:
+    """Adjust audio volume...."""
+    ...
+
+def fade_in(audio: np.ndarray, duration_samples: int) -> np.ndarray:
+    """Apply linear fade-in...."""
+    ...
+
+def fade_out(audio: np.ndarray, duration_samples: int) -> np.ndarray:
+    """Apply linear fade-out...."""
+    ...
+============================================================
+# audio/__init__.py [SUMMARIZED]
+============================================================
+"""Audio processing utilities."""
+
+============================================================
+# audio/speaker_diarization.py [SUMMARIZED]
+============================================================
+"""Speaker diarization for multi-speaker audio segmentation.
+
+This module provides speaker diarization capabilities using:
+- WavLM for speaker embeddings (512-dim from wavlm-base-sv)
+- Agglomerative clustering for speaker segmentation
+- Energy-based Voice Activity Detection (VAD)
+
+The pipeline identifies different speakers in audio and extracts their segments."""
+
+import gc
+import logging
+import psutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
+import tempfile
+import numpy
+import torch
+import torchaudio
+from scipy.cluster.hierarchy import fcluster, linkage
+from scipy.spatial.distance import pdist
+
+def get_available_memory_gb() -> float:
+    """Get available system memory in GB...."""
+    ...
+
+def get_gpu_memory_gb() -> Tuple[float, float]:
+    """Get GPU memory (used, total) in GB. Returns (0, 0) if no GPU...."""
+    ...
+
+class SpeakerSegment:
+    """A segment of audio belonging to a single speaker."""
+    def duration(self) -> float:
+        """Duration of the segment in seconds...."""
+        ...
+
+class DiarizationResult:
+    """Complete diarization result for an audio file."""
+    def get_speaker_segments(self, speaker_id: str) -> List[SpeakerSegment]:
+        """Get all segments for a specific speaker...."""
+        ...
+    def get_speaker_total_duration(self, speaker_id: str) -> float:
+        """Get total speaking duration for a speaker...."""
+        ...
+    def get_all_speaker_ids(self) -> List[str]:
+        """Get list of all unique speaker IDs...."""
+        ...
+
+class SpeakerDiarizer:
+    """Speaker diarization using WavLM embeddings and clustering.
+
+This provides a simpler alternative to pyannote.audio that works with
+the latest torchaudio versions on Jetson platforms."""
+    def __init__(self, device: Optional[str] = None, model_name: str = ..., min_segment_duration: float = 0.5, max_speakers: int = 10, max_memory_gb: Optional[float] = None, chunk_duration_sec: float = 60.0):
+        """Initialize the speaker diarizer...."""
+        ...
+    def _load_model(self):
+        """Lazy load the speaker embedding model...."""
+        ...
+    def _check_memory(self, warn_threshold: float = 0.9) -> bool:
+# ... (truncated)
+============================================================
+# audio/processor.py [SUMMARIZED]
+============================================================
+"""Audio processing utilities."""
+
+import logging
+from typing import Optional, Tuple
+import numpy
+
+class AudioProcessor:
+    """Core audio processing operations."""
+    def __init__(self, sample_rate: int = 22050):
+        ...
+    def load(self, path: str, sr: Optional[int] = None, mono: bool = True) -> Tuple[np.ndarray, int]:
+        """Load audio file...."""
+        ...
+    def save(self, path: str, audio: np.ndarray, sr: Optional[int] = None):
+        """Save audio to file...."""
+        ...
+    def resample(self, audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+        """Resample audio to target sample rate...."""
+        ...
+    def normalize(self, audio: np.ndarray, peak: float = 0.95) -> np.ndarray:
+        """Normalize audio to peak amplitude...."""
+        ...
+    def trim_silence(self, audio: np.ndarray, threshold_db: float = -40) -> np.ndarray:
+        """Trim silence from beginning and end...."""
+        ...
+    def to_mono(self, audio: np.ndarray) -> np.ndarray:
+        """Convert multi-channel audio to mono...."""
+        ...
+============================================================
+# audio/speaker_matcher.py [SUMMARIZED]
+============================================================
+"""Cross-track speaker matching and clustering for AutoVoice.
+
+This module provides:
+- Speaker embedding extraction using WavLM
+- Cross-track speaker clustering using cosine similarity
+- Auto-matching clusters to featured artist names from metadata
+
+Usage:
+    from auto_voice.audio.speaker_matcher import SpeakerMatcher
+
+    matcher = SpeakerMatcher()
+    matcher.extract_embeddings_for_artist('conor_maynard')
+    clusters = matcher.cluster_speakers(threshold=0.85)
+    matcher.auto_match_clusters_to_artists()"""
+
+import logging
+import uuid
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
+import numpy
+
+class SpeakerMatcher:
+    """Cross-track speaker matching and clustering.
+
+Uses WavLM-based embeddings to identify the same speaker across
+different tracks, enabling consistent voice profile assignment."""
+    def __init__(self, similarity_threshold: float = 0.85, min_cluster_duration: float = 30.0, device: str = 'cuda'):
+        """Initialize the speaker matcher...."""
+        ...
+    def _get_encoder(self):
+        """Lazy-load the WavLM encoder...."""
+        ...
+    def extract_embedding_from_audio(self, audio_path: Path, start_sec: Optional[float] = None, end_sec: Optional[float] = None) -> np.ndarray:
+        """Extract speaker embedding from audio file or segment...."""
+        ...
+    def extract_embeddings_for_artist(self, artist_name: str, separated_dir: Optional[Path] = None, diarized_dir: Optional[Path] = None) -> Dict[str, Any]:
+        """Extract and store embeddings for all speakers in an artist's tracks...."""
+        ...
+    def cosine_similarity(self, emb1: np.ndarray, emb2: np.ndarray) -> float:
+        """Calculate cosine similarity between two embeddings...."""
+        ...
+    def cluster_speakers(self, threshold: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Cluster all unclustered speaker embeddings...."""
+        ...
+    def auto_match_clusters_to_artists(self) -> Dict[str, Any]:
+        """Automatically match clusters to featured artist names from metadata...."""
+        ...
+    def get_cluster_sample_audio(self, cluster_id: str, max_duration: float = 10.0) -> Tuple[np.ndarray, int]:
+        """Get a sample audio clip for a speaker cluster...."""
+        ...
+
+def run_speaker_matching(artists: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Run full speaker matching pipeline for specified artists...."""
+    ...
+============================================================
+# audio/separation.py [SUMMARIZED]
+============================================================
+"""Vocal/instrumental separation using Demucs HTDemucs model.
+
+No fallback behavior - raises RuntimeError if Demucs is unavailable."""
+
+import logging
+from typing import Dict, Optional
+import numpy
+import torch
+
+class VocalSeparator:
+    """Separates vocals from instrumental using Demucs HTDemucs.
+
+Uses the pretrained HTDemucs model for high-quality source separation.
+Raises RuntimeError if Demucs cannot be loaded - no silent fallback."""
+    def __init__(self, device = None, model_name: str = 'htdemucs', segment: Optional[float] = None):
+        """Initialize VocalSeparator...."""
+        ...
+    def _load_model(self):
+        """Lazy-load Demucs model...."""
+        ...
+    def model_sample_rate(self) -> int:
+        """Return the model's expected sample rate...."""
+        ...
+    def sources(self):
+        """Return list of source names the model separates...."""
+        ...
+    def separate(self, audio: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
+        """Separate audio into vocals and instrumental...."""
+        ...
+============================================================
+# audio/separator.py [SUMMARIZED]
+============================================================
+"""Mel-Band RoFormer vocal separator for source separation.
+
+Implements a simplified Mel-Band RoFormer architecture for vocal/
+instrumental separation, based on the SDX'23 winning approach.
+
+Key design choices:
+- Mel-scale frequency band splitting (non-uniform bandwidth)
+- RoPE (Rotary Position Embeddings) in transformer layers
+- Complex-valued mask estimation for phase-aware separation
+- 44.1kHz processing with 2048 n_fft, 512 hop
+- No fallback: raises RuntimeError on failure"""
+
+import logging
+from pathlib import Path
+from typing import Optional, Tuple
+import numpy
+import torch
+import torch.nn
+import torch.nn.functional
+
+def compute_mel_band_splits(n_fft: int, sample_rate: int, n_bands: int = 32) -> list:
+    """Compute mel-scale frequency band boundaries...."""
+    ...
+
+class RotaryPositionEmbedding(nn.Module):
+    """Rotary Position Embedding (RoPE) for temporal modeling."""
+    def __init__(self, dim: int, max_len: int = 8192):
+        ...
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply RoPE to input tensor...."""
+        ...
+
+class BandTransformerBlock(nn.Module):
+    """Transformer block for processing a frequency band."""
+    def __init__(self, dim: int, n_heads: int = 4, ff_mult: int = 4, dropout: float = 0.1):
+        ...
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Process band features...."""
+        ...
+
+class MelBandRoFormer(nn.Module):
+    """Mel-Band RoFormer for vocal/instrumental separation.
+
+Architecture (SDX'23):
+- Input: Complex STFT at 44.1kHz
+- Band splitting: 32 mel-scale frequency bands
+- Per-band processing: Transformer with RoP..."""
+    def __init__(self, pretrained: Optional[str] = None, device: Optional[torch.device] = None, sample_rate: int = 44100, n_fft: int = 2048, hop_length: int = 512, n_bands: int = 32, hidden_dim: int = 128, n_layers: int = 6, n_heads: int = 4):
+        ...
+    def _load_pretrained(self, path: str):
+        """Load pretrained weights...."""
+        ...
+    def _stft(self, audio: torch.Tensor) -> torch.Tensor:
+        """Compute STFT...."""
+        ...
+    def _istft(self, stft: torch.Tensor, length: int) -> torch.Tensor:
+        """Compute inverse STFT...."""
+        ...
+    def _process_bands(self, stft: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Process STFT through band transformer...."""
+# ... (truncated)
+============================================================
+# audio/youtube_downloader.py [SUMMARIZED]
+============================================================
+"""YouTube audio downloader with metadata extraction and diarization integration.
+
+Uses yt-dlp to download audio from YouTube videos and extracts metadata
+for featured artist detection."""
+
+import logging
+import os
+import subprocess
+import tempfile
+import json
+import uuid
+import shutil
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
+from pathlib import Path
+from youtube_metadata import parse_youtube_metadata, parse_featured_artists
+
+def _find_ytdlp() -> str:
+    """Find yt-dlp executable, checking common locations...."""
+    ...
+
+class YouTubeDownloadResult:
+    """Result of a YouTube download operation."""
+
+class YouTubeDownloader:
+    """Downloads audio from YouTube videos with metadata extraction."""
+    def __init__(self, output_dir: Optional[str] = None):
+        """Initialize the downloader...."""
+        ...
+    def download(self, url: str, output_filename: Optional[str] = None, audio_format: str = 'wav', sample_rate: int = 44100) -> YouTubeDownloadResult:
+        """Download audio from a YouTube video...."""
+        ...
+    def get_video_info(self, url: str) -> YouTubeDownloadResult:
+        """Get video information without downloading...."""
+        ...
+    def _get_metadata(self, url: str) -> Optional[Dict[str, Any]]:
+        """Fetch video metadata using yt-dlp...."""
+        ...
+    def _download_audio(self, url: str, output_path: str, audio_format: str, sample_rate: int) -> bool:
+        """Download audio using yt-dlp...."""
+        ...
+    def _sanitize_filename(self, filename: str) -> str:
+        """Sanitize a string for use as a filename...."""
+        ...
+
+def get_downloader(output_dir: Optional[str] = None) -> YouTubeDownloader:
+    """Get or create a YouTubeDownloader instance...."""
+    ...
+============================================================
+# audio/training_filter.py [SUMMARIZED]
+============================================================
+"""Training data filtering for speaker-specific audio extraction.
+
+This module provides functionality to filter training audio to only include
+segments from a target speaker, based on diarization results and profile matching."""
+
+import logging
+import os
+import tempfile
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
+import numpy
+import torch
+from scipy.io import wavfile
+from auto_voice.audio.speaker_diarization import DiarizationResult, SpeakerDiarizer, SpeakerSegment, compute_speaker_similarity, match_speaker_to_profile
+
+class TrainingDataFilter:
+    """Filter training audio to extract only target speaker vocals."""
+    def __init__(self, diarizer: Optional[SpeakerDiarizer] = None, device: Optional[str] = None):
+        """Initialize the training data filter...."""
+        ...
+    def diarizer(self) -> SpeakerDiarizer:
+        """Lazy-load the diarizer...."""
+        ...
+    def filter_training_audio(self, audio_path: Union[str, Path], target_embedding: np.ndarray, output_path: Optional[Union[str, Path]] = None, similarity_threshold: float = 0.7, min_segment_duration: float = 0.5, diarization_result: Optional[DiarizationResult] = None) -> Tuple[Path, Dict]:
+        """Filter audio to only include segments matching target speaker...."""
+        ...
+    def filter_with_profile_matching(self, audio_path: Union[str, Path], profile_embeddings: Dict[str, np.ndarray], target_profile_id: str, output_path: Optional[Union[str, Path]] = None, **kwargs) -> Tuple[Path, Dict]:
+        """Filter audio to match a specific profile from a set of profiles...."""
+        ...
+    def auto_split_by_speakers(self, audio_path: Union[str, Path], output_dir: Union[str, Path], diarization_result: Optional[DiarizationResult] = None, min_segment_duration: float = 0.5) -> Dict[str, Tuple[Path, float]]:
+        """Split audio into separate files per detected speaker...."""
+        ...
+
+def filter_training_audio(audio_path: Union[str, Path], target_embedding: np.ndarray, output_path: Optional[Union[str, Path]] = None, **kwargs) -> Tuple[Path, Dict]:
+    """Convenience function for filtering training audio...."""
+    ...
+============================================================
+# audio/augmentation.py [SUMMARIZED]
+============================================================
+"""Data augmentation pipeline for training.
+
+Provides pitch shifting, time stretching, and EQ augmentation
+to increase effective training data diversity."""
+
+import logging
+from typing import Dict, Optional
+import numpy
+
+class AugmentationPipeline:
+    """Configurable audio augmentation pipeline for training.
+
+Each augmentation has an independent probability of being applied.
+Multiple augmentations can be applied to the same sample.
+
+Args:
+    pitch_sh..."""
+    def __init__(self, pitch_shift_prob: float = 0.5, pitch_shift_range: float = 2.0, time_stretch_prob: float = 0.3, time_stretch_range: float = 0.1, eq_prob: float = 0.3, eq_bands: int = 3, eq_gain_range: float = 6.0):
+        ...
+    def __call__(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Apply random augmentations to audio...."""
+        ...
+    def _pitch_shift(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Apply random pitch shift within ±pitch_shift_range semitones...."""
+        ...
+    def _time_stretch(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Apply random time stretch within ±time_stretch_range...."""
+        ...
+    def _eq(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """Apply random bandpass EQ emphasis/attenuation...."""
+        ...
+
+================================================================================

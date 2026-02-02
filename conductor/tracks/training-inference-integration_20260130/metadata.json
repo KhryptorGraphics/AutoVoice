@@ -2,16 +2,17 @@
   "id": "training-inference-integration_20260130",
   "title": "Training-to-Inference Integration",
   "type": "feature",
-  "status": "pending",
+  "status": "complete",
   "created": "2026-01-30T11:20:00Z",
-  "updated": "2026-01-30T11:20:00Z",
+  "updated": "2026-02-01T11:30:00Z",
+  "completed": "2026-02-01T11:30:00Z",
   "phases": {
     "total": 6,
-    "completed": 0
+    "completed": 6
   },
   "tasks": {
     "total": 26,
-    "completed": 0
+    "completed": 26
   },
   "dependencies": {
     "tracks": ["sota-dual-pipeline_20260130"],
@@ -20,5 +21,29 @@
       "data/trained_models/",
       "data/voice_profiles/"
     ]
+  },
+  "cross_context": {
+    "provides": [
+      "trained_adapters",
+      "has_trained_model_flag",
+      "lora_weights_format"
+    ],
+    "consumes": [
+      "voice_profiles",
+      "speaker_embeddings",
+      "pipeline_factory"
+    ],
+    "integration_points": [
+      "AdapterManager.load_adapter()",
+      "PipelineFactory.get_pipeline()",
+      "POST /api/v1/convert/song",
+      "GET /profiles/{id}/model"
+    ],
+    "tested_with": [
+      "test_adapter_integration_e2e.py",
+      "test_continuous_training_e2e.py",
+      "test_adapter_manager.py"
+    ],
+    "verified": true
   }
 }

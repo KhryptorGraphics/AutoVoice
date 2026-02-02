@@ -23,5 +23,38 @@
       "frontend/src/",
       "src/auto_voice/web/api.py"
     ]
+  },
+  "cross_context": {
+    "provides": [
+      "pipeline_selector_ui",
+      "training_monitor_ui",
+      "speaker_assignment_ui"
+    ],
+    "consumes": [
+      "api_convert_endpoint",
+      "websocket_karaoke",
+      "pipeline_types"
+    ],
+    "api_contract": [
+      "GET /api/v1/profiles",
+      "GET /api/v1/profiles/{id}/model",
+      "POST /api/v1/convert/song",
+      "POST /api/v1/training/jobs",
+      "WebSocket /ws/karaoke"
+    ],
+    "integration_points": [
+      "PipelineSelector → pipeline_type param",
+      "VoiceProfilePage → has_trained_model flag",
+      "TrainingConfigPanel → POST /training/jobs",
+      "KaraokePage → WebSocket streaming"
+    ],
+    "tested_with": [
+      "test_frontend_integration_e2e.py",
+      "test_karaoke_integration.py"
+    ],
+    "verified": true,
+    "issues": [
+      "Frontend defines quality_shortcut but backend doesn't implement it yet"
+    ]
   }
 }

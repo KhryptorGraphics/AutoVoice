@@ -29,7 +29,9 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: bool = False) -
     app.app_config = config if config else {}
 
     # Initialize SocketIO
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+    # Use threading mode in testing to avoid eventlet dependency
+    async_mode = 'threading' if (testing or app.config.get('TESTING')) else 'eventlet'
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode=async_mode)
     app.socketio = socketio
 
     # Register API blueprints
@@ -37,10 +39,13 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: bool = False) -
     from .karaoke_api import karaoke_bp
     from .speaker_api import speaker_bp
     from auto_voice.profiles.api import profiles_bp
+    from .api_docs import docs_bp, swagger_ui_blueprint
     app.register_blueprint(api_bp)
     app.register_blueprint(karaoke_bp)
     app.register_blueprint(speaker_bp)
     app.register_blueprint(profiles_bp)
+    app.register_blueprint(docs_bp, url_prefix='/api/v1')
+    app.register_blueprint(swagger_ui_blueprint)
 
     # Register WebSocket namespaces
     from .karaoke_events import register_karaoke_namespace

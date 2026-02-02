@@ -116,9 +116,10 @@ def singing_pipeline(voice_cloner):
     )
 
     # Pre-load ModelManager with random-weight models for testing
+    # Use content_dim=768 to match ContentVec Layer 12 output
     mm = ModelManager(device=device, config={'speaker_id': 'default'})
     mm.load()  # Random weights
-    model = SoVitsSvc()
+    model = SoVitsSvc({'content_dim': 768, 'pitch_dim': 768})
     model.to(device)
     mm._sovits_models['default'] = model
     pipeline._model_manager = mm

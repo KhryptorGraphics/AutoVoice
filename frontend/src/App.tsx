@@ -9,7 +9,7 @@ import { DiarizationResultsPage } from './pages/DiarizationResultsPage'
 import { YouTubeDownloadPage } from './pages/YouTubeDownloadPage'
 import HelpPage from './pages/HelpPage'
 import { AdapterSelector, AdapterBadge } from './components/AdapterSelector'
-import { PipelineSelector, type PipelineType } from './components/PipelineSelector'
+import { PipelineSelector, PipelineBadge, type PipelineType, getPreferredPipeline } from './components/PipelineSelector'
 import { apiService, VoiceProfile, AdapterType, ConversionRecord } from './services/api'
 import clsx from 'clsx'
 
@@ -17,7 +17,10 @@ function ConvertPage() {
   const [profiles, setProfiles] = useState<VoiceProfile[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null)
   const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null)
-  const [pipeline, setPipeline] = useState<PipelineType>('quality')  // Default to quality for song conversion
+  // Load preferred pipeline from localStorage, default to quality for song conversion
+  const [pipeline, setPipeline] = useState<PipelineType>(() => {
+    return getPreferredPipeline() || 'quality'
+  })
   const [file, setFile] = useState<File | null>(null)
   const [isConverting, setIsConverting] = useState(false)
   const [conversionStatus, setConversionStatus] = useState<ConversionRecord | null>(null)
@@ -70,7 +73,7 @@ function ConvertPage() {
         } else if (status.status === 'error') {
           setError(status.error || 'Conversion failed')
           setIsConverting(false)
-        } else if (status.status === 'complete') {
+        } else if (status.status === 'complete' || status.status === 'completed') {
           setIsConverting(false)
         }
       }
@@ -208,12 +211,15 @@ function ConvertPage() {
           </div>
         )}
 
-        {conversionStatus?.status === 'complete' && (
+        {(conversionStatus?.status === 'complete' || conversionStatus?.status === 'completed') && (
           <div className="mb-4 p-4 bg-green-500/20 border border-green-500 rounded">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-green-400">
                 <CheckCircle size={20} />
                 <span className="font-semibold">Conversion Complete!</span>
+                {conversionStatus.pipeline_type && (
+                  <PipelineBadge pipeline={conversionStatus.pipeline_type as PipelineType} />
+                )}
               </div>
               <button
                 onClick={handleDownload}
@@ -222,6 +228,17 @@ function ConvertPage() {
                 Download
               </button>
             </div>
+            {/* Show processing metrics if available */}
+            {(conversionStatus.processing_time_seconds || conversionStatus.rtf) && (
+              <div className="mt-2 flex gap-4 text-sm text-gray-400">
+                {conversionStatus.processing_time_seconds !== undefined && (
+                  <span>Processed in {conversionStatus.processing_time_seconds.toFixed(1)}s</span>
+                )}
+                {conversionStatus.rtf !== undefined && (
+                  <span>RTF: {conversionStatus.rtf.toFixed(2)}x</span>
+                )}
+              </div>
+            )}
           </div>
         )}
 

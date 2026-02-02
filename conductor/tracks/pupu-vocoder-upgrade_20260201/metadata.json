@@ -1,0 +1,26 @@
+{
+  "track_id": "pupu-vocoder-upgrade_20260201",
+  "title": "Pupu-Vocoder Anti-Aliasing Upgrade",
+  "status": "not_started",
+  "priority": "P2",
+  "created": "2026-02-01",
+  "updated": "2026-02-01",
+  "category": "quality-upgrade",
+  "estimated_complexity": "low",
+  "dependencies": [
+    "sota-dual-pipeline_20260130"
+  ],
+  "research_papers": [
+    "arXiv:2512.20211 (Pupu-Vocoder)"
+  ],
+  "key_innovations": [
+    "Anti-derivative anti-aliasing (ADAA) for activations",
+    "Aliasing-free upsampling filters",
+    "Better high-frequency preservation"
+  ],
+  "target_metrics": {
+    "pesq_44khz": "≥ 4.3",
+    "spectral_flatness": "improved",
+    "aliasing_reduction": "≥ 50%"
+  }
+}

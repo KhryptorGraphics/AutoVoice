@@ -5,6 +5,19 @@
 ### Ultimate Goal
 William Singe and Conor Maynard voice swaps: each artist singing in the style and talent of the other on each other's instrumental tracks.
 
+**Song Conversion Mode:**
+- One artist's voice sings another's song **EXACTLY** as the original artist sang it
+- **Pitch Correct**: Match original pitch contour exactly
+- **Singing Abilities Matched**: Transfer vibrato, dynamics, articulation
+- **Synced to Instrumental**: Perfect alignment with backing track
+
+**Live Karaoke Mode:**
+- Auto-morph user's live singing to match original artist's performance
+- **Multiple Audio Outputs (Configurable)**:
+  - **Audience Output**: Converted vocals + instrumental for speakers
+  - **Headphone Output**: Original song for user to sing along with
+- User can practice matching original artist's timing/pitch while audience hears converted voice
+
 ### Objectives
 
 1. **Dual SOTA Pipelines** - REALTIME (low-latency) + QUALITY (high-fidelity)

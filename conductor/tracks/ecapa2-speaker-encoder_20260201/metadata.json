@@ -1,0 +1,27 @@
+{
+  "track_id": "ecapa2-speaker-encoder_20260201",
+  "title": "ECAPA2 Speaker Encoder Upgrade",
+  "status": "not_started",
+  "priority": "P2",
+  "created": "2026-02-01",
+  "updated": "2026-02-01",
+  "category": "quality-upgrade",
+  "estimated_complexity": "low",
+  "dependencies": [
+    "sota-dual-pipeline_20260130"
+  ],
+  "research_papers": [
+    "FreeSVC (arXiv:2501.05586)"
+  ],
+  "key_innovations": [
+    "Enhanced context attentive pooling",
+    "Better speaker discrimination",
+    "Robust to background music",
+    "Multilingual support"
+  ],
+  "target_metrics": {
+    "speaker_similarity": "≥ 0.92",
+    "eer": "≤ 2.0%",
+    "snr_robustness": "≥ 5dB"
+  }
+}

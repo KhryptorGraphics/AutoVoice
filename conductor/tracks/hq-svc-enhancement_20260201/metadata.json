@@ -1,0 +1,28 @@
+{
+  "track_id": "hq-svc-enhancement_20260201",
+  "title": "HQ-SVC Voice Enhancement & Super-Resolution",
+  "status": "not_started",
+  "priority": "P1",
+  "created": "2026-02-01",
+  "updated": "2026-02-01",
+  "category": "quality-upgrade",
+  "estimated_complexity": "medium",
+  "dependencies": [
+    "sota-dual-pipeline_20260130",
+    "sota-innovations_20260131"
+  ],
+  "research_papers": [
+    "arXiv:2511.08496 (HQ-SVC - AAAI 2026)"
+  ],
+  "key_innovations": [
+    "Decoupled codec architecture",
+    "Voice super-resolution (22→44.1kHz)",
+    "DSP refinement for artifact reduction",
+    "Progressive diffusion enhancement"
+  ],
+  "target_metrics": {
+    "speaker_similarity": "≥ 0.94",
+    "mcd": "≤ 3.6",
+    "pesq_super_resolution": "≥ 4.0"
+  }
+}

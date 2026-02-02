@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award } from 'lucide-react'
+import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award, Search, Filter } from 'lucide-react'
 import { apiService, VoiceProfile, TrainingJob, TrainingConfig, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType } from '../services/api'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { TrainingJobQueue } from '../components/TrainingJobQueue'
@@ -327,6 +327,26 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
             size="lg"
           />
 
+          {/* Profile Training Info */}
+          <div className="grid grid-cols-2 gap-4 mt-4">
+            <div className="p-4 bg-gray-750 rounded-lg">
+              <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Training Samples</div>
+              <div className="text-2xl font-bold text-white">{samples.length}</div>
+            </div>
+            <div className="p-4 bg-gray-750 rounded-lg">
+              <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Last Trained</div>
+              <div className="text-lg font-medium text-white">
+                {profile.last_trained
+                  ? new Date(profile.last_trained).toLocaleDateString(undefined, {
+                      year: 'numeric',
+                      month: 'short',
+                      day: 'numeric',
+                    })
+                  : 'Never'}
+              </div>
+            </div>
+          </div>
+
           <div className="mt-6 p-4 bg-gray-750 rounded-lg">
             <h4 className="text-sm font-medium text-gray-300 mb-2">About Adapters</h4>
             <div className="text-sm text-gray-400 space-y-2">
@@ -536,11 +556,15 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
   )
 }
 
+type ProfileFilter = 'all' | 'trained' | 'untrained'
+
 export function VoiceProfilePage() {
   const [profiles, setProfiles] = useState<VoiceProfile[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedProfile, setSelectedProfile] = useState<VoiceProfile | null>(null)
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const [filter, setFilter] = useState<ProfileFilter>('all')
+  const [searchQuery, setSearchQuery] = useState('')
 
   const fetchProfiles = useCallback(async () => {
     try {
@@ -552,6 +576,22 @@ export function VoiceProfilePage() {
       setLoading(false)
     }
   }, [])
+
+  // Filter and search profiles
+  const filteredProfiles = profiles.filter(profile => {
+    // Apply training status filter
+    if (filter === 'trained' && !profile.has_trained_model) return false
+    if (filter === 'untrained' && profile.has_trained_model) return false
+
+    // Apply search query
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase()
+      const name = (profile.name || profile.profile_id).toLowerCase()
+      if (!name.includes(query)) return false
+    }
+
+    return true
+  })
 
   useEffect(() => {
     fetchProfiles()
@@ -578,6 +618,9 @@ export function VoiceProfilePage() {
       </div>
     )
   }
+
+  const trainedCount = profiles.filter(p => p.has_trained_model).length
+  const untrainedCount = profiles.length - trainedCount
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -607,6 +650,61 @@ export function VoiceProfilePage() {
         </div>
       )}
 
+      {/* Search and Filter Controls */}
+      {profiles.length > 0 && (
+        <div className="mb-4 flex flex-col sm:flex-row gap-3">
+          {/* Search Input */}
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={16} />
+            <input
+              type="text"
+              placeholder="Search profiles..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          {/* Filter Buttons */}
+          <div className="flex gap-1 p-1 bg-gray-800 rounded-lg">
+            <button
+              onClick={() => setFilter('all')}
+              className={clsx(
+                'px-3 py-1.5 text-sm rounded transition-colors',
+                filter === 'all'
+                  ? 'bg-gray-700 text-white'
+                  : 'text-gray-400 hover:text-white'
+              )}
+            >
+              All ({profiles.length})
+            </button>
+            <button
+              onClick={() => setFilter('trained')}
+              className={clsx(
+                'px-3 py-1.5 text-sm rounded transition-colors flex items-center gap-1',
+                filter === 'trained'
+                  ? 'bg-green-700 text-white'
+                  : 'text-gray-400 hover:text-white'
+              )}
+            >
+              <Award size={14} />
+              Trained ({trainedCount})
+            </button>
+            <button
+              onClick={() => setFilter('untrained')}
+              className={clsx(
+                'px-3 py-1.5 text-sm rounded transition-colors',
+                filter === 'untrained'
+                  ? 'bg-gray-600 text-white'
+                  : 'text-gray-400 hover:text-white'
+              )}
+            >
+              Untrained ({untrainedCount})
+            </button>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="animate-spin text-gray-400" size={32} />
@@ -624,9 +722,27 @@ export function VoiceProfilePage() {
             Create Profile
           </button>
         </div>
+      ) : filteredProfiles.length === 0 ? (
+        <div className="bg-gray-800 rounded-lg p-8 text-center">
+          <Filter className="mx-auto h-12 w-12 text-gray-500 mb-3" />
+          <h3 className="text-lg font-medium mb-2">No Matching Profiles</h3>
+          <p className="text-gray-400 mb-4">
+            {searchQuery
+              ? `No profiles match "${searchQuery}"`
+              : filter === 'trained'
+                ? 'No trained profiles yet. Train a profile to see it here.'
+                : 'No untrained profiles.'}
+          </p>
+          <button
+            onClick={() => { setFilter('all'); setSearchQuery(''); }}
+            className="text-blue-400 hover:text-blue-300"
+          >
+            Clear filters
+          </button>
+        </div>
       ) : (
         <div className="space-y-2">
-          {profiles.map(profile => (
+          {filteredProfiles.map(profile => (
             <button
               key={profile.profile_id}
               onClick={() => setSelectedProfile(profile)}

@@ -18,6 +18,18 @@ export { AdapterSelector, AdapterDropdown, AdapterBadge } from './AdapterSelecto
 export { QualityComparisonPanel } from './QualityComparisonPanel'
 export { QualityMetricsDashboard } from './QualityMetricsDashboard'
 
+// Pipeline selection components
+export {
+  PipelineSelector,
+  PipelineDropdown,
+  PipelineBadge,
+  getPipelineInfo,
+  getPreferredPipeline,
+  savePreferredPipeline,
+  pipelines,
+} from './PipelineSelector'
+export type { PipelineType, PipelineInfo } from './PipelineSelector'
+
 // System monitoring components
 export { GPUMonitor } from './GPUMonitor'
 export { GPUMetricsPanel } from './GPUMetricsPanel'
@@ -28,6 +40,9 @@ export { TensorRTControls } from './TensorRTControls'
 export { AudioWaveform } from './AudioWaveform'
 export { RealtimeWaveform } from './RealtimeWaveform'
 export { AudioDeviceSelector } from './AudioDeviceSelector'
+
+// Karaoke components
+export { KaraokeSessionInfo } from './KaraokeSessionInfo'
 
 // Batch processing components
 export { BatchProcessingQueue } from './BatchProcessingQueue'
@@ -42,6 +57,14 @@ export { SpectrogramViewer } from './SpectrogramViewer'
 export { WaveformViewer } from './WaveformViewer'
 export { ConversionHistoryTable } from './ConversionHistoryTable'
 export { CheckpointBrowser } from './CheckpointBrowser'
+
+// Conversion progress components
+export {
+  ConversionProgress,
+  ConversionProgressInline,
+  ConversionMetricsBadge,
+} from './ConversionProgress'
+export type { ConversionStatus, ConversionStage } from './ConversionProgress'
 
 // Debug & System components
 export { DebugPanel } from './DebugPanel'

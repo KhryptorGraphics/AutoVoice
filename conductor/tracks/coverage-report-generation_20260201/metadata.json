@@ -1,0 +1,17 @@
+{
+  "track_id": "coverage-report-generation_20260201",
+  "title": "Coverage Report Generation",
+  "created": "2026-02-01",
+  "updated": "2026-02-01",
+  "status": "pending",
+  "priority": "P0",
+  "estimated_days": 2,
+  "dependencies": [
+    "comprehensive-testing-coverage_20260201"
+  ],
+  "blocks": [
+    "production-deployment-prep_20260201"
+  ],
+  "agents_assigned": [],
+  "completion_percentage": 0
+}

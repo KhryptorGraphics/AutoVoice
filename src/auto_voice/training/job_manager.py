@@ -207,6 +207,8 @@ class TrainingJobManager:
         storage_path: Path | str,
         require_gpu: bool = True,
         socketio: Optional[Any] = None,
+        profiles_dir: Optional[str] = None,
+        samples_dir: Optional[str] = None,
     ):
         """Initialize job manager.
 
@@ -214,6 +216,8 @@ class TrainingJobManager:
             storage_path: Directory for job persistence
             require_gpu: If True, raise RuntimeError if CUDA unavailable
             socketio: Optional SocketIO instance for real-time events
+            profiles_dir: Optional custom profiles directory for VoiceProfileStore
+            samples_dir: Optional custom samples directory for VoiceProfileStore
 
         Raises:
             RuntimeError: If require_gpu=True and CUDA is not available
@@ -221,6 +225,8 @@ class TrainingJobManager:
         self.storage_path = Path(storage_path)
         self._require_gpu = require_gpu
         self._socketio = socketio
+        self._profiles_dir = profiles_dir
+        self._samples_dir = samples_dir
         self._jobs: Dict[str, TrainingJob] = {}
         self._is_initialized = False
 
@@ -938,3 +944,529 @@ class TrainingJobManager:
             key=lambda j: j.completed_at or datetime.min,
             reverse=True
         )
+
+    # =========================================================================
+    # Phase 4: Auto-Training Logic
+    # =========================================================================
+
+    def _get_profile_store(self) -> "VoiceProfileStore":
+        """Get VoiceProfileStore with configured paths."""
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+        if self._profiles_dir and self._samples_dir:
+            return VoiceProfileStore(
+                profiles_dir=self._profiles_dir,
+                samples_dir=self._samples_dir,
+            )
+        return VoiceProfileStore()
+
+    def check_needs_training(
+        self,
+        profile_id: str,
+        min_samples: int = 5,
+    ) -> Dict[str, Any]:
+        """Check if a profile needs initial training.
+
+        Phase 4: Training trigger conditions
+        - Profile has >= min_samples (default 5)
+        - No existing LoRA adapter
+        - Profile flagged "needs_training"
+
+        Args:
+            profile_id: Voice profile ID
+            min_samples: Minimum samples required for training (default: 5)
+
+        Returns:
+            Dict with keys:
+            - needs_training: bool
+            - reason: str (why training is needed)
+            - sample_count: int
+            - has_adapter: bool
+        """
+        from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
+
+        store = self._get_profile_store()
+
+        try:
+            profile = store.load(profile_id)
+        except Exception as e:
+            logger.warning(f"Could not load profile {profile_id}: {e}")
+            return {
+                "needs_training": False,
+                "reason": "profile_not_found",
+                "sample_count": 0,
+                "has_adapter": False,
+            }
+
+        # Count samples
+        samples = store.list_training_samples(profile_id)
+        sample_count = len(samples)
+
+        # Check if adapter exists
+        from pathlib import Path as PathLib
+
+        adapter_manager = AdapterManager(AdapterManagerConfig(
+            adapters_dir=PathLib("data/trained_models"),
+            profiles_dir=PathLib("data/voice_profiles"),
+        ))
+
+        try:
+            adapter_state = adapter_manager.load_adapter(profile_id, use_cache=False)
+            has_adapter = adapter_state is not None and len(adapter_state) > 0
+        except Exception:
+            has_adapter = False
+
+        # Check status flag
+        status = profile.get("status", "")
+        needs_training_flag = status == "needs_training"
+
+        # Determine if training needed
+        needs_training = False
+        reason = "none"
+
+        if sample_count < min_samples:
+            reason = f"insufficient_samples (have {sample_count}, need {min_samples})"
+        elif not has_adapter:
+            needs_training = True
+            reason = "no_adapter"
+        elif needs_training_flag:
+            needs_training = True
+            reason = "flagged_needs_training"
+
+        return {
+            "needs_training": needs_training,
+            "reason": reason,
+            "sample_count": sample_count,
+            "has_adapter": has_adapter,
+        }
+
+    def check_needs_retraining(
+        self,
+        profile_id: str,
+        retrain_new_samples: int = 3,
+        freshness_days: int = 30,
+        speaker_similarity_min: float = 0.85,
+        mcd_max: float = 4.5,
+    ) -> Dict[str, Any]:
+        """Check if a profile needs retraining.
+
+        Phase 4: Retrain trigger conditions
+        - >3 new samples since last training
+        - Quality degradation (speaker_sim drops below threshold)
+        - LoRA >30 days old with new samples available
+
+        Args:
+            profile_id: Voice profile ID
+            retrain_new_samples: Trigger retrain after N new samples (default: 3)
+            freshness_days: Max age before retrain recommended (default: 30)
+            speaker_similarity_min: Min speaker similarity threshold (default: 0.85)
+            mcd_max: Max MCD threshold (default: 4.5)
+
+        Returns:
+            Dict with keys:
+            - needs_retraining: bool
+            - reasons: List[str] (all reasons for retraining)
+            - new_sample_count: int
+            - days_since_training: int
+            - quality_metrics: Dict
+        """
+        store = self._get_profile_store()
+
+        try:
+            profile = store.load(profile_id)
+        except Exception as e:
+            logger.warning(f"Could not load profile {profile_id}: {e}")
+            return {
+                "needs_retraining": False,
+                "reasons": [],
+                "new_sample_count": 0,
+                "days_since_training": 0,
+                "quality_metrics": {},
+            }
+
+        reasons = []
+
+        # Check for new samples since last training
+        last_trained_at = profile.get("last_trained_at")
+        samples = store.list_training_samples(profile_id)
+
+        if last_trained_at:
+            last_trained_dt = datetime.fromisoformat(last_trained_at)
+            new_samples = [
+                s for s in samples
+                if datetime.fromisoformat(s.created_at) > last_trained_dt
+            ]
+            new_sample_count = len(new_samples)
+
+            if new_sample_count >= retrain_new_samples:
+                reasons.append(
+                    f"new_samples ({new_sample_count} >= {retrain_new_samples})"
+                )
+
+            # Check freshness
+            days_since_training = (datetime.now() - last_trained_dt).days
+            if days_since_training > freshness_days and new_sample_count > 0:
+                reasons.append(
+                    f"stale_adapter ({days_since_training} days > {freshness_days})"
+                )
+        else:
+            new_sample_count = len(samples)
+            days_since_training = 0
+
+        # Check quality metrics
+        quality_metrics = profile.get("quality_metrics", {})
+        speaker_sim = quality_metrics.get("speaker_similarity")
+        mcd = quality_metrics.get("mcd")
+
+        if speaker_sim is not None and speaker_sim < speaker_similarity_min:
+            reasons.append(
+                f"quality_degradation (speaker_sim={speaker_sim:.3f} < {speaker_similarity_min})"
+            )
+
+        if mcd is not None and mcd > mcd_max:
+            reasons.append(
+                f"quality_degradation (mcd={mcd:.2f} > {mcd_max})"
+            )
+
+        return {
+            "needs_retraining": len(reasons) > 0,
+            "reasons": reasons,
+            "new_sample_count": new_sample_count,
+            "days_since_training": days_since_training,
+            "quality_metrics": quality_metrics,
+        }
+
+    def auto_queue_training(
+        self,
+        profile_id: str,
+        min_samples: int = 5,
+        retrain_new_samples: int = 3,
+        freshness_days: int = 30,
+        config: Optional[TrainingConfig] = None,
+    ) -> Optional[TrainingJob]:
+        """Automatically queue training if conditions are met.
+
+        Phase 4: Background training scheduler integration
+        Checks both initial training and retraining conditions.
+
+        Args:
+            profile_id: Voice profile ID
+            min_samples: Minimum samples for initial training
+            retrain_new_samples: New samples threshold for retrain
+            freshness_days: Max days before retrain
+            config: Optional custom training config
+
+        Returns:
+            TrainingJob if queued, None if conditions not met
+        """
+        store = self._get_profile_store()
+
+        # Check if profile exists
+        try:
+            profile = store.load(profile_id)
+        except Exception as e:
+            logger.warning(f"Profile {profile_id} not found: {e}")
+            return None
+
+        # Check if already queued
+        existing_jobs = self.get_jobs_for_profile(profile_id)
+        pending_or_running = [
+            j for j in existing_jobs
+            if j.status in [JobStatus.PENDING.value, JobStatus.RUNNING.value]
+        ]
+
+        if pending_or_running:
+            logger.info(
+                f"Profile {profile_id} already has pending/running job: "
+                f"{pending_or_running[0].job_id}"
+            )
+            return None
+
+        # Check initial training conditions
+        training_check = self.check_needs_training(profile_id, min_samples)
+
+        if training_check["needs_training"]:
+            logger.info(
+                f"Queueing initial training for {profile_id}: "
+                f"{training_check['reason']}"
+            )
+
+            samples = store.list_training_samples(profile_id)
+            sample_ids = [s.sample_id for s in samples]
+
+            job = self.create_job(
+                profile_id=profile_id,
+                sample_ids=sample_ids,
+                config=config,
+            )
+
+            # Update profile status
+            profile["status"] = "training_queued"
+            store.save(profile)
+
+            return job
+
+        # Check retraining conditions
+        retrain_check = self.check_needs_retraining(
+            profile_id=profile_id,
+            retrain_new_samples=retrain_new_samples,
+            freshness_days=freshness_days,
+        )
+
+        if retrain_check["needs_retraining"]:
+            logger.info(
+                f"Queueing retraining for {profile_id}: "
+                f"{', '.join(retrain_check['reasons'])}"
+            )
+
+            samples = store.list_training_samples(profile_id)
+            sample_ids = [s.sample_id for s in samples]
+
+            job = self.create_job(
+                profile_id=profile_id,
+                sample_ids=sample_ids,
+                config=config,
+            )
+
+            return job
+
+        logger.debug(
+            f"Profile {profile_id} does not need training: "
+            f"has_adapter={training_check['has_adapter']}, "
+            f"sample_count={training_check['sample_count']}"
+        )
+        return None
+
+    def auto_queue_all_profiles(
+        self,
+        min_samples: int = 5,
+        retrain_new_samples: int = 3,
+        freshness_days: int = 30,
+    ) -> List[TrainingJob]:
+        """Check all profiles and queue training as needed.
+
+        Phase 4: Background scheduler integration
+        Scans all profiles and auto-queues training/retraining.
+
+        Args:
+            min_samples: Minimum samples for initial training
+            retrain_new_samples: New samples threshold for retrain
+            freshness_days: Max days before retrain
+
+        Returns:
+            List of queued training jobs
+        """
+        store = self._get_profile_store()
+        profiles = store.list_profiles()
+
+        queued_jobs = []
+
+        for profile in profiles:
+            profile_id = profile.get("profile_id")
+            if not profile_id:
+                continue
+
+            job = self.auto_queue_training(
+                profile_id=profile_id,
+                min_samples=min_samples,
+                retrain_new_samples=retrain_new_samples,
+                freshness_days=freshness_days,
+            )
+
+            if job:
+                queued_jobs.append(job)
+
+        if queued_jobs:
+            logger.info(
+                f"Auto-queued {len(queued_jobs)} training jobs across "
+                f"{len(profiles)} profiles"
+            )
+
+        return queued_jobs
+
+    # =========================================================================
+    # Phase 4.4: Full Model Training for High-Sample Profiles
+    # =========================================================================
+
+    SAMPLES_FOR_FULL_MODEL = 50  # Threshold from spec
+
+    def check_needs_full_model(
+        self,
+        profile_id: str,
+        samples_threshold: int = None,
+    ) -> Dict[str, Any]:
+        """Check if a profile should upgrade to full model training.
+
+        Phase 4.4: Full model training for profiles with >50 samples.
+
+        Args:
+            profile_id: Voice profile ID
+            samples_threshold: Override default threshold (default: 50)
+
+        Returns:
+            Dict with keys:
+            - needs_full_model: bool
+            - reason: str
+            - sample_count: int
+            - current_adapter_type: str
+        """
+        threshold = samples_threshold or self.SAMPLES_FOR_FULL_MODEL
+
+        store = self._get_profile_store()
+
+        try:
+            profile = store.load(profile_id)
+        except Exception as e:
+            logger.warning(f"Could not load profile {profile_id}: {e}")
+            return {
+                "needs_full_model": False,
+                "reason": "profile_not_found",
+                "sample_count": 0,
+                "current_adapter_type": "none",
+            }
+
+        # Count samples
+        samples = store.list_training_samples(profile_id)
+        sample_count = len(samples)
+
+        # Check current adapter type
+        from pathlib import Path as PathLib
+        trained_models_dir = PathLib("data/trained_models")
+
+        current_adapter_type = "none"
+        if (trained_models_dir / f"{profile_id}_full_model.pt").exists():
+            current_adapter_type = "full_model"
+        elif (trained_models_dir / "hq" / f"{profile_id}_hq_lora.pt").exists():
+            current_adapter_type = "hq_lora"
+        elif (trained_models_dir / "nvfp4" / f"{profile_id}_nvfp4_lora.pt").exists():
+            current_adapter_type = "nvfp4_lora"
+        elif (trained_models_dir / f"{profile_id}_adapter.pt").exists():
+            current_adapter_type = "standard_lora"
+
+        # Determine if upgrade needed
+        needs_full_model = False
+        reason = "none"
+
+        if sample_count < threshold:
+            reason = f"insufficient_samples (have {sample_count}, need {threshold})"
+        elif current_adapter_type == "full_model":
+            reason = "already_full_model"
+        else:
+            needs_full_model = True
+            reason = f"upgrade_recommended (has {sample_count} samples, current: {current_adapter_type})"
+
+        return {
+            "needs_full_model": needs_full_model,
+            "reason": reason,
+            "sample_count": sample_count,
+            "current_adapter_type": current_adapter_type,
+        }
+
+    def create_full_model_job(
+        self,
+        profile_id: str,
+        config: Optional[TrainingConfig] = None,
+    ) -> TrainingJob:
+        """Create a full model training job (not LoRA).
+
+        Phase 4.4: For profiles with >50 samples, train full model
+        for higher quality conversion.
+
+        Args:
+            profile_id: Voice profile ID
+            config: Optional training config (uses enhanced defaults for full model)
+
+        Returns:
+            Created TrainingJob with full_model flag
+
+        Raises:
+            ValueError: If insufficient samples for full model
+        """
+        # Check if eligible
+        check = self.check_needs_full_model(profile_id)
+
+        if not check["needs_full_model"]:
+            if check["sample_count"] < self.SAMPLES_FOR_FULL_MODEL:
+                raise ValueError(
+                    f"Profile {profile_id} has only {check['sample_count']} samples. "
+                    f"Need at least {self.SAMPLES_FOR_FULL_MODEL} for full model training."
+                )
+
+        store = self._get_profile_store()
+        samples = store.list_training_samples(profile_id)
+        sample_ids = [s.sample_id for s in samples]
+
+        # Enhanced config for full model training
+        if config is None:
+            config = TrainingConfig(
+                # Full model uses more epochs and lower LR
+                epochs=50,
+                learning_rate=5e-5,
+                batch_size=8,
+                # Disable LoRA for full model
+                lora_rank=0,  # 0 indicates full model
+                lora_alpha=0,
+                # Enable EWC for preserving base model behavior
+                use_ewc=True,
+                ewc_lambda=500.0,
+            )
+        else:
+            # Override LoRA settings for full model
+            config.lora_rank = 0
+            config.lora_alpha = 0
+
+        job = self.create_job(
+            profile_id=profile_id,
+            sample_ids=sample_ids,
+            config=config,
+        )
+
+        # Mark as full model job in results
+        job.results = job.results or {}
+        job.results["job_type"] = "full_model"
+        job.results["sample_count"] = len(sample_ids)
+
+        self._save_jobs()
+
+        logger.info(
+            f"Created full model training job {job.job_id} for {profile_id} "
+            f"with {len(sample_ids)} samples"
+        )
+
+        return job
+
+    def auto_queue_full_model_training(
+        self,
+        profile_id: str,
+        samples_threshold: int = None,
+    ) -> Optional[TrainingJob]:
+        """Automatically queue full model training if threshold met.
+
+        Phase 4.4: Auto-upgrade from LoRA to full model when samples >= 50.
+
+        Args:
+            profile_id: Voice profile ID
+            samples_threshold: Override threshold (default: 50)
+
+        Returns:
+            TrainingJob if queued, None otherwise
+        """
+        check = self.check_needs_full_model(profile_id, samples_threshold)
+
+        if not check["needs_full_model"]:
+            logger.debug(
+                f"Profile {profile_id} does not need full model: {check['reason']}"
+            )
+            return None
+
+        # Check if already has pending full model job
+        existing_jobs = self.get_jobs_for_profile(profile_id)
+        for job in existing_jobs:
+            if job.status in [JobStatus.PENDING.value, JobStatus.RUNNING.value]:
+                if job.results and job.results.get("job_type") == "full_model":
+                    logger.info(
+                        f"Profile {profile_id} already has full model job: {job.job_id}"
+                    )
+                    return None
+
+        return self.create_full_model_job(profile_id)

@@ -1,11 +1,13 @@
 import { useState, useMemo } from 'react'
 import {
-  History, Play, Pause, Download, Trash2, Star, StarOff,
+  Play, Pause, Download, Trash2, Star, StarOff,
   ChevronDown, ChevronUp, Search, Columns, AlertCircle,
-  CheckCircle, Clock, Loader2, BarChart2
+  CheckCircle, Clock, Loader2, BarChart2, History
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiService, ConversionRecord } from '../services/api'
+import { PipelineBadge } from './PipelineSelector'
+import { AdapterBadge } from './AdapterSelector'
 import clsx from 'clsx'
 
 interface ConversionHistoryTableProps {
@@ -14,13 +16,14 @@ interface ConversionHistoryTableProps {
   onCompare?: (records: [ConversionRecord, ConversionRecord]) => void
 }
 
-type SortField = 'created_at' | 'duration' | 'status'
+type SortField = 'created_at' | 'duration' | 'status' | 'pipeline_type'
 type SortDirection = 'asc' | 'desc'
 
 const statusConfig: Record<ConversionRecord['status'], { icon: typeof CheckCircle; color: string; label: string }> = {
   queued: { icon: Clock, color: 'text-yellow-400', label: 'Queued' },
   processing: { icon: Loader2, color: 'text-blue-400', label: 'Processing' },
   complete: { icon: CheckCircle, color: 'text-green-400', label: 'Complete' },
+  completed: { icon: CheckCircle, color: 'text-green-400', label: 'Complete' },
   error: { icon: AlertCircle, color: 'text-red-400', label: 'Failed' },
   cancelled: { icon: AlertCircle, color: 'text-gray-400', label: 'Cancelled' },
 }
@@ -78,6 +81,9 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
             break
           case 'status':
             cmp = a.status.localeCompare(b.status)
+            break
+          case 'pipeline_type':
+            cmp = (a.pipeline_type || '').localeCompare(b.pipeline_type || '')
             break
         }
         return sortDirection === 'asc' ? cmp : -cmp
@@ -239,6 +245,11 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
                     Status <SortIcon field="status" />
                   </span>
                 </th>
+                <th className="p-3 cursor-pointer hover:text-white" onClick={() => handleSort('pipeline_type')}>
+                  <span className="flex items-center gap-1">
+                    Pipeline <SortIcon field="pipeline_type" />
+                  </span>
+                </th>
                 <th className="p-3 cursor-pointer hover:text-white" onClick={() => handleSort('duration')}>
                   <span className="flex items-center gap-1">
                     Duration <SortIcon field="duration" />
@@ -307,6 +318,19 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
                         {statusConfig[record.status].label}
                       </span>
                     </td>
+                    <td className="p-3">
+                      <div className="flex flex-col gap-1">
+                        {record.pipeline_type && (
+                          <PipelineBadge pipeline={record.pipeline_type} />
+                        )}
+                        {record.adapter_type && record.adapter_type !== 'unified' && (
+                          <AdapterBadge adapterType={record.adapter_type as 'hq' | 'nvfp4'} />
+                        )}
+                        {!record.pipeline_type && !record.adapter_type && (
+                          <span className="text-xs text-gray-500">-</span>
+                        )}
+                      </div>
+                    </td>
                     <td className="p-3 font-mono text-sm text-gray-400">
                       {formatDuration(record.duration)}
                     </td>
@@ -356,28 +380,75 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
       )}
 
       {/* Quality Metrics (shown for selected record) */}
-      {selectedIds.size === 1 && (
-        <div className="p-4 border-t border-gray-700 bg-gray-750">
-          <div className="flex items-center gap-2 mb-2">
-            <BarChart2 size={14} className="text-blue-400" />
-            <span className="text-sm font-medium">Quality Metrics</span>
+      {selectedIds.size === 1 && (() => {
+        const selectedRecord = filteredRecords.find(r => selectedIds.has(r.id))
+        if (!selectedRecord) return null
+
+        return (
+          <div className="p-4 border-t border-gray-700 bg-gray-750">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <BarChart2 size={14} className="text-blue-400" />
+                <span className="text-sm font-medium">Conversion Details</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {selectedRecord.pipeline_type && (
+                  <PipelineBadge pipeline={selectedRecord.pipeline_type} />
+                )}
+                {selectedRecord.adapter_type && selectedRecord.adapter_type !== 'unified' && (
+                  <AdapterBadge adapterType={selectedRecord.adapter_type as 'hq' | 'nvfp4'} />
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+              {selectedRecord.processing_time_seconds != null && (
+                <div>
+                  <div className="flex items-center gap-1 text-gray-500">
+                    <Clock size={12} />
+                    Processing Time
+                  </div>
+                  <div className="font-mono mt-1">
+                    {selectedRecord.processing_time_seconds.toFixed(1)}s
+                  </div>
+                </div>
+              )}
+              {selectedRecord.rtf != null && (
+                <div>
+                  <div className="flex items-center gap-1 text-gray-500">
+                    <BarChart2 size={12} />
+                    Speed (RTF)
+                  </div>
+                  <div className={clsx(
+                    'font-mono mt-1',
+                    selectedRecord.rtf < 1 ? 'text-green-400' : 'text-yellow-400'
+                  )}>
+                    {selectedRecord.rtf < 1
+                      ? `${(selectedRecord.rtf * 100).toFixed(0)}% RT`
+                      : `${selectedRecord.rtf.toFixed(1)}x RT`
+                    }
+                  </div>
+                </div>
+              )}
+              {selectedRecord.audio_duration_seconds != null && (
+                <div>
+                  <div className="text-gray-500">Audio Length</div>
+                  <div className="font-mono mt-1">
+                    {formatDuration(selectedRecord.audio_duration_seconds)}
+                  </div>
+                </div>
+              )}
+              {selectedRecord.duration != null && (
+                <div>
+                  <div className="text-gray-500">Output Duration</div>
+                  <div className="font-mono mt-1">
+                    {formatDuration(selectedRecord.duration)}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="grid grid-cols-3 gap-4 text-sm">
-            <div>
-              <div className="text-gray-500">Pitch RMSE</div>
-              <div className="font-mono">12.3 cents</div>
-            </div>
-            <div>
-              <div className="text-gray-500">Speaker Similarity</div>
-              <div className="font-mono">0.89</div>
-            </div>
-            <div>
-              <div className="text-gray-500">MOS Score</div>
-              <div className="font-mono">4.2/5</div>
-            </div>
-          </div>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }

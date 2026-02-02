@@ -2,9 +2,9 @@
   "track_id": "sota-innovations_20260131",
   "name": "SOTA Voice Conversion Innovations",
   "description": "Implement cutting-edge SOTA innovations from academic research (2024-2026) including DiT-CFM decoders, shortcut flow matching, NSF harmonic modeling, MeanVC streaming, and vocoder improvements",
-  "status": "in_progress",
+  "status": "complete",
   "created": "2026-01-31",
-  "updated": "2026-01-31",
+  "updated": "2026-02-01",
   "priority": "P0",
   "tags": ["sota", "dit", "flow-matching", "nsf", "vocoder", "streaming", "research"],
   "dependencies": ["sota-dual-pipeline_20260130"],
@@ -78,5 +78,36 @@
     {"id": 9, "name": "Web UI Integration", "priority": "P0", "tasks": 3},
     {"id": 10, "name": "Testing & Benchmarks", "priority": "P0", "tasks": 4}
   ],
-  "total_tasks": 39
+  "total_tasks": 39,
+  "cross_context": {
+    "provides": [
+      "quality_seedvc_pipeline",
+      "realtime_meanvc_pipeline",
+      "adapter_bridge"
+    ],
+    "consumes": [
+      "adapter_manager",
+      "voice_profile_store",
+      "pipeline_factory"
+    ],
+    "integration_points": [
+      "PipelineFactory._create_pipeline()",
+      "AdapterBridge.apply_to_seed_vc()",
+      "SeedVCPipeline.convert()",
+      "MeanVCPipeline.convert()"
+    ],
+    "broken_links": [
+      "quality_shortcut pipeline defined in frontend but not implemented in PipelineFactory"
+    ],
+    "tested_with": [
+      "test_seed_vc_pipeline.py",
+      "test_meanvc_pipeline.py",
+      "test_adapter_bridge.py",
+      "test_pipeline_benchmarks.py"
+    ],
+    "verified": true,
+    "issues": [
+      "quality_shortcut not in PipelineFactory - frontend expects 5 pipeline types, backend has 4"
+    ]
+  }
 }

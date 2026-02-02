@@ -1,0 +1,24 @@
+{
+  "id": "production-deployment-prep_20260201",
+  "title": "Production Deployment Preparation",
+  "type": "devops",
+  "priority": "P0",
+  "status": "pending",
+  "created": "2026-02-01T11:00:00Z",
+  "updated": "2026-02-01T11:00:00Z",
+  "phases": {
+    "total": 4,
+    "completed": 0
+  },
+  "tasks": {
+    "total": 20,
+    "completed": 0
+  },
+  "dependencies": {
+    "upstream": [
+      "comprehensive-testing-coverage_20260201",
+      "performance-validation-suite_20260201"
+    ],
+    "downstream": []
+  }
+}

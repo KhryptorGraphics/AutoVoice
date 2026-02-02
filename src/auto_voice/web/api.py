@@ -1477,6 +1477,84 @@ def health_check():
     })
 
 
+@api_bp.route('/ready', methods=['GET'])
+def readiness_check():
+    """Readiness check endpoint for Kubernetes/orchestration probes.
+
+    Returns 200 if the application is ready to accept traffic, 503 otherwise.
+    Checks that critical components (torch, voice_cloner, singing_pipeline) are initialized.
+
+    Returns:
+        JSON with readiness status and components
+
+    Response Schema:
+        {
+            "ready": bool,
+            "timestamp": "ISO8601 timestamp",
+            "components": {
+                "torch": bool,
+                "voice_cloner": bool,
+                "singing_pipeline": bool
+            }
+        }
+    """
+    ready = True
+    components_ready = {}
+
+    if not TORCH_AVAILABLE or not torch.cuda.is_available():
+        ready = False
+        components_ready['torch'] = False
+    else:
+        components_ready['torch'] = True
+
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    components_ready['voice_cloner'] = voice_cloner is not None
+    if not voice_cloner:
+        ready = False
+
+    singing_pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
+    components_ready['singing_pipeline'] = singing_pipeline is not None
+    if not singing_pipeline:
+        ready = False
+
+    status_code = 200 if ready else 503
+    return jsonify({
+        'ready': ready,
+        'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'components': components_ready
+    }), status_code
+
+
+@api_bp.route('/metrics', methods=['GET'])
+def prometheus_metrics():
+    """Prometheus metrics endpoint for monitoring.
+
+    Returns metrics in Prometheus text format including:
+    - Conversion counts and durations
+    - GPU memory and utilization
+    - HTTP request metrics
+    - Job queue metrics
+
+    Returns:
+        Prometheus-formatted metrics text
+    """
+    try:
+        from ..monitoring.prometheus import get_metrics, get_content_type, update_gpu_metrics
+
+        update_gpu_metrics()
+
+        metrics = get_metrics()
+        content_type = get_content_type()
+
+        from flask import Response
+        return Response(metrics, mimetype=content_type)
+    except ImportError:
+        return jsonify({
+            'error': 'Prometheus metrics not available',
+            'message': 'Install prometheus_client to enable metrics export'
+        }), 503
+
+
 @api_bp.route('/gpu/metrics', methods=['GET'])
 def gpu_metrics():
     """Get GPU utilization and memory metrics.
@@ -3676,4 +3754,760 @@ def youtube_download():
 
     except Exception as e:
         logger.error(f"YouTube download failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# LoRA Lifecycle Management Endpoints
+# Cross-Context: lora-lifecycle-management_20260201
+# ============================================================================
+
+
+@api_bp.route('/audio/identify-speaker', methods=['POST'])
+def identify_speaker():
+    """Identify speaker from audio by matching against known profiles.
+
+    Cross-Context Dependencies:
+    - speaker-diarization_20260130: WavLM embeddings
+    - voice-profile-training_20260124: Profile management
+
+    Request body:
+    - file: Audio file
+    - threshold: Similarity threshold (default: 0.85)
+
+    Returns:
+        profile_id: Matched profile ID or null
+        profile_name: Matched profile name or null
+        similarity: Best similarity score
+        is_match: Whether threshold was met
+        all_similarities: Scores for all profiles
+    """
+    try:
+        from ..inference.voice_identifier import get_voice_identifier
+
+        # Get audio file
+        if 'file' not in request.files:
+            return jsonify({'error': 'No audio file provided'}), 400
+
+        audio_file = request.files['file']
+        if not audio_file.filename:
+            return jsonify({'error': 'Empty filename'}), 400
+
+        # Get threshold
+        threshold = request.form.get('threshold', 0.85)
+        try:
+            threshold = float(threshold)
+        except ValueError:
+            threshold = 0.85
+
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+            audio_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        try:
+            # Identify speaker
+            identifier = get_voice_identifier()
+            result = identifier.identify_from_file(tmp_path, threshold)
+
+            return jsonify({
+                'profile_id': result.profile_id,
+                'profile_name': result.profile_name,
+                'similarity': result.similarity,
+                'is_match': result.is_match,
+                'all_similarities': result.all_similarities,
+            })
+        finally:
+            # Clean up temp file
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    except Exception as e:
+        logger.error(f"Speaker identification failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/loras/audit', methods=['GET'])
+def audit_loras():
+    """Audit all LoRA adapters across voice profiles.
+
+    Cross-Context Dependencies:
+    - training-inference-integration_20260130: AdapterManager
+    - speaker-diarization_20260130: Profile embeddings
+
+    Query params:
+    - format: 'json' (default) or 'summary'
+
+    Returns:
+        audit_timestamp: When audit was run
+        summary: Aggregate statistics
+        profiles: Per-profile status details
+    """
+    try:
+        from pathlib import Path
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+        from scripts.audit_loras import LoRAAuditor
+
+        output_format = request.args.get('format', 'json')
+
+        auditor = LoRAAuditor(verbose=False)
+        statuses, summary = auditor.audit_all()
+
+        if output_format == 'summary':
+            return jsonify({
+                'audit_timestamp': None,
+                'total_profiles': summary.total_profiles,
+                'profiles_with_adapters': summary.profiles_with_adapters,
+                'profiles_needing_training': summary.profiles_needing_training,
+                'profiles_needing_retrain': summary.profiles_needing_retrain,
+                'stale_adapters': summary.stale_adapters,
+                'low_quality_adapters': summary.low_quality_adapters,
+                'adapter_types': summary.adapter_types,
+            })
+
+        # Full JSON output
+        from dataclasses import asdict
+        from datetime import datetime
+
+        return jsonify({
+            'audit_timestamp': datetime.now().isoformat(),
+            'summary': asdict(summary),
+            'profiles': [asdict(s) for s in statuses],
+        })
+
+    except Exception as e:
+        logger.error(f"LoRA audit failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/profiles/<profile_id>/check-retrain', methods=['POST'])
+def check_retrain(profile_id):
+    """Check if a profile needs retraining and optionally trigger it.
+
+    Cross-Context Dependencies:
+    - training-inference-integration_20260130: AdapterManager
+    - voice-profile-training_20260124: Training pipeline
+
+    Request body:
+    - trigger: If true, queue training if needed (default: false)
+
+    Returns:
+        needs_retrain: Whether retraining is recommended
+        reasons: List of reasons for retraining
+        training_queued: If trigger=true and training was queued
+    """
+    try:
+        from pathlib import Path
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+        from scripts.audit_loras import LoRAAuditor
+
+        trigger = request.json.get('trigger', False) if request.is_json else False
+
+        auditor = LoRAAuditor(verbose=False)
+        statuses, _ = auditor.audit_all()
+
+        # Find the requested profile
+        profile_status = None
+        for status in statuses:
+            if status.profile_id == profile_id:
+                profile_status = status
+                break
+
+        if not profile_status:
+            return jsonify({'error': f'Profile {profile_id} not found'}), 404
+
+        needs_retrain = profile_status.needs_retrain or profile_status.needs_training
+        reasons = profile_status.issues + profile_status.recommendations
+
+        result = {
+            'profile_id': profile_id,
+            'needs_retrain': needs_retrain,
+            'needs_initial_training': profile_status.needs_training,
+            'is_stale': profile_status.is_stale,
+            'quality_ok': profile_status.quality_ok,
+            'sample_count': profile_status.sample_count,
+            'reasons': reasons,
+            'training_queued': False,
+        }
+
+        # Optionally trigger training
+        if trigger and needs_retrain:
+            try:
+                from ..training.job_manager import get_job_manager
+                job_manager = get_job_manager()
+
+                job = job_manager.create_job(
+                    profile_id=profile_id,
+                    epochs=100,
+                    batch_size=4,
+                    learning_rate=1e-4,
+                    priority=1,
+                )
+
+                result['training_queued'] = True
+                result['job_id'] = job.job_id
+                result['job_status'] = job.status
+
+            except Exception as e:
+                logger.warning(f"Failed to queue training for {profile_id}: {e}")
+                result['training_error'] = str(e)
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Check retrain failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/convert/analyze', methods=['POST'])
+def analyze_conversion():
+    """Analyze conversion quality with comprehensive metrics.
+
+    Cross-Context Dependencies:
+    - sota-dual-pipeline_20260130: Pipeline implementations
+    - lora-lifecycle-management_20260201: Quality thresholds
+
+    Request body:
+    - source_audio: Path to source audio
+    - converted_audio: Path to converted audio
+    - target_profile_id: Target profile ID (optional)
+    - methodology: Conversion methodology name
+
+    Returns:
+        metrics: All quality metrics
+        passes_thresholds: Whether all thresholds met
+        recommendations: Improvement suggestions
+    """
+    try:
+        from ..evaluation.conversion_quality_analyzer import ConversionQualityAnalyzer
+
+        data = request.json or {}
+        source_audio = data.get('source_audio')
+        converted_audio = data.get('converted_audio')
+        target_profile_id = data.get('target_profile_id')
+        methodology = data.get('methodology', 'unknown')
+
+        if not source_audio or not converted_audio:
+            return jsonify({'error': 'source_audio and converted_audio required'}), 400
+
+        analyzer = ConversionQualityAnalyzer()
+        analysis = analyzer.analyze(
+            source_audio=source_audio,
+            converted_audio=converted_audio,
+            target_profile_id=target_profile_id,
+            methodology=methodology,
+        )
+
+        return jsonify({
+            'methodology': analysis.methodology,
+            'metrics': analysis.metrics.to_dict(),
+            'quality_score': analysis.metrics.quality_score,
+            'passes_thresholds': analysis.passes_thresholds,
+            'threshold_failures': analysis.threshold_failures,
+            'recommendations': analysis.recommendations,
+            'timestamp': analysis.timestamp,
+        })
+
+    except Exception as e:
+        logger.error(f"Conversion analysis failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/convert/compare-methodologies', methods=['POST'])
+def compare_methodologies():
+    """Compare conversion quality across multiple methodologies.
+
+    Request body:
+    - source_audio: Path to source audio
+    - target_profile_id: Target profile ID
+    - converted_outputs: Dict mapping methodology -> converted audio path
+
+    Returns:
+        best_methodology: Top-ranked methodology
+        rankings: Methodology rankings
+        analyses: Per-methodology analysis
+    """
+    try:
+        from ..evaluation.conversion_quality_analyzer import ConversionQualityAnalyzer
+
+        data = request.json or {}
+        source_audio = data.get('source_audio')
+        target_profile_id = data.get('target_profile_id')
+        converted_outputs = data.get('converted_outputs', {})
+
+        if not source_audio or not converted_outputs:
+            return jsonify({'error': 'source_audio and converted_outputs required'}), 400
+
+        analyzer = ConversionQualityAnalyzer()
+        comparison = analyzer.compare_methodologies(
+            source_audio=source_audio,
+            target_profile_id=target_profile_id,
+            methodologies=list(converted_outputs.keys()),
+            converted_outputs=converted_outputs,
+        )
+
+        return jsonify({
+            'best_methodology': comparison.best_methodology,
+            'rankings': comparison.rankings,
+            'summary': comparison.summary,
+            'analyses': {
+                m: {
+                    'metrics': a.metrics.to_dict(),
+                    'passes_thresholds': a.passes_thresholds,
+                    'threshold_failures': a.threshold_failures,
+                }
+                for m, a in comparison.analyses.items()
+            },
+        })
+
+    except Exception as e:
+        logger.error(f"Methodology comparison failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/loras/retrain/<profile_id>', methods=['POST'])
+def retrain_lora(profile_id):
+    """Queue LoRA retraining for a profile.
+
+    Cross-Context Dependencies:
+    - training-inference-integration_20260130: AdapterManager, JobManager
+    - voice-profile-training_20260124: Training pipeline
+
+    Request body:
+    - epochs: Training epochs (default: 100)
+    - learning_rate: Learning rate (default: 1e-4)
+    - batch_size: Batch size (default: 4)
+    - priority: Job priority (default: 1)
+
+    Returns:
+        job_id: Training job ID
+        status: Job status
+        profile_id: Profile being trained
+    """
+    try:
+        from ..training.job_manager import get_job_manager
+
+        data = request.json or {}
+        epochs = data.get('epochs', 100)
+        learning_rate = data.get('learning_rate', 1e-4)
+        batch_size = data.get('batch_size', 4)
+        priority = data.get('priority', 1)
+
+        job_manager = get_job_manager()
+
+        job = job_manager.create_job(
+            profile_id=profile_id,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            priority=priority,
+        )
+
+        return jsonify({
+            'job_id': job.job_id,
+            'status': job.status,
+            'profile_id': profile_id,
+            'epochs': epochs,
+            'message': f'Retraining queued for profile {profile_id}',
+        })
+
+    except Exception as e:
+        logger.error(f"Retrain LoRA failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# =============================================================================
+# Phase 5: Multi-Artist Separation API (lora-lifecycle-management_20260201)
+# =============================================================================
+
+
+@api_bp.route('/audio/separate-artists', methods=['POST'])
+def separate_artists():
+    """Separate multi-artist audio and route to voice profiles.
+
+    Phase 5: Multi-Artist Separation and Profile Routing
+
+    Pipeline:
+    1. Demucs vocal/instrumental separation
+    2. WavLM speaker diarization
+    3. Match segments to known profiles (or create new)
+    4. Return organized artist segments
+
+    Request:
+        multipart/form-data with 'audio' file
+        Optional JSON fields:
+        - num_speakers: Expected number of speakers
+        - youtube_url: YouTube URL for metadata extraction
+        - auto_create_profiles: Create profiles for unknown artists (default: true)
+
+    Returns:
+        {
+            "artists": {
+                "profile_id": {
+                    "profile_name": str,
+                    "segments": [{"start": float, "end": float, "duration": float}],
+                    "total_duration": float
+                }
+            },
+            "num_artists": int,
+            "new_profiles_created": [str],
+            "instrumental_available": bool
+        }
+    """
+    try:
+        from ..audio.multi_artist_separator import MultiArtistSeparator
+
+        # Get audio file
+        if 'audio' not in request.files:
+            return jsonify({'error': 'No audio file provided'}), 400
+
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'error': 'Empty filename'}), 400
+
+        # Get optional parameters
+        num_speakers = request.form.get('num_speakers', type=int)
+        auto_create = request.form.get('auto_create_profiles', 'true').lower() == 'true'
+        youtube_url = request.form.get('youtube_url')
+
+        # Get YouTube metadata if URL provided
+        youtube_metadata = None
+        if youtube_url and YOUTUBE_DOWNLOADER_AVAILABLE:
+            try:
+                downloader = YouTubeDownloader()
+                youtube_metadata = downloader.get_metadata(youtube_url)
+            except Exception as e:
+                logger.warning(f"Failed to get YouTube metadata: {e}")
+
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+            audio_file.save(tmp.name)
+            tmp_path = tmp.name
+
+        try:
+            # Load audio
+            waveform, sr = torchaudio.load(tmp_path)
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0)
+            else:
+                waveform = waveform.squeeze(0)
+            audio = waveform.numpy()
+
+            # Separate and route
+            separator = MultiArtistSeparator(auto_create_profiles=auto_create)
+            result = separator.separate_and_route(
+                audio=audio,
+                sample_rate=sr,
+                num_speakers=num_speakers,
+                youtube_metadata=youtube_metadata,
+                source_file=audio_file.filename,
+            )
+
+            # Format response
+            artists_response = {}
+            for profile_id, segments in result.artists.items():
+                artists_response[profile_id] = {
+                    'profile_name': segments[0].profile_name if segments else profile_id,
+                    'segments': [
+                        {
+                            'start': s.start,
+                            'end': s.end,
+                            'duration': s.duration,
+                            'similarity': s.similarity,
+                        }
+                        for s in segments
+                    ],
+                    'total_duration': sum(s.duration for s in segments),
+                }
+
+            return jsonify({
+                'artists': artists_response,
+                'num_artists': result.num_artists,
+                'new_profiles_created': result.new_profiles_created,
+                'total_duration': result.total_duration,
+                'instrumental_available': True,
+            })
+
+        finally:
+            os.unlink(tmp_path)
+
+    except Exception as e:
+        logger.error(f"Multi-artist separation failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/audio/batch-separate', methods=['POST'])
+def batch_separate_artists():
+    """Process multiple audio files (e.g., an album) for multi-artist separation.
+
+    Phase 5: Batch processing with artist aggregation
+
+    Request:
+        multipart/form-data with multiple 'audio' files
+        Optional:
+        - num_speakers: Expected speakers per file
+
+    Returns:
+        {
+            "files_processed": int,
+            "files_successful": int,
+            "artists_found": int,
+            "artist_summary": {
+                "profile_id": {
+                    "profile_name": str,
+                    "total_segments": int,
+                    "total_duration": float
+                }
+            }
+        }
+    """
+    try:
+        from ..audio.multi_artist_separator import MultiArtistSeparator
+
+        files = request.files.getlist('audio')
+        if not files:
+            return jsonify({'error': 'No audio files provided'}), 400
+
+        num_speakers = request.form.get('num_speakers', type=int)
+
+        # Save files to temp directory
+        temp_paths = []
+        for audio_file in files:
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+                audio_file.save(tmp.name)
+                temp_paths.append(tmp.name)
+
+        try:
+            separator = MultiArtistSeparator()
+            result = separator.process_batch(
+                audio_files=temp_paths,
+                num_speakers=num_speakers,
+            )
+
+            return jsonify(result)
+
+        finally:
+            for path in temp_paths:
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
+
+    except Exception as e:
+        logger.error(f"Batch separation failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# =============================================================================
+# Phase 6: Quality Monitoring API (lora-lifecycle-management_20260201)
+# =============================================================================
+
+
+@api_bp.route('/profiles/<profile_id>/quality-history', methods=['GET'])
+def get_profile_quality_history(profile_id: str):
+    """Get quality metrics history for a profile.
+
+    Phase 6: Quality Monitoring
+
+    Query Parameters:
+        - days: Number of days of history (default: 30)
+        - limit: Maximum number of records (optional)
+
+    Returns:
+        {
+            "profile_id": str,
+            "period_days": int,
+            "total_metrics": int,
+            "statistics": {
+                "metric_name": {
+                    "mean": float,
+                    "std": float,
+                    "min": float,
+                    "max": float
+                }
+            },
+            "metrics": [QualityMetric],
+            "recent_alerts": [QualityAlert]
+        }
+    """
+    try:
+        from ..monitoring.quality_monitor import get_quality_monitor
+
+        days = request.args.get('days', 30, type=int)
+
+        monitor = get_quality_monitor()
+        history = monitor.get_quality_history(profile_id, days=days)
+
+        return jsonify(history)
+
+    except Exception as e:
+        logger.error(f"Get quality history failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/profiles/<profile_id>/quality-status', methods=['GET'])
+def get_profile_quality_status(profile_id: str):
+    """Get current quality status for a profile.
+
+    Phase 6: Quality Monitoring
+
+    Returns:
+        {
+            "profile_id": str,
+            "status": "healthy" | "degraded" | "critical",
+            "rolling_averages": {
+                "speaker_similarity": float,
+                "mcd": float,
+                ...
+            },
+            "thresholds": {...},
+            "recommendations": [str],
+            "unacknowledged_alerts": int
+        }
+    """
+    try:
+        from ..monitoring.quality_monitor import get_quality_monitor
+
+        monitor = get_quality_monitor()
+        status = monitor.get_quality_summary(profile_id)
+
+        return jsonify(status)
+
+    except Exception as e:
+        logger.error(f"Get quality status failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/profiles/<profile_id>/check-degradation', methods=['POST'])
+def check_profile_degradation(profile_id: str):
+    """Explicitly check for quality degradation.
+
+    Phase 6: Quality Monitoring
+
+    Analyzes recent metrics vs historical baseline to detect degradation.
+
+    Returns:
+        {
+            "profile_id": str,
+            "degradation_detected": bool,
+            "alerts": [QualityAlert],
+            "recommendation": str | null
+        }
+    """
+    try:
+        from ..monitoring.quality_monitor import get_quality_monitor
+
+        monitor = get_quality_monitor()
+        result = monitor.detect_degradation(profile_id)
+
+        # If degradation detected, optionally trigger retraining
+        auto_retrain = request.json.get('auto_retrain', False) if request.json else False
+
+        if result['degradation_detected'] and auto_retrain:
+            try:
+                from ..training.job_manager import TrainingJobManager
+                job_manager = TrainingJobManager(
+                    storage_path='data/training_jobs',
+                    require_gpu=False,
+                )
+                job = job_manager.auto_queue_training(profile_id)
+                if job:
+                    result['retrain_job_id'] = job.job_id
+                    result['retrain_queued'] = True
+            except Exception as e:
+                logger.warning(f"Failed to queue retrain: {e}")
+                result['retrain_queued'] = False
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Check degradation failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/quality/record', methods=['POST'])
+def record_quality_metric():
+    """Record a quality metric for a profile.
+
+    Phase 6: Quality Monitoring
+
+    Request Body:
+        {
+            "profile_id": str (required),
+            "speaker_similarity": float (optional),
+            "mcd": float (optional),
+            "f0_correlation": float (optional),
+            "rtf": float (optional),
+            "mos": float (optional),
+            "conversion_id": str (optional)
+        }
+
+    Returns:
+        {
+            "recorded": bool,
+            "alerts": [QualityAlert]
+        }
+    """
+    try:
+        from ..monitoring.quality_monitor import get_quality_monitor
+
+        data = request.json
+        if not data or 'profile_id' not in data:
+            return jsonify({'error': 'profile_id required'}), 400
+
+        monitor = get_quality_monitor()
+        alerts = monitor.record_metric(
+            profile_id=data['profile_id'],
+            speaker_similarity=data.get('speaker_similarity'),
+            mcd=data.get('mcd'),
+            f0_correlation=data.get('f0_correlation'),
+            rtf=data.get('rtf'),
+            mos=data.get('mos'),
+            conversion_id=data.get('conversion_id'),
+        )
+
+        return jsonify({
+            'recorded': True,
+            'alerts': [a.to_dict() for a in alerts],
+            'alert_count': len(alerts),
+        })
+
+    except Exception as e:
+        logger.error(f"Record quality metric failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/quality/all-profiles', methods=['GET'])
+def get_all_profiles_quality():
+    """Get quality status for all monitored profiles.
+
+    Phase 6: Quality Monitoring Dashboard
+
+    Returns:
+        [
+            {
+                "profile_id": str,
+                "status": str,
+                "rolling_averages": {...},
+                ...
+            }
+        ]
+    """
+    try:
+        from ..monitoring.quality_monitor import get_quality_monitor
+
+        monitor = get_quality_monitor()
+        profiles = monitor.get_all_profiles_status()
+
+        return jsonify({
+            'profiles': profiles,
+            'total': len(profiles),
+            'degraded_count': sum(1 for p in profiles if p.get('status') == 'degraded'),
+            'critical_count': sum(1 for p in profiles if p.get('status') == 'critical'),
+        })
+
+    except Exception as e:
+        logger.error(f"Get all profiles quality failed: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500

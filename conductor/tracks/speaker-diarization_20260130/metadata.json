@@ -12,5 +12,33 @@
   "tasks": {
     "total": 44,
     "completed": 44
+  },
+  "cross_context": {
+    "provides": [
+      "speaker_embeddings",
+      "diarized_segments",
+      "cross_track_clustering",
+      "featured_artist_detection"
+    ],
+    "consumes": [
+      "youtube_metadata",
+      "voice_profile_store",
+      "separated_vocals"
+    ],
+    "integration_points": [
+      "speaker_diarization.py → WavLM embeddings",
+      "SpeakerMatcher.cluster_speakers()",
+      "POST /api/v1/speakers/identify",
+      "YouTubeMetadataFetcher.detect_featured_artists()"
+    ],
+    "tested_with": [
+      "test_speaker_diarization.py",
+      "test_youtube_pipeline.py",
+      "test_frontend_integration_e2e.py"
+    ],
+    "verified": true,
+    "missing_tests": [
+      "test_speaker_clustering_e2e.py - Multi-track clustering → auto-profile creation"
+    ]
   }
 }

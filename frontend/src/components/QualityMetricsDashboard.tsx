@@ -15,6 +15,8 @@ import {
   Loader2,
   CheckCircle,
   Trophy,
+  Download,
+  FileText,
 } from 'lucide-react'
 import { AdapterType } from '../services/api'
 import clsx from 'clsx'
@@ -245,6 +247,126 @@ export function QualityMetricsDashboard({ onProfileSelect }: QualityMetricsDashb
     }
   }
 
+  const exportReportAsJSON = () => {
+    if (!report) return
+
+    const dataStr = JSON.stringify(report, null, 2)
+    const dataBlob = new Blob([dataStr], { type: 'application/json' })
+    const url = URL.createObjectURL(dataBlob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `quality_report_${new Date().toISOString().split('T')[0]}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const exportReportAsCSV = () => {
+    if (!report) return
+
+    // CSV header
+    const headers = [
+      'Profile ID',
+      'Timestamp',
+      'Recommended',
+      'Quality Winner',
+      'Speed Winner',
+      'HQ RTF',
+      'HQ SNR (dB)',
+      'HQ Size (MB)',
+      'nvfp4 RTF',
+      'nvfp4 SNR (dB)',
+      'nvfp4 Size (MB)',
+      'Notes'
+    ]
+
+    // CSV rows
+    const rows = report.profiles.map(p => [
+      p.profile_id.slice(0, 12),
+      p.timestamp,
+      p.recommended,
+      p.quality_winner,
+      p.speed_winner,
+      p.hq?.real_time_factor.toFixed(4) ?? 'N/A',
+      p.hq?.snr_db.toFixed(2) ?? 'N/A',
+      p.hq?.adapter_size_mb.toFixed(2) ?? 'N/A',
+      p.nvfp4?.real_time_factor.toFixed(4) ?? 'N/A',
+      p.nvfp4?.snr_db.toFixed(2) ?? 'N/A',
+      p.nvfp4?.adapter_size_mb.toFixed(2) ?? 'N/A',
+      p.notes.join('; ')
+    ])
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n')
+
+    const dataBlob = new Blob([csvContent], { type: 'text/csv' })
+    const url = URL.createObjectURL(dataBlob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `quality_report_${new Date().toISOString().split('T')[0]}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const exportReportAsMarkdown = () => {
+    if (!report) return
+
+    let markdown = `# Quality Metrics Report\n\n`
+    markdown += `**Generated:** ${report.generated_at}\n`
+    markdown += `**Total Profiles:** ${report.total_profiles}\n\n`
+
+    markdown += `## Summary\n\n`
+    markdown += `| Metric | Value |\n`
+    markdown += `|--------|-------|\n`
+    markdown += `| HQ Quality Wins | ${report.summary.hq_quality_wins} |\n`
+    markdown += `| nvfp4 Speed Wins | ${report.summary.nvfp4_speed_wins} |\n`
+    markdown += `| HQ Recommended | ${report.summary.hq_recommended} |\n`
+    markdown += `| nvfp4 Recommended | ${report.summary.nvfp4_recommended} |\n\n`
+
+    markdown += `## Profile Results\n\n`
+
+    report.profiles.forEach(p => {
+      markdown += `### ${p.profile_id.slice(0, 12)}...\n\n`
+      markdown += `- **Timestamp:** ${p.timestamp}\n`
+      markdown += `- **Recommended:** ${p.recommended}\n`
+      markdown += `- **Quality Winner:** ${p.quality_winner}\n`
+      markdown += `- **Speed Winner:** ${p.speed_winner}\n\n`
+
+      markdown += `**HQ Metrics:**\n`
+      if (p.hq) {
+        markdown += `- RTF: ${p.hq.real_time_factor.toFixed(4)}\n`
+        markdown += `- SNR: ${p.hq.snr_db.toFixed(2)} dB\n`
+        markdown += `- Size: ${p.hq.adapter_size_mb.toFixed(2)} MB\n\n`
+      } else {
+        markdown += `- N/A\n\n`
+      }
+
+      markdown += `**nvfp4 Metrics:**\n`
+      if (p.nvfp4) {
+        markdown += `- RTF: ${p.nvfp4.real_time_factor.toFixed(4)}\n`
+        markdown += `- SNR: ${p.nvfp4.snr_db.toFixed(2)} dB\n`
+        markdown += `- Size: ${p.nvfp4.adapter_size_mb.toFixed(2)} MB\n\n`
+      } else {
+        markdown += `- N/A\n\n`
+      }
+
+      if (p.notes.length > 0) {
+        markdown += `**Notes:**\n${p.notes.map(n => `- ${n}`).join('\n')}\n\n`
+      }
+
+      markdown += `---\n\n`
+    })
+
+    const dataBlob = new Blob([markdown], { type: 'text/markdown' })
+    const url = URL.createObjectURL(dataBlob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `quality_report_${new Date().toISOString().split('T')[0]}.md`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
   useEffect(() => {
     loadReport()
   }, [])
@@ -299,13 +421,45 @@ export function QualityMetricsDashboard({ onProfileSelect }: QualityMetricsDashb
             Generated: {report.generated_at} • {report.total_profiles} profiles
           </p>
         </div>
-        <button
-          onClick={loadReport}
-          className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-sm text-gray-300 transition-colors"
-        >
-          <RefreshCw size={14} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Export dropdown */}
+          <div className="relative group">
+            <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-sm text-gray-300 transition-colors">
+              <Download size={14} />
+              Export
+            </button>
+            <div className="absolute right-0 mt-1 w-40 bg-gray-800 border border-gray-700 rounded shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10">
+              <button
+                onClick={exportReportAsJSON}
+                className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-2"
+              >
+                <FileText size={14} />
+                Export JSON
+              </button>
+              <button
+                onClick={exportReportAsCSV}
+                className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-2"
+              >
+                <FileText size={14} />
+                Export CSV
+              </button>
+              <button
+                onClick={exportReportAsMarkdown}
+                className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-700 flex items-center gap-2"
+              >
+                <FileText size={14} />
+                Export Markdown
+              </button>
+            </div>
+          </div>
+          <button
+            onClick={loadReport}
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-sm text-gray-300 transition-colors"
+          >
+            <RefreshCw size={14} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Summary cards */}

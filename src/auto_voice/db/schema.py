@@ -1,6 +1,8 @@
 """
 Database schema for AutoVoice persistent storage.
 
+Supports both SQLite (for testing) and MySQL (for production).
+
 Tables:
 - tracks: YouTube track metadata
 - featured_artists: Artists parsed from video titles
@@ -9,197 +11,283 @@ Tables:
 - cluster_members: Mapping of embeddings to clusters
 """
 
-import sqlite3
+import os
 import logging
 from pathlib import Path
 from typing import Optional
 from contextlib import contextmanager
 
+from sqlalchemy import (
+    create_engine, Column, String, Integer, Float, Boolean,
+    Text, LargeBinary, DateTime, ForeignKey, Index, UniqueConstraint
+)
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from sqlalchemy.sql import func
+
 logger = logging.getLogger(__name__)
 
-# Database location
+# Database configuration from environment
+DATABASE_TYPE = os.environ.get('AUTOVOICE_DB_TYPE', 'mysql')  # 'mysql' or 'sqlite'
+DATABASE_HOST = os.environ.get('AUTOVOICE_DB_HOST', '127.0.0.1')
+DATABASE_PORT = os.environ.get('AUTOVOICE_DB_PORT', '3306')
+DATABASE_NAME = os.environ.get('AUTOVOICE_DB_NAME', 'autovoice')
+DATABASE_USER = os.environ.get('AUTOVOICE_DB_USER', 'root')
+DATABASE_PASS = os.environ.get('AUTOVOICE_DB_PASS', 'teamrsi123teamrsi123teamrsi123')
+
+# Legacy SQLite path (for backward compatibility and testing)
 DATABASE_PATH = Path('data/autovoice.db')
 
-# Schema SQL
-SCHEMA_SQL = """
--- Track metadata from YouTube
-CREATE TABLE IF NOT EXISTS tracks (
-    id TEXT PRIMARY KEY,           -- YouTube video ID
-    title TEXT,
-    channel TEXT,
-    upload_date TEXT,
-    duration_sec REAL,
-    artist_name TEXT,              -- Main artist (conor_maynard, william_singe)
-    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    vocals_path TEXT,              -- Path to extracted vocals
-    diarization_path TEXT          -- Path to diarization JSON
-);
+# SQLAlchemy base
+Base = declarative_base()
 
--- Featured artists parsed from video titles
-CREATE TABLE IF NOT EXISTS featured_artists (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,            -- Parsed name (e.g., "Anth")
-    pattern_matched TEXT,          -- Pattern used (e.g., "ft.", "feat.", "vs.")
-    UNIQUE(track_id, name)
-);
-
--- Speaker embeddings for cross-track matching
-CREATE TABLE IF NOT EXISTS speaker_embeddings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-    speaker_id TEXT NOT NULL,      -- SPEAKER_00, SPEAKER_01, etc.
-    embedding BLOB NOT NULL,       -- 512-dim WavLM embedding (numpy tobytes)
-    duration_sec REAL,             -- Total speaking duration for this speaker
-    is_primary BOOLEAN DEFAULT FALSE,
-    profile_id TEXT,               -- Voice profile UUID if assigned
-    isolated_vocals_path TEXT,     -- Path to isolated vocals file
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(track_id, speaker_id)
-);
-
--- Global speaker clusters (same person across tracks)
-CREATE TABLE IF NOT EXISTS speaker_clusters (
-    id TEXT PRIMARY KEY,           -- UUID
-    name TEXT NOT NULL,            -- "Anth", "Tayler Holder", "Unknown 1"
-    is_verified BOOLEAN DEFAULT FALSE,  -- User confirmed identity
-    voice_profile_id TEXT,         -- Associated voice profile UUID
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Mapping: which embeddings belong to which cluster
-CREATE TABLE IF NOT EXISTS cluster_members (
-    cluster_id TEXT NOT NULL REFERENCES speaker_clusters(id) ON DELETE CASCADE,
-    embedding_id INTEGER NOT NULL REFERENCES speaker_embeddings(id) ON DELETE CASCADE,
-    confidence REAL,               -- Cosine similarity score (0-1)
-    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (cluster_id, embedding_id)
-);
-
--- Indexes for faster queries
-CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist_name);
-CREATE INDEX IF NOT EXISTS idx_featured_artists_track ON featured_artists(track_id);
-CREATE INDEX IF NOT EXISTS idx_featured_artists_name ON featured_artists(name);
-CREATE INDEX IF NOT EXISTS idx_embeddings_track ON speaker_embeddings(track_id);
-CREATE INDEX IF NOT EXISTS idx_embeddings_profile ON speaker_embeddings(profile_id);
-CREATE INDEX IF NOT EXISTS idx_cluster_members_cluster ON cluster_members(cluster_id);
-CREATE INDEX IF NOT EXISTS idx_cluster_members_embedding ON cluster_members(embedding_id);
-"""
+# Global engine and session factory
+_engine = None
+_SessionFactory = None
 
 
-def init_database(db_path: Optional[Path] = None) -> None:
+def get_database_url(db_type: Optional[str] = None) -> str:
+    """Get database connection URL.
+
+    Args:
+        db_type: 'mysql' or 'sqlite'. Defaults to DATABASE_TYPE env var.
+
+    Returns:
+        SQLAlchemy connection URL
+    """
+    db_type = db_type or DATABASE_TYPE
+
+    if db_type == 'sqlite':
+        DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{DATABASE_PATH}"
+    else:
+        # MySQL with PyMySQL driver
+        return f"mysql+pymysql://{DATABASE_USER}:{DATABASE_PASS}@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+
+
+def get_engine(db_type: Optional[str] = None):
+    """Get or create database engine.
+
+    Args:
+        db_type: 'mysql' or 'sqlite'. Defaults to DATABASE_TYPE env var.
+
+    Returns:
+        SQLAlchemy engine
+    """
+    global _engine
+
+    if _engine is None:
+        url = get_database_url(db_type)
+
+        # Engine options
+        if 'sqlite' in url:
+            _engine = create_engine(url, echo=False)
+        else:
+            _engine = create_engine(
+                url,
+                echo=False,
+                pool_size=5,
+                max_overflow=10,
+                pool_pre_ping=True,  # Handle stale connections
+            )
+
+        logger.info(f"Database engine created: {url.split('@')[-1] if '@' in url else url}")
+
+    return _engine
+
+
+def get_session_factory():
+    """Get session factory."""
+    global _SessionFactory
+
+    if _SessionFactory is None:
+        engine = get_engine()
+        _SessionFactory = sessionmaker(bind=engine)
+
+    return _SessionFactory
+
+
+# ============================================================================
+# ORM Models
+# ============================================================================
+
+class Track(Base):
+    """YouTube track metadata."""
+    __tablename__ = 'tracks'
+
+    id = Column(String(64), primary_key=True)  # YouTube video ID
+    title = Column(String(512))
+    channel = Column(String(256))
+    upload_date = Column(String(32))
+    duration_sec = Column(Float)
+    artist_name = Column(String(256), index=True)
+    fetched_at = Column(DateTime, default=func.now())
+    vocals_path = Column(String(1024))
+    diarization_path = Column(String(1024))
+
+
+class FeaturedArtist(Base):
+    """Featured artists parsed from video titles."""
+    __tablename__ = 'featured_artists'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    track_id = Column(String(64), ForeignKey('tracks.id', ondelete='CASCADE'), nullable=False, index=True)
+    name = Column(String(256), nullable=False, index=True)
+    pattern_matched = Column(String(64))
+
+    __table_args__ = (
+        UniqueConstraint('track_id', 'name', name='unique_track_artist'),
+    )
+
+
+class SpeakerEmbedding(Base):
+    """Speaker embeddings for cross-track matching."""
+    __tablename__ = 'speaker_embeddings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    track_id = Column(String(64), ForeignKey('tracks.id', ondelete='CASCADE'), nullable=False, index=True)
+    speaker_id = Column(String(32), nullable=False)
+    embedding = Column(LargeBinary, nullable=False)  # 512-dim numpy array as bytes
+    duration_sec = Column(Float)
+    is_primary = Column(Boolean, default=False)
+    profile_id = Column(String(64), index=True)
+    isolated_vocals_path = Column(String(1024))
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint('track_id', 'speaker_id', name='unique_track_speaker'),
+    )
+
+
+class SpeakerCluster(Base):
+    """Global speaker clusters (same person across tracks)."""
+    __tablename__ = 'speaker_clusters'
+
+    id = Column(String(64), primary_key=True)  # UUID
+    name = Column(String(256), nullable=False)
+    is_verified = Column(Boolean, default=False)
+    voice_profile_id = Column(String(64))
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class ClusterMember(Base):
+    """Mapping: which embeddings belong to which cluster."""
+    __tablename__ = 'cluster_members'
+
+    cluster_id = Column(String(64), ForeignKey('speaker_clusters.id', ondelete='CASCADE'), primary_key=True)
+    embedding_id = Column(Integer, ForeignKey('speaker_embeddings.id', ondelete='CASCADE'), primary_key=True, index=True)
+    confidence = Column(Float)
+    added_at = Column(DateTime, default=func.now())
+
+
+# ============================================================================
+# Database Operations
+# ============================================================================
+
+def init_database(db_type: Optional[str] = None) -> None:
     """Initialize the database with schema.
 
     Args:
-        db_path: Path to database file. Defaults to DATABASE_PATH.
+        db_type: 'mysql' or 'sqlite'. Defaults to DATABASE_TYPE env var.
     """
-    if db_path is None:
-        db_path = DATABASE_PATH
-
-    # Ensure parent directory exists
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    logger.info(f"Initializing database at {db_path}")
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(SCHEMA_SQL)
-        conn.commit()
-        logger.info("Database schema initialized successfully")
-    finally:
-        conn.close()
-
-
-def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Get a database connection.
-
-    Args:
-        db_path: Path to database file. Defaults to DATABASE_PATH.
-
-    Returns:
-        SQLite connection with row factory set to sqlite3.Row
-    """
-    if db_path is None:
-        db_path = DATABASE_PATH
-
-    # Initialize if database doesn't exist
-    if not db_path.exists():
-        init_database(db_path)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    engine = get_engine(db_type)
+    Base.metadata.create_all(engine)
+    logger.info("Database schema initialized successfully")
 
 
 @contextmanager
-def get_db_context(db_path: Optional[Path] = None):
-    """Context manager for database operations.
+def get_db_session(db_path: Optional[Path] = None) -> Session:
+    """Context manager for database sessions.
 
     Args:
-        db_path: Path to database file. Defaults to DATABASE_PATH.
+        db_path: Deprecated, kept for backward compatibility.
 
     Yields:
-        SQLite connection
+        SQLAlchemy session
     """
-    conn = get_connection(db_path)
+    SessionFactory = get_session_factory()
+    session = SessionFactory()
     try:
-        yield conn
-        conn.commit()
+        yield session
+        session.commit()
     except Exception:
-        conn.rollback()
+        session.rollback()
         raise
     finally:
-        conn.close()
+        session.close()
 
 
-def reset_database(db_path: Optional[Path] = None) -> None:
-    """Reset the database by deleting and reinitializing.
+# Legacy aliases for backward compatibility
+get_db_context = get_db_session
+
+
+def get_connection(db_path: Optional[Path] = None):
+    """Legacy function for backward compatibility.
+
+    Returns a session instead of raw connection.
+    """
+    SessionFactory = get_session_factory()
+    return SessionFactory()
+
+
+def reset_database(db_type: Optional[str] = None) -> None:
+    """Reset the database by dropping and recreating all tables.
 
     WARNING: This deletes all data!
 
     Args:
-        db_path: Path to database file. Defaults to DATABASE_PATH.
+        db_type: 'mysql' or 'sqlite'. Defaults to DATABASE_TYPE env var.
     """
-    if db_path is None:
-        db_path = DATABASE_PATH
+    global _engine, _SessionFactory
 
-    if db_path.exists():
-        logger.warning(f"Deleting existing database at {db_path}")
-        db_path.unlink()
-
-    init_database(db_path)
+    engine = get_engine(db_type)
+    logger.warning("Dropping all tables...")
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    logger.info("Database reset complete")
 
 
 def get_database_stats(db_path: Optional[Path] = None) -> dict:
     """Get statistics about the database contents.
 
     Args:
-        db_path: Path to database file. Defaults to DATABASE_PATH.
+        db_path: Deprecated, kept for backward compatibility.
 
     Returns:
         Dictionary with counts for each table
     """
-    with get_db_context(db_path) as conn:
-        cursor = conn.cursor()
-
-        stats = {}
-        tables = ['tracks', 'featured_artists', 'speaker_embeddings',
-                  'speaker_clusters', 'cluster_members']
-
-        for table in tables:
-            cursor.execute(f"SELECT COUNT(*) FROM {table}")
-            stats[table] = cursor.fetchone()[0]
+    with get_db_session() as session:
+        stats = {
+            'tracks': session.query(Track).count(),
+            'featured_artists': session.query(FeaturedArtist).count(),
+            'speaker_embeddings': session.query(SpeakerEmbedding).count(),
+            'speaker_clusters': session.query(SpeakerCluster).count(),
+            'cluster_members': session.query(ClusterMember).count(),
+        }
 
         # Additional stats
-        cursor.execute("SELECT COUNT(DISTINCT artist_name) FROM tracks")
-        stats['unique_artists'] = cursor.fetchone()[0]
+        from sqlalchemy import func as sqlfunc
+        stats['unique_artists'] = session.query(
+            sqlfunc.count(sqlfunc.distinct(Track.artist_name))
+        ).scalar() or 0
 
-        cursor.execute("SELECT COUNT(DISTINCT name) FROM featured_artists")
-        stats['unique_featured_artists'] = cursor.fetchone()[0]
+        stats['unique_featured_artists'] = session.query(
+            sqlfunc.count(sqlfunc.distinct(FeaturedArtist.name))
+        ).scalar() or 0
 
-        cursor.execute("SELECT COUNT(*) FROM speaker_clusters WHERE is_verified = TRUE")
-        stats['verified_clusters'] = cursor.fetchone()[0]
+        stats['verified_clusters'] = session.query(SpeakerCluster).filter(
+            SpeakerCluster.is_verified == True
+        ).count()
 
         return stats
+
+
+def close_database() -> None:
+    """Close database connections and reset globals."""
+    global _engine, _SessionFactory
+
+    if _engine is not None:
+        _engine.dispose()
+        _engine = None
+    _SessionFactory = None
+    logger.info("Database connections closed")

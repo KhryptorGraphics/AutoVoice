@@ -1,0 +1,160 @@
+{
+  "timestamp": "2026-02-01",
+  "tracks_analyzed": [
+    "sota-pipeline_20260124",
+    "sota-dual-pipeline_20260130",
+    "sota-innovations_20260131",
+    "speaker-diarization_20260130"
+  ],
+  "gaps": [
+    {
+      "track": "sota-pipeline_20260124",
+      "criterion": "integration_tests",
+      "severity": "P0",
+      "details": {
+        "exists": false,
+        "files": [],
+        "count": 0
+      }
+    },
+    {
+      "track": "sota-pipeline_20260124",
+      "criterion": "api_documentation",
+      "severity": "P1",
+      "details": {
+        "exists": false,
+        "has_spec": true
+      }
+    },
+    {
+      "track": "sota-pipeline_20260124",
+      "criterion": "frontend_integration",
+      "severity": "P1",
+      "details": {
+        "exists": false,
+        "files": []
+      }
+    },
+    {
+      "track": "sota-pipeline_20260124",
+      "criterion": "error_handling",
+      "severity": "P0",
+      "details": {
+        "exists": false
+      }
+    },
+    {
+      "track": "sota-dual-pipeline_20260130",
+      "criterion": "integration_tests",
+      "severity": "P0",
+      "details": {
+        "exists": false,
+        "files": [],
+        "count": 0
+      }
+    },
+    {
+      "track": "sota-dual-pipeline_20260130",
+      "criterion": "api_documentation",
+      "severity": "P1",
+      "details": {
+        "exists": false,
+        "has_spec": true
+      }
+    },
+    {
+      "track": "sota-dual-pipeline_20260130",
+      "criterion": "frontend_integration",
+      "severity": "P1",
+      "details": {
+        "exists": false,
+        "files": []
+      }
+    },
+    {
+      "track": "sota-dual-pipeline_20260130",
+      "criterion": "error_handling",
+      "severity": "P0",
+      "details": {
+        "exists": false
+      }
+    },
+    {
+      "track": "sota-innovations_20260131",
+      "criterion": "integration_tests",
+      "severity": "P0",
+      "details": {
+        "exists": false,
+        "files": [],
+        "count": 0
+      }
+    },
+    {
+      "track": "sota-innovations_20260131",
+      "criterion": "api_documentation",
+      "severity": "P1",
+      "details": {
+        "exists": false,
+        "has_spec": true
+      }
+    },
+    {
+      "track": "sota-innovations_20260131",
+      "criterion": "frontend_integration",
+      "severity": "P1",
+      "details": {
+        "exists": false,
+        "files": []
+      }
+    },
+    {
+      "track": "sota-innovations_20260131",
+      "criterion": "error_handling",
+      "severity": "P0",
+      "details": {
+        "exists": false
+      }
+    },
+    {
+      "track": "speaker-diarization_20260130",
+      "criterion": "integration_tests",
+      "severity": "P0",
+      "details": {
+        "exists": false,
+        "files": [],
+        "count": 0
+      }
+    },
+    {
+      "track": "speaker-diarization_20260130",
+      "criterion": "api_documentation",
+      "severity": "P1",
+      "details": {
+        "exists": false,
+        "has_spec": true
+      }
+    },
+    {
+      "track": "speaker-diarization_20260130",
+      "criterion": "frontend_integration",
+      "severity": "P1",
+      "details": {
+        "exists": false,
+        "files": []
+      }
+    },
+    {
+      "track": "speaker-diarization_20260130",
+      "criterion": "error_handling",
+      "severity": "P0",
+      "details": {
+        "exists": false
+      }
+    }
+  ],
+  "summary": {
+    "total_gaps": 16,
+    "p0_gaps": 8,
+    "p1_gaps": 8
+  }
+}

@@ -3,7 +3,7 @@
   "title": "Performance Validation Suite",
   "type": "test",
   "priority": "P1",
-  "status": "pending",
+  "status": "in_progress",
   "created": "2026-02-01T10:00:00Z",
   "updated": "2026-02-01T10:00:00Z",
   "phases": {

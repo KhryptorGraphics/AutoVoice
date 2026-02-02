@@ -1,0 +1,37 @@
+{
+  "id": "voice-profile-training-e2e_20260201",
+  "title": "Voice Profile Training E2E Validation",
+  "type": "e2e-testing",
+  "priority": "P0",
+  "status": "in_progress",
+  "created": "2026-02-01T12:00:00Z",
+  "updated": "2026-02-01T12:00:00Z",
+  "phases": {
+    "total": 6,
+    "completed": 0
+  },
+  "tasks": {
+    "total": 22,
+    "completed": 0
+  },
+  "workflows": {
+    "profile_from_audio": "New profile from uploaded audio file",
+    "profile_from_youtube": "New profile from YouTube with multi-artist detection",
+    "profile_enhancement": "Add samples and retrain existing profile"
+  },
+  "dependencies": {
+    "upstream": [
+      "training-inference-integration_20260130",
+      "speaker-diarization_20260130",
+      "frontend-complete-integration_20260201",
+      "youtube-artist-training_20260130"
+    ],
+    "downstream": []
+  },
+  "cross_context": {
+    "diarization": "pyannote, WavLM embeddings, segment extraction",
+    "separation": "Demucs, vocals/instrumentals",
+    "training": "LoRA adapters, hq/nvfp4 types, AdapterManager",
+    "frontend": "VoiceProfilePage, TrainingConfigPanel, DiarizationTimeline"
+  }
+}

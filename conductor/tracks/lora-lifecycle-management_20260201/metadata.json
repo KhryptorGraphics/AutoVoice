@@ -1,0 +1,48 @@
+{
+  "id": "lora-lifecycle-management_20260201",
+  "title": "LoRA Lifecycle Management",
+  "type": "feature",
+  "priority": "P1",
+  "status": "complete",
+  "created": "2026-02-01T12:00:00Z",
+  "updated": "2026-02-01T12:00:00Z",
+  "phases": {
+    "total": 6,
+    "completed": 6
+  },
+  "tasks": {
+    "total": 18,
+    "completed": 18
+  },
+  "capabilities": {
+    "lora_audit": "Examine existing LoRAs, check freshness and quality",
+    "voice_identification": "Match audio to existing profiles via embeddings",
+    "auto_profile_creation": "Create profiles for unknown speakers",
+    "auto_training": "Train LoRAs when sample threshold met",
+    "auto_retrain": "Retrain on quality degradation or new samples",
+    "vocalist_separation": "Route multi-artist tracks to correct profiles",
+    "quality_monitoring": "Track metrics and detect degradation"
+  },
+  "dependencies": {
+    "upstream": [
+      "speaker-diarization_20260130",
+      "training-inference-integration_20260130",
+      "voice-profile-training_20260124"
+    ],
+    "downstream": []
+  },
+  "cross_context": {
+    "embeddings": "WavLM speaker embeddings (256-dim)",
+    "adapters": "LoRA adapters in voice_profiles/{id}/adapters/",
+    "training": "JobManager for training queue",
+    "diarization": "Pyannote for speaker segmentation"
+  },
+  "thresholds": {
+    "min_samples_for_training": 5,
+    "retrain_new_samples": 3,
+    "freshness_days": 30,
+    "speaker_similarity_min": 0.85,
+    "mcd_max": 4.5,
+    "samples_for_full_model": 50
+  }
+}

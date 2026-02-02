@@ -111,11 +111,17 @@ export class AudioStreamingClient {
    * @param songId - ID of the uploaded song
    * @param voiceModelId - ID of the voice model to use
    * @param pipelineType - Pipeline type for voice conversion
+   * @param options - Optional additional session options
    */
   async startSession(
     songId: string,
     voiceModelId: string,
-    pipelineType: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' = 'realtime'
+    pipelineType: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut' = 'realtime',
+    options?: {
+      profileId?: string;
+      adapterType?: 'hq' | 'nvfp4';
+      collectSamples?: boolean;
+    }
   ): Promise<{ session_id: string }> {
     if (!this.socket?.connected) {
       throw new Error('Not connected to server');
@@ -128,6 +134,9 @@ export class AudioStreamingClient {
           song_id: songId,
           voice_model_id: voiceModelId,
           pipeline_type: pipelineType,
+          profile_id: options?.profileId,
+          adapter_type: options?.adapterType,
+          collect_samples: options?.collectSamples ?? false,
         },
         (response: { session_id?: string; error?: string }) => {
           if (response.error) {

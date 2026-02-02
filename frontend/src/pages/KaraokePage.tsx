@@ -32,9 +32,10 @@ import {
 import { getAudioStreamingClient, type StreamingStats } from '../services/audioStreaming';
 import { apiService, VoiceProfile } from '../services/api';
 import { AudioDeviceSelector } from '../components/AudioDeviceSelector';
-import { PipelineSelector, type PipelineType } from '../components/PipelineSelector';
+import { PipelineSelector, type PipelineType, getPreferredPipeline } from '../components/PipelineSelector';
 import { AdapterDropdown } from '../components/AdapterSelector';
 import { AdapterType } from '../services/api';
+import { KaraokeSessionInfo } from '../components/KaraokeSessionInfo';
 
 type Stage = 'upload' | 'separating' | 'ready' | 'performing';
 
@@ -42,8 +43,15 @@ export function KaraokePage() {
   // Stage management
   const [stage, setStage] = useState<Stage>('upload');
 
-  // Pipeline selection (realtime for low-latency, quality for high-fidelity)
-  const [pipeline, setPipeline] = useState<PipelineType>('realtime');
+  // Pipeline selection (default to realtime for karaoke, but respect user preference)
+  const [pipeline, setPipeline] = useState<PipelineType>(() => {
+    const preferred = getPreferredPipeline();
+    // For karaoke, prefer realtime pipelines but allow quality if that's what user saved
+    if (preferred === 'realtime' || preferred === 'realtime_meanvc') {
+      return preferred;
+    }
+    return 'realtime';
+  });
 
   // Song state
   const [uploadedSong, setUploadedSong] = useState<UploadedSong | null>(null);
@@ -259,8 +267,12 @@ export function KaraokePage() {
     try {
       const client = getAudioStreamingClient();
       await client.connect();
-      // Pass pipeline type: 'realtime' for live karaoke, 'quality' for high-fidelity
-      await client.startSession(uploadedSong.song_id, selectedModel, pipeline);
+      // Pass pipeline type and optional profile/adapter for trained voice conversion
+      await client.startSession(uploadedSong.song_id, selectedModel, pipeline, {
+        profileId: selectedProfileId || undefined,
+        adapterType: selectedAdapter || undefined,
+        collectSamples: collectTrainingSamples,
+      });
       await client.startStreaming();
       setStage('performing');
     } catch (error) {
@@ -403,7 +415,7 @@ export function KaraokePage() {
           {/* Voice Model Selection */}
           <div className="bg-gray-800 rounded-lg p-6">
             <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <User size={20} />
+              <Music size={20} />
               Voice Model
             </h3>
             <select
@@ -419,22 +431,6 @@ export function KaraokePage() {
               ))}
             </select>
 
-            {/* Adapter Selection */}
-            {selectedProfileId && (
-              <div className="mb-4">
-                <label className="text-sm text-gray-400 mb-2 block">LoRA Adapter</label>
-                <AdapterDropdown
-                  profileId={selectedProfileId}
-                  value={selectedAdapter}
-                  onChange={setSelectedAdapter}
-                  disabled={stage === 'performing'}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  {selectedAdapter === 'nvfp4' ? 'Fast (recommended for live)' : 'High quality'}
-                </p>
-              </div>
-            )}
-
             <button
               onClick={handleExtractVoice}
               disabled={isExtracting || stage === 'performing'}
@@ -444,50 +440,81 @@ export function KaraokePage() {
             </button>
           </div>
 
-          {/* Training Profile Selection */}
+          {/* Voice Profile Selection (for trained adapter conversion) */}
           <div className="bg-gray-800 rounded-lg p-6">
             <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Mic size={20} />
-              Training Profile
+              <User size={20} />
+              Voice Profile
             </h3>
-            <div className="space-y-3">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={collectTrainingSamples}
-                  onChange={(e) => setCollectTrainingSamples(e.target.checked)}
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm text-gray-400 mb-2 block">Target Voice Profile</label>
+                <select
+                  value={selectedProfileId || ''}
+                  onChange={(e) => setSelectedProfileId(e.target.value || null)}
                   disabled={stage === 'performing'}
-                  className="w-4 h-4 rounded bg-gray-700 border-gray-600"
-                />
-                <span className="text-sm text-gray-300">Collect training samples</span>
-              </label>
-              {collectTrainingSamples && (
-                <>
-                  <select
-                    value={selectedProfileId || ''}
-                    onChange={(e) => setSelectedProfileId(e.target.value)}
-                    disabled={stage === 'performing'}
-                    className="w-full p-3 bg-gray-700 rounded-lg"
-                  >
-                    <option value="">Select a profile...</option>
-                    {voiceProfiles
-                      .filter((profile) => profile.has_trained_model)
-                      .map((profile) => (
-                        <option key={profile.profile_id} value={profile.profile_id}>
-                          {profile.name || profile.profile_id} ({profile.sample_count} samples)
-                        </option>
-                      ))}
-                  </select>
-                  {voiceProfiles.filter((p) => p.has_trained_model).length === 0 && (
-                    <p className="text-xs text-yellow-400">
-                      No trained profiles available. Please train a profile first on the Voice Profiles page.
-                    </p>
-                  )}
-                  <p className="text-xs text-gray-500">
-                    Your singing during this session will be captured and added to the selected profile for continuous learning.
+                  className="w-full p-3 bg-gray-700 rounded-lg"
+                >
+                  <option value="">No profile (use voice model only)</option>
+                  {voiceProfiles
+                    .filter((profile) => profile.has_trained_model)
+                    .map((profile) => (
+                      <option key={profile.profile_id} value={profile.profile_id}>
+                        {profile.name || profile.profile_id} ({profile.sample_count} samples)
+                      </option>
+                    ))}
+                </select>
+                {voiceProfiles.filter((p) => p.has_trained_model).length === 0 && (
+                  <p className="text-xs text-yellow-400 mt-2">
+                    No trained profiles. Train one on Voice Profiles page for better quality.
                   </p>
-                </>
+                )}
+                {selectedProfileId && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Uses trained LoRA adapter for enhanced voice conversion quality.
+                  </p>
+                )}
+              </div>
+
+              {/* Adapter Selection (shown when profile selected) */}
+              {selectedProfileId && (
+                <div>
+                  <label className="text-sm text-gray-400 mb-2 block">LoRA Adapter</label>
+                  <AdapterDropdown
+                    profileId={selectedProfileId}
+                    value={selectedAdapter}
+                    onChange={setSelectedAdapter}
+                    disabled={stage === 'performing'}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    {selectedAdapter === 'nvfp4' ? 'Fast inference (recommended for live)' : 'Maximum quality'}
+                  </p>
+                </div>
               )}
+
+              {/* Training sample collection option */}
+              <div className="pt-3 border-t border-gray-700">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={collectTrainingSamples}
+                    onChange={(e) => setCollectTrainingSamples(e.target.checked)}
+                    disabled={stage === 'performing' || !selectedProfileId}
+                    className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                  />
+                  <span className="text-sm text-gray-300">Collect training samples</span>
+                </label>
+                {collectTrainingSamples && selectedProfileId && (
+                  <p className="text-xs text-gray-500 mt-2 ml-6">
+                    Your singing will be captured to improve this profile.
+                  </p>
+                )}
+                {!selectedProfileId && (
+                  <p className="text-xs text-gray-500 mt-1 ml-6">
+                    Select a profile to enable sample collection.
+                  </p>
+                )}
+              </div>
             </div>
           </div>
 
@@ -575,45 +602,16 @@ export function KaraokePage() {
             </div>
           </div>
 
-          {/* Stats */}
-          <div className="bg-gray-800 rounded-lg p-6">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Activity size={20} />
-              Performance Stats
-            </h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-gray-700 rounded p-3">
-                <div className="text-2xl font-bold">
-                  {streamingStats.latencyMs.toFixed(0)}
-                </div>
-                <div className="text-sm text-gray-400">Latency (ms)</div>
-              </div>
-              <div className="bg-gray-700 rounded p-3">
-                <div className="text-2xl font-bold">
-                  {streamingStats.chunksProcessed}
-                </div>
-                <div className="text-sm text-gray-400">Chunks</div>
-              </div>
-              <div className="bg-gray-700 rounded p-3">
-                <div className={clsx(
-                  'text-2xl font-bold',
-                  streamingStats.isConnected ? 'text-green-400' : 'text-red-400'
-                )}>
-                  {streamingStats.isConnected ? 'Connected' : 'Offline'}
-                </div>
-                <div className="text-sm text-gray-400">Server</div>
-              </div>
-              <div className="bg-gray-700 rounded p-3">
-                <div className={clsx(
-                  'text-2xl font-bold',
-                  streamingStats.isStreaming ? 'text-green-400' : 'text-gray-400'
-                )}>
-                  {streamingStats.isStreaming ? 'Live' : 'Idle'}
-                </div>
-                <div className="text-sm text-gray-400">Status</div>
-              </div>
-            </div>
-          </div>
+          {/* Session Info with Real-time Latency */}
+          <KaraokeSessionInfo
+            pipeline={pipeline}
+            profileName={selectedProfileId ? voiceProfiles.find(p => p.profile_id === selectedProfileId)?.name || selectedProfileId : undefined}
+            adapterType={selectedAdapter}
+            latencyMs={streamingStats.latencyMs}
+            isConnected={streamingStats.isConnected}
+            isStreaming={streamingStats.isStreaming}
+            chunksProcessed={streamingStats.chunksProcessed}
+          />
         </div>
       )}
 
