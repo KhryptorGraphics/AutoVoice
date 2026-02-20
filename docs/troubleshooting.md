@@ -3610,7 +3610,484 @@ grep -A 5 "authentication:" config/gpu_config.yaml
 
 ## Dependency and Environment Errors
 
-*This section will be populated with dependency error solutions.*
+### PyWorld installation fails or crashes (ARM64/Python 3.13)
+
+**Error Message**:
+```
+ImportError: undefined symbol: __aarch64_ldadd4_relax
+```
+or
+```
+ModuleNotFoundError: No module named 'pyworld'
+```
+
+**Cause**: PyWorld binary incompatibility with Python 3.13 on ARM64 (Jetson Thor) or missing installation.
+
+**Solutions**:
+
+1. **Build PyWorld from Source** (recommended for ARM64):
+   ```bash
+   # Install build dependencies
+   sudo apt-get install -y build-essential cmake
+
+   # Clone and build PyWorld
+   git clone https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder pyworld
+   cd pyworld
+   pip install -e .
+   ```
+
+2. **Use Compatible Python Version**:
+   ```bash
+   # Python 3.10 or 3.11 recommended for ARM64
+   conda create -n autovoice python=3.11 -y
+   conda activate autovoice
+   pip install pyworld
+   ```
+
+3. **Skip PyWorld-dependent Features** (temporary workaround):
+   ```python
+   # Use alternative pitch extraction
+   from auto_voice.inference import RealtimePipeline
+
+   pipeline = RealtimePipeline(
+       pitch_extractor='harvest',  # Instead of 'dio' (PyWorld)
+       use_hq_svc=False  # Disable HQ-SVC which requires PyWorld
+   )
+   ```
+
+4. **Install Pre-built Wheel** (if available):
+   ```bash
+   # Check for ARM64 wheels
+   pip install pyworld --find-links https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder/releases
+   ```
+
+**Diagnostic**:
+```bash
+# Test PyWorld import
+python -c "import pyworld; print(f'PyWorld version: {pyworld.__version__}')"
+
+# Check binary compatibility
+python -c "import pyworld; pyworld.dio(np.zeros(16000), 16000)"
+
+# Verify Python version
+python --version
+```
+
+**Prevention**:
+- Use Python 3.10 or 3.11 on ARM64 platforms
+- Build PyWorld from source during initial setup
+- Add PyWorld check to test suite: `pytest tests/test_hq_svc_wrapper.py -v`
+
+---
+
+### Missing local-attention module
+
+**Error Message**:
+```
+ModuleNotFoundError: No module named 'local_attention'
+```
+
+**Cause**: `local-attention` dependency not installed. Required for HQ-SVC and attention-based models.
+
+**Solutions**:
+
+1. **Install local-attention**:
+   ```bash
+   pip install local-attention==1.11.2
+   ```
+
+2. **Install with hyper-connections** (if also needed):
+   ```bash
+   pip install local-attention==1.11.2 hyper-connections==0.4.7
+   ```
+
+3. **Verify Installation**:
+   ```python
+   import local_attention
+   print(f"local-attention version: {local_attention.__version__}")
+   ```
+
+4. **Install from requirements.txt**:
+   ```bash
+   # Full dependency installation
+   pip install -r requirements.txt
+   ```
+
+**Diagnostic**:
+```bash
+# Check if module is installed
+pip show local-attention
+
+# Test import
+python -c "import local_attention; print('OK')"
+
+# Verify requirements
+grep -i "local-attention" requirements.txt
+```
+
+**Prevention**:
+- Run `pip install -r requirements.txt` during setup
+- Add dependency check to startup scripts
+- Enable test coverage for attention modules
+
+---
+
+### sounddevice not found (audio I/O errors)
+
+**Error Message**:
+```
+ModuleNotFoundError: No module named 'sounddevice'
+```
+or
+```
+OSError: PortAudio library not found
+```
+
+**Cause**: Missing `sounddevice` module or underlying PortAudio library for real-time audio I/O.
+
+**Solutions**:
+
+1. **Install sounddevice with PortAudio**:
+   ```bash
+   # Ubuntu/Debian
+   sudo apt-get install -y portaudio19-dev python3-pyaudio
+   pip install sounddevice
+
+   # macOS
+   brew install portaudio
+   pip install sounddevice
+   ```
+
+2. **Verify Audio Devices**:
+   ```python
+   import sounddevice as sd
+   print(sd.query_devices())  # List available devices
+   ```
+
+3. **Set Default Device** (if multiple devices):
+   ```python
+   import sounddevice as sd
+   sd.default.device = 'USB Audio Device'  # Set preferred device
+   sd.default.samplerate = 44100
+   sd.default.channels = 1
+   ```
+
+4. **Use Alternative Backend** (fallback):
+   ```python
+   # Use PyAudio instead
+   import pyaudio
+   # or use simpleaudio for playback only
+   import simpleaudio as sa
+   ```
+
+**Diagnostic**:
+```bash
+# Test sounddevice
+python -c "import sounddevice as sd; print(sd.query_devices())"
+
+# Check PortAudio library
+ldconfig -p | grep portaudio
+
+# List audio devices
+arecord -l  # Input devices
+aplay -l    # Output devices
+```
+
+**Prevention**:
+- Install PortAudio before pip install
+- Test audio devices after environment setup
+- Add device check to streaming pipeline initialization
+
+---
+
+### Demucs initialization failed (vocal separator)
+
+**Error Message**:
+```
+RuntimeError: Demucs initialization failed
+```
+or
+```
+FileNotFoundError: Demucs model checkpoint not found
+```
+
+**Cause**: Missing Demucs model files or CUDA compatibility issues during vocal separator initialization.
+
+**Solutions**:
+
+1. **Download Demucs Models**:
+   ```bash
+   # Download pretrained Demucs models
+   python -m demucs.download htdemucs
+   python -m demucs.download htdemucs_ft
+   ```
+
+2. **Verify Model Path**:
+   ```python
+   from auto_voice.audio import VocalSeparator
+
+   separator = VocalSeparator(
+       model_name='htdemucs',
+       device='cuda',
+       cache_dir='./models/demucs'  # Explicit path
+   )
+   ```
+
+3. **Use CPU if CUDA Fails**:
+   ```python
+   # Fallback to CPU
+   separator = VocalSeparator(model_name='htdemucs', device='cpu')
+   ```
+
+4. **Clear Model Cache**:
+   ```bash
+   # Remove corrupted cache
+   rm -rf ~/.cache/torch/hub/demucs
+
+   # Re-download models
+   python -m demucs.download htdemucs
+   ```
+
+5. **Manual Model Installation**:
+   ```bash
+   # Download specific model
+   wget https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/htdemucs.th
+   mkdir -p models/pretrained/demucs
+   mv htdemucs.th models/pretrained/demucs/
+   ```
+
+**Diagnostic**:
+```bash
+# Test Demucs import
+python -c "import demucs; print(f'Demucs installed: {demucs.__version__}')"
+
+# List cached models
+ls -lh ~/.cache/torch/hub/demucs/
+
+# Test separator initialization
+python -c "from auto_voice.audio import VocalSeparator; VocalSeparator(device='cpu')"
+```
+
+**Prevention**:
+- Run `scripts/download_pretrained_models.py` during setup
+- Verify model files exist before initialization
+- Add Demucs tests: `pytest tests/test_vocal_separator.py -v`
+
+---
+
+### TensorRT not available (optional optimization)
+
+**Error Message**:
+```
+ModuleNotFoundError: No module named 'tensorrt'
+```
+or
+```
+ImportError: cannot import name 'tensorrt_engine' from 'auto_voice.export'
+```
+
+**Cause**: TensorRT is an optional dependency for inference optimization. Safe to skip if not needed.
+
+**Solutions**:
+
+1. **Install TensorRT** (Jetson Thor has native support):
+   ```bash
+   # On Jetson platforms (pre-installed)
+   export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH
+
+   # Verify TensorRT
+   python -c "import tensorrt; print(f'TensorRT version: {tensorrt.__version__}')"
+   ```
+
+2. **Install via pip** (other platforms):
+   ```bash
+   # Install TensorRT Python bindings
+   pip install tensorrt
+
+   # Or use NVIDIA NGC container
+   docker pull nvcr.io/nvidia/tensorrt:23.11-py3
+   ```
+
+3. **Skip TensorRT Features** (optional):
+   ```python
+   # Use regular PyTorch inference
+   from auto_voice.inference import RealtimePipeline
+
+   pipeline = RealtimePipeline(
+       use_tensorrt=False  # Skip TRT optimization
+   )
+   ```
+
+4. **Conditional Import** (already handled):
+   ```python
+   # AutoVoice automatically handles missing TensorRT
+   try:
+       from auto_voice.export import TensorRTEngine
+   except ImportError:
+       print("TensorRT not available, using PyTorch backend")
+   ```
+
+**Diagnostic**:
+```bash
+# Check TensorRT installation
+python -c "import tensorrt; print(tensorrt.__version__)"
+
+# Verify library path
+echo $LD_LIBRARY_PATH | grep tensorrt
+
+# Test TRT export (if installed)
+python scripts/verify_bindings.py --tensorrt
+```
+
+**Prevention**:
+- TensorRT is optional for most users
+- Install only if targeting optimized inference (< 20ms latency)
+- Tests automatically skip if TensorRT unavailable: `@pytest.mark.skipif(not has_tensorrt)`
+
+---
+
+### Python version incompatibility
+
+**Error Message**:
+```
+RuntimeError: Python 3.13 not supported
+```
+or
+```
+SyntaxError: invalid syntax (f-strings, match statements)
+```
+
+**Cause**: AutoVoice requires Python 3.10, 3.11, or 3.12. Python 3.13 has compatibility issues with some dependencies.
+
+**Solutions**:
+
+1. **Use Recommended Python Version**:
+   ```bash
+   # Create conda environment with Python 3.11
+   conda create -n autovoice python=3.11 -y
+   conda activate autovoice
+
+   # Verify version
+   python --version  # Should show Python 3.11.x
+   ```
+
+2. **Check Current Version**:
+   ```bash
+   python --version
+   which python
+   ```
+
+3. **Install PyTorch with Matching Python**:
+   ```bash
+   # CRITICAL: Install PyTorch FIRST with correct Python version
+   pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu121
+
+   # Then install AutoVoice dependencies
+   pip install -r requirements.txt
+   ```
+
+4. **Downgrade if Necessary**:
+   ```bash
+   # Remove existing environment
+   conda deactivate
+   conda remove -n autovoice --all
+
+   # Recreate with Python 3.11
+   conda create -n autovoice python=3.11 -y
+   conda activate autovoice
+   ```
+
+**Diagnostic**:
+```bash
+# Check Python version
+python --version
+
+# Verify conda environment
+conda env list
+conda list python
+
+# Test PyTorch compatibility
+python -c "import torch; print(f'PyTorch: {torch.__version__}, Python: {torch.__config__.show().split()[0]}')"
+```
+
+**Prevention**:
+- Always use conda environment with pinned Python version
+- Add version check to setup scripts: `scripts/setup_pytorch_env.sh`
+- Document version requirements in README
+
+---
+
+### Missing CUDA toolkit (compilation errors)
+
+**Error Message**:
+```
+RuntimeError: CUDA toolkit not found
+```
+or
+```
+error: command 'nvcc' failed: No such file or directory
+```
+
+**Cause**: CUDA toolkit not installed or not in PATH. Required for building CUDA extensions.
+
+**Solutions**:
+
+1. **Install CUDA Toolkit**:
+   ```bash
+   # Ubuntu 22.04
+   wget https://developer.download.nvidia.com/compute/cuda/12.1.0/local_installers/cuda_12.1.0_530.30.02_linux.run
+   sudo sh cuda_12.1.0_530.30.02_linux.run
+
+   # Add to PATH
+   echo 'export PATH=/usr/local/cuda-12.1/bin:$PATH' >> ~/.bashrc
+   echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.1/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
+   source ~/.bashrc
+   ```
+
+2. **Verify CUDA Installation**:
+   ```bash
+   nvcc --version
+   nvidia-smi
+   ```
+
+3. **Use Pre-built Wheels** (skip compilation):
+   ```bash
+   # Install PyTorch with pre-built CUDA binaries
+   pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu121
+
+   # Skip building CUDA extensions (slower but works)
+   SKIP_CUDA_BUILD=1 pip install -e .
+   ```
+
+4. **Set CUDA Environment Variables**:
+   ```bash
+   export CUDA_HOME=/usr/local/cuda-12.1
+   export PATH=$CUDA_HOME/bin:$PATH
+   export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+   ```
+
+**Diagnostic**:
+```bash
+# Check CUDA toolkit
+nvcc --version
+which nvcc
+
+# Verify CUDA libraries
+ldconfig -p | grep cuda
+
+# Test PyTorch CUDA
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+
+# Test CUDA extension build
+python scripts/verify_bindings.py
+```
+
+**Prevention**:
+- Install CUDA toolkit before AutoVoice setup
+- Use `scripts/setup_pytorch_env.sh` for automated setup
+- Add CUDA path to shell profile permanently
+
+---
 
 ## Diagnostic Commands
 
