@@ -4091,11 +4091,1190 @@ python scripts/verify_bindings.py
 
 ## Diagnostic Commands
 
-*This section will be populated with diagnostic commands and utilities.*
+This section provides a comprehensive reference of diagnostic commands organized by category. Use these to investigate issues, validate your setup, and collect debugging information.
+
+### GPU and CUDA Diagnostics
+
+#### Check GPU Status
+```bash
+# Basic GPU information
+nvidia-smi
+
+# Detailed GPU memory usage
+nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu --format=csv
+
+# Monitor GPU in real-time (updates every 1 second)
+watch -n 1 nvidia-smi
+
+# Check CUDA driver version
+nvidia-smi | grep "Driver Version"
+
+# CUDA compiler version
+nvcc --version
+```
+
+#### Check PyTorch CUDA Integration
+```bash
+# Quick CUDA availability check
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+
+# Comprehensive CUDA diagnostics
+python -c "
+import torch
+print(f'PyTorch version: {torch.__version__}')
+print(f'CUDA available: {torch.cuda.is_available()}')
+print(f'CUDA version: {torch.version.cuda}')
+print(f'cuDNN version: {torch.backends.cudnn.version()}')
+print(f'Device count: {torch.cuda.device_count()}')
+if torch.cuda.is_available():
+    print(f'Current device: {torch.cuda.current_device()}')
+    print(f'Device name: {torch.cuda.get_device_name(0)}')
+    print(f'Device capability: {torch.cuda.get_device_capability(0)}')
+    print(f'Total memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB')
+"
+
+# Check CUDA memory allocation
+python -c "
+import torch
+if torch.cuda.is_available():
+    print(f'Allocated: {torch.cuda.memory_allocated(0) / 1024**3:.2f} GB')
+    print(f'Reserved: {torch.cuda.memory_reserved(0) / 1024**3:.2f} GB')
+    print(torch.cuda.memory_summary(device=0))
+"
+
+# Clear CUDA cache
+python -c "import torch; torch.cuda.empty_cache(); print('CUDA cache cleared')"
+```
+
+### Environment and Dependencies
+
+#### Python Environment Check
+```bash
+# Python version (requires 3.12+)
+python --version
+
+# Verify conda environment
+conda info --envs
+
+# Check for PYTHONNOUSERSITE (should be set to 1)
+echo $PYTHONNOUSERSITE
+
+# List installed packages
+pip list
+
+# Check specific critical packages
+pip show torch torchaudio torchvision librosa soundfile flask
+
+# Verify PyTorch installation
+python -c "import torch, torchaudio, torchvision; print('PyTorch packages OK')"
+```
+
+#### Dependency Verification
+```bash
+# Check all AutoVoice dependencies
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+import sys
+deps = [
+    ('torch', 'PyTorch'),
+    ('torchaudio', 'TorchAudio'),
+    ('librosa', 'Librosa'),
+    ('soundfile', 'SoundFile'),
+    ('flask', 'Flask'),
+    ('sqlalchemy', 'SQLAlchemy'),
+    ('pyworld', 'PyWorld'),
+    ('numpy', 'NumPy'),
+]
+for module, name in deps:
+    try:
+        mod = __import__(module)
+        version = getattr(mod, '__version__', 'unknown')
+        print(f'✓ {name}: {version}')
+    except ImportError as e:
+        print(f'✗ {name}: NOT FOUND - {e}')
+        sys.exit(1)
+print('\nAll dependencies OK')
+"
+
+# Check optional dependencies
+python -c "
+optional = [
+    ('local_attention', 'local-attention (for streaming)'),
+    ('sounddevice', 'sounddevice (for audio I/O)'),
+    ('tensorrt', 'TensorRT (for acceleration)'),
+    ('demucs', 'Demucs (for separation)'),
+]
+for module, name in optional:
+    try:
+        __import__(module)
+        print(f'✓ {name}: available')
+    except ImportError:
+        print(f'⚠ {name}: not available (optional)')
+"
+```
+
+### Model and Configuration Verification
+
+#### Check Pre-trained Models
+```bash
+# List model files
+ls -lh models/pretrained/
+
+# Verify required models exist
+test -f models/pretrained/sovits5.0_main_1500.pth && echo "✓ Main model OK" || echo "✗ Main model missing"
+test -f models/pretrained/hifigan_ljspeech.ckpt && echo "✓ Vocoder OK" || echo "✗ Vocoder missing"
+test -f models/pretrained/hubert-soft-0d54a1f4.pt && echo "✓ HuBERT OK" || echo "✗ HuBERT missing"
+
+# Check model file integrity (size)
+du -h models/pretrained/*.{pth,pt,ckpt} 2>/dev/null
+
+# Verify model loadable
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+import torch
+model_path = 'models/pretrained/sovits5.0_main_1500.pth'
+try:
+    checkpoint = torch.load(model_path, map_location='cpu')
+    print(f'✓ Model loadable: {list(checkpoint.keys())}')
+except Exception as e:
+    print(f'✗ Model load failed: {e}')
+"
+```
+
+#### Check Configuration Files
+```bash
+# Display GPU configuration
+cat config/gpu_config.yaml
+
+# Validate YAML syntax
+python -c "
+import yaml
+with open('config/gpu_config.yaml') as f:
+    config = yaml.safe_load(f)
+    print('✓ GPU config valid')
+    print(f'  Max memory fraction: {config.get(\"max_memory_fraction\", \"N/A\")}')
+    print(f'  Device: {config.get(\"device\", \"N/A\")}')
+"
+
+# Check logging configuration
+cat config/logging_config.yaml
+```
+
+#### Verify Voice Profiles
+```bash
+# List voice profiles in database
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+from auto_voice.database.session import get_session
+from auto_voice.database.models import VoiceProfile
+
+with get_session() as session:
+    profiles = session.query(VoiceProfile).all()
+    print(f'Found {len(profiles)} voice profiles:')
+    for p in profiles:
+        print(f'  - {p.name} (ID: {p.id}, embedding shape: {len(p.embedding) if p.embedding else 0})')
+"
+
+# Check profile data directory
+ls -lh data/profiles/
+```
+
+### Audio Processing Diagnostics
+
+#### Test Audio File Processing
+```bash
+# Check audio file properties
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+import librosa
+import soundfile as sf
+
+# Test file
+audio_file = 'path/to/test.wav'
+
+# Librosa
+y, sr = librosa.load(audio_file, sr=None)
+print(f'Librosa: duration={len(y)/sr:.2f}s, sr={sr}, shape={y.shape}')
+
+# SoundFile
+data, sr = sf.read(audio_file)
+print(f'SoundFile: duration={len(data)/sr:.2f}s, sr={sr}, shape={data.shape}')
+
+# Check for NaN/Inf
+import numpy as np
+if np.any(np.isnan(y)):
+    print('⚠ WARNING: Audio contains NaN values')
+if np.any(np.isinf(y)):
+    print('⚠ WARNING: Audio contains Inf values')
+"
+
+# Convert audio to required format
+ffmpeg -i input.mp3 -ar 44100 -ac 1 -sample_fmt s16 output.wav
+```
+
+#### Test Vocal Separation (if Demucs available)
+```bash
+# Check Demucs availability
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+try:
+    import demucs
+    print(f'✓ Demucs available: {demucs.__version__}')
+except ImportError:
+    print('✗ Demucs not available')
+"
+
+# Test separation on sample
+demucs --two-stems=vocals input.mp3 -o output_dir/
+```
+
+### Database Diagnostics
+
+#### Check Database Connection
+```bash
+# Test database connectivity
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+from auto_voice.database.session import get_session, init_db
+
+# Initialize database
+init_db()
+print('✓ Database initialized')
+
+# Test session
+with get_session() as session:
+    print(f'✓ Database session created: {session}')
+"
+
+# Check database file (SQLite)
+ls -lh data/autovoice.db
+sqlite3 data/autovoice.db ".tables"
+```
+
+#### Query Database Statistics
+```bash
+# Profile and session counts
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+from auto_voice.database.session import get_session
+from auto_voice.database.models import VoiceProfile, ConversionJob
+
+with get_session() as session:
+    profile_count = session.query(VoiceProfile).count()
+    job_count = session.query(ConversionJob).count()
+    print(f'Voice Profiles: {profile_count}')
+    print(f'Conversion Jobs: {job_count}')
+"
+```
+
+### API and Server Diagnostics
+
+#### Test API Endpoints
+```bash
+# Health check
+curl http://localhost:5000/api/v1/health
+
+# Detailed health with components
+curl http://localhost:5000/api/v1/health | python -m json.tool
+
+# GPU metrics
+curl http://localhost:5000/api/v1/gpu/metrics
+
+# List profiles
+curl http://localhost:5000/api/v1/profiles
+
+# Check server logs
+tail -f logs/autovoice.log
+```
+
+#### Test WebSocket Connection
+```bash
+# Install socketio client if needed
+pip install python-socketio[client]
+
+# Test connection
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+import socketio
+
+sio = socketio.Client()
+
+@sio.on('connect')
+def on_connect():
+    print('✓ Connected to WebSocket')
+
+@sio.on('disconnect')
+def on_disconnect():
+    print('✗ Disconnected from WebSocket')
+
+try:
+    sio.connect('http://localhost:5000')
+    sio.disconnect()
+except Exception as e:
+    print(f'✗ WebSocket connection failed: {e}')
+"
+```
+
+### Performance Profiling
+
+#### Profile GPU Memory Usage
+```bash
+# Record memory history during operation
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+import torch
+
+# Enable memory history tracking
+torch.cuda.memory._record_memory_history(max_entries=100000)
+
+# ... run your operation here ...
+
+# Dump snapshot for analysis
+torch.cuda.memory._dump_snapshot('memory_snapshot.pickle')
+print('Memory snapshot saved to memory_snapshot.pickle')
+"
+
+# Analyze snapshot with pytorch memory profiler
+# https://pytorch.org/memory_viz
+```
+
+#### Profile Inference Performance
+```bash
+# Time a single conversion
+time PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+import torch
+
+pipeline = SingingConversionPipeline()
+audio = torch.randn(1, 44100 * 5)  # 5 seconds
+result = pipeline(audio, profile_id='test')
+print(f'Conversion completed: {result.shape}')
+"
+
+# Profile with cProfile
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -m cProfile -o profile.stats src/auto_voice/inference/singing_conversion_pipeline.py
+
+# View profile results
+python -c "
+import pstats
+p = pstats.Stats('profile.stats')
+p.sort_stats('cumulative').print_stats(20)
+"
+```
+
+### Test Suite Diagnostics
+
+#### Run Specific Test Categories
+```bash
+# Smoke tests (fastest, < 30s)
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -m pytest tests/ -m smoke -v
+
+# CUDA tests (requires GPU)
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -m pytest tests/ -m cuda -v
+
+# Fast tests (excludes slow)
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -m pytest tests/ -m "not slow" -v
+
+# Specific component tests
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -m pytest tests/test_inference*.py -v
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -m pytest tests/test_audio*.py -v
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -m pytest tests/test_database*.py -v
+
+# Run with verbose output for debugging
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -m pytest tests/test_specific.py::test_function -vv -s
+
+# Generate coverage report
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -m pytest tests/ --cov=src/auto_voice --cov-report=html --cov-report=term
+```
+
+#### Test Individual Components
+```bash
+# Test model loading
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+from auto_voice.models.encoder import ContentVecEncoder
+encoder = ContentVecEncoder()
+print('✓ ContentVecEncoder loaded successfully')
+"
+
+# Test voice cloning
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+from auto_voice.inference.voice_cloner import VoiceCloner
+import torch
+
+cloner = VoiceCloner()
+audio = torch.randn(1, 44100 * 3)  # 3 seconds
+embedding = cloner.create_profile('test', audio)
+print(f'✓ Voice embedding created: shape={embedding.shape}')
+"
+
+# Test realtime pipeline
+PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+from auto_voice.inference.realtime_voice_conversion_pipeline import RealtimeVoiceConversionPipeline
+pipeline = RealtimeVoiceConversionPipeline()
+print('✓ Realtime pipeline initialized')
+"
+```
+
+### Log Analysis
+
+#### View Recent Errors
+```bash
+# Last 50 errors from log
+grep -i "error\|exception\|failed" logs/autovoice.log | tail -50
+
+# Errors from last hour
+find logs/ -name "*.log" -mmin -60 -exec grep -i "error" {} \;
+
+# Count error types
+grep -i "error" logs/autovoice.log | awk '{print $NF}' | sort | uniq -c | sort -rn
+
+# GPU OOM errors specifically
+grep -i "cuda out of memory" logs/autovoice.log | tail -20
+```
+
+#### Monitor Logs in Real-time
+```bash
+# Follow all logs
+tail -f logs/autovoice.log
+
+# Follow only errors
+tail -f logs/autovoice.log | grep -i --line-buffered "error\|warning"
+
+# Watch GPU usage while running
+watch -n 1 'nvidia-smi && echo "---" && tail -5 logs/autovoice.log'
+```
+
+### System Resource Monitoring
+
+#### Check Disk Space
+```bash
+# Overall disk usage
+df -h
+
+# Model directory size
+du -sh models/
+
+# Database size
+du -sh data/
+
+# Log files size
+du -sh logs/
+
+# Find large files
+find . -type f -size +100M -exec ls -lh {} \;
+```
+
+#### Check Memory Usage
+```bash
+# Overall system memory
+free -h
+
+# AutoVoice process memory
+ps aux | grep python | grep autovoice
+
+# Detailed process info
+top -p $(pgrep -f autovoice)
+```
 
 ## Common Workflows
 
-*This section will be populated with troubleshooting workflows.*
+This section provides step-by-step troubleshooting workflows for common scenarios. Follow these when you encounter issues or need to validate your setup.
+
+### Workflow 1: Initial Setup Validation
+
+**Use when:** Setting up AutoVoice for the first time or after environment changes.
+
+**Steps:**
+
+1. **Verify Python Environment**
+   ```bash
+   # Check Python version (must be 3.12+)
+   python --version
+
+   # Verify conda environment is active
+   which python
+   # Should show: /home/kp/anaconda3/envs/autovoice-thor/bin/python
+   ```
+
+2. **Check CUDA and GPU**
+   ```bash
+   # Verify GPU is visible
+   nvidia-smi
+
+   # Check CUDA is accessible from PyTorch
+   python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'; print(f'✓ CUDA OK: {torch.cuda.get_device_name(0)}')"
+   ```
+
+3. **Verify Dependencies**
+   ```bash
+   # Run dependency check script
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   import sys
+   deps = ['torch', 'torchaudio', 'librosa', 'soundfile', 'flask', 'sqlalchemy', 'pyworld']
+   for dep in deps:
+       try:
+           __import__(dep)
+           print(f'✓ {dep}')
+       except ImportError as e:
+           print(f'✗ {dep}: {e}')
+           sys.exit(1)
+   print('✓ All core dependencies OK')
+   "
+   ```
+
+4. **Check Pre-trained Models**
+   ```bash
+   # Verify models exist
+   test -f models/pretrained/sovits5.0_main_1500.pth || echo "✗ Main model missing - run: python scripts/download_pretrained_models.py"
+   test -f models/pretrained/hifigan_ljspeech.ckpt || echo "✗ Vocoder missing"
+   test -f models/pretrained/hubert-soft-0d54a1f4.pt || echo "✗ HuBERT missing"
+   ```
+
+5. **Run Smoke Tests**
+   ```bash
+   # Quick validation (<30s)
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -m pytest tests/ -m smoke -v
+   ```
+
+6. **Initialize Database**
+   ```bash
+   # Create database and tables
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.database.session import init_db
+   init_db()
+   print('✓ Database initialized')
+   "
+   ```
+
+7. **Test API Server**
+   ```bash
+   # Start server in background
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python main.py &
+   SERVER_PID=$!
+
+   # Wait for startup
+   sleep 5
+
+   # Test health endpoint
+   curl http://localhost:5000/api/v1/health
+
+   # Stop server
+   kill $SERVER_PID
+   ```
+
+**Expected Result:** All checks pass, smoke tests complete, API responds with healthy status.
+
+**If Failed:** Review error messages and refer to relevant sections in this guide.
+
+---
+
+### Workflow 2: Pre-Conversion Checklist
+
+**Use when:** Before running a voice conversion to ensure success.
+
+**Steps:**
+
+1. **Verify Voice Profile Exists**
+   ```bash
+   # List available profiles
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.database.session import get_session
+   from auto_voice.database.models import VoiceProfile
+
+   with get_session() as session:
+       profiles = session.query(VoiceProfile).all()
+       if not profiles:
+           print('✗ No profiles found - create one first')
+       else:
+           print('Available profiles:')
+           for p in profiles:
+               print(f'  - {p.name} (ID: {p.id})')
+   "
+   ```
+
+2. **Check Input Audio Quality**
+   ```bash
+   # Verify audio file format and properties
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   import librosa
+   import numpy as np
+
+   audio_file = 'path/to/input.wav'
+   y, sr = librosa.load(audio_file, sr=None)
+   duration = len(y) / sr
+
+   print(f'Sample rate: {sr} Hz')
+   print(f'Duration: {duration:.2f} seconds')
+   print(f'Channels: {y.ndim}')
+
+   # Validate quality
+   assert duration >= 1.0, f'Audio too short: {duration:.2f}s (minimum 1.0s)'
+   assert not np.any(np.isnan(y)), 'Audio contains NaN values'
+   assert not np.any(np.isinf(y)), 'Audio contains Inf values'
+   assert sr >= 16000, f'Sample rate too low: {sr} Hz (minimum 16kHz)'
+
+   print('✓ Audio quality OK')
+   "
+   ```
+
+3. **Verify GPU Memory Available**
+   ```bash
+   # Check available GPU memory
+   nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits
+
+   # Should have at least 4GB free for conversion
+   python -c "
+   import torch
+   if torch.cuda.is_available():
+       free_mem = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)) / 1024**3
+       print(f'Free GPU memory: {free_mem:.2f} GB')
+       assert free_mem >= 4.0, f'Insufficient memory: {free_mem:.2f} GB (need 4GB+)'
+       print('✓ GPU memory OK')
+   "
+   ```
+
+4. **Test Pipeline Initialization**
+   ```bash
+   # Verify pipeline can be created
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+
+   pipeline = SingingConversionPipeline()
+   print('✓ Pipeline initialized successfully')
+   "
+   ```
+
+5. **Check Adapter/LoRA (if using fine-tuned model)**
+   ```bash
+   # Verify adapter exists
+   test -f data/adapters/my_adapter.safetensors || echo "⚠ Adapter not found - using base model"
+   ```
+
+**Expected Result:** All checks pass, ready for conversion.
+
+**If Failed:**
+- Missing profile → Create one using `/api/v1/voice/clone` endpoint
+- Poor audio quality → Preprocess with ffmpeg or enhance with audio tools
+- Low GPU memory → Clear cache or reduce batch size
+- Pipeline failure → Check model files and dependencies
+
+---
+
+### Workflow 3: Investigating CUDA OOM Errors
+
+**Use when:** Encountering "CUDA out of memory" errors during conversion.
+
+**Steps:**
+
+1. **Identify Current GPU Usage**
+   ```bash
+   # Check what's using GPU memory
+   nvidia-smi
+
+   # Detailed breakdown
+   python -c "
+   import torch
+   if torch.cuda.is_available():
+       print(torch.cuda.memory_summary(device=0))
+   "
+   ```
+
+2. **Clear GPU Cache**
+   ```bash
+   # Free unused memory
+   python -c "
+   import torch
+   torch.cuda.empty_cache()
+   torch.cuda.synchronize()
+   print('✓ GPU cache cleared')
+   "
+   ```
+
+3. **Check Configuration Settings**
+   ```bash
+   # Review memory limit settings
+   cat config/gpu_config.yaml | grep -A5 memory
+
+   # Should see max_memory_fraction: 0.9 or similar
+   ```
+
+4. **Test with Smaller Chunk Size**
+   ```bash
+   # Temporarily reduce chunk size
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.inference.realtime_pipeline import RealtimeVoiceConversionPipeline
+
+   # Try smaller chunk size
+   pipeline = RealtimeVoiceConversionPipeline(chunk_size=512)  # Default is 2048
+   print('✓ Pipeline created with reduced chunk size')
+   "
+   ```
+
+5. **Monitor Memory During Conversion**
+   ```bash
+   # Watch GPU memory in real-time
+   watch -n 0.5 nvidia-smi
+
+   # In another terminal, run conversion
+   ```
+
+6. **Enable Memory Profiling**
+   ```bash
+   # Record memory allocation history
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   import torch
+   torch.cuda.memory._record_memory_history(max_entries=100000)
+
+   # ... run conversion here ...
+
+   torch.cuda.memory._dump_snapshot('oom_snapshot.pickle')
+   print('Memory snapshot saved for analysis')
+   "
+   ```
+
+**Expected Result:** Identify memory bottleneck and resolve OOM error.
+
+**Solutions:**
+- Reduce `chunk_size` in pipeline configuration
+- Increase `max_memory_fraction` in `config/gpu_config.yaml`
+- Process audio in smaller segments
+- Close other GPU applications
+- Use TensorRT-optimized pipeline for better memory efficiency
+
+---
+
+### Workflow 4: Debugging Model Loading Failures
+
+**Use when:** Models fail to load or initialization errors occur.
+
+**Steps:**
+
+1. **Verify Model Files Exist**
+   ```bash
+   # Check all required models
+   ls -lh models/pretrained/
+
+   # Expected files:
+   # - sovits5.0_main_1500.pth (should be ~1.5GB)
+   # - hifigan_ljspeech.ckpt (should be ~50MB)
+   # - hubert-soft-0d54a1f4.pt (should be ~200MB)
+   ```
+
+2. **Test Model Loading Individually**
+   ```bash
+   # Test main model
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   import torch
+   checkpoint = torch.load('models/pretrained/sovits5.0_main_1500.pth', map_location='cpu')
+   print(f'✓ Main model loaded: {list(checkpoint.keys())}')
+   "
+
+   # Test vocoder
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   import torch
+   checkpoint = torch.load('models/pretrained/hifigan_ljspeech.ckpt', map_location='cpu')
+   print(f'✓ Vocoder loaded: {list(checkpoint.keys())}')
+   "
+   ```
+
+3. **Check Model File Integrity**
+   ```bash
+   # Verify file not corrupted (should not produce errors)
+   python -c "
+   import torch
+   import hashlib
+
+   model_file = 'models/pretrained/sovits5.0_main_1500.pth'
+
+   # Try loading
+   try:
+       torch.load(model_file, map_location='cpu')
+       print('✓ Model file integrity OK')
+   except Exception as e:
+       print(f'✗ Model corrupted: {e}')
+       print('→ Re-download with: python scripts/download_pretrained_models.py')
+   "
+   ```
+
+4. **Test Voice Profile Embedding**
+   ```bash
+   # Verify profile embedding is valid
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.database.session import get_session
+   from auto_voice.database.models import VoiceProfile
+   import numpy as np
+
+   with get_session() as session:
+       profile = session.query(VoiceProfile).filter_by(id='TARGET_ID').first()
+       if not profile:
+           print('✗ Profile not found')
+       else:
+           emb = np.frombuffer(profile.embedding, dtype=np.float32)
+           print(f'Embedding shape: {emb.shape}')
+           print(f'Has NaN: {np.any(np.isnan(emb))}')
+           print(f'Has Inf: {np.any(np.isinf(emb))}')
+           print(f'L2 norm: {np.linalg.norm(emb):.4f}')
+
+           assert not np.any(np.isnan(emb)), 'Embedding contains NaN'
+           assert not np.any(np.isinf(emb)), 'Embedding contains Inf'
+           print('✓ Embedding valid')
+   "
+   ```
+
+5. **Check Adapter/LoRA File**
+   ```bash
+   # If using fine-tuned adapters
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from safetensors.torch import load_file
+
+   adapter_path = 'data/adapters/my_adapter.safetensors'
+   try:
+       state_dict = load_file(adapter_path)
+       print(f'✓ Adapter loaded: {len(state_dict)} tensors')
+       print(f'  Keys: {list(state_dict.keys())[:5]}...')
+   except Exception as e:
+       print(f'✗ Adapter load failed: {e}')
+   "
+   ```
+
+6. **Test Full Pipeline Initialization**
+   ```bash
+   # Try creating pipeline with debug output
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   import logging
+   logging.basicConfig(level=logging.DEBUG)
+
+   from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+
+   pipeline = SingingConversionPipeline()
+   print('✓ Full pipeline initialized')
+   "
+   ```
+
+**Expected Result:** Identify which model component is failing and why.
+
+**Solutions:**
+- Missing files → Run `python scripts/download_pretrained_models.py`
+- Corrupted files → Re-download models
+- Invalid embedding → Regenerate voice profile
+- Adapter mismatch → Verify adapter is compatible with current model version
+
+---
+
+### Workflow 5: Audio Quality Issues
+
+**Use when:** Output audio has artifacts, distortion, or quality problems.
+
+**Steps:**
+
+1. **Validate Input Audio**
+   ```bash
+   # Check input for issues
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   import librosa
+   import numpy as np
+
+   audio, sr = librosa.load('input.wav', sr=None)
+
+   print(f'Sample rate: {sr}')
+   print(f'Duration: {len(audio)/sr:.2f}s')
+   print(f'RMS level: {np.sqrt(np.mean(audio**2)):.4f}')
+   print(f'Peak level: {np.max(np.abs(audio)):.4f}')
+   print(f'Has NaN: {np.any(np.isnan(audio))}')
+   print(f'Has Inf: {np.any(np.isinf(audio))}')
+   print(f'Clipping: {np.sum(np.abs(audio) > 0.99)} samples')
+   "
+   ```
+
+2. **Check for NaN/Inf in Pipeline**
+   ```bash
+   # Add validation hooks to pipeline
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.inference.realtime_pipeline import RealtimeVoiceConversionPipeline
+   import torch
+   import numpy as np
+
+   pipeline = RealtimeVoiceConversionPipeline()
+
+   # Test with sample audio
+   audio = torch.randn(1, 44100 * 3)  # 3 seconds
+   result = pipeline(audio, profile_id='test')
+
+   # Validate output
+   assert not torch.isnan(result).any(), 'Output contains NaN'
+   assert not torch.isinf(result).any(), 'Output contains Inf'
+   print('✓ Output validation passed')
+   "
+   ```
+
+3. **Verify Speaker Embedding Quality**
+   ```bash
+   # Check if embedding is causing issues
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.inference.voice_cloner import VoiceCloner
+   import numpy as np
+
+   # Load profile
+   from auto_voice.database.session import get_session
+   from auto_voice.database.models import VoiceProfile
+
+   with get_session() as session:
+       profile = session.query(VoiceProfile).first()
+       if profile:
+           emb = np.frombuffer(profile.embedding, dtype=np.float32)
+
+           # Check statistics
+           print(f'Embedding mean: {emb.mean():.6f}')
+           print(f'Embedding std: {emb.std():.6f}')
+           print(f'Embedding min/max: {emb.min():.6f} / {emb.max():.6f}')
+
+           # Should be roughly normalized
+           norm = np.linalg.norm(emb)
+           print(f'L2 norm: {norm:.6f} (should be ~1.0 if normalized)')
+
+           if abs(norm - 1.0) > 0.1:
+               print('⚠ WARNING: Embedding not normalized - may cause quality issues')
+   "
+   ```
+
+4. **Test with Different Sample Rates**
+   ```bash
+   # Convert input to different sample rates and test
+   ffmpeg -i input.wav -ar 16000 input_16k.wav
+   ffmpeg -i input.wav -ar 22050 input_22k.wav
+   ffmpeg -i input.wav -ar 44100 input_44k.wav
+
+   # Test each version
+   # Models typically work best at 44.1kHz or 22.05kHz
+   ```
+
+5. **Check Pitch Extraction**
+   ```bash
+   # Verify pitch extraction is working
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   import librosa
+   import numpy as np
+
+   audio, sr = librosa.load('input.wav', sr=22050)
+
+   # Extract pitch with PYIN
+   f0, voiced_flag, voiced_probs = librosa.pyin(
+       audio,
+       fmin=librosa.note_to_hz('C2'),
+       fmax=librosa.note_to_hz('C7')
+   )
+
+   print(f'F0 range: {np.nanmin(f0):.1f} - {np.nanmax(f0):.1f} Hz')
+   print(f'Voiced frames: {np.sum(voiced_flag)} / {len(voiced_flag)}')
+   print(f'NaN F0 values: {np.sum(np.isnan(f0))}')
+
+   if np.sum(~np.isnan(f0)) < len(f0) * 0.3:
+       print('⚠ WARNING: Less than 30% of frames have pitch - audio may be silent or noisy')
+   "
+   ```
+
+6. **Compare with Reference**
+   ```bash
+   # Process a known-good reference audio
+   # If reference works but your audio doesn't, input quality is the issue
+   # If reference also fails, pipeline configuration issue
+   ```
+
+**Expected Result:** Identify source of quality degradation.
+
+**Solutions:**
+- NaN/Inf in input → Clean audio with preprocessing
+- Low RMS level → Normalize input audio
+- Clipping → Reduce input gain
+- Poor embedding → Recreate voice profile with better quality samples
+- Sample rate mismatch → Resample to 44.1kHz
+- Pitch extraction failure → Use cleaner vocal audio (separate vocals first)
+
+---
+
+### Workflow 6: Performance Optimization
+
+**Use when:** Conversions are too slow or you want to improve throughput.
+
+**Steps:**
+
+1. **Baseline Performance Measurement**
+   ```bash
+   # Time a conversion
+   time PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+   import torch
+
+   pipeline = SingingConversionPipeline()
+   audio = torch.randn(1, 44100 * 30)  # 30 seconds
+   result = pipeline(audio, profile_id='test')
+   print(f'Processed {len(result)/44100:.2f}s of audio')
+   "
+   ```
+
+2. **Profile GPU Utilization**
+   ```bash
+   # Monitor GPU during conversion
+   watch -n 0.5 nvidia-smi
+
+   # Check if GPU is being fully utilized
+   # Low utilization → CPU bottleneck or inefficient batching
+   # High utilization → GPU-bound, consider TensorRT optimization
+   ```
+
+3. **Try TensorRT Acceleration**
+   ```bash
+   # Check if TensorRT is available
+   python -c "
+   try:
+       import tensorrt
+       print(f'✓ TensorRT available: {tensorrt.__version__}')
+   except ImportError:
+       print('✗ TensorRT not installed')
+       print('→ Install with: pip install tensorrt')
+   "
+
+   # Use TensorRT pipeline
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.inference.tensorrt_pipeline import TensorRTPipeline
+
+   pipeline = TensorRTPipeline()
+   print('✓ TensorRT pipeline initialized (expect 2-3x speedup)')
+   "
+   ```
+
+4. **Optimize Chunk Size**
+   ```bash
+   # Test different chunk sizes
+   for chunk_size in 512 1024 2048 4096; do
+       echo "Testing chunk_size=$chunk_size"
+       time PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+       from auto_voice.inference.realtime_pipeline import RealtimeVoiceConversionPipeline
+       import torch
+
+       pipeline = RealtimeVoiceConversionPipeline(chunk_size=$chunk_size)
+       audio = torch.randn(1, 44100 * 10)
+       result = pipeline(audio, profile_id='test')
+       "
+   done
+   ```
+
+5. **Check Batch Processing**
+   ```bash
+   # Process multiple files in batch
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+   import torch
+
+   pipeline = SingingConversionPipeline()
+
+   # Batch of audios
+   batch = torch.randn(4, 1, 44100 * 5)  # 4 samples, 5 seconds each
+   results = [pipeline(audio, profile_id='test') for audio in batch]
+
+   print(f'Processed {len(results)} files in batch')
+   "
+   ```
+
+6. **Profile Code Hotspots**
+   ```bash
+   # Identify bottlenecks with cProfile
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -m cProfile -o conversion.prof -c "
+   from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+   import torch
+
+   pipeline = SingingConversionPipeline()
+   audio = torch.randn(1, 44100 * 10)
+   pipeline(audio, profile_id='test')
+   "
+
+   # View results
+   python -c "
+   import pstats
+   p = pstats.Stats('conversion.prof')
+   p.sort_stats('cumulative').print_stats(20)
+   "
+   ```
+
+**Expected Result:** Identify performance bottlenecks and optimize throughput.
+
+**Optimizations:**
+- Use TensorRT pipeline for 2-3x speedup
+- Tune chunk_size based on hardware (larger = faster but more memory)
+- Process multiple files in parallel if you have sufficient GPU memory
+- Use mixed precision (FP16) if supported
+- Pre-load models to avoid initialization overhead
+
+---
+
+### Workflow 7: Database Issues
+
+**Use when:** Encountering database errors or data inconsistencies.
+
+**Steps:**
+
+1. **Check Database File**
+   ```bash
+   # Verify database exists
+   ls -lh data/autovoice.db
+
+   # Check if writable
+   test -w data/autovoice.db && echo "✓ Database writable" || echo "✗ Database read-only"
+   ```
+
+2. **Test Connection**
+   ```bash
+   # Test basic connectivity
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.database.session import get_session
+
+   try:
+       with get_session() as session:
+           print(f'✓ Database connected: {session}')
+   except Exception as e:
+       print(f'✗ Connection failed: {e}')
+   "
+   ```
+
+3. **Verify Schema**
+   ```bash
+   # List tables
+   sqlite3 data/autovoice.db ".tables"
+
+   # Check voice_profiles table schema
+   sqlite3 data/autovoice.db ".schema voice_profiles"
+   ```
+
+4. **Query for Orphaned Records**
+   ```bash
+   # Check for profiles without embeddings
+   sqlite3 data/autovoice.db "SELECT id, name FROM voice_profiles WHERE embedding IS NULL;"
+
+   # Check for failed jobs
+   sqlite3 data/autovoice.db "SELECT id, status, error_message FROM conversion_jobs WHERE status='failed';"
+   ```
+
+5. **Backup and Rebuild**
+   ```bash
+   # Backup database
+   cp data/autovoice.db data/autovoice.db.backup
+
+   # Rebuild if corrupted
+   PYTHONNOUSERSITE=1 PYTHONPATH=src python -c "
+   from auto_voice.database.session import init_db
+   init_db()
+   print('✓ Database rebuilt')
+   "
+   ```
+
+6. **Clean Up Old Data**
+   ```bash
+   # Remove old completed jobs (keep last 7 days)
+   sqlite3 data/autovoice.db "DELETE FROM conversion_jobs WHERE status='completed' AND created_at < datetime('now', '-7 days');"
+
+   # Vacuum to reclaim space
+   sqlite3 data/autovoice.db "VACUUM;"
+   ```
+
+**Expected Result:** Database is healthy and accessible.
+
+**Solutions:**
+- Corrupted database → Restore from backup or rebuild
+- Permission issues → Check file ownership and permissions
+- Missing tables → Run `init_db()`
+- Orphaned records → Clean up with SQL queries
+- Large database → Archive old jobs, vacuum database
 
 ## Getting Help
 
