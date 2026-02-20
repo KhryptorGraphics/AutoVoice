@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, current_app, send_file
 from werkzeug.utils import secure_filename
 from typing import Optional, Dict, Any
@@ -88,6 +89,14 @@ except ImportError:
     YouTubeDownloader = None
     YouTubeDownloadResult = None
     YOUTUBE_DOWNLOADER_AVAILABLE = False
+
+# Import PipelineFactory for status endpoint
+try:
+    from ..inference.pipeline_factory import PipelineFactory
+    PIPELINE_FACTORY_AVAILABLE = True
+except ImportError:
+    PipelineFactory = None
+    PIPELINE_FACTORY_AVAILABLE = False
 
 # Import shared utilities
 from .utils import allowed_file, ALLOWED_AUDIO_EXTENSIONS
@@ -1475,6 +1484,76 @@ def health_check():
         'cuda_kernels_available': cuda_kernels,
         'version': '0.1.0'
     })
+
+
+@api_bp.route('/pipelines/status', methods=['GET'])
+def pipelines_status():
+    """Get status of all voice conversion pipelines.
+
+    Returns detailed information about loaded pipelines, GPU memory usage,
+    latency targets, and sample rates for monitoring and diagnostics.
+
+    Returns:
+        HTTP 200: Pipeline status information
+        HTTP 503: PipelineFactory unavailable
+
+    Example Response:
+        {
+            "status": "ok",
+            "timestamp": "2026-02-20T16:00:00Z",
+            "pipelines": {
+                "realtime": {
+                    "loaded": true,
+                    "memory_gb": 1.2,
+                    "latency_target_ms": 100,
+                    "sample_rate": 22050,
+                    "description": "Low-latency pipeline for live karaoke"
+                },
+                "quality": {
+                    "loaded": false,
+                    "memory_gb": 0.0,
+                    "latency_target_ms": 3000,
+                    "sample_rate": 24000,
+                    "description": "High-quality CoMoSVC with 30-step diffusion"
+                },
+                "quality_seedvc": {
+                    "loaded": true,
+                    "memory_gb": 2.5,
+                    "latency_target_ms": 2000,
+                    "sample_rate": 44100,
+                    "description": "SOTA quality with DiT-CFM (5-10 steps), 44kHz output"
+                }
+            }
+        }
+    """
+    # Check if PipelineFactory is available
+    if not PIPELINE_FACTORY_AVAILABLE:
+        logger.error("PipelineFactory not available")
+        return jsonify({
+            'error': 'PipelineFactory unavailable',
+            'message': 'Pipeline factory module not loaded'
+        }), 503
+
+    try:
+        # Get singleton instance of PipelineFactory
+        factory = PipelineFactory.get_instance()
+
+        # Get pipeline status from factory
+        pipeline_status = factory.get_status()
+
+        # Return structured response
+        return jsonify({
+            'status': 'ok',
+            'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'pipelines': pipeline_status
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error getting pipeline status: {e}", exc_info=True)
+        return jsonify({
+            'error': 'Failed to get pipeline status',
+            'message': str(e)
+        }), 503
 
 
 @api_bp.route('/ready', methods=['GET'])
