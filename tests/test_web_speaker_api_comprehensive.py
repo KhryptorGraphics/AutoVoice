@@ -368,7 +368,10 @@ class TestFetchMetadata:
         """Returns 500 on fetch errors."""
         mock_populate.side_effect = Exception("Network error")
 
-        response = client.post('/api/v1/speakers/tracks/fetch-metadata', json={})
+        response = client.post(
+            '/api/v1/speakers/tracks/fetch-metadata',
+            json={'artist_name': 'conor_maynard'},
+        )
 
         assert response.status_code == 500
         data = json.loads(response.data)
