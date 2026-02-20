@@ -68,13 +68,19 @@ def get_inference_device(
 def enforce_inference_gpu(func: F) -> F:
     """Decorator to enforce GPU availability before inference function execution.
 
+    Args:
+        func: Function to wrap with GPU enforcement
+
+    Returns:
+        Wrapped function that verifies GPU before execution
+
+    Raises:
+        RuntimeError: If CUDA is not available when function is called
+
     Usage:
         @enforce_inference_gpu
         def convert_voice(audio, speaker):
             ...
-
-    Raises:
-        RuntimeError: If CUDA is not available when function is called
     """
 
     @functools.wraps(func)
@@ -167,20 +173,43 @@ class GPUInferenceContext:
 
     @property
     def device(self) -> torch.device:
-        """Get the CUDA device for this context."""
+        """Get the CUDA device for this context.
+
+        Returns:
+            CUDA device allocated for this inference context
+
+        Raises:
+            RuntimeError: If accessed outside of context manager
+        """
         if self._device is None:
             raise RuntimeError("Device not available outside context")
         return self._device
 
     def __enter__(self) -> "GPUInferenceContext":
-        """Enter context, verifying CUDA availability."""
+        """Enter context, verifying CUDA availability.
+
+        Returns:
+            Self for use in with statement
+
+        Raises:
+            RuntimeError: If CUDA is not available
+        """
         require_gpu_for_inference(self.operation_name)
         self._device = get_inference_device(device_id=self.device_id)
         logger.debug(f"Entered GPU inference context on {self._device}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        """Exit context."""
+        """Exit context, cleaning up device reference.
+
+        Args:
+            exc_type: Exception type if raised
+            exc_val: Exception value if raised
+            exc_tb: Exception traceback if raised
+
+        Returns:
+            False to propagate any exceptions
+        """
         self._device = None
         return False  # Don't suppress exceptions
 
@@ -239,7 +268,13 @@ class StrictGPUMode:
         self._active = False
 
     def _record_violation(self, op_name: str, *args, **kwargs):
-        """Record a CPU allocation violation."""
+        """Record a CPU allocation violation.
+
+        Args:
+            op_name: Name of the operation that allocated on CPU
+            *args: Positional arguments passed to the operation
+            **kwargs: Keyword arguments passed to the operation
+        """
         device = kwargs.get('device', None)
         if device is None and len(args) > 0:
             # Check if any positional arg specifies device
@@ -251,7 +286,15 @@ class StrictGPUMode:
                 self._violations.append(f"{op_name}: allocated on CPU (no device specified)")
 
     def _make_wrapper(self, original_fn, op_name: str):
-        """Create a wrapper that records violations."""
+        """Create a wrapper that records violations.
+
+        Args:
+            original_fn: Original PyTorch function to wrap
+            op_name: Name of the operation for violation tracking
+
+        Returns:
+            Wrapped function that records CPU allocations before calling original
+        """
         def wrapper(*args, **kwargs):
             device = kwargs.get('device', None)
             # Check if device is specified
@@ -267,15 +310,31 @@ class StrictGPUMode:
 
     @property
     def violation_count(self) -> int:
-        """Get count of CPU allocation violations."""
+        """Get count of CPU allocation violations.
+
+        Returns:
+            Number of CPU tensor allocations detected during strict mode
+        """
         return len(self._violations)
 
     def get_violations(self) -> List[str]:
-        """Get list of violation descriptions."""
+        """Get list of violation descriptions.
+
+        Returns:
+            List of strings describing each CPU allocation violation detected,
+            including operation name and allocation context
+        """
         return list(self._violations)
 
     def __enter__(self) -> "StrictGPUMode":
-        """Enter strict GPU mode, hooking tensor allocation functions."""
+        """Enter strict GPU mode, hooking tensor allocation functions.
+
+        Returns:
+            Self for use in with statement
+
+        Raises:
+            RuntimeError: If CUDA is not available
+        """
         require_gpu_for_inference("strict GPU mode")
         self._active = True
 
@@ -293,7 +352,16 @@ class StrictGPUMode:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        """Exit strict mode, restoring original functions."""
+        """Exit strict mode, restoring original functions.
+
+        Args:
+            exc_type: Exception type if raised
+            exc_val: Exception value if raised
+            exc_tb: Exception traceback if raised
+
+        Returns:
+            False to propagate any exceptions
+        """
         self._active = False
 
         # Restore originals
