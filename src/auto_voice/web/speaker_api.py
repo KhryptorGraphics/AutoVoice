@@ -348,6 +348,8 @@ def update_cluster_name_endpoint(cluster_id: str):
         return jsonify({'error': str(e)}), 500
 
 
+@log_request
+@rate_limit(5, 60)
 @speaker_bp.route('/clusters/merge', methods=['POST'])
 def merge_clusters_endpoint():
     """Merge two clusters.
