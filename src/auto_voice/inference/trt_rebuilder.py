@@ -27,6 +27,25 @@ class TRTEngineManager:
 
     Tracks model checksums to detect when fine-tuning has changed parameters,
     triggering automatic ONNX export and TRT engine rebuild.
+
+    Why rebuilding is needed:
+    - LoRA fine-tuning modifies model parameters
+    - TensorRT engines are static (baked with specific weights)
+    - Using old engine with new weights causes incorrect inference
+    - Each parameter change requires new ONNX export + TRT build
+
+    How rebuild detection works:
+    - Computes SHA-256 checksum of all model parameters
+    - Compares against checksum from last build
+    - Triggers rebuild if mismatch detected
+
+    Usage:
+        manager = TRTEngineManager(cache_dir='engines/', precision='fp16')
+        manager.load_state()  # Restore from previous session
+        manager.register_model('encoder', encoder_model)
+
+        if manager.needs_rebuild('encoder', encoder_model):
+            engine_path = manager.rebuild_engine('encoder', encoder_model, export_fn)
     """
 
     def __init__(
@@ -34,11 +53,14 @@ class TRTEngineManager:
         cache_dir: str,
         precision: str = 'fp16',
     ):
-        """Initialize TRT engine manager.
+        """Initialize TRT engine manager for automatic rebuild tracking.
+
+        Sets up cache directory and state tracking for TensorRT engines.
+        Call load_state() after initialization to restore previous session.
 
         Args:
-            cache_dir: Directory for engine cache and metadata
-            precision: TRT precision mode ('fp16' or 'fp32')
+            cache_dir: Directory for engine cache and metadata (created if missing)
+            precision: TRT precision mode - 'fp16' for speed or 'fp32' for accuracy
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -53,13 +75,18 @@ class TRTEngineManager:
         self._state_file = self.cache_dir / 'engine_manager_state.json'
 
     def compute_model_checksum(self, model: nn.Module) -> str:
-        """Compute SHA-256 checksum of model parameters.
+        """Compute SHA-256 checksum of model parameters for change detection.
 
         Creates a deterministic hash of all model parameters to detect
-        when fine-tuning has modified the model.
+        when fine-tuning has modified the model. The hash includes:
+        - Parameter names (for ordering)
+        - Parameter data (as bytes)
+
+        Any change to model weights (LoRA fine-tuning, training, etc.) will
+        produce a different checksum, triggering engine rebuild.
 
         Args:
-            model: PyTorch model to checksum
+            model: PyTorch model to checksum (on any device)
 
         Returns:
             64-character hex string (SHA-256 digest)
@@ -79,12 +106,18 @@ class TRTEngineManager:
     def get_engine_path(self, model_name: str, model: nn.Module) -> Path:
         """Get engine path for a model, including checksum in filename.
 
+        Generates unique filename based on model parameters and precision:
+        {model_name}_{checksum[:8]}_{precision}.engine
+
+        The checksum ensures different model versions get different engine files,
+        preventing accidental use of stale engines after fine-tuning.
+
         Args:
             model_name: Name identifier for the model
-            model: PyTorch model instance
+            model: PyTorch model instance (checksum computed from parameters)
 
         Returns:
-            Path to engine file (may not exist yet)
+            Path object to engine file (file may not exist yet)
         """
         checksum = self.compute_model_checksum(model)
         short_checksum = checksum[:8]
@@ -94,12 +127,20 @@ class TRTEngineManager:
     def needs_rebuild(self, model_name: str, model: nn.Module) -> bool:
         """Check if a model's TRT engine needs to be rebuilt.
 
+        Rebuilding is needed when:
+        - Model is not yet registered (first-time use)
+        - Model parameters have changed (fine-tuning detected via checksum)
+        - Engine file is missing or was deleted
+
+        This prevents using stale engines after LoRA fine-tuning or other
+        parameter updates that would cause inference errors.
+
         Args:
             model_name: Name identifier for the model
             model: Current PyTorch model instance
 
         Returns:
-            True if engine needs to be rebuilt
+            True if engine needs to be rebuilt, False if current engine is valid
         """
         current_checksum = self.compute_model_checksum(model)
 
@@ -121,11 +162,15 @@ class TRTEngineManager:
         return False
 
     def register_model(self, model_name: str, model: nn.Module) -> None:
-        """Register a model for engine management.
+        """Register a model for engine management and rebuild tracking.
+
+        Establishes baseline checksum for detecting future fine-tuning changes.
+        Must be called before first rebuild to enable automatic invalidation
+        when model parameters change.
 
         Args:
-            model_name: Name identifier for the model
-            model: PyTorch model instance
+            model_name: Name identifier for the model (e.g., 'encoder', 'vocoder')
+            model: PyTorch model instance in current state
         """
         checksum = self.compute_model_checksum(model)
 
@@ -140,9 +185,16 @@ class TRTEngineManager:
     def _mark_engine_built(self, model_name: str, model: nn.Module) -> None:
         """Mark an engine as successfully built for a model.
 
+        Updates internal tracking to prevent redundant rebuilds. Stores:
+        - Current model checksum (for detecting future fine-tuning)
+        - Engine file path (for validation)
+        - Build timestamp (for cleanup decisions)
+
+        This allows needs_rebuild() to detect when an engine is valid.
+
         Args:
             model_name: Name identifier for the model
-            model: PyTorch model instance
+            model: PyTorch model instance (as built into engine)
         """
         checksum = self.compute_model_checksum(model)
         engine_path = self.get_engine_path(model_name, model)
@@ -159,24 +211,33 @@ class TRTEngineManager:
         self._current_engines[model_name] = str(engine_path)
 
     def _store_engine_metadata(self, model_name: str, metadata: Dict[str, Any]) -> None:
-        """Store engine metadata for a model.
+        """Store engine metadata for a model to JSON file.
+
+        Saves build information (checksum, precision, timestamp) separately from
+        state file for debugging and auditing. Useful for tracking which model
+        version produced a given engine.
 
         Args:
             model_name: Name identifier for the model
-            metadata: Metadata dict to store
+            metadata: Metadata dict to store (must be JSON-serializable)
         """
         metadata_path = self.cache_dir / f"{model_name}_metadata.json"
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
 
     def _get_engine_metadata(self, model_name: str) -> Optional[Dict[str, Any]]:
-        """Get stored engine metadata for a model.
+        """Get stored engine metadata for a model from JSON file.
+
+        Retrieves build information (checksum, precision, timestamp) for debugging
+        and verification. Returns None if metadata file doesn't exist (engine never
+        built or metadata deleted).
 
         Args:
             model_name: Name identifier for the model
 
         Returns:
-            Metadata dict or None if not found
+            Metadata dict with keys: model_name, checksum, precision, build_time,
+            engine_path; or None if no metadata file found
         """
         metadata_path = self.cache_dir / f"{model_name}_metadata.json"
         if not metadata_path.exists():
@@ -186,13 +247,21 @@ class TRTEngineManager:
             return json.load(f)
 
     def cleanup_old_engines(self, keep_count: int = 3) -> List[str]:
-        """Remove old engine files, keeping only the most recent.
+        """Remove old engine files, keeping only the most recent versions.
+
+        Why cleanup is needed:
+        - Each fine-tuning iteration creates a new engine (different checksum)
+        - Engine files are large (100MB-1GB+) and accumulate quickly
+        - Only the latest N versions are needed for rollback
+
+        Protects current engines (referenced in self._current_engines) from deletion
+        even if they exceed the keep_count limit.
 
         Args:
-            keep_count: Number of engine versions to keep per model
+            keep_count: Number of engine versions to keep per model (default: 3)
 
         Returns:
-            List of removed engine file paths
+            List of removed engine file paths as strings
         """
         removed = []
 
@@ -229,7 +298,16 @@ class TRTEngineManager:
         return removed
 
     def save_state(self) -> None:
-        """Save manager state to disk for persistence across sessions."""
+        """Save manager state to disk for persistence across sessions.
+
+        Persists:
+        - Registered models and their checksums
+        - Current engine paths
+        - Precision settings
+
+        This prevents redundant rebuilds after server restarts by maintaining
+        the model-to-engine mapping and invalidation state.
+        """
         state = {
             'registered_models': self._registered_models,
             'current_engines': self._current_engines,
@@ -242,10 +320,14 @@ class TRTEngineManager:
         logger.info(f"Saved engine manager state to {self._state_file}")
 
     def load_state(self) -> bool:
-        """Load manager state from disk.
+        """Load manager state from disk to restore session.
+
+        Restores model checksums and engine paths from previous session,
+        allowing immediate validation without re-registration. If state
+        file doesn't exist (first run), returns False gracefully.
 
         Returns:
-            True if state was loaded successfully
+            True if state was loaded successfully, False if no saved state found
         """
         if not self._state_file.exists():
             return False
@@ -271,19 +353,32 @@ class TRTEngineManager:
         export_fn: callable,
         dynamic_shapes: Optional[Dict] = None,
     ) -> str:
-        """Rebuild TRT engine for a model.
+        """Rebuild TRT engine for a model after fine-tuning or invalidation.
+
+        Call this when needs_rebuild() returns True to regenerate the optimized
+        TensorRT engine. This is required after:
+        - LoRA fine-tuning changes model parameters
+        - Model architecture updates
+        - Precision mode changes
+        - Engine file corruption or deletion
+
+        The rebuild process:
+        1. Exports PyTorch model to ONNX (temporary file)
+        2. Builds TensorRT engine with specified precision
+        3. Updates checksums and metadata
+        4. Saves state for persistence
 
         Args:
             model_name: Name identifier for the model
-            model: PyTorch model instance
+            model: PyTorch model instance (current state)
             export_fn: Function to export model to ONNX (model, path) -> None
-            dynamic_shapes: Optional dynamic shape profiles for TRT
+            dynamic_shapes: Optional dynamic shape profiles for TRT optimization
 
         Returns:
-            Path to built engine file
+            Absolute path to built engine file as string
 
         Raises:
-            RuntimeError: If build fails
+            RuntimeError: If ONNX export or TRT build fails
         """
         from .trt_pipeline import TRTEngineBuilder
 
