@@ -170,3 +170,39 @@ class AudioProcessor:
             )
 
         return True
+
+    def validate_sample_rate(
+        self,
+        file_path: str,
+        allowed_rates: Optional[list] = None
+    ) -> bool:
+        """Validate audio sample rate against allowed values.
+
+        Args:
+            file_path: Path to the audio file
+            allowed_rates: List of allowed sample rates in Hz (default: None, no restriction)
+
+        Returns:
+            True if sample rate is valid
+
+        Raises:
+            ValueError: If sample rate is not in allowed_rates
+            FileNotFoundError: If audio file does not exist
+            RuntimeError: If unable to read audio file metadata
+
+        Example:
+            >>> processor = AudioProcessor()
+            >>> # Validate sample rate is one of the common rates
+            >>> processor.validate_sample_rate('song.wav', allowed_rates=[44100, 48000])
+            True
+        """
+        info = self.get_audio_info(file_path)
+        sample_rate = info['sample_rate']
+
+        if allowed_rates is not None and sample_rate not in allowed_rates:
+            raise ValueError(
+                f"Audio sample rate {sample_rate}Hz is not allowed. "
+                f"Allowed rates: {', '.join(map(str, allowed_rates))}Hz"
+            )
+
+        return True
