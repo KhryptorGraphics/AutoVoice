@@ -388,6 +388,8 @@ def merge_clusters_endpoint():
         return jsonify({'error': str(e)}), 500
 
 
+@log_request
+@rate_limit(10, 60)
 @speaker_bp.route('/clusters/split', methods=['POST'])
 def split_cluster_endpoint():
     """Split a cluster by moving members to new cluster.
