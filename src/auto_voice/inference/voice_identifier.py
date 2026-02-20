@@ -29,7 +29,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class IdentificationResult:
-    """Result of voice identification."""
+    """Result of voice identification.
+
+    Attributes:
+        profile_id: Matched profile ID if similarity >= threshold, else None
+        profile_name: Display name of matched profile, else None
+        similarity: Highest cosine similarity score (0.0 to 1.0)
+        is_match: True if similarity >= threshold (default 0.85)
+        all_similarities: Dict mapping all profile_ids to their similarity scores
+    """
     profile_id: Optional[str]
     profile_name: Optional[str]
     similarity: float
@@ -52,6 +60,17 @@ class VoiceIdentifier:
         device: str = "cuda",
         embedding_model: Optional[str] = None,
     ):
+        """Initialize VoiceIdentifier.
+
+        Args:
+            profiles_dir: Directory containing voice profiles (.npy embeddings + .json metadata)
+            device: Target device ('cuda' or 'cpu'). Auto-falls back to CPU if CUDA unavailable.
+            embedding_model: Optional model name for embedding extraction (reserved for future use)
+
+        Note:
+            WavLM model is lazy-loaded on first embedding extraction to minimize startup time.
+            Call load_all_embeddings() to load profile embeddings from disk.
+        """
         self.profiles_dir = Path(profiles_dir)
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.embedding_model = embedding_model
@@ -113,7 +132,19 @@ class VoiceIdentifier:
         return count
 
     def _load_wavlm(self) -> None:
-        """Lazy load WavLM model for embedding extraction."""
+        """Lazy load WavLM model for embedding extraction.
+
+        Loads microsoft/wavlm-base-plus from HuggingFace transformers. This is called
+        automatically on first embedding extraction to minimize startup time.
+
+        Raises:
+            ImportError: If transformers library not installed
+            RuntimeError: If model download or loading fails
+
+        Note:
+            Model is loaded to self.device (CUDA if available, else CPU).
+            Hidden states output is disabled to reduce memory usage.
+        """
         if self._wavlm_model is not None:
             return
 
@@ -258,7 +289,21 @@ class VoiceIdentifier:
         audio_path: str,
         threshold: Optional[float] = None
     ) -> IdentificationResult:
-        """Identify speaker from audio file."""
+        """Identify speaker from audio file.
+
+        Loads audio from disk, converts to mono if needed, and identifies the speaker.
+
+        Args:
+            audio_path: Path to audio file (any format supported by torchaudio)
+            threshold: Similarity threshold (default: 0.85)
+
+        Returns:
+            IdentificationResult with match info
+
+        Raises:
+            FileNotFoundError: If audio_path does not exist
+            RuntimeError: If audio loading fails
+        """
         import torchaudio
 
         waveform, sample_rate = torchaudio.load(audio_path)
@@ -517,7 +562,18 @@ _global_identifier: Optional[VoiceIdentifier] = None
 
 
 def get_voice_identifier() -> VoiceIdentifier:
-    """Get or create global VoiceIdentifier instance."""
+    """Get or create global VoiceIdentifier instance.
+
+    Singleton pattern for VoiceIdentifier. On first call, creates instance
+    with default settings and loads all profile embeddings from disk.
+
+    Returns:
+        Global VoiceIdentifier instance with embeddings pre-loaded
+
+    Note:
+        Subsequent calls return the same instance without reloading embeddings.
+        To reload embeddings, call identifier.load_all_embeddings() manually.
+    """
     global _global_identifier
     if _global_identifier is None:
         _global_identifier = VoiceIdentifier()
