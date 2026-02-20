@@ -104,7 +104,17 @@ class HQSVCWrapper:
         os.chdir(HQ_SVC_ROOT)
 
     def _load_config(self, config_path: str):
-        """Load HQ-SVC configuration from YAML file."""
+        """Load HQ-SVC configuration from YAML file.
+
+        Args:
+            config_path: Path to HQ-SVC config YAML file
+
+        Returns:
+            Configuration object with HQ-SVC settings
+
+        Raises:
+            RuntimeError: If config file not found
+        """
         from logger.utils import load_config
 
         if not os.path.exists(config_path):
@@ -129,7 +139,18 @@ class HQSVCWrapper:
         return args
 
     def _init_models(self):
-        """Initialize all HQ-SVC model components."""
+        """Initialize all HQ-SVC model components.
+
+        Loads and initializes:
+          - NSF-HiFiGAN vocoder (44.1kHz synthesis)
+          - HQ-SVC generator (DDSP + Diffusion)
+          - FACodec encoder/decoder (content extraction)
+          - RMVPE F0 extractor (pitch tracking)
+          - Volume extractor
+
+        Raises:
+            RuntimeError: If model weights not found or loading fails
+        """
         from utils.models.models_v2_beta import load_hq_svc
         from utils.vocoder import Vocoder
         from utils.data_preprocessing import (
@@ -178,7 +199,16 @@ class HQSVCWrapper:
     def _resample(
         self, audio: torch.Tensor, from_sr: int, to_sr: int
     ) -> torch.Tensor:
-        """Resample audio between sample rates using linear interpolation."""
+        """Resample audio between sample rates using linear interpolation.
+
+        Args:
+            audio: Input audio tensor, shape [T] or [C, T]
+            from_sr: Source sample rate in Hz
+            to_sr: Target sample rate in Hz
+
+        Returns:
+            Resampled audio tensor with same shape as input
+        """
         if from_sr == to_sr:
             return audio
 
@@ -198,7 +228,17 @@ class HQSVCWrapper:
             return resampled.squeeze(0)
 
     def _to_mono(self, audio: torch.Tensor) -> torch.Tensor:
-        """Convert to mono by averaging channels."""
+        """Convert to mono by averaging channels.
+
+        Args:
+            audio: Input audio tensor, shape [T] (mono) or [C, T] (multi-channel)
+
+        Returns:
+            Mono audio tensor with shape [T]
+
+        Raises:
+            RuntimeError: If audio has unexpected shape (not 1D or 2D)
+        """
         if audio.dim() == 1:
             return audio
         if audio.dim() == 2:
@@ -206,7 +246,15 @@ class HQSVCWrapper:
         raise RuntimeError(f"Unexpected audio shape: {audio.shape}")
 
     def _wav_pad(self, wav: np.ndarray, multiple: int = 200) -> np.ndarray:
-        """Pad waveform to multiple of given value."""
+        """Pad waveform to multiple of given value.
+
+        Args:
+            wav: Input waveform array with shape [T]
+            multiple: Pad length to nearest multiple of this value (default: 200)
+
+        Returns:
+            Padded waveform with length divisible by multiple
+        """
         seq_len = wav.shape[0]
         padded_len = ((seq_len + (multiple - 1)) // multiple) * multiple
         if padded_len > seq_len:
