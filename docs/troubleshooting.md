@@ -2019,11 +2019,1594 @@ ffprobe -v error -select_streams a:0 -show_entries stream=sample_rate -of defaul
 
 ## Database Errors
 
-*This section will be populated with database error solutions.*
+### SQLAlchemy session errors
+
+**Error Message**:
+```
+sqlalchemy.exc.InvalidRequestError: Object '<VoiceProfile>' is already attached to session
+sqlalchemy.orm.exc.DetachedInstanceError: Instance is not bound to a Session
+sqlalchemy.exc.PendingRollbackError: This Session's transaction has been rolled back
+```
+
+**Cause**: Session lifecycle management issues - improper session handling, detached objects, or uncommitted transactions.
+
+**Solutions**:
+
+1. **Use Context Managers for Sessions**:
+   ```python
+   from contextlib import contextmanager
+   from sqlalchemy.orm import sessionmaker
+
+   Session = sessionmaker(bind=engine)
+
+   @contextmanager
+   def get_db_session():
+       """Context manager for database sessions."""
+       session = Session()
+       try:
+           yield session
+           session.commit()
+       except Exception:
+           session.rollback()
+           raise
+       finally:
+           session.close()
+
+   # Use in code
+   with get_db_session() as session:
+       profile = session.query(VoiceProfile).filter_by(id=profile_id).first()
+       # Session auto-commits on success, auto-rolls back on error
+   ```
+
+2. **Fix Detached Instance Errors**:
+   ```python
+   from sqlalchemy.orm import Session
+
+   # ✗ WRONG - object becomes detached after session closes
+   def get_profile_wrong(profile_id: str):
+       session = Session()
+       profile = session.query(VoiceProfile).get(profile_id)
+       session.close()  # Profile is now detached
+       return profile
+
+   # ✓ CORRECT - refresh or use within session scope
+   def get_profile_correct(profile_id: str):
+       with get_db_session() as session:
+           profile = session.query(VoiceProfile).get(profile_id)
+           # Access all needed attributes before session closes
+           data = {
+               'id': profile.id,
+               'name': profile.name,
+               'created_at': profile.created_at
+           }
+       return data
+   ```
+
+3. **Handle Rollback Errors**:
+   ```python
+   from sqlalchemy.exc import SQLAlchemyError
+
+   def create_profile_safe(profile_data: dict):
+       """Create profile with proper error handling."""
+       with get_db_session() as session:
+           try:
+               profile = VoiceProfile(**profile_data)
+               session.add(profile)
+               session.flush()  # Check for errors before commit
+               return profile.id
+           except SQLAlchemyError as e:
+               logger.error(f"Database error: {e}")
+               # Session automatically rolls back via context manager
+               raise
+   ```
+
+4. **Fix "Already Attached" Errors**:
+   ```python
+   # ✗ WRONG - trying to add object to multiple sessions
+   profile = VoiceProfile(name="Artist")
+   session1.add(profile)
+   session2.add(profile)  # Error: already attached to session1
+
+   # ✓ CORRECT - use merge for cross-session objects
+   with get_db_session() as session1:
+       profile = VoiceProfile(name="Artist")
+       session1.add(profile)
+       session1.flush()
+       profile_id = profile.id
+
+   # Later, in different session
+   with get_db_session() as session2:
+       # Use merge to re-attach to new session
+       profile = session2.merge(profile)
+       profile.name = "Updated Name"
+   ```
+
+5. **Enable Session Auto-Expire**:
+   ```python
+   # Configure session to prevent detached errors
+   Session = sessionmaker(
+       bind=engine,
+       expire_on_commit=False,  # Keep objects usable after commit
+   )
+
+   # Alternative: explicitly refresh objects
+   with get_db_session() as session:
+       profile = session.query(VoiceProfile).get(profile_id)
+       session.commit()
+       session.refresh(profile)  # Re-load from database
+       # Now safe to access profile attributes
+   ```
+
+**Diagnostic**:
+```bash
+# Test database connection
+python -c "
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+engine = create_engine('sqlite:///data/autovoice.db')
+Session = sessionmaker(bind=engine)
+
+session = Session()
+try:
+    result = session.execute('SELECT 1')
+    print('✓ Database connection OK')
+finally:
+    session.close()
+"
+```
+
+**Prevention**:
+- Always use context managers for session management
+- Set `expire_on_commit=False` if accessing objects after commit
+- Use `session.refresh()` to reload detached objects
+- Never share session objects across threads
+- Log all SQLAlchemy errors with full stack traces
+
+---
+
+### Profile not found in database
+
+**Error Message**:
+```
+ValueError: Profile not found: 7da05140-e5a7-4e89-b2c3-8f6d9a1c2b3e
+FileNotFoundError: Voice profile file not found
+ProfileNotFoundError: No profile with ID: <profile_id>
+```
+
+**Cause**: Voice profile does not exist in database or file storage, or was deleted.
+
+**Solutions**:
+
+1. **Verify Profile Exists Before Access**:
+   ```python
+   from auto_voice.storage.voice_profiles import VoiceProfileStore, ProfileNotFoundError
+
+   store = VoiceProfileStore()
+
+   def get_profile_safe(profile_id: str):
+       """Get profile with existence check."""
+       try:
+           profile = store.get(profile_id)
+           if profile is None:
+               raise ProfileNotFoundError(f"Profile not found: {profile_id}")
+           return profile
+       except FileNotFoundError:
+           logger.error(f"Profile file missing: {profile_id}")
+           raise ProfileNotFoundError(f"Profile not found: {profile_id}")
+
+   # Use in API
+   try:
+       profile = get_profile_safe(profile_id)
+   except ProfileNotFoundError:
+       return jsonify({'error': 'Profile not found'}), 404
+   ```
+
+2. **List Available Profiles**:
+   ```python
+   from pathlib import Path
+   import json
+
+   def list_all_profiles():
+       """List all available voice profiles."""
+       profiles_dir = Path('data/voice_profiles')
+       profiles = []
+
+       for profile_file in profiles_dir.glob('*.json'):
+           try:
+               with open(profile_file) as f:
+                   profile_data = json.load(f)
+               profiles.append({
+                   'id': profile_data['profile_id'],
+                   'name': profile_data['name'],
+                   'created_at': profile_data.get('created_at', 'Unknown')
+               })
+           except Exception as e:
+               logger.warning(f"Failed to load profile {profile_file}: {e}")
+
+       return profiles
+
+   # Check if profile exists
+   all_profiles = list_all_profiles()
+   profile_ids = [p['id'] for p in all_profiles]
+
+   if profile_id not in profile_ids:
+       print(f"✗ Profile {profile_id} not found")
+       print(f"Available profiles: {len(profile_ids)}")
+       for p in all_profiles:
+           print(f"  - {p['id']}: {p['name']}")
+   ```
+
+3. **Create Profile if Missing**:
+   ```python
+   from auto_voice.inference.voice_cloner import VoiceCloner
+
+   def get_or_create_profile(profile_id: str, audio_files: list = None):
+       """Get existing profile or create new one."""
+       store = VoiceProfileStore()
+
+       try:
+           profile = store.get(profile_id)
+           logger.info(f"Profile found: {profile_id}")
+           return profile
+       except (ProfileNotFoundError, FileNotFoundError):
+           if audio_files is None:
+               raise ValueError(f"Profile {profile_id} not found and no audio provided")
+
+           # Create new profile
+           logger.info(f"Creating new profile: {profile_id}")
+           cloner = VoiceCloner()
+           profile = cloner.create_profile(
+               name=profile_id,
+               audio_files=audio_files
+           )
+           return profile
+   ```
+
+4. **Check Database and File Storage Consistency**:
+   ```python
+   from pathlib import Path
+   import json
+
+   def validate_profile_storage():
+       """Check for orphaned JSON or missing embeddings."""
+       profiles_dir = Path('data/voice_profiles')
+
+       json_files = set(f.stem for f in profiles_dir.glob('*.json'))
+       npy_files = set(f.stem for f in profiles_dir.glob('*.npy'))
+
+       # Find orphaned files
+       orphaned_json = json_files - npy_files
+       orphaned_npy = npy_files - json_files
+
+       if orphaned_json:
+           print(f"⚠ {len(orphaned_json)} profiles missing embeddings:")
+           for profile_id in orphaned_json:
+               print(f"  - {profile_id} (missing .npy)")
+
+       if orphaned_npy:
+           print(f"⚠ {len(orphaned_npy)} orphaned embeddings:")
+           for profile_id in orphaned_npy:
+               print(f"  - {profile_id} (missing .json)")
+
+       # Validate each profile
+       for profile_id in json_files & npy_files:
+           json_path = profiles_dir / f"{profile_id}.json"
+           npy_path = profiles_dir / f"{profile_id}.npy"
+
+           try:
+               with open(json_path) as f:
+                   profile = json.load(f)
+               import numpy as np
+               embedding = np.load(npy_path)
+
+               print(f"✓ {profile_id}: {profile['name']}")
+           except Exception as e:
+               print(f"✗ {profile_id}: {e}")
+
+   # Run validation
+   validate_profile_storage()
+   ```
+
+5. **Restore Deleted Profile from Backup**:
+   ```bash
+   # Check backups directory
+   ls -lh data/backups/voice_profiles/
+
+   # Restore specific profile
+   PROFILE_ID="7da05140-e5a7-4e89-b2c3-8f6d9a1c2b3e"
+   cp data/backups/voice_profiles/${PROFILE_ID}.json data/voice_profiles/
+   cp data/backups/voice_profiles/${PROFILE_ID}.npy data/voice_profiles/
+
+   # Verify restoration
+   python -c "
+   from auto_voice.storage.voice_profiles import VoiceProfileStore
+   store = VoiceProfileStore()
+   profile = store.get('${PROFILE_ID}')
+   print(f'✓ Restored: {profile[\"name\"]}')
+   "
+   ```
+
+**Diagnostic**:
+```bash
+# Check profile storage integrity
+python -c "
+from pathlib import Path
+import json
+
+profiles_dir = Path('data/voice_profiles')
+
+json_count = len(list(profiles_dir.glob('*.json')))
+npy_count = len(list(profiles_dir.glob('*.npy')))
+
+print(f'JSON profiles: {json_count}')
+print(f'NPY embeddings: {npy_count}')
+
+if json_count != npy_count:
+    print('⚠ WARNING: Profile count mismatch')
+else:
+    print('✓ Storage consistent')
+"
+```
+
+**Prevention**:
+- Always validate profile existence before operations
+- Implement soft-delete instead of hard-delete
+- Enable automatic backups for production
+- Use database constraints for referential integrity
+- Log all profile access attempts
+
+---
+
+### Transaction rollback issues
+
+**Error Message**:
+```
+sqlalchemy.exc.PendingRollbackError: This Session's transaction has been rolled back due to a previous exception
+sqlalchemy.exc.InvalidRequestError: This session is in 'inactive' state
+RuntimeError: Transaction already rolled back
+```
+
+**Cause**: Previous database error caused transaction rollback, but session is still being used without proper cleanup.
+
+**Solutions**:
+
+1. **Proper Transaction Handling**:
+   ```python
+   from sqlalchemy.exc import SQLAlchemyError
+
+   def update_profile_safe(profile_id: str, updates: dict):
+       """Update profile with proper transaction handling."""
+       session = Session()
+       try:
+           # Start explicit transaction
+           with session.begin():
+               profile = session.query(VoiceProfile).get(profile_id)
+               if not profile:
+                   raise ValueError(f"Profile not found: {profile_id}")
+
+               # Apply updates
+               for key, value in updates.items():
+                   setattr(profile, key, value)
+
+               # Commit happens automatically at end of 'with' block
+           return True
+
+       except SQLAlchemyError as e:
+           # Rollback happens automatically
+           logger.error(f"Failed to update profile: {e}")
+           raise
+       finally:
+           session.close()
+   ```
+
+2. **Reset Session After Rollback**:
+   ```python
+   def execute_with_retry(session, operation, max_retries=3):
+       """Execute database operation with automatic retry after rollback."""
+       for attempt in range(max_retries):
+           try:
+               result = operation(session)
+               session.commit()
+               return result
+
+           except SQLAlchemyError as e:
+               session.rollback()
+               logger.warning(f"Attempt {attempt + 1} failed: {e}")
+
+               if attempt == max_retries - 1:
+                   raise
+
+               # Create new session for retry
+               session.close()
+               session = Session()
+
+   # Usage
+   def add_training_sample(session):
+       sample = TrainingSample(profile_id=profile_id, audio_path=path)
+       session.add(sample)
+       return sample
+
+   execute_with_retry(session, add_training_sample)
+   ```
+
+3. **Use Savepoints for Nested Transactions**:
+   ```python
+   from sqlalchemy.exc import IntegrityError
+
+   def batch_insert_with_savepoints(records: list):
+       """Insert records with savepoints to isolate failures."""
+       session = Session()
+       successful = 0
+       failed = 0
+
+       try:
+           for record in records:
+               # Create savepoint before each insert
+               savepoint = session.begin_nested()
+
+               try:
+                   session.add(record)
+                   session.flush()
+                   savepoint.commit()
+                   successful += 1
+
+               except IntegrityError as e:
+                   # Rollback to savepoint (not entire transaction)
+                   savepoint.rollback()
+                   logger.warning(f"Failed to insert {record}: {e}")
+                   failed += 1
+
+           # Commit all successful inserts
+           session.commit()
+           logger.info(f"Batch insert: {successful} success, {failed} failed")
+
+       except Exception as e:
+           session.rollback()
+           raise
+       finally:
+           session.close()
+   ```
+
+4. **Check Session State Before Operations**:
+   ```python
+   def safe_query(session, model, filters):
+       """Execute query with session state check."""
+       # Check if session is in valid state
+       if not session.is_active:
+           logger.warning("Session inactive, creating new session")
+           session.close()
+           session = Session()
+
+       try:
+           result = session.query(model).filter_by(**filters).all()
+           return result
+       except Exception as e:
+           logger.error(f"Query failed: {e}")
+           session.rollback()
+           raise
+   ```
+
+5. **Use Two-Phase Commit for Critical Operations**:
+   ```python
+   def update_profile_with_files(profile_id: str, updates: dict, files: list):
+       """Update database and file system atomically."""
+       session = Session()
+       temp_files = []
+
+       try:
+           # Phase 1: Prepare database changes
+           with session.begin():
+               profile = session.query(VoiceProfile).get(profile_id)
+               for key, value in updates.items():
+                   setattr(profile, key, value)
+               session.flush()  # Validate but don't commit
+
+               # Phase 2: Write files
+               for file_data in files:
+                   temp_path = f"/tmp/{uuid.uuid4()}.tmp"
+                   with open(temp_path, 'wb') as f:
+                       f.write(file_data)
+                   temp_files.append(temp_path)
+
+               # Both phases successful - commit
+               session.commit()
+
+               # Move temp files to final location
+               for temp_path in temp_files:
+                   final_path = temp_path.replace('/tmp/', 'data/samples/')
+                   os.rename(temp_path, final_path)
+
+       except Exception as e:
+           # Rollback database
+           session.rollback()
+
+           # Clean up temp files
+           for temp_path in temp_files:
+               if os.path.exists(temp_path):
+                   os.remove(temp_path)
+
+           raise
+       finally:
+           session.close()
+   ```
+
+**Diagnostic**:
+```python
+# Check session state
+def diagnose_session(session):
+    """Print session diagnostic information."""
+    print(f"Session active: {session.is_active}")
+    print(f"Session dirty: {len(session.dirty)}")
+    print(f"Session new: {len(session.new)}")
+    print(f"Session deleted: {len(session.deleted)}")
+    print(f"Session in transaction: {session.in_transaction()}")
+
+    if not session.is_active:
+        print("⚠ WARNING: Session is inactive")
+    if session.dirty:
+        print(f"⚠ WARNING: {len(session.dirty)} uncommitted changes")
+```
+
+**Prevention**:
+- Use context managers for automatic rollback
+- Enable session pooling with proper timeout
+- Set `autoflush=False` to control when flushes occur
+- Add retry logic for transient database errors
+- Monitor long-running transactions
+
+---
+
+### Database connection failures
+
+**Error Message**:
+```
+sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) unable to open database file
+sqlalchemy.exc.OperationalError: database is locked
+OperationalError: no such table: voice_profiles
+```
+
+**Cause**: Database file missing, locked, or schema not initialized. Common with SQLite in multi-process environments.
+
+**Solutions**:
+
+1. **Initialize Database Schema**:
+   ```python
+   from sqlalchemy import create_engine
+   from sqlalchemy.orm import declarative_base, sessionmaker
+
+   Base = declarative_base()
+
+   def init_database(db_url: str = 'sqlite:///data/autovoice.db'):
+       """Initialize database schema."""
+       # Create engine
+       engine = create_engine(db_url, echo=False)
+
+       # Create all tables
+       Base.metadata.create_all(engine)
+
+       # Verify tables created
+       inspector = sqlalchemy.inspect(engine)
+       tables = inspector.get_table_names()
+       print(f"✓ Database initialized with {len(tables)} tables: {tables}")
+
+       return engine
+
+   # Run during setup
+   engine = init_database()
+   ```
+
+2. **Fix Database Locked Errors** (SQLite):
+   ```python
+   from sqlalchemy import create_engine
+   from sqlalchemy.pool import StaticPool
+
+   # Use connection pooling to reduce lock contention
+   engine = create_engine(
+       'sqlite:///data/autovoice.db',
+       connect_args={
+           'timeout': 30,  # Wait up to 30s for lock
+           'check_same_thread': False,  # Allow multi-threading
+       },
+       poolclass=StaticPool,  # Reuse connections
+       echo=False
+   )
+
+   # Alternative: Use WAL mode for better concurrency
+   with engine.connect() as conn:
+       conn.execute("PRAGMA journal_mode=WAL")
+       result = conn.execute("PRAGMA journal_mode").fetchone()
+       print(f"Journal mode: {result[0]}")
+   ```
+
+3. **Verify Database File Permissions**:
+   ```bash
+   # Check if database file exists and is writable
+   DB_FILE="data/autovoice.db"
+
+   if [ -f "$DB_FILE" ]; then
+       ls -lh "$DB_FILE"
+       # Ensure write permissions
+       chmod 644 "$DB_FILE"
+       echo "✓ Database file permissions OK"
+   else
+       echo "✗ Database file not found: $DB_FILE"
+       echo "Creating database directory..."
+       mkdir -p data
+       python -c "from auto_voice.database import init_database; init_database()"
+   fi
+   ```
+
+4. **Handle Missing Tables**:
+   ```python
+   from sqlalchemy import inspect
+   from sqlalchemy.exc import OperationalError
+
+   def ensure_tables_exist(engine):
+       """Check if required tables exist, create if missing."""
+       inspector = inspect(engine)
+       existing_tables = set(inspector.get_table_names())
+
+       required_tables = {'voice_profiles', 'training_samples', 'conversion_jobs'}
+
+       missing_tables = required_tables - existing_tables
+
+       if missing_tables:
+           logger.warning(f"Missing tables: {missing_tables}")
+           logger.info("Creating missing tables...")
+           Base.metadata.create_all(engine)
+           logger.info("✓ Tables created")
+       else:
+           logger.info("✓ All required tables exist")
+
+   # Use before operations
+   ensure_tables_exist(engine)
+   ```
+
+5. **Use Connection Retry Logic**:
+   ```python
+   from sqlalchemy import create_engine, event
+   from sqlalchemy.exc import OperationalError
+   import time
+
+   def create_engine_with_retry(db_url: str, max_retries: int = 5):
+       """Create engine with connection retry."""
+       for attempt in range(max_retries):
+           try:
+               engine = create_engine(db_url)
+               # Test connection
+               with engine.connect() as conn:
+                   conn.execute("SELECT 1")
+               logger.info("✓ Database connection successful")
+               return engine
+
+           except OperationalError as e:
+               logger.warning(f"Connection attempt {attempt + 1} failed: {e}")
+               if attempt < max_retries - 1:
+                   time.sleep(2 ** attempt)  # Exponential backoff
+               else:
+                   logger.error("Failed to connect to database after retries")
+                   raise
+
+   engine = create_engine_with_retry('sqlite:///data/autovoice.db')
+   ```
+
+**Diagnostic**:
+```bash
+# Test database connection
+python -c "
+import os
+from sqlalchemy import create_engine
+
+db_file = 'data/autovoice.db'
+
+# Check file exists
+if not os.path.exists(db_file):
+    print(f'✗ Database file not found: {db_file}')
+    exit(1)
+
+# Check permissions
+if not os.access(db_file, os.R_OK | os.W_OK):
+    print(f'✗ Database file not readable/writable')
+    exit(1)
+
+# Test connection
+engine = create_engine(f'sqlite:///{db_file}')
+try:
+    with engine.connect() as conn:
+        result = conn.execute('SELECT 1').fetchone()
+    print('✓ Database connection OK')
+except Exception as e:
+    print(f'✗ Connection failed: {e}')
+    exit(1)
+"
+
+# Check SQLite journal mode
+sqlite3 data/autovoice.db "PRAGMA journal_mode;"
+
+# Check for locks
+lsof data/autovoice.db 2>/dev/null || echo "No processes holding database lock"
+```
+
+**Prevention**:
+- Use PostgreSQL for production (better concurrency than SQLite)
+- Enable WAL mode for SQLite: `PRAGMA journal_mode=WAL`
+- Set appropriate connection timeouts
+- Implement connection pooling
+- Close sessions properly in `finally` blocks
+- Run schema migrations during deployment
+
+---
 
 ## API and Validation Errors
 
-*This section will be populated with API and validation error solutions.*
+### Invalid adapter_type parameter
+
+**Error Message**:
+```
+ValueError: Invalid adapter_type: <value>
+ValueError: Invalid value for adapter_type
+TypeError: adapter_type must be one of: ['lora', 'full', 'none']
+```
+
+**Cause**: API request contains invalid or unsupported adapter type value. AutoVoice supports specific adapter types for voice conversion.
+
+**Solutions**:
+
+1. **Use Valid Adapter Types**:
+   ```python
+   # Valid adapter types
+   VALID_ADAPTER_TYPES = ['lora', 'full', 'none', 'auto']
+
+   # ✓ CORRECT usage
+   response = requests.post('/api/v1/convert/song', json={
+       'audio_file': 'input.wav',
+       'profile_id': '7da05140-...',
+       'adapter_type': 'lora',  # Valid
+   })
+
+   # ✗ WRONG usage
+   response = requests.post('/api/v1/convert/song', json={
+       'adapter_type': 'LoRA',  # Case-sensitive, will fail
+   })
+
+   response = requests.post('/api/v1/convert/song', json={
+       'adapter_type': 'custom',  # Not supported, will fail
+   })
+   ```
+
+2. **Validate Input Before API Call**:
+   ```python
+   def validate_conversion_request(data: dict) -> dict:
+       """Validate conversion request parameters."""
+       valid_adapter_types = {'lora', 'full', 'none', 'auto'}
+
+       adapter_type = data.get('adapter_type', 'auto')
+
+       if adapter_type not in valid_adapter_types:
+           raise ValueError(
+               f"Invalid adapter_type: '{adapter_type}'. "
+               f"Must be one of: {valid_adapter_types}"
+           )
+
+       # Normalize to lowercase
+       data['adapter_type'] = adapter_type.lower()
+
+       return data
+
+   # Use before API call
+   request_data = {
+       'audio_file': 'song.wav',
+       'profile_id': profile_id,
+       'adapter_type': user_input_adapter_type
+   }
+
+   try:
+       validated = validate_conversion_request(request_data)
+       response = requests.post('/api/v1/convert/song', json=validated)
+   except ValueError as e:
+       print(f"Validation error: {e}")
+   ```
+
+3. **Check API Documentation**:
+   ```python
+   # Adapter type meanings:
+   # - 'lora': Use LoRA adapter (fast, high quality, requires training)
+   # - 'full': Use full model fine-tuning (best quality, slower)
+   # - 'none': Use base model without adaptation (fastest, lower quality)
+   # - 'auto': Automatically select best available (default)
+
+   # Example: Use auto mode (recommended)
+   response = requests.post('/api/v1/convert/song', json={
+       'audio_file': 'input.wav',
+       'profile_id': profile_id,
+       'adapter_type': 'auto',  # Will use LoRA if available, else base model
+   })
+   ```
+
+4. **Handle Missing LoRA Gracefully**:
+   ```python
+   def convert_with_fallback(audio_file: str, profile_id: str):
+       """Convert audio with automatic fallback if LoRA not available."""
+       # Try LoRA first
+       try:
+           response = requests.post('/api/v1/convert/song', json={
+               'audio_file': audio_file,
+               'profile_id': profile_id,
+               'adapter_type': 'lora',
+           })
+
+           if response.status_code == 200:
+               return response.json()
+           elif response.status_code == 404:
+               logger.warning("LoRA not found, falling back to base model")
+
+       except Exception as e:
+           logger.warning(f"LoRA conversion failed: {e}")
+
+       # Fallback to base model
+       response = requests.post('/api/v1/convert/song', json={
+           'audio_file': audio_file,
+           'profile_id': profile_id,
+           'adapter_type': 'none',
+       })
+
+       return response.json()
+   ```
+
+5. **Use TypedDict for Request Validation**:
+   ```python
+   from typing import TypedDict, Literal
+
+   class ConversionRequest(TypedDict):
+       audio_file: str
+       profile_id: str
+       adapter_type: Literal['lora', 'full', 'none', 'auto']
+       pitch_shift: int  # Optional
+       formant_shift: float  # Optional
+
+   def create_conversion_request(
+       audio_file: str,
+       profile_id: str,
+       adapter_type: Literal['lora', 'full', 'none', 'auto'] = 'auto'
+   ) -> ConversionRequest:
+       """Type-safe conversion request builder."""
+       return {
+           'audio_file': audio_file,
+           'profile_id': profile_id,
+           'adapter_type': adapter_type,
+       }
+
+   # Type checker will catch invalid adapter types at development time
+   request = create_conversion_request(
+       'song.wav',
+       profile_id,
+       adapter_type='lora'  # ✓ Valid
+       # adapter_type='invalid'  # ✗ Type error at development time
+   )
+   ```
+
+**Diagnostic**:
+```bash
+# Test API parameter validation
+python -c "
+import requests
+
+# Test valid adapter type
+response = requests.post('http://localhost:5000/api/v1/convert/song', json={
+    'audio_file': 'test.wav',
+    'profile_id': 'test-id',
+    'adapter_type': 'lora'
+})
+
+print(f'Status: {response.status_code}')
+if response.status_code != 200:
+    print(f'Error: {response.json()}')
+
+# Test invalid adapter type
+response = requests.post('http://localhost:5000/api/v1/convert/song', json={
+    'adapter_type': 'invalid'
+})
+
+print(f'Invalid adapter response: {response.status_code}')
+print(f'Error message: {response.json().get(\"error\", \"N/A\")}')
+"
+```
+
+**Valid Adapter Types**:
+- **lora**: LoRA adapter (recommended, requires training)
+- **full**: Full model fine-tuning (highest quality, slowest)
+- **none**: Base model without adaptation (fastest)
+- **auto**: Automatic selection (default, uses LoRA if available)
+
+**Prevention**:
+- Use Pydantic models for request validation
+- Add API parameter documentation
+- Return clear error messages with valid options
+- Implement client-side validation in frontend
+- Use TypedDict or enums for type safety
+
+---
+
+### Type errors in request validation
+
+**Error Message**:
+```
+TypeError: Expected str, got int
+TypeError: 'NoneType' object is not subscriptable
+ValueError: invalid literal for int() with base 10
+KeyError: 'required_field'
+```
+
+**Cause**: API request parameters have incorrect types or missing required fields.
+
+**Solutions**:
+
+1. **Use Pydantic for Request Validation**:
+   ```python
+   from pydantic import BaseModel, Field, validator
+   from typing import Optional, Literal
+
+   class ConversionRequest(BaseModel):
+       """Type-safe conversion request model."""
+       audio_file: str = Field(..., min_length=1, description="Path to audio file")
+       profile_id: str = Field(..., regex=r'^[a-f0-9-]{36}$', description="UUID of voice profile")
+       adapter_type: Literal['lora', 'full', 'none', 'auto'] = 'auto'
+       pitch_shift: Optional[int] = Field(0, ge=-12, le=12, description="Semitones")
+       formant_shift: Optional[float] = Field(0.0, ge=-1.0, le=1.0)
+
+       @validator('audio_file')
+       def validate_audio_file(cls, v):
+           if not v.endswith(('.wav', '.mp3', '.flac')):
+               raise ValueError('Audio file must be WAV, MP3, or FLAC')
+           return v
+
+   # Use in Flask API
+   from flask import request, jsonify
+
+   @app.route('/api/v1/convert/song', methods=['POST'])
+   def convert_song():
+       try:
+           # Validate request with Pydantic
+           req_data = ConversionRequest(**request.json)
+
+           # Now req_data is type-safe
+           result = pipeline.convert(
+               audio_file=req_data.audio_file,
+               profile_id=req_data.profile_id,
+               adapter_type=req_data.adapter_type,
+               pitch_shift=req_data.pitch_shift
+           )
+
+           return jsonify(result), 200
+
+       except ValueError as e:
+           return jsonify({'error': str(e)}), 400
+   ```
+
+2. **Manual Type Validation**:
+   ```python
+   def validate_request_params(data: dict) -> dict:
+       """Validate and coerce request parameters."""
+       errors = []
+
+       # Required string fields
+       for field in ['audio_file', 'profile_id']:
+           if field not in data:
+               errors.append(f"Missing required field: {field}")
+           elif not isinstance(data[field], str):
+               errors.append(f"{field} must be a string, got {type(data[field]).__name__}")
+
+       # Optional integer with range
+       if 'pitch_shift' in data:
+           try:
+               pitch_shift = int(data['pitch_shift'])
+               if not -12 <= pitch_shift <= 12:
+                   errors.append("pitch_shift must be between -12 and 12")
+               data['pitch_shift'] = pitch_shift
+           except (ValueError, TypeError):
+               errors.append(f"pitch_shift must be an integer, got {data['pitch_shift']}")
+
+       # Optional float with range
+       if 'formant_shift' in data:
+           try:
+               formant_shift = float(data['formant_shift'])
+               if not -1.0 <= formant_shift <= 1.0:
+                   errors.append("formant_shift must be between -1.0 and 1.0")
+               data['formant_shift'] = formant_shift
+           except (ValueError, TypeError):
+               errors.append(f"formant_shift must be a float, got {data['formant_shift']}")
+
+       if errors:
+           raise ValueError("Validation errors: " + "; ".join(errors))
+
+       return data
+
+   # Use in API
+   try:
+       validated_data = validate_request_params(request.json or {})
+   except ValueError as e:
+       return jsonify({'error': str(e)}), 400
+   ```
+
+3. **Safe Dictionary Access**:
+   ```python
+   # ✗ WRONG - will raise KeyError if field missing
+   audio_file = request_data['audio_file']
+
+   # ✓ CORRECT - use .get() with default
+   audio_file = request_data.get('audio_file')
+   if not audio_file:
+       return jsonify({'error': 'audio_file is required'}), 400
+
+   # ✓ CORRECT - use .get() with type check
+   pitch_shift = request_data.get('pitch_shift', 0)
+   if not isinstance(pitch_shift, (int, float)):
+       return jsonify({'error': 'pitch_shift must be a number'}), 400
+   ```
+
+4. **Type Coercion with Error Handling**:
+   ```python
+   def safe_int(value, default=None, min_val=None, max_val=None):
+       """Safely convert value to int with range checking."""
+       try:
+           result = int(value)
+
+           if min_val is not None and result < min_val:
+               raise ValueError(f"Value {result} below minimum {min_val}")
+
+           if max_val is not None and result > max_val:
+               raise ValueError(f"Value {result} above maximum {max_val}")
+
+           return result
+
+       except (ValueError, TypeError) as e:
+           if default is not None:
+               return default
+           raise ValueError(f"Invalid integer value: {value}")
+
+   # Use in API
+   try:
+       pitch_shift = safe_int(
+           request_data.get('pitch_shift'),
+           default=0,
+           min_val=-12,
+           max_val=12
+       )
+   except ValueError as e:
+       return jsonify({'error': str(e)}), 400
+   ```
+
+5. **Validate JSON Structure**:
+   ```python
+   from flask import request, jsonify
+
+   @app.route('/api/v1/convert/song', methods=['POST'])
+   def convert_song():
+       # Check if request has JSON body
+       if not request.is_json:
+           return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+       # Check if JSON is valid dict
+       data = request.json
+       if not isinstance(data, dict):
+           return jsonify({'error': 'Request body must be a JSON object'}), 400
+
+       # Validate required fields
+       required_fields = ['audio_file', 'profile_id']
+       missing_fields = [f for f in required_fields if f not in data]
+
+       if missing_fields:
+           return jsonify({
+               'error': f"Missing required fields: {', '.join(missing_fields)}"
+           }), 400
+
+       # Continue with validated data
+       ...
+   ```
+
+**Diagnostic**:
+```bash
+# Test API with various invalid inputs
+python -c "
+import requests
+
+base_url = 'http://localhost:5000/api/v1/convert/song'
+
+# Test missing required field
+response = requests.post(base_url, json={'audio_file': 'test.wav'})
+print(f'Missing field: {response.status_code} - {response.json()}')
+
+# Test wrong type
+response = requests.post(base_url, json={
+    'audio_file': 123,  # Should be string
+    'profile_id': 'test'
+})
+print(f'Wrong type: {response.status_code} - {response.json()}')
+
+# Test invalid range
+response = requests.post(base_url, json={
+    'audio_file': 'test.wav',
+    'profile_id': 'test',
+    'pitch_shift': 100  # Out of range
+})
+print(f'Invalid range: {response.status_code} - {response.json()}')
+
+# Test valid request
+response = requests.post(base_url, json={
+    'audio_file': 'test.wav',
+    'profile_id': '7da05140-e5a7-4e89-b2c3-8f6d9a1c2b3e',
+    'adapter_type': 'lora',
+    'pitch_shift': 2
+})
+print(f'Valid request: {response.status_code}')
+"
+```
+
+**Prevention**:
+- Use Pydantic, Marshmallow, or similar for schema validation
+- Return 400 (Bad Request) with detailed error messages
+- Document required fields and types in API docs
+- Add request examples in documentation
+- Use TypeScript on frontend for type safety
+- Implement OpenAPI/Swagger schema validation
+
+---
+
+### Missing required parameters
+
+**Error Message**:
+```
+KeyError: 'profile_id'
+ValueError: Missing required parameter: audio_file
+TypeError: Missing required argument: 'adapter_type'
+```
+
+**Cause**: API request missing required fields or arguments.
+
+**Solutions**:
+
+1. **Explicit Required Field Validation**:
+   ```python
+   from flask import request, jsonify
+
+   REQUIRED_FIELDS = {
+       '/api/v1/convert/song': ['audio_file', 'profile_id'],
+       '/api/v1/voice/clone': ['name', 'audio_files'],
+       '/api/v1/train/lora': ['profile_id', 'training_data'],
+   }
+
+   def validate_required_fields(endpoint: str, data: dict) -> tuple:
+       """Validate required fields for endpoint."""
+       required = REQUIRED_FIELDS.get(endpoint, [])
+       missing = [field for field in required if field not in data or not data[field]]
+
+       if missing:
+           error_msg = f"Missing required fields: {', '.join(missing)}"
+           return False, error_msg
+
+       return True, None
+
+   @app.route('/api/v1/convert/song', methods=['POST'])
+   def convert_song():
+       data = request.json or {}
+
+       # Validate required fields
+       valid, error = validate_required_fields('/api/v1/convert/song', data)
+       if not valid:
+           return jsonify({'error': error}), 400
+
+       # Proceed with conversion
+       ...
+   ```
+
+2. **Use Default Values for Optional Parameters**:
+   ```python
+   def convert_song_request(data: dict):
+       """Extract and validate conversion request parameters."""
+       # Required parameters (will raise KeyError if missing - caught below)
+       try:
+           audio_file = data['audio_file']
+           profile_id = data['profile_id']
+       except KeyError as e:
+           raise ValueError(f"Missing required parameter: {e.args[0]}")
+
+       # Optional parameters with defaults
+       adapter_type = data.get('adapter_type', 'auto')
+       pitch_shift = data.get('pitch_shift', 0)
+       formant_shift = data.get('formant_shift', 0.0)
+       output_format = data.get('output_format', 'wav')
+
+       return {
+           'audio_file': audio_file,
+           'profile_id': profile_id,
+           'adapter_type': adapter_type,
+           'pitch_shift': pitch_shift,
+           'formant_shift': formant_shift,
+           'output_format': output_format,
+       }
+
+   # Use in API
+   try:
+       params = convert_song_request(request.json or {})
+   except ValueError as e:
+       return jsonify({'error': str(e)}), 400
+   ```
+
+3. **Provide Clear Error Messages with Examples**:
+   ```python
+   @app.route('/api/v1/convert/song', methods=['POST'])
+   def convert_song():
+       data = request.json or {}
+
+       # Check for required fields with helpful error messages
+       if 'audio_file' not in data:
+           return jsonify({
+               'error': 'Missing required parameter: audio_file',
+               'example': {
+                   'audio_file': 'path/to/song.wav',
+                   'profile_id': '7da05140-e5a7-4e89-b2c3-8f6d9a1c2b3e',
+                   'adapter_type': 'lora'  # optional
+               }
+           }), 400
+
+       if 'profile_id' not in data:
+           return jsonify({
+               'error': 'Missing required parameter: profile_id',
+               'hint': 'Use /api/v1/profiles to list available profiles'
+           }), 400
+
+       # Proceed with valid request
+       ...
+   ```
+
+4. **Use Function Signatures with Type Hints**:
+   ```python
+   from typing import Optional
+
+   def convert_audio(
+       audio_file: str,
+       profile_id: str,
+       adapter_type: str = 'auto',
+       pitch_shift: int = 0,
+       formant_shift: float = 0.0
+   ) -> dict:
+       """
+       Convert audio to target voice.
+
+       Args:
+           audio_file: Path to input audio file (required)
+           profile_id: Voice profile UUID (required)
+           adapter_type: Type of adapter ('lora', 'full', 'none', 'auto')
+           pitch_shift: Pitch shift in semitones (-12 to +12)
+           formant_shift: Formant shift (-1.0 to +1.0)
+
+       Returns:
+           Conversion result with output path
+
+       Raises:
+           ValueError: If required parameters missing or invalid
+       """
+       # Function signature enforces required parameters
+       if not audio_file:
+           raise ValueError("audio_file cannot be empty")
+
+       if not profile_id:
+           raise ValueError("profile_id cannot be empty")
+
+       # Proceed with conversion
+       ...
+
+   # Use in API - Python will enforce required args
+   try:
+       result = convert_audio(
+           audio_file=data['audio_file'],
+           profile_id=data['profile_id'],
+           # Optional params use defaults if not provided
+       )
+   except KeyError as e:
+       return jsonify({'error': f'Missing required field: {e.args[0]}'}), 400
+   ```
+
+5. **Implement API Request Builder**:
+   ```python
+   class ConversionRequestBuilder:
+       """Builder pattern for type-safe API requests."""
+
+       def __init__(self):
+           self._audio_file = None
+           self._profile_id = None
+           self._adapter_type = 'auto'
+           self._pitch_shift = 0
+           self._formant_shift = 0.0
+
+       def with_audio_file(self, path: str):
+           self._audio_file = path
+           return self
+
+       def with_profile(self, profile_id: str):
+           self._profile_id = profile_id
+           return self
+
+       def with_adapter(self, adapter_type: str):
+           self._adapter_type = adapter_type
+           return self
+
+       def with_pitch_shift(self, semitones: int):
+           self._pitch_shift = semitones
+           return self
+
+       def build(self) -> dict:
+           """Build request, validating required fields."""
+           if not self._audio_file:
+               raise ValueError("audio_file is required")
+
+           if not self._profile_id:
+               raise ValueError("profile_id is required")
+
+           return {
+               'audio_file': self._audio_file,
+               'profile_id': self._profile_id,
+               'adapter_type': self._adapter_type,
+               'pitch_shift': self._pitch_shift,
+               'formant_shift': self._formant_shift,
+           }
+
+   # Usage
+   request_data = (ConversionRequestBuilder()
+       .with_audio_file('song.wav')
+       .with_profile(profile_id)
+       .with_pitch_shift(2)
+       .build())
+
+   response = requests.post('/api/v1/convert/song', json=request_data)
+   ```
+
+**Diagnostic**:
+```bash
+# Test required parameter validation
+python -c "
+import requests
+
+base_url = 'http://localhost:5000/api/v1/convert/song'
+
+# Test completely empty request
+response = requests.post(base_url, json={})
+print(f'Empty request: {response.status_code}')
+print(f'Error: {response.json().get(\"error\")}')
+
+# Test with only one required field
+response = requests.post(base_url, json={'audio_file': 'test.wav'})
+print(f'Missing profile_id: {response.status_code}')
+print(f'Error: {response.json().get(\"error\")}')
+
+# Test with all required fields
+response = requests.post(base_url, json={
+    'audio_file': 'test.wav',
+    'profile_id': 'test-id'
+})
+print(f'Valid request: {response.status_code}')
+"
+```
+
+**Prevention**:
+- Use schema validation libraries (Pydantic, Marshmallow)
+- Return 400 (Bad Request) with specific field names
+- Document required vs optional parameters in API docs
+- Provide request examples in documentation
+- Use OpenAPI/Swagger for automatic validation
+- Add request logging to debug missing parameters
+
+---
+
+### Authentication failures
+
+**Error Message**:
+```
+401 Unauthorized: Missing authentication token
+403 Forbidden: Invalid API key
+401 Unauthorized: Token expired
+```
+
+**Cause**: Missing, invalid, or expired authentication credentials.
+
+**Solutions**:
+
+1. **Provide Valid API Key**:
+   ```python
+   import requests
+
+   # Set API key in headers
+   headers = {
+       'Authorization': 'Bearer YOUR_API_KEY_HERE',
+       'Content-Type': 'application/json'
+   }
+
+   response = requests.post(
+       'http://localhost:5000/api/v1/convert/song',
+       headers=headers,
+       json={'audio_file': 'song.wav', 'profile_id': profile_id}
+   )
+
+   if response.status_code == 401:
+       print("Authentication failed - check API key")
+   elif response.status_code == 200:
+       print("Request successful")
+   ```
+
+2. **Configure Authentication**:
+   ```python
+   # config/api_config.yaml
+   api:
+     authentication:
+       enabled: true
+       type: bearer  # or 'api_key', 'oauth'
+       api_keys:
+         - key: "your-secret-key-here"
+           name: "production"
+         - key: "dev-key-12345"
+           name: "development"
+
+   # Load and use configuration
+   import yaml
+
+   with open('config/api_config.yaml') as f:
+       config = yaml.safe_load(f)
+
+   if config['api']['authentication']['enabled']:
+       valid_keys = {k['key'] for k in config['api']['authentication']['api_keys']}
+   ```
+
+3. **Implement Token Refresh**:
+   ```python
+   import requests
+   from datetime import datetime, timedelta
+
+   class APIClient:
+       """API client with automatic token refresh."""
+
+       def __init__(self, base_url: str, api_key: str):
+           self.base_url = base_url
+           self.api_key = api_key
+           self.token = None
+           self.token_expires = None
+
+       def get_token(self):
+           """Get or refresh access token."""
+           if self.token and self.token_expires > datetime.now():
+               return self.token
+
+           # Request new token
+           response = requests.post(
+               f'{self.base_url}/api/v1/auth/token',
+               json={'api_key': self.api_key}
+           )
+
+           if response.status_code == 200:
+               data = response.json()
+               self.token = data['access_token']
+               self.token_expires = datetime.now() + timedelta(seconds=data['expires_in'])
+               return self.token
+           else:
+               raise ValueError("Failed to get access token")
+
+       def convert_song(self, audio_file: str, profile_id: str):
+           """Convert song with automatic token refresh."""
+           token = self.get_token()
+
+           response = requests.post(
+               f'{self.base_url}/api/v1/convert/song',
+               headers={'Authorization': f'Bearer {token}'},
+               json={'audio_file': audio_file, 'profile_id': profile_id}
+           )
+
+           if response.status_code == 401:
+               # Token might have expired, refresh and retry
+               self.token = None
+               token = self.get_token()
+
+               response = requests.post(
+                   f'{self.base_url}/api/v1/convert/song',
+                   headers={'Authorization': f'Bearer {token}'},
+                   json={'audio_file': audio_file, 'profile_id': profile_id}
+               )
+
+           return response.json()
+
+   # Usage
+   client = APIClient('http://localhost:5000', api_key='your-key')
+   result = client.convert_song('song.wav', profile_id)
+   ```
+
+4. **Handle Auth Errors Gracefully**:
+   ```python
+   def api_request_with_auth(url: str, api_key: str, data: dict):
+       """Make API request with error handling."""
+       headers = {'Authorization': f'Bearer {api_key}'}
+
+       response = requests.post(url, headers=headers, json=data)
+
+       if response.status_code == 401:
+           error_data = response.json()
+           if 'Token expired' in error_data.get('error', ''):
+               raise AuthenticationError("API token expired - please refresh")
+           else:
+               raise AuthenticationError("Invalid API key")
+
+       elif response.status_code == 403:
+           raise AuthenticationError("API key does not have permission for this operation")
+
+       elif response.status_code == 200:
+           return response.json()
+
+       else:
+           raise APIError(f"Request failed: {response.status_code}")
+
+   # Usage
+   try:
+       result = api_request_with_auth(
+           'http://localhost:5000/api/v1/convert/song',
+           api_key='your-key',
+           data={'audio_file': 'song.wav', 'profile_id': profile_id}
+       )
+   except AuthenticationError as e:
+       print(f"Auth error: {e}")
+       # Prompt user to re-authenticate
+   ```
+
+5. **For Local Development (Disable Auth)**:
+   ```python
+   # config/gpu_config.yaml (development)
+   api:
+     authentication:
+       enabled: false  # Disable for local development
+
+   # Or use environment variable
+   import os
+
+   AUTH_ENABLED = os.getenv('AUTOVOICE_AUTH_ENABLED', 'false').lower() == 'true'
+
+   if not AUTH_ENABLED:
+       # Skip authentication for local development
+       print("⚠ WARNING: Authentication disabled (development mode)")
+   ```
+
+**Diagnostic**:
+```bash
+# Test authentication
+python -c "
+import requests
+
+base_url = 'http://localhost:5000'
+
+# Test without authentication
+response = requests.get(f'{base_url}/api/v1/profiles')
+print(f'No auth: {response.status_code}')
+
+# Test with invalid API key
+headers = {'Authorization': 'Bearer invalid-key'}
+response = requests.get(f'{base_url}/api/v1/profiles', headers=headers)
+print(f'Invalid key: {response.status_code} - {response.json()}')
+
+# Test with valid API key (replace with your key)
+headers = {'Authorization': 'Bearer YOUR_API_KEY'}
+response = requests.get(f'{base_url}/api/v1/profiles', headers=headers)
+print(f'Valid key: {response.status_code}')
+"
+
+# Check if authentication is enabled
+grep -A 5 "authentication:" config/gpu_config.yaml
+```
+
+**Prevention**:
+- Store API keys in environment variables, not code
+- Use secure token storage (keyring, secrets manager)
+- Implement token rotation policy
+- Add rate limiting to prevent brute force
+- Log authentication failures for security monitoring
+- Use HTTPS in production to protect tokens
+
+---
 
 ## Dependency and Environment Errors
 
