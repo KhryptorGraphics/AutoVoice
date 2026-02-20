@@ -314,6 +314,8 @@ def get_cluster_details(cluster_id: str):
     })
 
 
+@log_request
+@rate_limit(5, 60)
 @speaker_bp.route('/clusters/<cluster_id>/name', methods=['PUT'])
 def update_cluster_name_endpoint(cluster_id: str):
     """Update cluster name.
