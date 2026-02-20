@@ -1241,7 +1241,781 @@ for name in required_engines:
 
 ## Audio Processing Errors
 
-*This section will be populated with audio processing error solutions.*
+### Input audio contains NaN or Inf values
+
+**Error Message**:
+```
+RuntimeError: Audio contains NaN or Inf values
+ValueError: Invalid audio data - contains NaN or Inf
+RuntimeError: Speaker embedding contains NaN or Inf
+```
+
+**Cause**: Audio data contains invalid numerical values (Not-a-Number or Infinity), typically from:
+- Corrupted audio files
+- Numerical instability during processing
+- Division by zero in audio transformations
+- Invalid resampling or filtering
+
+**Solutions**:
+
+1. **Validate Input Audio**:
+   ```python
+   import numpy as np
+   import torchaudio
+
+   # Load and check audio
+   audio, sr = torchaudio.load("input.wav")
+
+   # Check for NaN or Inf
+   if torch.isnan(audio).any():
+       print("✗ Audio contains NaN values")
+   elif torch.isinf(audio).any():
+       print("✗ Audio contains Inf values")
+   else:
+       print("✓ Audio is valid")
+
+   # Auto-fix by replacing invalid values
+   audio = torch.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
+   ```
+
+2. **Check Audio File Integrity**:
+   ```bash
+   # Verify file is not corrupted
+   ffmpeg -v error -i input.wav -f null - 2>&1
+
+   # If corrupted, re-encode to fix
+   ffmpeg -i input.wav -ar 44100 -ac 1 -c:a pcm_s16le output.wav
+   ```
+
+3. **Clean Audio Data**:
+   ```python
+   import numpy as np
+
+   # Load audio as numpy
+   audio = np.load("audio.npy")
+
+   # Replace invalid values
+   audio = np.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
+
+   # Clip to valid range [-1.0, 1.0]
+   audio = np.clip(audio, -1.0, 1.0)
+
+   # Verify
+   assert not np.isnan(audio).any(), "Still contains NaN"
+   assert not np.isinf(audio).any(), "Still contains Inf"
+
+   # Save cleaned audio
+   np.save("audio_cleaned.npy", audio)
+   ```
+
+4. **Fix Speaker Embeddings**:
+   ```python
+   from auto_voice.inference.voice_cloner import VoiceCloner
+   import numpy as np
+
+   # Check embedding file
+   embedding_path = "data/voice_profiles/<profile_id>.npy"
+   embedding = np.load(embedding_path)
+
+   if np.isnan(embedding).any() or np.isinf(embedding).any():
+       print("✗ Embedding is corrupted - regenerating...")
+
+       # Regenerate from clean audio
+       cloner = VoiceCloner()
+       new_embedding = cloner.create_speaker_embedding([
+           "clean_audio1.wav",
+           "clean_audio2.wav"
+       ])
+
+       # Save new embedding
+       np.save(embedding_path, new_embedding)
+       print("✓ Embedding regenerated")
+   ```
+
+5. **Prevent During Processing**:
+   ```python
+   import torch
+
+   def safe_normalize(audio: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
+       """Normalize audio safely without creating NaN/Inf."""
+       # Clamp to prevent extreme values
+       audio = torch.clamp(audio, -100.0, 100.0)
+
+       # Normalize with epsilon to prevent division by zero
+       max_val = audio.abs().max()
+       if max_val > eps:
+           audio = audio / max_val
+
+       # Final safety check
+       audio = torch.nan_to_num(audio, nan=0.0, posinf=1.0, neginf=-1.0)
+
+       return audio
+
+   # Use in pipeline
+   audio = safe_normalize(audio)
+   ```
+
+**Diagnostic**:
+```bash
+# Check audio files for NaN/Inf
+python -c "
+import numpy as np
+import torchaudio
+from pathlib import Path
+
+audio_dir = Path('data/audio')
+for audio_file in audio_dir.glob('**/*.wav'):
+    try:
+        audio, sr = torchaudio.load(audio_file)
+
+        has_nan = torch.isnan(audio).any().item()
+        has_inf = torch.isinf(audio).any().item()
+
+        if has_nan or has_inf:
+            print(f'✗ {audio_file.name}: NaN={has_nan}, Inf={has_inf}')
+        else:
+            print(f'✓ {audio_file.name}')
+    except Exception as e:
+        print(f'✗ {audio_file.name}: {e}')
+"
+```
+
+**Prevention**:
+- Always validate audio after loading
+- Use `torch.nan_to_num()` or `np.nan_to_num()` as safety net
+- Add epsilon values to prevent division by zero
+- Clip audio to valid ranges before processing
+- Regenerate corrupted embeddings from source audio
+
+---
+
+### Insufficient audio quality
+
+**Error Message**:
+```
+InsufficientQualityError: Audio quality too low for voice cloning
+InvalidAudioError: Silent audio - cannot extract embedding
+ValueError: Audio too short (2.3s). Minimum 3.0s required.
+```
+
+**Cause**: Audio quality does not meet minimum requirements for voice conversion:
+- Too short duration (< 3 seconds)
+- Silent or near-silent audio
+- Excessive background noise
+- Low sample rate
+- Heavy compression artifacts
+
+**Solutions**:
+
+1. **Check Audio Duration**:
+   ```python
+   import librosa
+
+   audio, sr = librosa.load("input.wav")
+   duration = len(audio) / sr
+
+   if duration < 3.0:
+       print(f"✗ Audio too short: {duration:.1f}s (minimum 3.0s)")
+   else:
+       print(f"✓ Duration OK: {duration:.1f}s")
+   ```
+
+2. **Check Audio Level**:
+   ```python
+   import numpy as np
+   import librosa
+
+   audio, sr = librosa.load("input.wav")
+
+   # Check RMS energy
+   rms = np.sqrt(np.mean(audio**2))
+   max_amplitude = np.abs(audio).max()
+
+   if max_amplitude < 0.01:
+       print("✗ Audio is too quiet (likely silent)")
+       print("  Solution: Use audio with vocals present")
+   elif max_amplitude > 0.99:
+       print("⚠ Audio may be clipped")
+       print("  Solution: Reduce input gain")
+   else:
+       print(f"✓ Audio level OK (max={max_amplitude:.3f}, rms={rms:.3f})")
+   ```
+
+3. **Improve Audio Quality**:
+   ```bash
+   # Normalize audio to -1dB peak
+   ffmpeg -i input.wav -af "loudnorm=I=-1:TP=-1:LRA=7" normalized.wav
+
+   # Remove silence from ends
+   ffmpeg -i input.wav -af "silenceremove=start_periods=1:stop_periods=1:detection=peak" trimmed.wav
+
+   # Denoise (reduce background noise)
+   ffmpeg -i input.wav -af "afftdn=nf=-20" denoised.wav
+
+   # Combine all improvements
+   ffmpeg -i input.wav \
+       -af "afftdn=nf=-20,silenceremove=start_periods=1:stop_periods=1,loudnorm=I=-1:TP=-1" \
+       enhanced.wav
+   ```
+
+4. **Use Longer/Better Quality Audio**:
+   ```python
+   from auto_voice.inference.voice_cloner import VoiceCloner
+
+   cloner = VoiceCloner()
+
+   # Use multiple high-quality samples (10+ seconds each)
+   audio_files = [
+       "song1_vocals.wav",  # 30 seconds, clean vocals
+       "song2_vocals.wav",  # 25 seconds, isolated vocals
+       "song3_vocals.wav",  # 20 seconds, studio quality
+   ]
+
+   # Create profile with quality audio
+   profile = cloner.create_profile(
+       name="Artist Name",
+       audio_files=audio_files,
+       min_duration=10.0  # Increase minimum duration
+   )
+   ```
+
+5. **Extract Vocals First**:
+   ```python
+   from auto_voice.audio.separation import VocalSeparator
+   import torchaudio
+
+   # Separate vocals from full mix
+   separator = VocalSeparator()
+   audio, sr = torchaudio.load("full_song.wav")
+
+   separated = separator.separate(audio.numpy(), sr)
+   vocals = separated['vocals']
+
+   # Save isolated vocals
+   torchaudio.save("vocals_only.wav",
+                    torch.from_numpy(vocals).unsqueeze(0),
+                    sr)
+
+   # Use vocals for profile creation
+   embedding = cloner.create_speaker_embedding(["vocals_only.wav"])
+   ```
+
+**Diagnostic**:
+```bash
+# Analyze audio quality
+python -c "
+import librosa
+import numpy as np
+
+audio, sr = librosa.load('input.wav')
+duration = len(audio) / sr
+rms = np.sqrt(np.mean(audio**2))
+max_amp = np.abs(audio).max()
+zero_crossings = np.sum(np.abs(np.diff(np.sign(audio)))) / len(audio)
+
+print(f'Duration: {duration:.1f}s')
+print(f'Sample rate: {sr} Hz')
+print(f'Max amplitude: {max_amp:.3f}')
+print(f'RMS energy: {rms:.3f}')
+print(f'Zero crossing rate: {zero_crossings:.3f}')
+
+# Quality assessment
+if duration < 3.0:
+    print('✗ FAIL: Too short')
+elif max_amp < 0.01:
+    print('✗ FAIL: Too quiet/silent')
+elif max_amp > 0.99:
+    print('⚠ WARNING: May be clipped')
+else:
+    print('✓ PASS: Quality OK')
+"
+```
+
+**Minimum Requirements**:
+- **Duration**: ≥ 3 seconds (10+ seconds recommended)
+- **Sample Rate**: ≥ 16kHz (44.1kHz recommended)
+- **Level**: Peak amplitude 0.1 - 0.95 (avoid silence and clipping)
+- **Format**: WAV, FLAC, or lossless (avoid low-bitrate MP3)
+- **Content**: Clean vocals (use vocal separation if needed)
+
+---
+
+### Speaker embedding contains NaN or Inf
+
+**Error Message**:
+```
+RuntimeError: Speaker embedding contains NaN or Inf
+ValueError: Could not load embedding for model: <model_id>
+FileNotFoundError: [Errno 2] No such file or directory: 'data/voice_profiles/<profile_id>.npy'
+```
+
+**Cause**: Speaker embedding file is missing, corrupted, or contains invalid values (see [Could not load embedding for model](#could-not-load-embedding-for-model) in Model Loading Errors section for file-related issues). This section focuses on NaN/Inf value issues.
+
+**Solutions**:
+
+1. **Validate Existing Embedding**:
+   ```python
+   import numpy as np
+
+   profile_id = "7da05140-..."
+   embedding_path = f"data/voice_profiles/{profile_id}.npy"
+
+   try:
+       embedding = np.load(embedding_path)
+
+       # Check for invalid values
+       if np.isnan(embedding).any():
+           print("✗ Embedding contains NaN - regeneration required")
+       elif np.isinf(embedding).any():
+           print("✗ Embedding contains Inf - regeneration required")
+       elif np.all(embedding == 0):
+           print("✗ Embedding is all zeros - regeneration required")
+       else:
+           norm = np.linalg.norm(embedding)
+           print(f"✓ Valid embedding: shape={embedding.shape}, norm={norm:.3f}")
+           print(f"  Range: [{embedding.min():.3f}, {embedding.max():.3f}]")
+
+   except FileNotFoundError:
+       print(f"✗ Embedding file not found: {embedding_path}")
+   ```
+
+2. **Regenerate Corrupted Embedding**:
+   ```python
+   from auto_voice.inference.voice_cloner import VoiceCloner
+   import numpy as np
+
+   profile_id = "7da05140-..."
+   cloner = VoiceCloner()
+
+   # Use high-quality reference audio
+   reference_audio = [
+       "data/separated_youtube/artist/song1_vocals.wav",
+       "data/separated_youtube/artist/song2_vocals.wav",
+   ]
+
+   # Regenerate embedding
+   print("Regenerating speaker embedding...")
+   embedding = cloner.create_speaker_embedding(reference_audio)
+
+   # Validate before saving
+   assert not np.isnan(embedding).any(), "New embedding contains NaN"
+   assert not np.isinf(embedding).any(), "New embedding contains Inf"
+   assert np.linalg.norm(embedding) > 0, "New embedding is zero"
+
+   # Save
+   embedding_path = f"data/voice_profiles/{profile_id}.npy"
+   np.save(embedding_path, embedding)
+   print(f"✓ Embedding saved: shape={embedding.shape}")
+   ```
+
+3. **Fix Silent Audio Issue**:
+   ```python
+   # If getting "Silent audio - cannot extract embedding"
+   import librosa
+   import numpy as np
+
+   # Check reference audio is not silent
+   for audio_path in reference_audio:
+       audio, sr = librosa.load(audio_path)
+       max_amp = np.abs(audio).max()
+
+       if max_amp < 0.01:
+           print(f"✗ {audio_path} is too quiet/silent")
+           print("  → Use different audio or normalize:")
+
+           # Normalize to -3dB
+           normalized = audio / max_amp * 0.7
+           output_path = audio_path.replace('.wav', '_normalized.wav')
+
+           import soundfile as sf
+           sf.write(output_path, normalized, sr)
+           print(f"  → Saved normalized version: {output_path}")
+   ```
+
+4. **Use Better Reference Audio**:
+   ```python
+   from auto_voice.inference.voice_cloner import VoiceCloner
+
+   cloner = VoiceCloner(auto_separate_vocals=True)
+
+   # Use full songs - vocals will be auto-extracted
+   full_songs = [
+       "artist_song1.wav",
+       "artist_song2.wav",
+       "artist_song3.wav",
+   ]
+
+   # VoiceCloner will automatically:
+   # 1. Separate vocals from instrumental
+   # 2. Extract embeddings from clean vocals
+   # 3. Average embeddings for robustness
+   profile = cloner.create_profile(
+       name="Artist Name",
+       audio_files=full_songs
+   )
+
+   print(f"Profile created: {profile.profile_id}")
+   ```
+
+5. **Batch Validate All Embeddings**:
+   ```python
+   from pathlib import Path
+   import numpy as np
+
+   profile_dir = Path("data/voice_profiles")
+
+   print("Validating all embeddings...")
+   for npy_file in profile_dir.glob("*.npy"):
+       try:
+           embedding = np.load(npy_file)
+
+           has_nan = np.isnan(embedding).any()
+           has_inf = np.isinf(embedding).any()
+           is_zero = np.all(embedding == 0)
+           norm = np.linalg.norm(embedding)
+
+           if has_nan or has_inf or is_zero:
+               print(f"✗ {npy_file.stem}: INVALID (NaN={has_nan}, Inf={has_inf}, Zero={is_zero})")
+           else:
+               print(f"✓ {npy_file.stem}: OK (norm={norm:.3f})")
+
+       except Exception as e:
+           print(f"✗ {npy_file.stem}: ERROR - {e}")
+   ```
+
+**Diagnostic**:
+```bash
+# Quick validation of all profiles
+python -c "
+from pathlib import Path
+import numpy as np
+import json
+
+profile_dir = Path('data/voice_profiles')
+
+for json_file in profile_dir.glob('*.json'):
+    profile_id = json_file.stem
+    npy_file = profile_dir / f'{profile_id}.npy'
+
+    # Check files exist
+    if not npy_file.exists():
+        print(f'✗ {profile_id}: Missing .npy file')
+        continue
+
+    # Load and validate
+    try:
+        with open(json_file) as f:
+            profile = json.load(f)
+
+        embedding = np.load(npy_file)
+
+        # Validate
+        valid = (
+            not np.isnan(embedding).any() and
+            not np.isinf(embedding).any() and
+            np.linalg.norm(embedding) > 0
+        )
+
+        status = '✓' if valid else '✗'
+        print(f'{status} {profile_id}: {profile.get(\"name\", \"Unknown\")} ({embedding.shape})')
+
+    except Exception as e:
+        print(f'✗ {profile_id}: {e}')
+"
+```
+
+**Expected Embedding Properties**:
+- **Shape**: (256,) for mel-statistics, (192,) or (512,) for WavLM
+- **Normalization**: L2-normalized (norm ≈ 1.0)
+- **Range**: Typically [-3, 3] for mel-statistics
+- **No invalid values**: No NaN, Inf, or all-zeros
+- **Paired files**: Both .json and .npy must exist
+
+**Cross-Reference**: See [Could not load embedding for model](#could-not-load-embedding-for-model) for file-not-found issues.
+
+---
+
+### Audio file format not supported
+
+**Error Message**:
+```
+RuntimeError: Unsupported audio format: .mp3
+RuntimeError: Failed to load audio: unknown format
+torchaudio.backend.common.BackendNotAvailableError
+```
+
+**Cause**: Audio file format is not supported by the audio backend, or required dependencies are missing.
+
+**Solutions**:
+
+1. **Convert to Supported Format**:
+   ```bash
+   # Convert to WAV (universally supported)
+   ffmpeg -i input.mp3 -ar 44100 -ac 1 output.wav
+
+   # Convert to FLAC (lossless)
+   ffmpeg -i input.m4a -c:a flac output.flac
+
+   # Batch convert all MP3s to WAV
+   for f in *.mp3; do
+       ffmpeg -i "$f" -ar 44100 -ac 1 "${f%.mp3}.wav"
+   done
+   ```
+
+2. **Install Audio Backends**:
+   ```bash
+   # Install soundfile (recommended for WAV/FLAC)
+   pip install soundfile
+
+   # Install ffmpeg (for all formats)
+   # Ubuntu/Debian
+   sudo apt-get install ffmpeg
+
+   # macOS
+   brew install ffmpeg
+
+   # Verify installation
+   python -c "import soundfile as sf; print(f'soundfile version: {sf.__version__}')"
+   ffmpeg -version
+   ```
+
+3. **Use torchaudio with ffmpeg Backend**:
+   ```python
+   import torchaudio
+
+   # Set backend to ffmpeg (supports more formats)
+   torchaudio.set_audio_backend("ffmpeg")
+
+   # Now can load MP3, M4A, AAC, etc.
+   audio, sr = torchaudio.load("input.mp3")
+
+   # Convert to WAV for compatibility
+   torchaudio.save("output.wav", audio, sr)
+   ```
+
+4. **Check Supported Formats**:
+   ```python
+   import soundfile as sf
+
+   # List available formats
+   print("Supported formats:", sf.available_formats())
+
+   # Check if specific file is supported
+   try:
+       with sf.SoundFile("audio.opus") as f:
+           print(f"✓ Format supported: {f.format}")
+   except RuntimeError as e:
+       print(f"✗ Format not supported: {e}")
+   ```
+
+5. **Pre-process Audio Files**:
+   ```python
+   from pathlib import Path
+   import subprocess
+
+   def convert_to_wav(input_path: str, output_dir: str = "converted") -> str:
+       """Convert any audio format to WAV."""
+       input_path = Path(input_path)
+       output_dir = Path(output_dir)
+       output_dir.mkdir(exist_ok=True)
+
+       output_path = output_dir / f"{input_path.stem}.wav"
+
+       cmd = [
+           "ffmpeg", "-i", str(input_path),
+           "-ar", "44100",  # 44.1kHz sample rate
+           "-ac", "1",      # Mono
+           "-y",            # Overwrite
+           str(output_path)
+       ]
+
+       try:
+           subprocess.run(cmd, check=True, capture_output=True)
+           print(f"✓ Converted: {input_path.name} → {output_path.name}")
+           return str(output_path)
+       except subprocess.CalledProcessError as e:
+           print(f"✗ Conversion failed: {e.stderr.decode()}")
+           raise
+
+   # Use in pipeline
+   wav_path = convert_to_wav("input.m4a")
+   # Now use wav_path for processing
+   ```
+
+**Supported Formats**:
+- **Recommended**: WAV (PCM), FLAC (lossless)
+- **With soundfile**: WAV, FLAC, OGG, AIFF
+- **With ffmpeg**: MP3, M4A, AAC, OPUS, WMA, and more
+- **Avoid**: Very low bitrate MP3 (<128kbps) due to quality loss
+
+**Diagnostic**:
+```bash
+# Check audio file format
+ffprobe -v error -show_entries format=format_name,bit_rate -show_entries stream=codec_name,sample_rate,channels input.mp3
+
+# Test loading with Python
+python -c "
+import torchaudio
+import sys
+
+try:
+    audio, sr = torchaudio.load('${1:-input.wav}')
+    print(f'✓ Format supported: shape={audio.shape}, sr={sr}')
+except Exception as e:
+    print(f'✗ Format error: {e}')
+    sys.exit(1)
+"
+```
+
+---
+
+### Sample rate mismatch
+
+**Error Message**:
+```
+RuntimeError: Sample rate mismatch: expected 16000, got 44100
+ValueError: Input audio sample rate (48000) != model sample rate (22050)
+```
+
+**Cause**: Audio sample rate doesn't match what the model expects. AutoVoice models use:
+- **ContentVec**: 16kHz input
+- **HiFiGAN vocoder**: 22.05kHz output
+- **Demucs separation**: 44.1kHz
+
+**Solutions**:
+
+1. **Automatic Resampling** (handled by pipeline):
+   ```python
+   from auto_voice.inference import RealtimePipeline
+
+   # Pipeline handles resampling automatically
+   pipeline = RealtimePipeline()
+
+   # Can input any sample rate - will be resampled to 16kHz internally
+   import torchaudio
+   audio, sr = torchaudio.load("audio_48khz.wav")  # 48kHz input
+
+   # Pipeline resamples automatically
+   output = pipeline.process_chunk(audio)  # Outputs at 22.05kHz
+   ```
+
+2. **Manual Resampling**:
+   ```python
+   import torchaudio
+   import torchaudio.transforms as T
+
+   # Load audio
+   audio, sr = torchaudio.load("input.wav")
+   print(f"Original: {sr} Hz")
+
+   # Resample to target rate
+   target_sr = 16000
+   resampler = T.Resample(orig_freq=sr, new_freq=target_sr)
+   audio_resampled = resampler(audio)
+
+   # Save resampled audio
+   torchaudio.save("output_16k.wav", audio_resampled, target_sr)
+   print(f"Resampled: {target_sr} Hz")
+   ```
+
+3. **Batch Resample with ffmpeg**:
+   ```bash
+   # Resample single file to 16kHz
+   ffmpeg -i input.wav -ar 16000 output_16k.wav
+
+   # Batch resample all WAVs to 16kHz
+   for f in *.wav; do
+       ffmpeg -i "$f" -ar 16000 "resampled/${f%.wav}_16k.wav"
+   done
+
+   # Resample to model-specific rates
+   # For ContentVec (16kHz)
+   ffmpeg -i input.wav -ar 16000 content_input.wav
+
+   # For HiFiGAN (22.05kHz)
+   ffmpeg -i input.wav -ar 22050 vocoder_output.wav
+
+   # For Demucs (44.1kHz)
+   ffmpeg -i input.wav -ar 44100 separation_input.wav
+   ```
+
+4. **Check Sample Rate Before Processing**:
+   ```python
+   import torchaudio
+
+   def load_and_resample(audio_path: str, target_sr: int = 16000):
+       """Load audio and resample if needed."""
+       audio, sr = torchaudio.load(audio_path)
+
+       if sr != target_sr:
+           print(f"Resampling: {sr} Hz → {target_sr} Hz")
+           resampler = torchaudio.transforms.Resample(sr, target_sr)
+           audio = resampler(audio)
+
+       return audio, target_sr
+
+   # Use in pipeline
+   audio, sr = load_and_resample("input.wav", target_sr=16000)
+   assert sr == 16000, "Sample rate mismatch"
+   ```
+
+5. **Configure Pipeline Sample Rates**:
+   ```python
+   from auto_voice.inference import SingingConversionPipeline
+
+   # Pipeline configuration with explicit sample rates
+   pipeline = SingingConversionPipeline(
+       device='cuda',
+       input_sample_rate=44100,   # Your audio sample rate
+       model_sample_rate=16000,   # ContentVec requirement
+       output_sample_rate=22050,  # HiFiGAN output
+   )
+   ```
+
+**Diagnostic**:
+```bash
+# Check sample rates of all audio files
+python -c "
+import torchaudio
+from pathlib import Path
+
+audio_dir = Path('data/audio')
+sample_rates = {}
+
+for audio_file in audio_dir.glob('**/*.wav'):
+    try:
+        info = torchaudio.info(audio_file)
+        sr = info.sample_rate
+
+        if sr not in sample_rates:
+            sample_rates[sr] = []
+        sample_rates[sr].append(audio_file.name)
+
+    except Exception as e:
+        print(f'✗ {audio_file.name}: {e}')
+
+# Print summary
+for sr, files in sorted(sample_rates.items()):
+    print(f'{sr} Hz: {len(files)} files')
+    if len(files) <= 5:
+        for f in files:
+            print(f'  - {f}')
+"
+
+# Quick check single file
+ffprobe -v error -select_streams a:0 -show_entries stream=sample_rate -of default=noprint_wrappers=1:nokey=1 input.wav
+```
+
+**Model Sample Rate Requirements**:
+- **ContentVec encoder**: 16kHz input
+- **RMVPE pitch**: 16kHz input
+- **HiFiGAN vocoder**: 22.05kHz output
+- **Demucs separation**: 44.1kHz (model default)
+- **So-VITS decoder**: 22.05kHz mel output
+
+**Note**: AutoVoice pipelines handle resampling automatically - you typically don't need to manually resample unless working with raw model inference.
+
+---
 
 ## Database Errors
 
