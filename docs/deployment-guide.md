@@ -85,6 +85,8 @@ curl http://localhost:10001/api/v1/ready
 curl http://localhost:10001/api/v1/gpu/metrics
 ```
 
+> **Note**: If you encounter errors during deployment, see the [Troubleshooting Guide](troubleshooting.md) for common issues and solutions.
+
 ## Monitoring Setup
 
 ### Enable Prometheus and Grafana
@@ -249,6 +251,10 @@ tar czf models-backup.tar.gz models/pretrained/
 
 ## Troubleshooting
 
+> **Comprehensive Guide**: For detailed troubleshooting steps, error solutions, and diagnostic workflows, see the [Troubleshooting Guide](troubleshooting.md).
+
+This section covers quick deployment-specific issues. For GPU errors, model loading failures, audio processing issues, and more, refer to the full troubleshooting guide.
+
 ### Container Won't Start
 
 ```bash
@@ -351,7 +357,8 @@ watch -n 1 'docker exec autovoice nvidia-smi'
 ## Support
 
 For issues:
-1. Check logs: `docker-compose logs -f autovoice`
-2. Verify health: `curl http://localhost:10001/api/v1/health`
-3. Check GPU: `docker exec autovoice nvidia-smi`
-4. Review metrics: http://localhost:10003 (Grafana)
+1. Check the [Troubleshooting Guide](troubleshooting.md) for common errors and solutions
+2. Check logs: `docker-compose logs -f autovoice`
+3. Verify health: `curl http://localhost:10001/api/v1/health`
+4. Check GPU: `docker exec autovoice nvidia-smi`
+5. Review metrics: http://localhost:10003 (Grafana)
