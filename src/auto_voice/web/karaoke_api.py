@@ -16,7 +16,14 @@ from typing import Dict, Any, Optional, Callable
 from flask import Blueprint, request, jsonify, current_app, g
 from werkzeug.utils import secure_filename
 
-from .utils import allowed_file, ALLOWED_AUDIO_EXTENSIONS
+from .utils import (
+    allowed_file,
+    ALLOWED_AUDIO_EXTENSIONS,
+    validation_error_response,
+    not_found_response,
+    service_unavailable_response,
+    error_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -246,10 +253,11 @@ def rate_limit(max_requests: int, window_seconds: int) -> Callable:
                 logger.warning(
                     f"Rate limit exceeded for {client_ip} on {endpoint}"
                 )
-                return jsonify({
-                    'error': 'Rate limit exceeded',
-                    'retry_after': remaining
-                }), 429
+                return error_response(
+                    'Rate limit exceeded',
+                    status_code=429,
+                    retry_after=remaining
+                )
 
             # Increment counter
             entry['count'] += 1
@@ -470,17 +478,17 @@ def upload_song():
     """
     # Check for song file
     if 'song' not in request.files:
-        return jsonify({'error': 'No song file provided'}), 400
+        return validation_error_response('No song file provided')
 
     song_file = request.files['song']
 
     if song_file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+        return validation_error_response('No file selected')
 
     if not allowed_file(song_file.filename):
-        return jsonify({
-            'error': f'Invalid file format. Supported formats: {", ".join(ALLOWED_AUDIO_EXTENSIONS)}'
-        }), 400
+        return validation_error_response(
+            f'Invalid file format. Supported formats: {", ".join(ALLOWED_AUDIO_EXTENSIONS)}'
+        )
 
     # Check file size (approximate, before saving)
     song_file.seek(0, 2)  # Seek to end
@@ -488,9 +496,10 @@ def upload_song():
     song_file.seek(0)  # Reset to beginning
 
     if file_size > MAX_UPLOAD_SIZE_MB * 1024 * 1024:
-        return jsonify({
-            'error': f'File too large. Maximum size: {MAX_UPLOAD_SIZE_MB}MB'
-        }), 413
+        return error_response(
+            f'File too large. Maximum size: {MAX_UPLOAD_SIZE_MB}MB',
+            status_code=413
+        )
 
     tmp_file = None
     try:
@@ -521,9 +530,9 @@ def upload_song():
         # Check duration limit
         if duration > MAX_SONG_DURATION_SECONDS:
             os.unlink(tmp_file.name)
-            return jsonify({
-                'error': f'Song too long. Maximum duration: {MAX_SONG_DURATION_SECONDS // 60} minutes'
-            }), 400
+            return validation_error_response(
+                f'Song too long. Maximum duration: {MAX_SONG_DURATION_SECONDS // 60} minutes'
+            )
 
         # Get sample rate if possible
         sample_rate = 44100  # Default
@@ -567,9 +576,7 @@ def upload_song():
                 os.unlink(tmp_file.name)
             except OSError:
                 pass
-        return jsonify({
-            'error': 'Failed to process uploaded file'
-        }), 503
+        return service_unavailable_response('Failed to process uploaded file')
 
 
 @karaoke_bp.route('/songs/<song_id>', methods=['GET'])
@@ -585,10 +592,7 @@ def get_song_info(song_id: str):
     """
     song = _uploaded_songs.get(song_id)
     if not song:
-        return jsonify({
-            'error': 'Song not found',
-            'song_id': song_id
-        }), 404
+        return error_response('Song not found', status_code=404, song_id=song_id)
 
     # Return public fields only
     return jsonify({
@@ -629,15 +633,12 @@ def start_separation():
     song_id = data.get('song_id')
 
     if not song_id:
-        return jsonify({'error': 'song_id is required'}), 400
+        return validation_error_response('song_id is required')
 
     # Verify song exists
     song = _uploaded_songs.get(song_id)
     if not song:
-        return jsonify({
-            'error': 'Song not found',
-            'song_id': song_id
-        }), 404
+        return error_response('Song not found', status_code=404, song_id=song_id)
 
     # Check if separator is available
     separator = getattr(current_app, 'vocal_separator', None)
@@ -718,10 +719,7 @@ def get_separation_status(job_id: str):
     """
     job = _separation_jobs.get(job_id)
     if not job:
-        return jsonify({
-            'error': 'Job not found',
-            'job_id': job_id
-        }), 404
+        return error_response('Job not found', status_code=404, job_id=job_id)
 
     # Sync status from KaraokeManager if available
     karaoke_mgr = getattr(current_app, 'karaoke_manager', None)
@@ -881,20 +879,22 @@ def set_output_device_config():
     if 'speaker_device' in data:
         speaker_idx = data['speaker_device']
         if speaker_idx is not None and speaker_idx not in device_indices:
-            return jsonify({
-                'error': f'Invalid speaker device index: {speaker_idx}',
-                'available_devices': list(device_indices)
-            }), 400
+            return error_response(
+                f'Invalid speaker device index: {speaker_idx}',
+                status_code=400,
+                available_devices=list(device_indices)
+            )
         _device_config['speaker_device'] = speaker_idx
 
     # Validate and set headphone device
     if 'headphone_device' in data:
         headphone_idx = data['headphone_device']
         if headphone_idx is not None and headphone_idx not in device_indices:
-            return jsonify({
-                'error': f'Invalid headphone device index: {headphone_idx}',
-                'available_devices': list(device_indices)
-            }), 400
+            return error_response(
+                f'Invalid headphone device index: {headphone_idx}',
+                status_code=400,
+                available_devices=list(device_indices)
+            )
         _device_config['headphone_device'] = headphone_idx
 
     logger.info(
@@ -965,10 +965,7 @@ def get_voice_model(model_id: str):
     model = registry.get_model(model_id)
 
     if not model:
-        return jsonify({
-            'error': 'Voice model not found',
-            'model_id': model_id
-        }), 404
+        return error_response('Voice model not found', status_code=404, model_id=model_id)
 
     return jsonify(model)
 
@@ -994,40 +991,40 @@ def extract_voice_model():
     name = data.get('name')
 
     if not song_id:
-        return jsonify({'error': 'song_id is required'}), 400
+        return validation_error_response('song_id is required')
 
     if not name:
-        return jsonify({'error': 'name is required'}), 400
+        return validation_error_response('name is required')
 
     # Get song info
     song = _uploaded_songs.get(song_id)
     if not song:
-        return jsonify({
-            'error': 'Song not found',
-            'song_id': song_id
-        }), 404
+        return error_response('Song not found', status_code=404, song_id=song_id)
 
     # Check if song has been separated
     job_id = song.get('separation_job_id')
     if not job_id:
-        return jsonify({
-            'error': 'Song has not been separated',
-            'song_id': song_id
-        }), 400
+        return error_response(
+            'Song has not been separated',
+            status_code=400,
+            song_id=song_id
+        )
 
     job = _separation_jobs.get(job_id)
     if not job or job['status'] != 'completed':
-        return jsonify({
-            'error': 'Separation not complete',
-            'song_id': song_id
-        }), 400
+        return error_response(
+            'Separation not complete',
+            status_code=400,
+            song_id=song_id
+        )
 
     vocals_path = job.get('vocals_path')
     if not vocals_path:
-        return jsonify({
-            'error': 'Vocals not available',
-            'song_id': song_id
-        }), 400
+        return error_response(
+            'Vocals not available',
+            status_code=400,
+            song_id=song_id
+        )
 
     try:
         import torch
@@ -1063,6 +1060,4 @@ def extract_voice_model():
 
     except Exception as e:
         logger.error(f"Failed to extract voice model: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Failed to extract voice model'
-        }), 503
+        return service_unavailable_response('Failed to extract voice model')
