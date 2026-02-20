@@ -55,14 +55,29 @@ class PipelineFactory:
 
     @classmethod
     def get_instance(cls, device: Optional[torch.device] = None) -> 'PipelineFactory':
-        """Get singleton instance of the factory."""
+        """Get singleton instance of the factory.
+
+        Creates the factory instance on first call, then returns the same
+        instance on subsequent calls to ensure pipelines are shared across
+        the application.
+
+        Args:
+            device: Target device for pipelines (default: CUDA if available)
+
+        Returns:
+            The singleton PipelineFactory instance
+        """
         if cls._instance is None:
             cls._instance = cls(device=device)
         return cls._instance
 
     @classmethod
     def reset_instance(cls) -> None:
-        """Reset singleton instance (useful for testing)."""
+        """Reset singleton instance and unload all pipelines.
+
+        Unloads all cached pipelines and destroys the factory instance.
+        Primarily used for testing to ensure a clean state between tests.
+        """
         if cls._instance is not None:
             cls._instance.unload_all()
             cls._instance = None
@@ -121,7 +136,18 @@ class PipelineFactory:
         pipeline_type: PipelineType,
         profile_store: Optional['VoiceProfileStore'] = None,
     ) -> Union['RealtimePipeline', 'SOTAConversionPipeline', 'SeedVCPipeline', 'MeanVCPipeline']:
-        """Create a new pipeline instance."""
+        """Create a new pipeline instance.
+
+        Args:
+            pipeline_type: Type of pipeline to create
+            profile_store: Optional voice profile store for SOTA pipeline
+
+        Returns:
+            Initialized pipeline instance
+
+        Raises:
+            ValueError: If unknown pipeline_type
+        """
         if pipeline_type == 'realtime':
             from .realtime_pipeline import RealtimePipeline
             return RealtimePipeline(device=self.device)
@@ -167,15 +193,33 @@ class PipelineFactory:
             raise ValueError(f"Unknown pipeline type: {pipeline_type}")
 
     def is_loaded(self, pipeline_type: PipelineType) -> bool:
-        """Check if a pipeline is currently loaded."""
+        """Check if a pipeline is currently loaded.
+
+        Args:
+            pipeline_type: Pipeline to check
+
+        Returns:
+            True if pipeline is loaded in memory, False otherwise
+        """
         return pipeline_type in self._pipelines
 
     def get_memory_usage(self, pipeline_type: PipelineType) -> float:
-        """Get GPU memory usage for a pipeline in GB."""
+        """Get GPU memory usage for a pipeline in GB.
+
+        Args:
+            pipeline_type: Pipeline to query
+
+        Returns:
+            GPU memory allocated by pipeline in gigabytes, or 0.0 if not loaded
+        """
         return self._memory_usage.get(pipeline_type, 0.0)
 
     def get_total_memory_usage(self) -> float:
-        """Get total GPU memory usage across all pipelines in GB."""
+        """Get total GPU memory usage across all pipelines in GB.
+
+        Returns:
+            Sum of GPU memory allocated by all loaded pipelines in gigabytes
+        """
         return sum(self._memory_usage.values())
 
     def unload_pipeline(self, pipeline_type: PipelineType) -> bool:
@@ -204,16 +248,30 @@ class PipelineFactory:
         return True
 
     def unload_all(self) -> None:
-        """Unload all pipelines."""
+        """Unload all pipelines and free GPU memory.
+
+        Iterates through all loaded pipelines and unloads them,
+        triggering garbage collection and CUDA cache cleanup.
+        """
         pipeline_types = list(self._pipelines.keys())
         for pt in pipeline_types:
             self.unload_pipeline(pt)
 
     def get_status(self) -> Dict[str, Dict]:
-        """Get status of all pipelines.
+        """Get status and capabilities of all pipeline types.
+
+        Returns detailed information about each pipeline type including
+        load status, memory usage, performance characteristics, and features.
+        Used by the API to provide pipeline information to clients.
 
         Returns:
-            Dict with pipeline status info for API responses
+            Dict mapping pipeline type to status info containing:
+                - loaded: Whether pipeline is currently loaded
+                - memory_gb: GPU memory usage in gigabytes
+                - latency_target_ms: Expected processing latency
+                - sample_rate: Output sample rate
+                - description: Human-readable description
+                - features: List of key features (for advanced pipelines)
         """
         return {
             'realtime': {
