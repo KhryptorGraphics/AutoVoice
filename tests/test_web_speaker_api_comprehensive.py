@@ -11,6 +11,8 @@ Tests cover:
 - PUT /api/v1/speakers/clusters/<cluster_id>/name - Update cluster name
 - POST /api/v1/speakers/clusters/merge - Merge clusters
 - POST /api/v1/speakers/clusters/split - Split cluster
+- POST /api/v1/speakers/clusters/<cluster_id>/members - Add cluster members
+- DELETE /api/v1/speakers/clusters/<cluster_id>/members/<embedding_id> - Remove cluster member
 - GET /api/v1/speakers/clusters/<cluster_id>/sample - Get cluster audio sample
 - POST /api/v1/speakers/identify - Run speaker identification
 - GET /api/v1/speakers/featured-artists - List featured artists
@@ -128,6 +130,7 @@ def mock_db_ops():
             {'name': 'Artist 1', 'track_count': 5},
             {'name': 'Artist 2', 'track_count': 3},
         ]),
+        'remove_from_cluster': MagicMock(),
     }
     return mock_ops
 
@@ -607,6 +610,112 @@ class TestSplitCluster:
                 'embedding_ids': ['e1'],
             },
         )
+
+        assert response.status_code == 500
+        data = json.loads(response.data)
+        assert 'error' in data
+
+
+class TestAddClusterMembers:
+    """Test POST /api/v1/speakers/clusters/<cluster_id>/members endpoint."""
+
+    @patch('auto_voice.db.operations.add_to_cluster')
+    @patch('auto_voice.web.speaker_api._get_db_operations')
+    def test_add_single_member_success(self, mock_get_db, mock_add, client, mock_db_ops):
+        """Adds single member to cluster successfully."""
+        mock_get_db.return_value = mock_db_ops
+
+        response = client.post(
+            '/api/v1/speakers/clusters/cluster1/members',
+            json={'embedding_id': 123},
+        )
+
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['success'] is True
+        assert 'cluster' in data
+        assert 'member_count' in data
+        assert data['added_count'] == 1
+        mock_add.assert_called_once_with('cluster1', 123, confidence=None)
+
+    @patch('auto_voice.db.operations.add_to_cluster')
+    @patch('auto_voice.web.speaker_api._get_db_operations')
+    def test_add_multiple_members_success(self, mock_get_db, mock_add, client, mock_db_ops):
+        """Adds multiple members to cluster successfully."""
+        mock_get_db.return_value = mock_db_ops
+
+        response = client.post(
+            '/api/v1/speakers/clusters/cluster1/members',
+            json={'embedding_ids': [123, 456, 789]},
+        )
+
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['success'] is True
+        assert data['added_count'] == 3
+        assert mock_add.call_count == 3
+
+    def test_add_members_missing_embedding_ids_returns_400(self, client):
+        """Returns 400 when no embedding IDs provided."""
+        response = client.post(
+            '/api/v1/speakers/clusters/cluster1/members',
+            json={},
+        )
+
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert 'error' in data
+
+
+class TestRemoveClusterMember:
+    """Test DELETE /api/v1/speakers/clusters/<cluster_id>/members/<embedding_id> endpoint."""
+
+    @patch('auto_voice.web.speaker_api._get_db_operations')
+    def test_remove_member_success(self, mock_get_db, client, mock_db_ops):
+        """Removes member from cluster successfully."""
+        mock_get_db.return_value = mock_db_ops
+
+        response = client.delete('/api/v1/speakers/clusters/cluster1/members/123')
+
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['success'] is True
+        assert 'cluster' in data
+        assert 'member_count' in data
+        mock_db_ops['remove_from_cluster'].assert_called_once_with('cluster1', 123)
+
+    @patch('auto_voice.web.speaker_api._get_db_operations')
+    def test_remove_member_cluster_not_found_returns_404(self, mock_get_db, client, mock_db_ops):
+        """Returns 404 when cluster doesn't exist."""
+        mock_db_ops['get_cluster'].return_value = None
+        mock_get_db.return_value = mock_db_ops
+
+        response = client.delete('/api/v1/speakers/clusters/nonexistent/members/123')
+
+        assert response.status_code == 404
+        data = json.loads(response.data)
+        assert 'error' in data
+        assert 'Cluster not found' in data['error']
+
+    @patch('auto_voice.web.speaker_api._get_db_operations')
+    def test_remove_member_invalid_embedding_id_returns_400(self, mock_get_db, client, mock_db_ops):
+        """Returns 400 when embedding_id is not a valid integer."""
+        mock_get_db.return_value = mock_db_ops
+
+        response = client.delete('/api/v1/speakers/clusters/cluster1/members/invalid')
+
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert 'error' in data
+        assert 'Invalid embedding_id format' in data['error']
+
+    @patch('auto_voice.web.speaker_api._get_db_operations')
+    def test_remove_member_handles_errors(self, mock_get_db, client, mock_db_ops):
+        """Returns 500 on removal errors."""
+        mock_db_ops['remove_from_cluster'].side_effect = Exception("Removal failed")
+        mock_get_db.return_value = mock_db_ops
+
+        response = client.delete('/api/v1/speakers/clusters/cluster1/members/123')
 
         assert response.status_code == 500
         data = json.loads(response.data)

@@ -30,7 +30,7 @@ def _get_db_operations():
         get_all_clusters, get_cluster, get_cluster_members,
         update_cluster_name, merge_clusters, create_cluster,
         get_embeddings_by_cluster, get_featured_artists_for_track,
-        get_all_featured_artists,
+        get_all_featured_artists, remove_from_cluster,
     )
     return {
         'get_all_tracks': get_all_tracks,
@@ -45,6 +45,7 @@ def _get_db_operations():
         'get_embeddings_by_cluster': get_embeddings_by_cluster,
         'get_featured_artists_for_track': get_featured_artists_for_track,
         'get_all_featured_artists': get_all_featured_artists,
+        'remove_from_cluster': remove_from_cluster,
     }
 
 
@@ -485,6 +486,49 @@ def add_cluster_members(cluster_id: str):
         })
     except Exception as e:
         logger.error(f"Failed to add members to cluster: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@log_request
+@rate_limit(10, 60)
+@speaker_bp.route('/clusters/<cluster_id>/members/<embedding_id>', methods=['DELETE'])
+def remove_cluster_member(cluster_id: str, embedding_id: str):
+    """Remove a member from a cluster.
+
+    Args:
+        cluster_id: Cluster UUID
+        embedding_id: Embedding ID to remove
+
+    Returns:
+        JSON with updated cluster
+    """
+    db = _get_db_operations()
+
+    # Check if cluster exists
+    cluster = db['get_cluster'](cluster_id)
+    if not cluster:
+        return jsonify({'error': 'Cluster not found'}), 404
+
+    try:
+        # Convert embedding_id to int
+        emb_id = int(embedding_id)
+    except ValueError:
+        return jsonify({'error': 'Invalid embedding_id format'}), 400
+
+    try:
+        db['remove_from_cluster'](cluster_id, emb_id)
+
+        # Get updated cluster info
+        cluster = db['get_cluster'](cluster_id)
+        members = db['get_cluster_members'](cluster_id)
+
+        return jsonify({
+            'success': True,
+            'cluster': cluster,
+            'member_count': len(members),
+        })
+    except Exception as e:
+        logger.error(f"Failed to remove member from cluster: {e}")
         return jsonify({'error': str(e)}), 500
 
 
