@@ -12,6 +12,8 @@ from flask import Blueprint, request, jsonify, send_file
 from typing import Dict, Any, Optional
 import tempfile
 
+from .utils import validation_error_response, not_found_response, error_response
+
 logger = logging.getLogger(__name__)
 
 # Blueprint with /api/v1/speakers prefix
@@ -65,7 +67,7 @@ def run_extraction():
     artist_name = data.get('artist_name')
 
     if not artist_name:
-        return jsonify({'error': 'artist_name is required'}), 400
+        return validation_error_response('artist_name is required')
 
     job_id = str(uuid.uuid4())
 
@@ -133,7 +135,7 @@ def get_extraction_status(job_id: str):
         JSON with job status and progress
     """
     if job_id not in _extraction_jobs:
-        return jsonify({'error': 'Job not found'}), 404
+        return not_found_response('Job not found')
 
     job = _extraction_jobs[job_id]
     return jsonify({
@@ -197,7 +199,7 @@ def get_track_details(track_id: str):
 
     track = db['get_track'](track_id)
     if not track:
-        return jsonify({'error': 'Track not found'}), 404
+        return not_found_response('Track not found')
 
     featured = db['get_featured_artists_for_track'](track_id)
     track['featured_artists'] = featured
@@ -248,7 +250,7 @@ def fetch_metadata():
 
     except Exception as e:
         logger.error(f"Metadata fetch failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # =============================================================================
@@ -282,7 +284,7 @@ def get_cluster_details(cluster_id: str):
 
     cluster = db['get_cluster'](cluster_id)
     if not cluster:
-        return jsonify({'error': 'Cluster not found'}), 404
+        return not_found_response('Cluster not found')
 
     members = db['get_cluster_members'](cluster_id)
 
@@ -328,7 +330,7 @@ def update_cluster_name_endpoint(cluster_id: str):
 
     name = data.get('name')
     if not name:
-        return jsonify({'error': 'name is required'}), 400
+        return validation_error_response('name is required')
 
     is_verified = data.get('is_verified', True)
 
@@ -341,7 +343,7 @@ def update_cluster_name_endpoint(cluster_id: str):
         })
     except Exception as e:
         logger.error(f"Failed to update cluster name: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @speaker_bp.route('/clusters/merge', methods=['POST'])
@@ -362,10 +364,10 @@ def merge_clusters_endpoint():
     source_id = data.get('source_id')
 
     if not target_id or not source_id:
-        return jsonify({'error': 'target_id and source_id are required'}), 400
+        return validation_error_response('target_id and source_id are required')
 
     if target_id == source_id:
-        return jsonify({'error': 'Cannot merge cluster with itself'}), 400
+        return validation_error_response('Cannot merge cluster with itself')
 
     try:
         db['merge_clusters'](target_id, source_id)
@@ -379,7 +381,7 @@ def merge_clusters_endpoint():
         })
     except Exception as e:
         logger.error(f"Failed to merge clusters: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @speaker_bp.route('/clusters/split', methods=['POST'])
@@ -402,10 +404,10 @@ def split_cluster_endpoint():
     new_name = data.get('new_name', 'Split Cluster')
 
     if not cluster_id:
-        return jsonify({'error': 'cluster_id is required'}), 400
+        return validation_error_response('cluster_id is required')
 
     if not embedding_ids:
-        return jsonify({'error': 'embedding_ids is required'}), 400
+        return validation_error_response('embedding_ids is required')
 
     try:
         from ..db.operations import remove_from_cluster, add_to_cluster
@@ -428,7 +430,7 @@ def split_cluster_endpoint():
         })
     except Exception as e:
         logger.error(f"Failed to split cluster: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @speaker_bp.route('/clusters/<cluster_id>/sample', methods=['GET'])
@@ -461,10 +463,10 @@ def get_cluster_sample(cluster_id: str):
             )
 
     except ValueError as e:
-        return jsonify({'error': str(e)}), 404
+        return not_found_response(str(e))
     except Exception as e:
         logger.error(f"Failed to get cluster sample: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # =============================================================================
@@ -536,7 +538,7 @@ def run_speaker_identification():
 
     except Exception as e:
         logger.error(f"Speaker identification failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @speaker_bp.route('/featured-artists', methods=['GET'])
@@ -585,4 +587,4 @@ def organize_files():
 
     except Exception as e:
         logger.error(f"File organization failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
