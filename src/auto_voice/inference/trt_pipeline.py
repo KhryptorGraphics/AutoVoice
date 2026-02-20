@@ -360,7 +360,11 @@ class TRTInferenceContext:
         return outputs
 
     def get_memory_usage(self) -> int:
-        """Get engine memory usage in bytes."""
+        """Get TRT engine device memory usage.
+
+        Returns:
+            Memory usage in bytes required by the engine on GPU
+        """
         return self.engine.device_memory_size
 
 
@@ -398,7 +402,15 @@ class TRTConversionPipeline:
         logger.info(f"TRTConversionPipeline initialized from {engine_dir}")
 
     def _load_or_build_engines(self):
-        """Load existing TRT engines or build them from PyTorch models."""
+        """Load existing TRT engines or build them from PyTorch models.
+
+        Checks for all required engine files (content, pitch, decoder, vocoder).
+        If any are missing, builds them automatically using ONNXExporter and
+        TRTEngineBuilder with fp16 precision and dynamic shape profiles.
+
+        Raises:
+            RuntimeError: If engine building fails
+        """
         engine_paths = {
             'content': self.engine_dir / 'content_extractor.trt',
             'pitch': self.engine_dir / 'pitch_extractor.trt',
@@ -490,7 +502,16 @@ class TRTConversionPipeline:
 
     def _resample(self, audio: torch.Tensor, from_sr: int,
                   to_sr: int) -> torch.Tensor:
-        """Resample audio tensor."""
+        """Resample audio tensor to target sample rate.
+
+        Args:
+            audio: [T] or [C, T] input audio tensor
+            from_sr: Source sample rate in Hz
+            to_sr: Target sample rate in Hz
+
+        Returns:
+            Resampled audio tensor with same number of dimensions
+        """
         if from_sr == to_sr:
             return audio
         if audio.dim() == 1:
@@ -503,7 +524,17 @@ class TRTConversionPipeline:
         return audio
 
     def _to_mono(self, audio: torch.Tensor) -> torch.Tensor:
-        """Convert to mono."""
+        """Convert stereo or multi-channel audio to mono.
+
+        Args:
+            audio: [T] mono or [C, T] multi-channel audio tensor
+
+        Returns:
+            [T] mono audio tensor (averaged across channels if multi-channel)
+
+        Raises:
+            RuntimeError: If audio has unexpected shape (not 1D or 2D)
+        """
         if audio.dim() == 1:
             return audio
         if audio.dim() == 2:
@@ -511,7 +542,18 @@ class TRTConversionPipeline:
         raise RuntimeError(f"Unexpected audio shape: {audio.shape}")
 
     def _encode_pitch(self, f0: torch.Tensor) -> torch.Tensor:
-        """Encode F0 to pitch embeddings."""
+        """Encode F0 contour to 256-dimensional pitch embeddings.
+
+        Converts fundamental frequency (F0) values to sinusoidal pitch
+        embeddings using log-scaled frequency with 128 sine and 128 cosine
+        components. This representation is used by the CoMoSVC decoder.
+
+        Args:
+            f0: [B, T] fundamental frequency tensor in Hz
+
+        Returns:
+            [B, T, 256] pitch embedding tensor (128 sin + 128 cos)
+        """
         B, T = f0.shape
         log_f0 = torch.log2(f0.clamp(min=1.0))
         log_f0_norm = (log_f0 - 5.6) / (10.1 - 5.6)
@@ -612,7 +654,14 @@ class TRTConversionPipeline:
         }
 
     def get_engine_memory_usage(self) -> int:
-        """Get total memory usage of all TRT engines in bytes."""
+        """Get total GPU memory usage of all TRT engines.
+
+        Sums device memory requirements for content extractor, pitch extractor,
+        decoder, and vocoder engines. Does not include PyTorch separator memory.
+
+        Returns:
+            Total memory usage in bytes across all four TRT engines
+        """
         total = 0
         total += self.content_ctx.get_memory_usage()
         total += self.pitch_ctx.get_memory_usage()
