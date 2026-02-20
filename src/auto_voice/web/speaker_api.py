@@ -12,6 +12,8 @@ from flask import Blueprint, request, jsonify, send_file
 from typing import Dict, Any, Optional
 import tempfile
 
+from .karaoke_api import log_request, rate_limit
+
 logger = logging.getLogger(__name__)
 
 # Blueprint with /api/v1/speakers prefix
