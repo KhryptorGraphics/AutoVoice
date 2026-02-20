@@ -89,7 +89,15 @@ class SeedVCPipeline:
         )
 
     def _initialize(self):
-        """Lazy-initialize the Seed-VC wrapper."""
+        """Lazy-initialize the Seed-VC wrapper.
+
+        Loads the DiT-CFM decoder, BigVGAN vocoder, Whisper encoder, CAMPPlus speaker
+        encoder, and RMVPE F0 extractor. Models are loaded only once on first use.
+
+        Raises:
+            RuntimeError: If SeedVCWrapper import fails or model initialization fails.
+                         Ensure models are downloaded via scripts/download_seed_vc_models.py
+        """
         if self._wrapper is not None:
             return
 
@@ -150,9 +158,16 @@ class SeedVCPipeline:
     ) -> None:
         """Load reference audio from a voice profile (legacy method).
 
+        Loads the first audio sample from the profile's audio files and sets it
+        as the reference for in-context learning. Prefer set_reference_from_profile_id
+        for new code as it uses the AdapterBridge.
+
         Args:
-            profile_store: Voice profile storage
+            profile_store: Voice profile storage instance
             profile_id: Profile ID to load reference from
+
+        Raises:
+            ValueError: If profile not found or has no audio samples
         """
         profile = profile_store.get_profile(profile_id)
         if profile is None:
@@ -175,11 +190,16 @@ class SeedVCPipeline:
         """Load reference audio using the AdapterBridge.
 
         This is the preferred method for loading voice profile references
-        as it doesn't require a VoiceProfileStore instance.
+        as it doesn't require a VoiceProfileStore instance. Uses the global
+        AdapterBridge to fetch voice reference data.
 
         Args:
             profile_id: Voice profile UUID
-            reference_index: Which reference audio to use (0 = best quality)
+            reference_index: Which reference audio to use (0 = best quality).
+                           Index is clamped to available reference count.
+
+        Raises:
+            ValueError: If no reference audio found for profile
         """
         from .adapter_bridge import get_adapter_bridge
 
@@ -351,17 +371,26 @@ class SeedVCPipeline:
         """Convert audio with vocal separation pre-processing.
 
         This method first separates vocals from the input audio using
-        MelBandRoFormer, then converts only the vocal track.
+        MelBandRoFormer, then converts only the vocal track. Useful for
+        converting songs or audio with background music/noise.
+
+        Progress is remapped: separation 0-30%, conversion 30-100%.
 
         Args:
             audio: Input audio (may contain background music)
             sample_rate: Input sample rate
-            speaker_embedding: Ignored
-            on_progress: Progress callback
-            pitch_shift: Pitch shift in semitones
+            speaker_embedding: Ignored (Seed-VC uses reference audio)
+            on_progress: Optional callback(stage_name, progress_fraction)
+            pitch_shift: Pitch shift in semitones (positive = higher pitch)
 
         Returns:
-            Dict with converted audio and metadata
+            Dict with:
+                - audio: Converted vocal track at 44.1kHz
+                - sample_rate: 44100
+                - metadata: Processing info
+
+        Raises:
+            RuntimeError: If no reference audio set or conversion fails
         """
         def report(stage: str, progress: float):
             if on_progress:
