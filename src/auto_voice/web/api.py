@@ -90,7 +90,14 @@ except ImportError:
     YOUTUBE_DOWNLOADER_AVAILABLE = False
 
 # Import shared utilities
-from .utils import allowed_file, ALLOWED_AUDIO_EXTENSIONS
+from .utils import (
+    allowed_file,
+    ALLOWED_AUDIO_EXTENSIONS,
+    validation_error_response,
+    not_found_response,
+    service_unavailable_response,
+    error_response
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,26 +180,24 @@ def convert_song():
     # Check singing conversion pipeline availability
     singing_pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
     if not singing_pipeline:
-        return jsonify({
-            'error': 'Song conversion service unavailable',
-            'message': 'Singing conversion pipeline not initialized'
-        }), 503
+        return service_unavailable_response(
+            'Song conversion service unavailable',
+            message='Singing conversion pipeline not initialized'
+        )
 
     if not NUMPY_AVAILABLE:
-        return jsonify({
-            'error': 'numpy required for audio processing'
-        }), 503
+        return service_unavailable_response('numpy required for audio processing')
 
     # Check for song file
     if 'song' not in request.files and 'audio' not in request.files:
-        return jsonify({'error': 'No song file provided'}), 400
+        return validation_error_response('No song file provided')
 
     song_file = request.files.get('song') or request.files.get('audio')
     if song_file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+        return validation_error_response('No selected file')
 
     if not allowed_file(song_file.filename):
-        return jsonify({'error': 'Invalid file type'}), 400
+        return validation_error_response('Invalid file type')
 
     # Get profile_id from form or settings JSON
     profile_id = request.form.get('profile_id')
@@ -206,15 +211,15 @@ def convert_song():
             settings_data = json.loads(settings)
             profile_id = settings_data.get('target_profile_id') or settings_data.get('profile_id') or profile_id
         except json.JSONDecodeError:
-            return jsonify({'error': 'Invalid settings JSON'}), 400
+            return validation_error_response('Invalid settings JSON')
 
     if not profile_id:
-        return jsonify({'error': 'profile_id required'}), 400
+        return validation_error_response('profile_id required')
 
     # Decoupled profile validation: returns 404 independently of pipeline exceptions
     voice_cloner = getattr(current_app, 'voice_cloner', None)
     if not voice_cloner:
-        return jsonify({'error': 'Voice cloning service unavailable'}), 503
+        return service_unavailable_response('Voice cloning service unavailable')
 
     profile = None
     try:
@@ -224,7 +229,7 @@ def convert_song():
 
     if profile is None:
         logger.warning(f"Profile not found during validation: {profile_id}")
-        return jsonify({'error': f'Voice profile {profile_id} not found'}), 404
+        return not_found_response(f'Voice profile {profile_id} not found')
 
     # Define preset_map locally (Comment 1 fix)
     preset_map = {
@@ -242,7 +247,7 @@ def convert_song():
             lambda v: 0.0 <= v <= 2.0, type_hint='float'
         )
     except ValueError as e:
-        return jsonify({'error': str(e)}), 400
+        return validation_error_response(str(e))
 
     try:
         instrumental_volume = get_param(
@@ -250,7 +255,7 @@ def convert_song():
             lambda v: 0.0 <= v <= 2.0, type_hint='float'
         )
     except ValueError as e:
-        return jsonify({'error': str(e)}), 400
+        return validation_error_response(str(e))
 
     try:
         pitch_shift = get_param(
@@ -258,7 +263,7 @@ def convert_song():
             lambda v: -12 <= v <= 12, type_hint='float'
         )
     except ValueError as e:
-        return jsonify({'error': str(e)}), 400
+        return validation_error_response(str(e))
 
     return_stems = get_param(
         settings_data, 'return_stems', 'return_stems', False,
@@ -381,9 +386,7 @@ def convert_song():
                 # Get speaker embedding from profile
                 speaker_embedding = profile.get('embedding')
                 if speaker_embedding is None:
-                    return jsonify({
-                        'error': 'Profile missing speaker embedding for realtime conversion'
-                    }), 400
+                    return validation_error_response('Profile missing speaker embedding for realtime conversion')
 
                 # Convert using realtime pipeline
                 import numpy as np
@@ -420,25 +423,19 @@ def convert_song():
             # Comment 2: Defensive validation of pipeline result
             if not isinstance(result, dict):
                 logger.error(f"Invalid pipeline result type: {type(result)}")
-                return jsonify({
-                    'error': 'Temporary service unavailability during conversion'
-                }), 503
+                return service_unavailable_response('Temporary service unavailability during conversion')
 
             required_keys = ['mixed_audio', 'sample_rate', 'duration', 'metadata']
             missing_keys = [k for k in required_keys if k not in result]
             if missing_keys:
                 logger.error(f"Missing pipeline result keys: {missing_keys}")
-                return jsonify({
-                    'error': 'Invalid pipeline response - temporary service unavailability'
-                }), 503
+                return service_unavailable_response('Invalid pipeline response - temporary service unavailability')
 
             # Validate mixed_audio is non-empty numpy array
             mixed_audio = result['mixed_audio']
             if not isinstance(mixed_audio, np.ndarray) or mixed_audio.size == 0:
                 logger.error("Invalid mixed_audio: not a non-empty numpy array")
-                return jsonify({
-                    'error': 'Invalid pipeline response - temporary service unavailability'
-                }), 503
+                return service_unavailable_response('Invalid pipeline response - temporary service unavailability')
 
             # Validate stems if requested
             stems = result.get('stems', {})
@@ -618,29 +615,23 @@ def convert_song():
             logger.info(f"Song conversion job {response_data['job_id']} completed successfully")
             return jsonify(response_data)
         else:
-            return jsonify({'error': 'No conversion service available'}), 503
+            return service_unavailable_response('No conversion service available')
 
     except (ProfileNotFoundError, FileNotFoundError) as e:
         logger.warning(f"Profile not found: {profile_id} ({type(e).__name__})")
-        return jsonify({'error': f'Voice profile {profile_id} not found'}), 404
+        return not_found_response(f'Voice profile {profile_id} not found')
 
     except (SeparationError, ConversionError) as e:
         # Comment 1: Pipeline errors return 503 (retriable)
         logger.error(f"Singing conversion pipeline error: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Temporary service unavailability during conversion',
-            'message': str(e) if current_app.debug else None
-        }), 503
+        return service_unavailable_response('Temporary service unavailability during conversion', message=str(e))
 
 
     except Exception as e:
         # Comment 1: Generic exceptions that are likely service issues -> 503
         # e.g., GPU OOM, temp file issues, etc.
         logger.error(f"Song conversion error: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Temporary service unavailability during conversion',
-            'message': str(e) if current_app.debug else None
-        }), 503
+        return service_unavailable_response('Temporary service unavailability during conversion', message=str(e))
 
     finally:
         # Don't delete temp file if job_manager path was used (job handles cleanup)
@@ -657,15 +648,12 @@ def get_conversion_status(job_id):
     """Get conversion job status - COMMENT 3 FIX"""
     job_manager = getattr(current_app, 'job_manager', None)
     if not job_manager:
-        return jsonify({'error': 'Job management service unavailable'}), 503
+        return service_unavailable_response('Job management service unavailable')
 
     status = job_manager.get_job_status(job_id)
     if status is None:
         logger.info(f"Status request for unknown job_id: {job_id}")
-        return jsonify({
-            'error': 'Job not found',
-            'job_id': job_id
-        }), 404
+        return not_found_response('Job not found')
 
     # COMMENT 3 FIX: Add download_url when job is completed and result is available
     if status.get('status') == 'completed':
@@ -685,15 +673,12 @@ def download_converted_audio(job_id):
     """Download converted audio file"""
     job_manager = getattr(current_app, 'job_manager', None)
     if not job_manager:
-        return jsonify({'error': 'Job management service unavailable'}), 503
+        return service_unavailable_response('Job management service unavailable')
     
     result_path = job_manager.get_job_result_path(job_id)
     if not result_path or not os.path.exists(result_path):
         logger.info(f"Download request for unavailable result: {job_id}")
-        return jsonify({
-            'error': 'Result not available',
-            'job_id': job_id
-        }), 404
+        return not_found_response('Result not available')
     
     try:
         logger.info(f"Downloading result for job {job_id}: {result_path}")
@@ -705,10 +690,7 @@ def download_converted_audio(job_id):
         )
     except Exception as e:
         logger.error(f"Download error for job {job_id}: {e}")
-        return jsonify({
-            'error': 'Download failed',
-            'job_id': job_id
-        }), 500
+        return error_response('Download failed')
 
 
 @api_bp.route('/convert/cancel/<job_id>', methods=['POST'])
@@ -716,15 +698,12 @@ def cancel_conversion(job_id):
     """Cancel a conversion job"""
     job_manager = getattr(current_app, 'job_manager', None)
     if not job_manager:
-        return jsonify({'error': 'Job management service unavailable'}), 503
+        return service_unavailable_response('Job management service unavailable')
 
     cancelled = job_manager.cancel_job(job_id)
     if not cancelled:
         logger.info(f"Cancel request for non-cancellable job: {job_id}")
-        return jsonify({
-            'error': 'Job not found or already completed',
-            'job_id': job_id
-        }), 404
+        return not_found_response('Job not found or already completed')
 
     logger.info(f"Cancelled job {job_id}")
     return jsonify({
@@ -738,33 +717,23 @@ def get_conversion_metrics(job_id):
     """Get quality metrics for a completed conversion job"""
     job_manager = getattr(current_app, 'job_manager', None)
     if not job_manager:
-        return jsonify({'error': 'Job management service unavailable'}), 503
+        return service_unavailable_response('Job management service unavailable')
 
     # Check if job exists and is completed
     status = job_manager.get_job_status(job_id)
     if status is None:
         logger.info(f"Metrics request for unknown job_id: {job_id}")
-        return jsonify({
-            'error': 'Job not found',
-            'job_id': job_id
-        }), 404
+        return not_found_response('Job not found')
 
     if status.get('status') != 'completed':
         logger.info(f"Metrics request for non-completed job: {job_id} (status: {status.get('status')})")
-        return jsonify({
-            'error': 'Metrics only available for completed jobs',
-            'job_id': job_id,
-            'status': status.get('status')
-        }), 400
+        return validation_error_response('Metrics only available for completed jobs')
 
     # Retrieve metrics from job manager
     metrics = job_manager.get_job_metrics(job_id)
     if metrics is None:
         logger.info(f"No metrics available for job: {job_id}")
-        return jsonify({
-            'error': 'Metrics not available for this job',
-            'job_id': job_id
-        }), 404
+        return not_found_response('Metrics not available for this job')
 
     logger.info(f"Metrics request for job {job_id}: success")
     return jsonify(metrics)
@@ -782,14 +751,14 @@ def clone_voice():
         }), 503
 
     if 'reference_audio' not in request.files:
-        return jsonify({'error': 'No reference_audio file provided'}), 400
+        return validation_error_response('No reference_audio file provided')
 
     audio_file = request.files['reference_audio']
     if audio_file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+        return validation_error_response('No file selected')
 
     if not allowed_file(audio_file.filename):
-        return jsonify({'error': 'Invalid file format'}), 400
+        return validation_error_response('Invalid file format')
 
     user_id = request.form.get('user_id')
     name = request.form.get('name')
@@ -819,44 +788,39 @@ def clone_voice():
 
     except InvalidAudioError as e:
         logger.warning(f"Invalid audio for voice cloning: {e}")
-        return jsonify({
-            'error': 'Invalid reference audio',
-            'message': str(e),
-            'error_code': 'invalid_reference_audio'
-        }), 400
+        return validation_error_response(
+            'Invalid reference audio',
+            message=str(e),
+            error_code='invalid_reference_audio'
+        )
 
     except InsufficientQualityError as e:
         logger.warning(f"Insufficient audio quality for voice cloning: {e}")
-        error_response = {
-            'error': 'Insufficient audio quality',
+        kwargs = {
             'message': str(e),
             'error_code': getattr(e, 'error_code', 'insufficient_quality')
         }
         # Include quality details if available
         if hasattr(e, 'details') and e.details:
-            error_response['details'] = e.details
-        return jsonify(error_response), 400
+            kwargs['details'] = e.details
+        return validation_error_response('Insufficient audio quality', **kwargs)
 
     except InconsistentSamplesError as e:
         logger.warning(f"Inconsistent samples for voice cloning: {e}")
-        error_response = {
-            'error': 'Inconsistent audio samples',
+        kwargs = {
             'message': str(e),
             'error_code': getattr(e, 'error_code', 'inconsistent_samples')
         }
         # Include consistency details if available
         if hasattr(e, 'details') and e.details:
-            error_response['details'] = e.details
-        return jsonify(error_response), 400
+            kwargs['details'] = e.details
+        return validation_error_response('Inconsistent audio samples', **kwargs)
 
     except Exception as e:
         # Generic exceptions in voice cloning context are treated as transient service errors (503)
         # This mirrors the behavior in convert_song and indicates temporary service unavailability
         logger.error(f"Voice cloning error: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Temporary service unavailability during voice cloning',
-            'message': str(e) if current_app.debug else None
-        }), 503
+        return service_unavailable_response('Temporary service unavailability during voice cloning', message=str(e))
 
     finally:
         if tmp_file and os.path.exists(tmp_file.name):
@@ -919,10 +883,7 @@ def get_voice_profiles():
         # COMMENT 2 FIX: Treat unexpected internal failures as transient service issues (503)
         # This mirrors the behavior in clone_voice and convert_song
         logger.error(f"Voice cloner list_profiles error: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Temporary service unavailability during profile listing',
-            'message': str(e) if current_app.debug else None
-        }), 503
+        return service_unavailable_response('Temporary service unavailability during profile listing', message=str(e))
 
 
 @api_bp.route('/voice/profiles/<profile_id>', methods=['GET'])
@@ -973,10 +934,7 @@ def get_voice_profile(profile_id):
         # COMMENT 2 FIX: Treat unexpected internal failures as transient service issues (503)
         # This mirrors the behavior in clone_voice and convert_song
         logger.error(f"Error loading voice profile {profile_id}: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Temporary service unavailability during profile retrieval',
-            'message': str(e) if current_app.debug else None
-        }), 503
+        return service_unavailable_response('Temporary service unavailability during profile retrieval', message=str(e))
 
 
 @api_bp.route('/voice/profiles/<profile_id>', methods=['DELETE'])
@@ -1015,10 +973,7 @@ def delete_voice_profile(profile_id):
         # COMMENT 2 FIX: Treat unexpected internal failures as transient service issues (503)
         # This mirrors the behavior in clone_voice and convert_song
         logger.error(f"Voice profile deletion error: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Temporary service unavailability during profile deletion',
-            'message': str(e) if current_app.debug else None
-        }), 503
+        return service_unavailable_response('Temporary service unavailability during profile deletion', message=str(e))
 
 
 @api_bp.route('/voice/profiles/<profile_id>/adapters', methods=['GET'])
@@ -1036,14 +991,14 @@ def get_profile_adapters(profile_id):
     # Check if profile exists
     voice_cloner = getattr(current_app, 'voice_cloner', None)
     if voice_cloner is None:
-        return jsonify({'error': 'Voice cloning service unavailable'}), 503
+        return service_unavailable_response('Voice cloning service unavailable')
 
     try:
         profile = voice_cloner.load_voice_profile(profile_id)
         if profile is None:
-            return jsonify({'error': 'Voice profile not found', 'profile_id': profile_id}), 404
+            return not_found_response('Voice profile not found')
     except Exception:
-        return jsonify({'error': 'Voice profile not found', 'profile_id': profile_id}), 404
+        return not_found_response('Voice profile not found')
 
     # Scan for adapters
     base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
@@ -1113,7 +1068,7 @@ def get_profile_model(profile_id):
     # Check if profile exists
     voice_cloner = getattr(current_app, 'voice_cloner', None)
     if voice_cloner is None:
-        return jsonify({'error': 'Voice cloning service unavailable'}), 503
+        return service_unavailable_response('Voice cloning service unavailable')
 
     try:
         profile = voice_cloner.load_voice_profile(profile_id)
@@ -1228,13 +1183,13 @@ def select_profile_adapter(profile_id):
     # Store selection in profile metadata
     voice_cloner = getattr(current_app, 'voice_cloner', None)
     if voice_cloner is None:
-        return jsonify({'error': 'Voice cloning service unavailable'}), 503
+        return service_unavailable_response('Voice cloning service unavailable')
 
     try:
         # Update profile with selected adapter
         profile = voice_cloner.load_voice_profile(profile_id)
         if profile is None:
-            return jsonify({'error': 'Voice profile not found'}), 404
+            return not_found_response('Voice profile not found')
 
         # Store adapter preference
         profile['selected_adapter'] = adapter_type
@@ -1248,7 +1203,7 @@ def select_profile_adapter(profile_id):
         })
     except Exception as e:
         logger.error(f"Failed to select adapter: {e}", exc_info=True)
-        return jsonify({'error': 'Failed to select adapter', 'message': str(e)}), 500
+        return error_response('Failed to select adapter', message=str(e))
 
 
 @api_bp.route('/voice/profiles/<profile_id>/adapter/metrics', methods=['GET'])
@@ -1268,14 +1223,14 @@ def get_adapter_metrics(profile_id):
     # Check if profile exists
     voice_cloner = getattr(current_app, 'voice_cloner', None)
     if voice_cloner is None:
-        return jsonify({'error': 'Voice cloning service unavailable'}), 503
+        return service_unavailable_response('Voice cloning service unavailable')
 
     try:
         profile = voice_cloner.load_voice_profile(profile_id)
         if profile is None:
-            return jsonify({'error': 'Voice profile not found', 'profile_id': profile_id}), 404
+            return not_found_response('Voice profile not found')
     except Exception:
-        return jsonify({'error': 'Voice profile not found', 'profile_id': profile_id}), 404
+        return not_found_response('Voice profile not found')
 
     base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
     metrics = {}
@@ -1384,10 +1339,7 @@ def get_profile_training_status(profile_id):
         }), 404
     except Exception as e:
         logger.error(f"Training status error for {profile_id}: {e}", exc_info=True)
-        return jsonify({
-            'error': 'Failed to get training status',
-            'message': str(e) if current_app.debug else None
-        }), 503
+        return service_unavailable_response('Failed to get training status', message=str(e))
 
 
 # ============================================================================
@@ -1795,7 +1747,7 @@ def list_devices():
 
         device_type = request.args.get('type')
         if device_type and device_type not in ('input', 'output'):
-            return jsonify({'error': 'Invalid type parameter, use "input" or "output"'}), 400
+            return validation_error_response('Invalid type parameter, use "input" or "output"')
 
         devices = list_audio_devices(device_type=device_type)
         return jsonify(devices)
@@ -1852,7 +1804,7 @@ def set_device_config():
     try:
         data = request.get_json()
         if data is None:
-            return jsonify({'error': 'Request body required'}), 400
+            return validation_error_response('Request body required')
 
         # Get current config
         device_config = getattr(current_app, '_device_config', None)
@@ -1872,7 +1824,7 @@ def set_device_config():
                 input_devices = list_audio_devices(device_type='input')
                 valid_ids = [d['device_id'] for d in input_devices]
                 if input_id not in valid_ids:
-                    return jsonify({'error': f'Invalid input device ID: {input_id}'}), 400
+                    return validation_error_response(f'Invalid input device ID: {input_id}')
                 device_config['input_device_id'] = input_id
             else:
                 device_config['input_device_id'] = None
@@ -1886,7 +1838,7 @@ def set_device_config():
                 output_devices = list_audio_devices(device_type='output')
                 valid_ids = [d['device_id'] for d in output_devices]
                 if output_id not in valid_ids:
-                    return jsonify({'error': f'Invalid output device ID: {output_id}'}), 400
+                    return validation_error_response(f'Invalid output device ID: {output_id}')
                 device_config['output_device_id'] = output_id
             else:
                 device_config['output_device_id'] = None
@@ -1897,7 +1849,7 @@ def set_device_config():
             if isinstance(sample_rate, int) and sample_rate > 0:
                 device_config['sample_rate'] = sample_rate
             else:
-                return jsonify({'error': 'Invalid sample_rate, must be positive integer'}), 400
+                return validation_error_response('Invalid sample_rate, must be positive integer')
 
         # Store updated config
         current_app._device_config = device_config
@@ -1949,7 +1901,7 @@ def list_training_jobs():
         return jsonify(jobs)
     except Exception as e:
         logger.error(f"Error listing training jobs: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/training/jobs', methods=['POST'])
@@ -1958,11 +1910,11 @@ def create_training_job():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         profile_id = data.get('profile_id')
         if not profile_id:
-            return jsonify({'error': 'profile_id is required'}), 400
+            return validation_error_response('profile_id is required')
 
         sample_ids = data.get('sample_ids', [])
         config = data.get('config', {})
@@ -2177,7 +2129,7 @@ def create_training_job():
         return jsonify(job), 201
     except Exception as e:
         logger.error(f"Error creating training job: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/training/jobs/<job_id>', methods=['GET'])
@@ -2185,7 +2137,7 @@ def get_training_job(job_id: str):
     """Get details of a specific training job."""
     job = _training_jobs.get(job_id)
     if not job:
-        return jsonify({'error': 'Training job not found'}), 404
+        return not_found_response('Training job not found')
     return jsonify(_sanitize_job(job))
 
 
@@ -2194,9 +2146,9 @@ def cancel_training_job(job_id: str):
     """Cancel a training job."""
     job = _training_jobs.get(job_id)
     if not job:
-        return jsonify({'error': 'Training job not found'}), 404
+        return not_found_response('Training job not found')
     if job['status'] in ('completed', 'failed', 'cancelled'):
-        return jsonify({'error': f"Cannot cancel job in {job['status']} state"}), 400
+        return validation_error_response(f"Cannot cancel job in {job['status']} state")
     job['status'] = 'cancelled'
     job['completed_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     logger.info(f"Cancelled training job {job_id}")
@@ -2255,12 +2207,12 @@ def upload_sample(profile_id: str):
             file = request.files['audio']
 
         if not file:
-            return jsonify({'error': 'No file provided (expected "file" or "audio" field)'}), 400
+            return validation_error_response('No file provided (expected "file" or "audio" field)')
         if not file.filename:
-            return jsonify({'error': 'No file selected'}), 400
+            return validation_error_response('No file selected')
 
         if not allowed_file(file.filename):
-            return jsonify({'error': 'Invalid file type'}), 400
+            return validation_error_response('Invalid file type')
 
         # Save file temporarily
         filename = secure_filename(file.filename)
@@ -2299,7 +2251,7 @@ def upload_sample(profile_id: str):
         return jsonify(sample), 201
     except Exception as e:
         logger.error(f"Error uploading sample: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/profiles/<profile_id>/samples/from-path', methods=['POST'])
@@ -2321,10 +2273,10 @@ def add_sample_from_path(profile_id: str):
         skip_separation = data.get('skip_separation', False)
 
         if not audio_path:
-            return jsonify({'error': 'audio_path is required'}), 400
+            return validation_error_response('audio_path is required')
 
         if not os.path.exists(audio_path):
-            return jsonify({'error': f'File not found: {audio_path}'}), 404
+            return not_found_response(f'File not found: {audio_path}')
 
         # Generate sample ID
         sample_id = str(uuid.uuid4())
@@ -2352,7 +2304,7 @@ def add_sample_from_path(profile_id: str):
 
             # Load audio
             if not SOUNDFILE_AVAILABLE:
-                return jsonify({'error': 'soundfile not available for audio loading'}), 500
+                return error_response('soundfile not available for audio loading')
 
             audio, sr = soundfile.read(audio_path)
             if audio.ndim > 1:
@@ -2425,7 +2377,7 @@ def add_sample_from_path(profile_id: str):
         return jsonify(sample), 201
     except Exception as e:
         logger.error(f"Error adding sample from path: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # In-memory storage for song separation jobs
@@ -2444,13 +2396,13 @@ def upload_song(profile_id: str):
             file = request.files['audio']
 
         if not file:
-            return jsonify({'error': 'No file provided (expected "file" or "audio" field)'}), 400
+            return validation_error_response('No file provided (expected "file" or "audio" field)')
 
         if not file.filename:
-            return jsonify({'error': 'No file selected'}), 400
+            return validation_error_response('No file selected')
 
         if not allowed_file(file.filename):
-            return jsonify({'error': 'Invalid file type'}), 400
+            return validation_error_response('Invalid file type')
 
         # Save file temporarily
         filename = secure_filename(file.filename)
@@ -2565,7 +2517,7 @@ def upload_song(profile_id: str):
 
     except Exception as e:
         logger.error(f"Error uploading song: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/separation/<job_id>/status', methods=['GET'])
@@ -2573,7 +2525,7 @@ def get_separation_status(job_id: str):
     """Get status of a vocal separation job."""
     job = _separation_jobs.get(job_id)
     if not job:
-        return jsonify({'error': 'Job not found'}), 404
+        return not_found_response('Job not found')
     return jsonify(job)
 
 
@@ -2583,7 +2535,7 @@ def get_sample(profile_id: str, sample_id: str):
     samples = _profile_samples.get(profile_id, {})
     sample = samples.get(sample_id)
     if not sample:
-        return jsonify({'error': 'Sample not found'}), 404
+        return not_found_response('Sample not found')
     return jsonify(sample)
 
 
@@ -2593,7 +2545,7 @@ def delete_sample(profile_id: str, sample_id: str):
     samples = _profile_samples.get(profile_id, {})
     sample = samples.get(sample_id)
     if not sample:
-        return jsonify({'error': 'Sample not found'}), 404
+        return not_found_response('Sample not found')
 
     # Delete file if exists
     if sample.get('file_path') and os.path.exists(sample['file_path']):
@@ -2624,7 +2576,7 @@ def diarize_audio():
         if 'file' in request.files:
             file = request.files['file']
             if not file.filename:
-                return jsonify({'error': 'No file selected'}), 400
+                return validation_error_response('No file selected')
 
             # Save uploaded file temporarily
             import tempfile
@@ -2635,9 +2587,9 @@ def diarize_audio():
             data = request.get_json()
             audio_path = data.get('audio_path')
             if not audio_path or not os.path.exists(audio_path):
-                return jsonify({'error': 'audio_path not found'}), 400
+                return validation_error_response('audio_path not found')
         else:
-            return jsonify({'error': 'Provide file upload or audio_path'}), 400
+            return validation_error_response('Provide file upload or audio_path')
 
         # Optional parameters
         num_speakers = None
@@ -2689,7 +2641,7 @@ def diarize_audio():
 
     except Exception as e:
         logger.error(f"Diarization error: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/profiles/<profile_id>/samples/<sample_id>/filter', methods=['POST'])
@@ -2710,20 +2662,18 @@ def filter_sample(profile_id: str, sample_id: str):
         samples = _profile_samples.get(profile_id, {})
         sample = samples.get(sample_id)
         if not sample:
-            return jsonify({'error': 'Sample not found'}), 404
+            return not_found_response('Sample not found')
 
         audio_path = sample.get('file_path')
         if not audio_path or not os.path.exists(audio_path):
-            return jsonify({'error': 'Sample audio file not found'}), 404
+            return not_found_response('Sample audio file not found')
 
         # Get profile's speaker embedding
         store = VoiceProfileStore()
         embedding = store.load_speaker_embedding(profile_id)
 
         if embedding is None:
-            return jsonify({
-                'error': 'Profile has no speaker embedding. Upload a sample first to create one.'
-            }), 400
+            return validation_error_response('Profile has no speaker embedding. Upload a sample first to create one.')
 
         # Optional parameters
         data = request.get_json() or {}
@@ -2757,7 +2707,7 @@ def filter_sample(profile_id: str, sample_id: str):
 
     except Exception as e:
         logger.error(f"Filter error: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/profiles/<profile_id>/speaker-embedding', methods=['POST'])
@@ -2777,7 +2727,7 @@ def set_profile_speaker_embedding(profile_id: str):
 
         store = VoiceProfileStore()
         if not store.exists(profile_id):
-            return jsonify({'error': 'Profile not found'}), 404
+            return not_found_response('Profile not found')
 
         data = request.get_json() or {}
 
@@ -2785,16 +2735,16 @@ def set_profile_speaker_embedding(profile_id: str):
             # Compute embedding from existing samples
             samples = store.list_training_samples(profile_id)
             if not samples:
-                return jsonify({'error': 'No training samples to compute embedding from'}), 400
+                return validation_error_response('No training samples to compute embedding from')
 
             # Use first sample for now
             audio_path = samples[0].vocals_path
         elif 'audio_path' in data:
             audio_path = data['audio_path']
             if not os.path.exists(audio_path):
-                return jsonify({'error': 'Audio file not found'}), 400
+                return validation_error_response('Audio file not found')
         else:
-            return jsonify({'error': 'Provide audio_path or set use_samples=true'}), 400
+            return validation_error_response('Provide audio_path or set use_samples=true')
 
         # Extract embedding
         diarizer = SpeakerDiarizer()
@@ -2813,7 +2763,7 @@ def set_profile_speaker_embedding(profile_id: str):
 
     except Exception as e:
         logger.error(f"Error setting speaker embedding: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/profiles/<profile_id>/speaker-embedding', methods=['GET'])
@@ -2824,7 +2774,7 @@ def get_profile_speaker_embedding(profile_id: str):
 
         store = VoiceProfileStore()
         if not store.exists(profile_id):
-            return jsonify({'error': 'Profile not found'}), 404
+            return not_found_response('Profile not found')
 
         embedding = store.load_speaker_embedding(profile_id)
 
@@ -2836,7 +2786,7 @@ def get_profile_speaker_embedding(profile_id: str):
 
     except Exception as e:
         logger.error(f"Error getting speaker embedding: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # In-memory storage for diarization results (cleared on restart)
@@ -2864,32 +2814,30 @@ def assign_diarization_segment():
 
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         diarization_id = data.get('diarization_id')
         segment_index = data.get('segment_index')
         profile_id = data.get('profile_id')
 
         if not all([diarization_id, segment_index is not None, profile_id]):
-            return jsonify({
-                'error': 'Required: diarization_id, segment_index, profile_id'
-            }), 400
+            return validation_error_response('Required: diarization_id, segment_index, profile_id')
 
         # Get diarization result
         diarization_data = _diarization_results.get(diarization_id)
         if not diarization_data:
-            return jsonify({'error': 'Diarization result not found or expired'}), 404
+            return not_found_response('Diarization result not found or expired')
 
         segments = diarization_data.get('segments', [])
         if segment_index < 0 or segment_index >= len(segments):
-            return jsonify({'error': f'Invalid segment_index: {segment_index}'}), 400
+            return validation_error_response(f'Invalid segment_index: {segment_index}')
 
         segment = segments[segment_index]
 
         # Verify profile exists
         store = VoiceProfileStore()
         if not store.exists(profile_id):
-            return jsonify({'error': 'Profile not found'}), 404
+            return not_found_response('Profile not found')
 
         # Extract audio for segment if requested
         extract_audio = data.get('extract_audio', True)
@@ -2952,7 +2900,7 @@ def assign_diarization_segment():
 
     except Exception as e:
         logger.error(f"Error assigning segment: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/profiles/<profile_id>/segments', methods=['GET'])
@@ -2966,7 +2914,7 @@ def get_profile_segments(profile_id: str):
 
         store = VoiceProfileStore()
         if not store.exists(profile_id):
-            return jsonify({'error': 'Profile not found'}), 404
+            return not_found_response('Profile not found')
 
         # Get training samples
         samples = store.list_training_samples(profile_id)
@@ -3005,7 +2953,7 @@ def get_profile_segments(profile_id: str):
 
     except Exception as e:
         logger.error(f"Error getting profile segments: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/profiles/auto-create', methods=['POST'])
@@ -3029,32 +2977,30 @@ def auto_create_profile_from_diarization():
 
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         diarization_id = data.get('diarization_id')
         speaker_id = data.get('speaker_id')
         name = data.get('name')
 
         if not all([diarization_id, speaker_id, name]):
-            return jsonify({
-                'error': 'Required: diarization_id, speaker_id, name'
-            }), 400
+            return validation_error_response('Required: diarization_id, speaker_id, name')
 
         # Get diarization result
         diarization_data = _diarization_results.get(diarization_id)
         if not diarization_data:
-            return jsonify({'error': 'Diarization result not found or expired'}), 404
+            return not_found_response('Diarization result not found or expired')
 
         # Find segments for this speaker
         segments = diarization_data.get('segments', [])
         speaker_segments = [s for s in segments if s['speaker_id'] == speaker_id]
 
         if not speaker_segments:
-            return jsonify({'error': f'No segments found for speaker {speaker_id}'}), 400
+            return validation_error_response(f'No segments found for speaker {speaker_id}')
 
         audio_path = diarization_data.get('audio_path')
         if not audio_path or not os.path.exists(audio_path):
-            return jsonify({'error': 'Original audio not found'}), 400
+            return validation_error_response('Original audio not found')
 
         # Extract speaker embedding from segments
         diarizer = SpeakerDiarizer()
@@ -3123,7 +3069,7 @@ def auto_create_profile_from_diarization():
 
     except Exception as e:
         logger.error(f"Error auto-creating profile: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # =============================================================================
@@ -3146,11 +3092,11 @@ def create_preset():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         name = data.get('name')
         if not name:
-            return jsonify({'error': 'name is required'}), 400
+            return validation_error_response('name is required')
 
         preset_id = str(uuid.uuid4())
         preset = {
@@ -3165,7 +3111,7 @@ def create_preset():
         return jsonify(preset), 201
     except Exception as e:
         logger.error(f"Error creating preset: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/presets/<preset_id>', methods=['GET'])
@@ -3173,7 +3119,7 @@ def get_preset(preset_id: str):
     """Get a specific preset."""
     preset = _presets.get(preset_id)
     if not preset:
-        return jsonify({'error': 'Preset not found'}), 404
+        return not_found_response('Preset not found')
     return jsonify(preset)
 
 
@@ -3182,12 +3128,12 @@ def update_preset(preset_id: str):
     """Update a preset."""
     preset = _presets.get(preset_id)
     if not preset:
-        return jsonify({'error': 'Preset not found'}), 404
+        return not_found_response('Preset not found')
 
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         if 'name' in data:
             preset['name'] = data['name']
@@ -3199,14 +3145,14 @@ def update_preset(preset_id: str):
         return jsonify(preset)
     except Exception as e:
         logger.error(f"Error updating preset: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/presets/<preset_id>', methods=['DELETE'])
 def delete_preset(preset_id: str):
     """Delete a preset."""
     if preset_id not in _presets:
-        return jsonify({'error': 'Preset not found'}), 404
+        return not_found_response('Preset not found')
     del _presets[preset_id]
     logger.info(f"Deleted preset {preset_id}")
     return '', 204
@@ -3232,11 +3178,11 @@ def load_model():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         model_type = data.get('model_type')
         if not model_type:
-            return jsonify({'error': 'model_type is required'}), 400
+            return validation_error_response('model_type is required')
 
         path = data.get('path')
 
@@ -3252,7 +3198,7 @@ def load_model():
         return jsonify(model_info), 201
     except Exception as e:
         logger.error(f"Error loading model: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/models/unload', methods=['POST'])
@@ -3261,11 +3207,11 @@ def unload_model():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         model_type = data.get('model_type')
         if not model_type:
-            return jsonify({'error': 'model_type is required'}), 400
+            return validation_error_response('model_type is required')
 
         if model_type in _loaded_models:
             del _loaded_models[model_type]
@@ -3274,7 +3220,7 @@ def unload_model():
         return '', 204
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/models/tensorrt/status', methods=['GET'])
@@ -3300,7 +3246,7 @@ def get_tensorrt_status():
         })
     except Exception as e:
         logger.error(f"Error getting TensorRT status: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/models/tensorrt/rebuild', methods=['POST'])
@@ -3320,7 +3266,7 @@ def rebuild_tensorrt():
         })
     except Exception as e:
         logger.error(f"Error rebuilding TensorRT: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/models/tensorrt/build', methods=['POST'])
@@ -3342,7 +3288,7 @@ def build_tensorrt():
         })
     except Exception as e:
         logger.error(f"Error building TensorRT: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # =============================================================================
@@ -3387,7 +3333,7 @@ def update_separation_config():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         for key in ['model', 'overlap', 'segment', 'shifts', 'device']:
             if key in data:
@@ -3397,7 +3343,7 @@ def update_separation_config():
         return jsonify(_separation_config)
     except Exception as e:
         logger.error(f"Error updating separation config: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/config/pitch', methods=['GET'])
@@ -3412,7 +3358,7 @@ def update_pitch_config():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         for key in ['method', 'hop_length', 'threshold', 'device']:
             if key in data:
@@ -3422,7 +3368,7 @@ def update_pitch_config():
         return jsonify(_pitch_config)
     except Exception as e:
         logger.error(f"Error updating pitch config: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/audio/router/config', methods=['GET'])
@@ -3437,7 +3383,7 @@ def update_audio_router_config():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         for key in ['speaker_gain', 'headphone_gain', 'voice_gain',
                     'instrumental_gain', 'speaker_enabled', 'headphone_enabled']:
@@ -3448,7 +3394,7 @@ def update_audio_router_config():
         return jsonify(_audio_router_config)
     except Exception as e:
         logger.error(f"Error updating audio router config: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # =============================================================================
@@ -3475,7 +3421,7 @@ def get_conversion_history():
 def delete_conversion_record(record_id: str):
     """Delete a conversion record."""
     if record_id not in _conversion_history:
-        return jsonify({'error': 'Record not found'}), 404
+        return not_found_response('Record not found')
     del _conversion_history[record_id]
     logger.info(f"Deleted conversion record {record_id}")
     return '', 204
@@ -3486,12 +3432,12 @@ def update_conversion_record(record_id: str):
     """Update a conversion record (e.g., add notes, favorite)."""
     record = _conversion_history.get(record_id)
     if not record:
-        return jsonify({'error': 'Record not found'}), 404
+        return not_found_response('Record not found')
 
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No JSON data provided'}), 400
+            return validation_error_response('No JSON data provided')
 
         # Allow updating specific fields
         for key in ['notes', 'isFavorite', 'tags']:
@@ -3502,7 +3448,7 @@ def update_conversion_record(record_id: str):
         return jsonify(record)
     except Exception as e:
         logger.error(f"Error updating conversion record: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # =============================================================================
@@ -3526,7 +3472,7 @@ def rollback_checkpoint(profile_id: str, checkpoint_id: str):
     checkpoints = _profile_checkpoints.get(profile_id, {})
     checkpoint = checkpoints.get(checkpoint_id)
     if not checkpoint:
-        return jsonify({'error': 'Checkpoint not found'}), 404
+        return not_found_response('Checkpoint not found')
 
     # TODO: Actually rollback the model
     logger.info(f"Rolling back profile {profile_id} to checkpoint {checkpoint_id}")
@@ -3538,7 +3484,7 @@ def delete_checkpoint(profile_id: str, checkpoint_id: str):
     """Delete a checkpoint."""
     checkpoints = _profile_checkpoints.get(profile_id, {})
     if checkpoint_id not in checkpoints:
-        return jsonify({'error': 'Checkpoint not found'}), 404
+        return not_found_response('Checkpoint not found')
 
     del _profile_checkpoints[profile_id][checkpoint_id]
     logger.info(f"Deleted checkpoint {checkpoint_id} from profile {profile_id}")
@@ -3588,15 +3534,15 @@ def youtube_info():
         }
     """
     if not YOUTUBE_DOWNLOADER_AVAILABLE:
-        return jsonify({'error': 'YouTube downloader not available. Install yt-dlp.'}), 503
+        return service_unavailable_response('YouTube downloader not available. Install yt-dlp.')
 
     data = request.get_json()
     if not data or 'url' not in data:
-        return jsonify({'error': 'Missing required field: url'}), 400
+        return validation_error_response('Missing required field: url')
 
     url = data['url']
     if not url.strip():
-        return jsonify({'error': 'URL cannot be empty'}), 400
+        return validation_error_response('URL cannot be empty')
 
     try:
         downloader = get_youtube_downloader()
@@ -3618,7 +3564,7 @@ def youtube_info():
 
     except Exception as e:
         logger.error(f"YouTube info failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/youtube/download', methods=['POST'])
@@ -3646,27 +3592,27 @@ def youtube_download():
         }
     """
     if not YOUTUBE_DOWNLOADER_AVAILABLE:
-        return jsonify({'error': 'YouTube downloader not available. Install yt-dlp.'}), 503
+        return service_unavailable_response('YouTube downloader not available. Install yt-dlp.')
 
     data = request.get_json()
     if not data or 'url' not in data:
-        return jsonify({'error': 'Missing required field: url'}), 400
+        return validation_error_response('Missing required field: url')
 
     url = data['url']
     if not url.strip():
-        return jsonify({'error': 'URL cannot be empty'}), 400
+        return validation_error_response('URL cannot be empty')
 
     audio_format = data.get('format', 'wav')
     if audio_format not in ['wav', 'mp3', 'flac']:
-        return jsonify({'error': 'Invalid format. Must be wav, mp3, or flac'}), 400
+        return validation_error_response('Invalid format. Must be wav, mp3, or flac')
 
     sample_rate = data.get('sample_rate', 44100)
     try:
         sample_rate = int(sample_rate)
         if sample_rate not in [16000, 22050, 44100, 48000]:
-            return jsonify({'error': 'Invalid sample_rate. Must be 16000, 22050, 44100, or 48000'}), 400
+            return validation_error_response('Invalid sample_rate. Must be 16000, 22050, 44100, or 48000')
     except (ValueError, TypeError):
-        return jsonify({'error': 'sample_rate must be an integer'}), 400
+        return validation_error_response('sample_rate must be an integer')
 
     run_diarization = data.get('run_diarization', False)
     filter_to_main_artist = data.get('filter_to_main_artist', False)
@@ -3754,7 +3700,7 @@ def youtube_download():
 
     except Exception as e:
         logger.error(f"YouTube download failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # ============================================================================
@@ -3787,11 +3733,11 @@ def identify_speaker():
 
         # Get audio file
         if 'file' not in request.files:
-            return jsonify({'error': 'No audio file provided'}), 400
+            return validation_error_response('No audio file provided')
 
         audio_file = request.files['file']
         if not audio_file.filename:
-            return jsonify({'error': 'Empty filename'}), 400
+            return validation_error_response('Empty filename')
 
         # Get threshold
         threshold = request.form.get('threshold', 0.85)
@@ -3824,7 +3770,7 @@ def identify_speaker():
 
     except Exception as e:
         logger.error(f"Speaker identification failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/loras/audit', methods=['GET'])
@@ -3878,7 +3824,7 @@ def audit_loras():
 
     except Exception as e:
         logger.error(f"LoRA audit failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/profiles/<profile_id>/check-retrain', methods=['POST'])
@@ -3916,7 +3862,7 @@ def check_retrain(profile_id):
                 break
 
         if not profile_status:
-            return jsonify({'error': f'Profile {profile_id} not found'}), 404
+            return not_found_response(f'Profile {profile_id} not found')
 
         needs_retrain = profile_status.needs_retrain or profile_status.needs_training
         reasons = profile_status.issues + profile_status.recommendations
@@ -3958,7 +3904,7 @@ def check_retrain(profile_id):
 
     except Exception as e:
         logger.error(f"Check retrain failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/convert/analyze', methods=['POST'])
@@ -3990,7 +3936,7 @@ def analyze_conversion():
         methodology = data.get('methodology', 'unknown')
 
         if not source_audio or not converted_audio:
-            return jsonify({'error': 'source_audio and converted_audio required'}), 400
+            return validation_error_response('source_audio and converted_audio required')
 
         analyzer = ConversionQualityAnalyzer()
         analysis = analyzer.analyze(
@@ -4012,7 +3958,7 @@ def analyze_conversion():
 
     except Exception as e:
         logger.error(f"Conversion analysis failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/convert/compare-methodologies', methods=['POST'])
@@ -4038,7 +3984,7 @@ def compare_methodologies():
         converted_outputs = data.get('converted_outputs', {})
 
         if not source_audio or not converted_outputs:
-            return jsonify({'error': 'source_audio and converted_outputs required'}), 400
+            return validation_error_response('source_audio and converted_outputs required')
 
         analyzer = ConversionQualityAnalyzer()
         comparison = analyzer.compare_methodologies(
@@ -4064,7 +4010,7 @@ def compare_methodologies():
 
     except Exception as e:
         logger.error(f"Methodology comparison failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/loras/retrain/<profile_id>', methods=['POST'])
@@ -4115,7 +4061,7 @@ def retrain_lora(profile_id):
 
     except Exception as e:
         logger.error(f"Retrain LoRA failed: {e}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # =============================================================================
@@ -4161,11 +4107,11 @@ def separate_artists():
 
         # Get audio file
         if 'audio' not in request.files:
-            return jsonify({'error': 'No audio file provided'}), 400
+            return validation_error_response('No audio file provided')
 
         audio_file = request.files['audio']
         if audio_file.filename == '':
-            return jsonify({'error': 'Empty filename'}), 400
+            return validation_error_response('Empty filename')
 
         # Get optional parameters
         num_speakers = request.form.get('num_speakers', type=int)
@@ -4235,7 +4181,7 @@ def separate_artists():
 
     except Exception as e:
         logger.error(f"Multi-artist separation failed: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/audio/batch-separate', methods=['POST'])
@@ -4268,7 +4214,7 @@ def batch_separate_artists():
 
         files = request.files.getlist('audio')
         if not files:
-            return jsonify({'error': 'No audio files provided'}), 400
+            return validation_error_response('No audio files provided')
 
         num_speakers = request.form.get('num_speakers', type=int)
 
@@ -4297,7 +4243,7 @@ def batch_separate_artists():
 
     except Exception as e:
         logger.error(f"Batch separation failed: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 # =============================================================================
@@ -4344,7 +4290,7 @@ def get_profile_quality_history(profile_id: str):
 
     except Exception as e:
         logger.error(f"Get quality history failed: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/profiles/<profile_id>/quality-status', methods=['GET'])
@@ -4377,7 +4323,7 @@ def get_profile_quality_status(profile_id: str):
 
     except Exception as e:
         logger.error(f"Get quality status failed: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/profiles/<profile_id>/check-degradation', methods=['POST'])
@@ -4424,7 +4370,7 @@ def check_profile_degradation(profile_id: str):
 
     except Exception as e:
         logger.error(f"Check degradation failed: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/quality/record', methods=['POST'])
@@ -4455,7 +4401,7 @@ def record_quality_metric():
 
         data = request.json
         if not data or 'profile_id' not in data:
-            return jsonify({'error': 'profile_id required'}), 400
+            return validation_error_response('profile_id required')
 
         monitor = get_quality_monitor()
         alerts = monitor.record_metric(
@@ -4476,7 +4422,7 @@ def record_quality_metric():
 
     except Exception as e:
         logger.error(f"Record quality metric failed: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
 
 
 @api_bp.route('/quality/all-profiles', methods=['GET'])
@@ -4510,4 +4456,4 @@ def get_all_profiles_quality():
 
     except Exception as e:
         logger.error(f"Get all profiles quality failed: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e))
