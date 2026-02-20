@@ -58,13 +58,17 @@ class AdapterBridge:
         lora_dir: Union[str, Path] = "data/trained_models/hq",
         device: str = "cuda",
     ):
-        """Initialize the adapter bridge.
+        """Initialize the adapter bridge with profile and LoRA storage locations.
+
+        Loads all voice profile mappings and initializes caches for efficient
+        reference audio and LoRA weight access.
 
         Args:
-            profiles_dir: Directory containing voice profile JSON files
-            training_audio_dir: Directory containing separated vocals for training
+            profiles_dir: Directory containing voice profile JSON files and embeddings
+            training_audio_dir: Directory containing separated vocals for training/reference
             lora_dir: Directory containing trained LoRA checkpoints
-            device: Device for loading tensors
+            device: Device for loading tensors ('cuda' or 'cpu'). LoRA weights will be
+                moved to this device when loaded.
         """
         self.profiles_dir = Path(profiles_dir)
         self.training_audio_dir = Path(training_audio_dir)
@@ -82,7 +86,13 @@ class AdapterBridge:
         logger.info(f"AdapterBridge initialized with {len(self._profile_to_artist)} profiles")
 
     def _load_profile_mappings(self) -> None:
-        """Load profile ID to artist name mappings."""
+        """Load profile ID to artist name mappings from JSON files.
+
+        Scans the profiles directory for JSON files and extracts profile_id and name
+        fields. Mappings are stored in _profile_to_artist for use in finding
+        reference audio directories. Failures to read individual profiles are logged
+        as warnings but do not stop the loading process.
+        """
         for profile_file in self.profiles_dir.glob("*.json"):
             try:
                 with open(profile_file) as f:
@@ -95,7 +105,19 @@ class AdapterBridge:
                 logger.warning(f"Failed to load profile {profile_file}: {e}")
 
     def _find_artist_audio_dir(self, profile_id: str) -> Optional[Path]:
-        """Find the audio directory for a profile's artist."""
+        """Find the audio directory for a profile's artist using fuzzy matching.
+
+        Searches for the artist's separated audio directory by normalizing the profile
+        name and attempting exact matches, substring matches, and fuzzy matches on
+        directory names. This handles variations like spaces vs underscores and
+        minor spelling differences (e.g., "Connor" vs "Conor").
+
+        Args:
+            profile_id: Voice profile UUID to look up
+
+        Returns:
+            Path to artist's audio directory if found, None otherwise
+        """
         name = self._profile_to_artist.get(profile_id, "")
         if not name:
             return None
@@ -288,13 +310,18 @@ class AdapterBridge:
         return lora_state
 
     def get_lora_metadata(self, profile_id: str) -> Dict:
-        """Get metadata from a trained LoRA checkpoint.
+        """Get metadata from a trained LoRA checkpoint without loading weights.
+
+        Loads only the metadata portion of the checkpoint to retrieve training
+        information such as artist name, epoch, loss, precision, and configuration.
+        Returns an empty dict if the checkpoint does not exist.
 
         Args:
             profile_id: Voice profile UUID
 
         Returns:
-            Metadata dict with training info
+            Metadata dict with fields: artist, epoch, loss, precision, status, config.
+            Empty dict if checkpoint not found.
         """
         lora_path = self.lora_dir / f"{profile_id}_hq_lora.pt"
         if not lora_path.exists():
@@ -314,8 +341,17 @@ class AdapterBridge:
     def list_available_profiles(self) -> List[Tuple[str, str, bool, bool]]:
         """List all available voice profiles with their capabilities.
 
+        Scans all loaded profiles and checks for the presence of trained LoRA weights
+        and reference audio files. Useful for determining which profiles are ready
+        for different pipeline types (original pipeline needs LoRA, Seed-VC needs
+        reference audio).
+
         Returns:
-            List of (profile_id, name, has_lora, has_reference_audio) tuples
+            List of tuples, each containing:
+                - profile_id (str): Profile UUID
+                - name (str): Artist/profile name
+                - has_lora (bool): Whether trained LoRA weights exist
+                - has_reference_audio (bool): Whether reference vocals are available
         """
         results = []
 
@@ -331,7 +367,12 @@ class AdapterBridge:
         return results
 
     def clear_cache(self) -> None:
-        """Clear all caches."""
+        """Clear all cached references and LoRA weights.
+
+        Frees memory by clearing the reference cache and LoRA cache. Use this when
+        switching between many different profiles or to force reloading of updated
+        files from disk.
+        """
         self._reference_cache.clear()
         self._lora_cache.clear()
         logger.info("Adapter bridge cache cleared")
@@ -342,7 +383,15 @@ _bridge_instance: Optional[AdapterBridge] = None
 
 
 def get_adapter_bridge() -> AdapterBridge:
-    """Get the global AdapterBridge instance."""
+    """Get the global AdapterBridge singleton instance.
+
+    Creates the instance on first call with default configuration. Subsequent calls
+    return the same instance. Use this for consistent bridge state across the
+    application.
+
+    Returns:
+        The global AdapterBridge instance
+    """
     global _bridge_instance
     if _bridge_instance is None:
         _bridge_instance = AdapterBridge()
