@@ -26,6 +26,11 @@ from flask import Blueprint, current_app, jsonify, request
 
 from auto_voice.profiles.db.models import TrainingSampleDB, VoiceProfileDB
 from auto_voice.profiles.db.session import get_db_session
+from auto_voice.web.utils import (
+    error_response,
+    not_found_response,
+    validation_error_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,18 +53,18 @@ def create_profile():
     data = request.get_json()
 
     if not data:
-        return jsonify({"error": "Request body required"}), 400
+        return validation_error_response("Request body required")
 
     user_id = data.get("user_id")
     if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
+        return validation_error_response("user_id is required")
 
     name = data.get("name")
     if not name:
-        return jsonify({"error": "name is required"}), 400
+        return validation_error_response("name is required")
 
     if not name.strip():
-        return jsonify({"error": "name cannot be empty"}), 400
+        return validation_error_response("name cannot be empty")
 
     try:
         with get_db_session() as session:
@@ -76,7 +81,7 @@ def create_profile():
             return jsonify(result), 201
     except Exception as e:
         logger.error(f"Failed to create profile: {e}")
-        return jsonify({"error": str(e)}), 500
+        return error_response(str(e))
 
 
 @profiles_bp.route("", methods=["GET"])
@@ -93,7 +98,7 @@ def list_profiles():
     user_id = request.args.get("user_id")
 
     if not user_id:
-        return jsonify({"error": "user_id query parameter is required"}), 400
+        return validation_error_response("user_id query parameter is required")
 
     try:
         with get_db_session() as session:
@@ -106,7 +111,7 @@ def list_profiles():
             return jsonify([p.to_dict() for p in profiles]), 200
     except Exception as e:
         logger.error(f"Failed to list profiles: {e}")
-        return jsonify({"error": str(e)}), 500
+        return error_response(str(e))
 
 
 @profiles_bp.route("/<profile_id>", methods=["GET"])
@@ -122,12 +127,12 @@ def get_profile(profile_id: str):
             profile = session.query(VoiceProfileDB).filter_by(id=profile_id).first()
 
             if not profile:
-                return jsonify({"error": "Profile not found"}), 404
+                return not_found_response("Profile not found")
 
             return jsonify(profile.to_dict()), 200
     except Exception as e:
         logger.error(f"Failed to get profile {profile_id}: {e}")
-        return jsonify({"error": str(e)}), 500
+        return error_response(str(e))
 
 
 @profiles_bp.route("/<profile_id>", methods=["PUT"])
@@ -148,20 +153,20 @@ def update_profile(profile_id: str):
     data = request.get_json()
 
     if not data:
-        return jsonify({"error": "Request body required"}), 400
+        return validation_error_response("Request body required")
 
     try:
         with get_db_session() as session:
             profile = session.query(VoiceProfileDB).filter_by(id=profile_id).first()
 
             if not profile:
-                return jsonify({"error": "Profile not found"}), 404
+                return not_found_response("Profile not found")
 
             # Update allowed fields
             if "name" in data:
                 name = data["name"]
                 if not name or not name.strip():
-                    return jsonify({"error": "name cannot be empty"}), 400
+                    return validation_error_response("name cannot be empty")
                 profile.name = name.strip()
 
             if "settings" in data:
@@ -182,7 +187,7 @@ def update_profile(profile_id: str):
             return jsonify(result), 200
     except Exception as e:
         logger.error(f"Failed to update profile {profile_id}: {e}")
-        return jsonify({"error": str(e)}), 500
+        return error_response(str(e))
 
 
 @profiles_bp.route("/<profile_id>", methods=["DELETE"])
@@ -198,14 +203,14 @@ def delete_profile(profile_id: str):
             profile = session.query(VoiceProfileDB).filter_by(id=profile_id).first()
 
             if not profile:
-                return jsonify({"error": "Profile not found"}), 404
+                return not_found_response("Profile not found")
 
             session.delete(profile)
             logger.info(f"Deleted profile {profile_id}")
             return "", 204
     except Exception as e:
         logger.error(f"Failed to delete profile {profile_id}: {e}")
-        return jsonify({"error": str(e)}), 500
+        return error_response(str(e))
 
 
 # =============================================================================
@@ -243,15 +248,15 @@ def upload_sample(profile_id: str):
             # Check profile exists
             profile = session.query(VoiceProfileDB).filter_by(id=profile_id).first()
             if not profile:
-                return jsonify({"error": "Profile not found"}), 404
+                return not_found_response("Profile not found")
 
             # Check for audio file
             if "audio" not in request.files:
-                return jsonify({"error": "audio file is required"}), 400
+                return validation_error_response("audio file is required")
 
             audio_file = request.files["audio"]
             if not audio_file.filename:
-                return jsonify({"error": "audio file is required"}), 400
+                return validation_error_response("audio file is required")
 
             # Create profile sample directory
             sample_dir = get_profile_sample_dir(profile_id)
@@ -274,7 +279,7 @@ def upload_sample(profile_id: str):
             except Exception as e:
                 # Invalid audio file - clean up and return error
                 os.remove(audio_path)
-                return jsonify({"error": f"Invalid audio file: {e}"}), 400
+                return validation_error_response(f"Invalid audio file: {e}")
 
             # Parse optional metadata
             extra_metadata = None
@@ -306,7 +311,7 @@ def upload_sample(profile_id: str):
 
     except Exception as e:
         logger.error(f"Failed to upload sample for profile {profile_id}: {e}")
-        return jsonify({"error": str(e)}), 500
+        return error_response(str(e))
 
 
 @profiles_bp.route("/<profile_id>/samples", methods=["GET"])
@@ -322,7 +327,7 @@ def list_samples(profile_id: str):
             # Check profile exists
             profile = session.query(VoiceProfileDB).filter_by(id=profile_id).first()
             if not profile:
-                return jsonify({"error": "Profile not found"}), 404
+                return not_found_response("Profile not found")
 
             samples = (
                 session.query(TrainingSampleDB)
@@ -334,7 +339,7 @@ def list_samples(profile_id: str):
 
     except Exception as e:
         logger.error(f"Failed to list samples for profile {profile_id}: {e}")
-        return jsonify({"error": str(e)}), 500
+        return error_response(str(e))
 
 
 @profiles_bp.route("/<profile_id>/samples/<sample_id>", methods=["GET"])
@@ -350,7 +355,7 @@ def get_sample(profile_id: str, sample_id: str):
             # Check profile exists
             profile = session.query(VoiceProfileDB).filter_by(id=profile_id).first()
             if not profile:
-                return jsonify({"error": "Profile not found"}), 404
+                return not_found_response("Profile not found")
 
             sample = (
                 session.query(TrainingSampleDB)
@@ -358,13 +363,13 @@ def get_sample(profile_id: str, sample_id: str):
                 .first()
             )
             if not sample:
-                return jsonify({"error": "Sample not found"}), 404
+                return not_found_response("Sample not found")
 
             return jsonify(sample.to_dict()), 200
 
     except Exception as e:
         logger.error(f"Failed to get sample {sample_id}: {e}")
-        return jsonify({"error": str(e)}), 500
+        return error_response(str(e))
 
 
 @profiles_bp.route("/<profile_id>/samples/<sample_id>", methods=["DELETE"])
@@ -380,7 +385,7 @@ def delete_sample(profile_id: str, sample_id: str):
             # Check profile exists
             profile = session.query(VoiceProfileDB).filter_by(id=profile_id).first()
             if not profile:
-                return jsonify({"error": "Profile not found"}), 404
+                return not_found_response("Profile not found")
 
             sample = (
                 session.query(TrainingSampleDB)
@@ -388,7 +393,7 @@ def delete_sample(profile_id: str, sample_id: str):
                 .first()
             )
             if not sample:
-                return jsonify({"error": "Sample not found"}), 404
+                return not_found_response("Sample not found")
 
             # Delete file from disk
             audio_path = sample.audio_path
@@ -408,4 +413,4 @@ def delete_sample(profile_id: str, sample_id: str):
 
     except Exception as e:
         logger.error(f"Failed to delete sample {sample_id}: {e}")
-        return jsonify({"error": str(e)}), 500
+        return error_response(str(e))
