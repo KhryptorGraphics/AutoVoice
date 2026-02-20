@@ -439,6 +439,55 @@ def split_cluster_endpoint():
         return jsonify({'error': str(e)}), 500
 
 
+@log_request
+@rate_limit(10, 60)
+@speaker_bp.route('/clusters/<cluster_id>/members', methods=['POST'])
+def add_cluster_members(cluster_id: str):
+    """Add members to a cluster.
+
+    Request JSON:
+        embedding_ids: List of embedding IDs to add to cluster (or single embedding_id)
+        confidence: Optional confidence score
+
+    Returns:
+        JSON with updated cluster
+    """
+    db = _get_db_operations()
+    data = request.get_json() or {}
+
+    # Support both single embedding_id and list of embedding_ids
+    embedding_id = data.get('embedding_id')
+    embedding_ids = data.get('embedding_ids', [])
+
+    if embedding_id is not None:
+        embedding_ids = [embedding_id]
+
+    if not embedding_ids:
+        return jsonify({'error': 'embedding_id or embedding_ids is required'}), 400
+
+    confidence = data.get('confidence')
+
+    try:
+        from ..db.operations import add_to_cluster
+
+        # Add each embedding to cluster
+        for emb_id in embedding_ids:
+            add_to_cluster(cluster_id, emb_id, confidence=confidence)
+
+        cluster = db['get_cluster'](cluster_id)
+        members = db['get_cluster_members'](cluster_id)
+
+        return jsonify({
+            'success': True,
+            'cluster': cluster,
+            'member_count': len(members),
+            'added_count': len(embedding_ids),
+        })
+    except Exception as e:
+        logger.error(f"Failed to add members to cluster: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @speaker_bp.route('/clusters/<cluster_id>/sample', methods=['GET'])
 def get_cluster_sample(cluster_id: str):
     """Get audio sample for a cluster.
