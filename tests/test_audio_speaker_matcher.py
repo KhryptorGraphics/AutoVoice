@@ -223,24 +223,26 @@ class TestSpeakerMatching:
     def test_similarity_threshold_matching(self, speaker_matcher):
         """Test that similarity threshold correctly filters matches."""
         # Create embeddings with known similarity
+        np.random.seed(42)  # Fixed seed for reproducibility
         emb1 = np.random.randn(512)
         emb1 = emb1 / np.linalg.norm(emb1)
 
-        # Create similar embedding (90% match)
-        emb2 = 0.9 * emb1 + 0.1 * np.random.randn(512)
+        # Create similar embedding (high similarity via direct construction)
+        emb2 = 0.95 * emb1 + 0.05 * np.random.randn(512)
         emb2 = emb2 / np.linalg.norm(emb2)
 
-        similarity = np.dot(emb1, emb2)
+        similarity = speaker_matcher.cosine_similarity(emb1, emb2)
 
         # With threshold 0.85, should match
-        if similarity > 0.85:
-            assert True  # Match
-        else:
-            # Create more similar embedding
-            emb2 = 0.95 * emb1 + 0.05 * np.random.randn(512)
-            emb2 = emb2 / np.linalg.norm(emb2)
-            similarity = np.dot(emb1, emb2)
-            assert similarity > 0.85
+        assert similarity > 0.85
+
+        # Create dissimilar embedding
+        emb3 = np.random.randn(512)
+        emb3 = emb3 / np.linalg.norm(emb3)
+
+        dissimilarity = speaker_matcher.cosine_similarity(emb1, emb3)
+        # Should be below threshold (different random vectors)
+        assert dissimilarity < 0.85
 
     def test_different_speakers_low_similarity(self):
         """Test that different speakers have low similarity."""

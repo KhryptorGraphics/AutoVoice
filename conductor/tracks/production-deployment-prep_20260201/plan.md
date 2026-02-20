@@ -13,7 +13,7 @@
 - [x] Task 1.2: Add multi-stage build for smaller image
 - [x] Task 1.3: Create docker-compose.yml with GPU support
 - [x] Task 1.4: Add nvidia-docker runtime configuration
-- [ ] Task 1.5: Test container startup and GPU access
+- [x] Task 1.5: Test container startup and GPU access
 
 ## Phase 2: Health & Monitoring
 
@@ -31,9 +31,9 @@
 
 - [x] Task 3.1: Document all environment variables
 - [x] Task 3.2: Create .env.example template
-- [ ] Task 3.3: Add config validation on startup
-- [ ] Task 3.4: Support config from YAML or env vars
-- [ ] Task 3.5: Add secrets management (API keys, etc)
+- [x] Task 3.3: Add config validation on startup
+- [x] Task 3.4: Support config from YAML or env vars
+- [x] Task 3.5: Add secrets management (API keys, etc)
 
 ## Phase 4: Resilience & Shutdown
 

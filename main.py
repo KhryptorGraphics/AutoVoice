@@ -19,11 +19,24 @@ def parse_args():
     return parser.parse_args()
 
 
-def setup_signal_handlers(app):
+def setup_signal_handlers(app, socketio):
     """Setup graceful shutdown handlers for SIGTERM and SIGINT."""
     def shutdown_handler(signum, frame):
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
 
+        # Step 1: Signal shutdown to stop accepting new connections
+        logger.info("Signaling shutdown to stop accepting new requests...")
+
+        # Step 2: Wait for active requests to complete (with timeout)
+        wait_method = getattr(app, 'wait_for_requests', None)
+        if wait_method:
+            completed = wait_method(timeout=30.0)
+            if not completed:
+                logger.warning("Some requests did not complete in time")
+        else:
+            logger.warning("Request tracking not available, skipping drain phase")
+
+        # Step 3: Stop job manager
         job_manager = getattr(app, 'job_manager', None)
         if job_manager:
             logger.info("Stopping job manager...")
@@ -32,6 +45,15 @@ def setup_signal_handlers(app):
             except Exception as e:
                 logger.warning(f"Error stopping job manager: {e}")
 
+        # Step 4: Stop SocketIO
+        if socketio:
+            logger.info("Stopping SocketIO...")
+            try:
+                socketio.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping SocketIO: {e}")
+
+        # Step 5: Clear GPU memory
         try:
             import torch
             if torch.cuda.is_available():

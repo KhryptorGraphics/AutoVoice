@@ -49,6 +49,7 @@ class JobManager:
                 'result_path': None,
                 'error': None,
                 'metrics': None,
+                'duration': None,
             }
 
         self._executor.submit(self._process_job, job_id)
@@ -183,9 +184,9 @@ class JobManager:
                 'progress': job['progress'],
                 'created_at': job['created_at'],
             }
-            if job['error']:
+            if job.get('error'):
                 status['error'] = job['error']
-            if job['duration']:
+            if job.get('duration'):
                 status['duration'] = job['duration']
             return status
 

@@ -173,9 +173,10 @@ class TestDiarizationExtractor:
         assert speaker_track.shape == audio.shape
         assert speaker_track.dtype == audio.dtype
 
-        # Verify speaker segments are audible
+        # Verify speaker segments are audible (check range, not single sample)
         start_idx = int(0.5 * sr)
-        assert np.abs(speaker_track[start_idx]) > 0.01
+        end_idx = int(1.0 * sr)
+        assert np.max(np.abs(speaker_track[start_idx:end_idx])) > 0.01
 
         # Verify other speakers are silenced
         silence_idx = int(3.0 * sr)

@@ -58,3 +58,6 @@ frontend/dist/
 .swarm/
 .beads/
 checkpoints/
+
+# Auto Claude data directory
+.auto-claude/

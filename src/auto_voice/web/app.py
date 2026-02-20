@@ -1,8 +1,10 @@
 """Flask application factory for AutoVoice."""
 import logging
+import time
+import threading
 from typing import Optional, Dict, Any, Tuple
 
-from flask import Flask
+from flask import Flask, request, g
 from flask_socketio import SocketIO
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,65 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: bool = False) -
 
     # Store app-level config for API access
     app.app_config = config if config else {}
+
+    # Request tracking for graceful shutdown
+    app._active_requests = 0
+    app._shutdown_event = threading.Event()
+    app._request_lock = threading.Lock()
+
+    @app.before_request
+    def track_request_start():
+        """Track active requests for graceful shutdown."""
+        if app._shutdown_event.is_set():
+            from flask import jsonify
+            return jsonify({'error': 'Server is shutting down'}), 503
+
+        with app._request_lock:
+            app._active_requests += 1
+            g._request_tracked = True
+
+    @app.after_request
+    def track_request_end(response):
+        """Decrement active request counter."""
+        if getattr(g, '_request_tracked', False):
+            with app._request_lock:
+                app._active_requests = max(0, app._active_requests - 1)
+        return response
+
+    @app.errorhandler(Exception)
+    def handle_exception(error):
+        """Ensure request tracking is decremented on errors."""
+        if getattr(g, '_request_tracked', False):
+            with app._request_lock:
+                app._active_requests = max(0, app._active_requests - 1)
+        raise error
+
+    def wait_for_requests(timeout=30.0):
+        """Wait for active requests to complete during shutdown.
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if all requests completed, False if timeout
+        """
+        app._shutdown_event.set()
+        logger.info(f"Waiting for {app._active_requests} active requests to complete...")
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            with app._request_lock:
+                if app._active_requests == 0:
+                    logger.info("All requests completed")
+                    return True
+            time.sleep(0.1)
+
+        with app._request_lock:
+            remaining = app._active_requests
+        logger.warning(f"Shutdown timeout reached with {remaining} requests still active")
+        return False
+
+    app.wait_for_requests = wait_for_requests
 
     # Initialize SocketIO
     # Use threading mode in testing to avoid eventlet dependency
