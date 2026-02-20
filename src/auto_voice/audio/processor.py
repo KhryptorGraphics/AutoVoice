@@ -78,3 +78,53 @@ class AudioProcessor:
             )
 
         return True
+
+    def get_audio_info(self, file_path: str) -> dict:
+        """Get audio file metadata.
+
+        Args:
+            file_path: Path to the audio file
+
+        Returns:
+            Dictionary containing audio metadata:
+                - duration: Duration in seconds (float)
+                - sample_rate: Sample rate in Hz (int)
+                - channels: Number of audio channels (int)
+                - format: Audio format/subtype (str)
+                - frames: Total number of frames (int)
+
+        Raises:
+            FileNotFoundError: If audio file does not exist
+            RuntimeError: If unable to read audio file metadata
+
+        Example:
+            >>> processor = AudioProcessor()
+            >>> info = processor.get_audio_info('song.wav')
+            >>> print(f"Duration: {info['duration']:.2f}s")
+            Duration: 180.50s
+        """
+        import os
+        import soundfile as sf
+
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"Audio file not found: {file_path}")
+
+        try:
+            with sf.SoundFile(file_path) as audio_file:
+                frames = len(audio_file)
+                sample_rate = audio_file.samplerate
+                channels = audio_file.channels
+                audio_format = audio_file.format
+                subtype = audio_file.subtype
+
+                duration = frames / sample_rate if sample_rate > 0 else 0.0
+
+                return {
+                    'duration': duration,
+                    'sample_rate': sample_rate,
+                    'channels': channels,
+                    'format': f"{audio_format}/{subtype}",
+                    'frames': frames,
+                }
+        except Exception as e:
+            raise RuntimeError(f"Failed to read audio file metadata: {e}") from e
