@@ -6,6 +6,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_AUDIO_EXTENSIONS = {
+    'wav', 'mp3', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'wma', 'aiff', 'webm'
+}
+
 
 class AudioProcessor:
     """Core audio processing operations."""
@@ -50,3 +54,27 @@ class AudioProcessor:
         if audio.ndim == 1:
             return audio
         return np.mean(audio, axis=0)
+
+    def validate_format(self, file_path: str) -> bool:
+        """Validate if file has an allowed audio extension.
+
+        Args:
+            file_path: Path to the audio file
+
+        Returns:
+            True if file has valid audio extension
+
+        Raises:
+            ValueError: If file path is invalid or has unsupported extension
+        """
+        if not file_path or '.' not in file_path:
+            raise ValueError("Invalid file path: must contain an extension")
+
+        ext = file_path.rsplit('.', 1)[1].lower()
+        if ext not in ALLOWED_AUDIO_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported audio format: .{ext}. "
+                f"Allowed formats: {', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))}"
+            )
+
+        return True
