@@ -128,3 +128,45 @@ class AudioProcessor:
                 }
         except Exception as e:
             raise RuntimeError(f"Failed to read audio file metadata: {e}") from e
+
+    def validate_duration(
+        self,
+        file_path: str,
+        min_duration: float = 0,
+        max_duration: Optional[float] = None
+    ) -> bool:
+        """Validate audio duration against min/max limits.
+
+        Args:
+            file_path: Path to the audio file
+            min_duration: Minimum allowed duration in seconds (default: 0)
+            max_duration: Maximum allowed duration in seconds (default: None, no limit)
+
+        Returns:
+            True if duration is within valid range
+
+        Raises:
+            ValueError: If duration is outside the specified range
+            FileNotFoundError: If audio file does not exist
+            RuntimeError: If unable to read audio file metadata
+
+        Example:
+            >>> processor = AudioProcessor()
+            >>> # Validate song is between 30s and 600s
+            >>> processor.validate_duration('song.wav', min_duration=30, max_duration=600)
+            True
+        """
+        info = self.get_audio_info(file_path)
+        duration = info['duration']
+
+        if duration < min_duration:
+            raise ValueError(
+                f"Audio duration {duration:.2f}s is below minimum {min_duration:.2f}s"
+            )
+
+        if max_duration is not None and duration > max_duration:
+            raise ValueError(
+                f"Audio duration {duration:.2f}s exceeds maximum {max_duration:.2f}s"
+            )
+
+        return True
