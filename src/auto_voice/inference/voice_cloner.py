@@ -38,7 +38,14 @@ class InconsistentSamplesError(Exception):
 
 
 def _get_vocal_separator(device):
-    """Get or create the vocal separator (lazy singleton)."""
+    """Get or create the vocal separator (lazy singleton).
+
+    Args:
+        device: PyTorch device (CPU or CUDA) for model inference
+
+    Returns:
+        VocalSeparator instance, or None if unavailable
+    """
     global _vocal_separator
     if _vocal_separator is None:
         try:
@@ -56,6 +63,13 @@ class VoiceCloner:
 
     def __init__(self, device=None, profiles_dir: str = 'data/voice_profiles',
                  auto_separate_vocals: bool = True):
+        """Initialize voice cloner with storage and processing settings.
+
+        Args:
+            device: PyTorch device for inference (defaults to CUDA if available)
+            profiles_dir: Directory for storing voice profile metadata and embeddings
+            auto_separate_vocals: If True, automatically separate vocals from instrumentals
+        """
         import torch
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.store = VoiceProfileStore(profiles_dir)
@@ -64,7 +78,22 @@ class VoiceCloner:
         self._auto_separate_vocals = auto_separate_vocals
 
     def _extract_embedding(self, audio_path: str) -> np.ndarray:
-        """Extract speaker embedding from mel-spectrogram statistics."""
+        """Extract speaker embedding from mel-spectrogram statistics.
+
+        Creates a 256-dimensional L2-normalized embedding by computing mean and
+        standard deviation across 128 mel-frequency bins. This captures the speaker's
+        timbre and spectral characteristics.
+
+        Args:
+            audio_path: Path to audio file (WAV, MP3, etc.)
+
+        Returns:
+            L2-normalized 256-dim float32 array [mel_mean(128), mel_std(128)]
+
+        Raises:
+            InvalidAudioError: If audio file cannot be loaded, is too short (< 3s),
+                or is silent (all zeros)
+        """
         try:
             import librosa
             audio, sr = librosa.load(audio_path, sr=self._sample_rate, mono=True)
@@ -91,7 +120,22 @@ class VoiceCloner:
         return (embedding / norm).astype(np.float32)
 
     def create_speaker_embedding(self, audio_paths: List[str]) -> np.ndarray:
-        """Create averaged speaker embedding from multiple singing recordings."""
+        """Create averaged speaker embedding from multiple singing recordings.
+
+        Computes individual embeddings from each audio file and averages them to
+        create a more robust speaker representation. Useful when multiple reference
+        samples are available.
+
+        Args:
+            audio_paths: List of paths to audio files containing target speaker
+
+        Returns:
+            L2-normalized 256-dim averaged embedding
+
+        Raises:
+            InvalidAudioError: If no audio files provided, any file is invalid,
+                or all embeddings are zero
+        """
         if not audio_paths:
             raise InvalidAudioError("No audio files provided")
         embeddings = [self._extract_embedding(p) for p in audio_paths]
@@ -102,7 +146,18 @@ class VoiceCloner:
         return (avg / norm).astype(np.float32)
 
     def _estimate_vocal_range(self, audio_path: str) -> Dict[str, float]:
-        """Estimate vocal range from audio."""
+        """Estimate vocal range from audio using pitch tracking.
+
+        Uses probabilistic YIN (pYIN) algorithm to track fundamental frequency
+        and compute min/max/mean pitch over voiced regions.
+
+        Args:
+            audio_path: Path to audio file
+
+        Returns:
+            Dict with 'min_hz', 'max_hz', 'mean_hz' keys. Returns default range
+            (80-800 Hz) if pitch tracking fails.
+        """
         try:
             import librosa
             audio, sr = librosa.load(audio_path, sr=self._sample_rate)
@@ -265,19 +320,58 @@ class VoiceCloner:
         return profile_data
 
     def load_voice_profile(self, profile_id: str) -> Dict[str, Any]:
-        """Load a voice profile. Raises ProfileNotFoundError if not found."""
+        """Load a voice profile by ID.
+
+        Args:
+            profile_id: UUID of the voice profile to load
+
+        Returns:
+            Dict containing profile metadata and embedding (profile_id, user_id,
+            name, audio_duration, vocal_range, embedding, created_at, etc.)
+
+        Raises:
+            ProfileNotFoundError: If profile does not exist
+        """
         return self.store.load(profile_id)
 
     def list_voice_profiles(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List voice profiles, optionally filtered by user_id."""
+        """List voice profiles, optionally filtered by user_id.
+
+        Args:
+            user_id: Optional user ID to filter profiles. If None, returns all profiles.
+
+        Returns:
+            List of profile dicts (without embedding data for efficiency)
+        """
         return self.store.list_profiles(user_id=user_id)
 
     def delete_voice_profile(self, profile_id: str) -> bool:
-        """Delete a voice profile. Returns True if deleted."""
+        """Delete a voice profile and its associated data.
+
+        Removes profile metadata, embedding file, and any training samples.
+
+        Args:
+            profile_id: UUID of the voice profile to delete
+
+        Returns:
+            True if profile was deleted, False if profile did not exist
+        """
         return self.store.delete(profile_id)
 
     def compare_embeddings(self, embedding_a: np.ndarray, embedding_b: np.ndarray) -> float:
-        """Compute cosine similarity between two speaker embeddings."""
+        """Compute cosine similarity between two speaker embeddings.
+
+        Measures speaker similarity in range [-1, 1], where 1 means identical,
+        0 means orthogonal (unrelated), and -1 means opposite.
+
+        Args:
+            embedding_a: First speaker embedding (256-dim)
+            embedding_b: Second speaker embedding (256-dim)
+
+        Returns:
+            Cosine similarity in range [-1, 1]. Returns 0.0 if either embedding
+            is zero-vector.
+        """
         norm_a = np.linalg.norm(embedding_a)
         norm_b = np.linalg.norm(embedding_b)
         if norm_a == 0 or norm_b == 0:
