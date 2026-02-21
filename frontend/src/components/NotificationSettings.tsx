@@ -4,6 +4,7 @@ import {
   Loader2, Volume2, VolumeX, TestTube, Edit2
 } from 'lucide-react'
 import clsx from 'clsx'
+import { useToastContext } from '../contexts/ToastContext'
 
 interface WebhookConfig {
   id: string
@@ -50,6 +51,7 @@ const DEFAULT_CONFIG: NotificationConfig = {
 }
 
 export function NotificationSettings() {
+  const toast = useToastContext()
   const [config, setConfig] = useState<NotificationConfig>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY)
@@ -82,7 +84,7 @@ export function NotificationSettings() {
   // Request browser notification permission
   const requestNotificationPermission = async () => {
     if (!('Notification' in window)) {
-      alert('This browser does not support notifications')
+      toast.error('This browser does not support notifications')
       return
     }
 
@@ -126,6 +128,7 @@ export function NotificationSettings() {
   const deleteWebhook = (id: string) => {
     if (confirm('Delete this webhook?')) {
       updateConfig({ webhooks: config.webhooks.filter(w => w.id !== id) })
+      toast.success('Webhook deleted successfully')
     }
   }
 
@@ -165,12 +168,12 @@ export function NotificationSettings() {
         }),
       })
       if (response.ok) {
-        alert('Webhook test successful!')
+        toast.success('Webhook test successful!')
       } else {
-        alert(`Webhook test failed: ${response.status} ${response.statusText}`)
+        toast.error(`Webhook test failed: ${response.status} ${response.statusText}`)
       }
     } catch (err) {
-      alert(`Webhook test failed: ${(err as Error).message}`)
+      toast.error(`Webhook test failed: ${(err as Error).message}`)
     } finally {
       setTestingWebhookId(null)
     }
