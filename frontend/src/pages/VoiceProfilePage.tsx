@@ -8,6 +8,7 @@ import { AddSongButton } from '../components/AddSongButton'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { TrainingSampleUpload } from '../components/TrainingSampleUpload'
 import { AdapterSelector } from '../components/AdapterSelector'
+import { useToastContext } from '../contexts/ToastContext'
 import clsx from 'clsx'
 
 // Training status badge component
@@ -54,6 +55,7 @@ interface ProfileDetailProps {
 }
 
 function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
+  const toast = useToastContext()
   const [samples, setSamples] = useState<TrainingSample[]>([])
   const [loading, setLoading] = useState(true)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -115,25 +117,29 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     setIsDeleting(true)
     try {
       await apiService.deleteProfile(profile.profile_id)
+      toast.success('Profile deleted successfully')
       onDelete()
     } catch (error) {
-      alert(`Failed to delete profile: ${error}`)
+      const errorMsg = error instanceof Error ? error.message : 'Failed to delete profile'
+      toast.error(errorMsg)
       setIsDeleting(false)
     }
   }
 
   const handleStartTraining = async () => {
     if (samples.length === 0) {
-      alert('No samples available. Upload samples first.')
+      toast.error('No samples available. Upload samples first.')
       return
     }
     setStartingTraining(true)
     try {
       const sampleIds = samples.map(s => s.id)
       await apiService.createTrainingJob(profile.profile_id, sampleIds, trainingConfig)
+      toast.success('Training job started successfully')
       setActiveTab('jobs')
     } catch (error) {
-      alert(`Failed to start training: ${error}`)
+      const errorMsg = error instanceof Error ? error.message : 'Failed to start training'
+      toast.error(errorMsg)
     } finally {
       setStartingTraining(false)
     }
@@ -145,8 +151,10 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     try {
       const sample = await apiService.uploadSample(profile.profile_id, file)
       setSamples(prev => [...prev, sample])
+      toast.success('Sample uploaded successfully')
     } catch (error) {
-      alert(`Failed to upload sample: ${error}`)
+      const errorMsg = error instanceof Error ? error.message : 'Failed to upload sample'
+      toast.error(errorMsg)
     }
     e.target.value = ''
   }
@@ -156,8 +164,10 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     try {
       await apiService.deleteSample(profile.profile_id, sampleId)
       setSamples(prev => prev.filter(s => s.id !== sampleId))
+      toast.success('Sample deleted successfully')
     } catch (error) {
-      alert(`Failed to delete sample: ${error}`)
+      const errorMsg = error instanceof Error ? error.message : 'Failed to delete sample'
+      toast.error(errorMsg)
     }
   }
 
@@ -463,6 +473,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
 }
 
 function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) => void }) {
+  const toast = useToastContext()
   const [file, setFile] = useState<File | null>(null)
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -478,11 +489,14 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
     try {
       // Pass name as second parameter - backend will store it directly
       const profile = await apiService.createVoiceProfile(file, name || undefined)
+      toast.success('Voice profile created successfully')
       onCreated(profile)
       setFile(null)
       setName('')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create profile')
+      const errorMsg = err instanceof Error ? err.message : 'Failed to create profile'
+      setError(errorMsg)
+      toast.error(errorMsg)
     } finally {
       setCreating(false)
     }
