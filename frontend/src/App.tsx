@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Music, History, Activity, Mic, HelpCircle, User, Users, Youtube, Upload, Loader2, CheckCircle, XCircle } from 'lucide-react'
+import { Music, History, Activity, Mic, HelpCircle, User, Users, Youtube, Loader2, XCircle } from 'lucide-react'
 import { ConversionHistoryPage } from './pages/ConversionHistoryPage'
 import { SystemStatusPage } from './pages/SystemStatusPage'
 import { KaraokePage } from './pages/KaraokePage'
@@ -10,6 +10,7 @@ import { YouTubeDownloadPage } from './pages/YouTubeDownloadPage'
 import HelpPage from './pages/HelpPage'
 import { AdapterSelector, AdapterBadge } from './components/AdapterSelector'
 import { PipelineSelector, PipelineBadge, type PipelineType, getPreferredPipeline } from './components/PipelineSelector'
+import { DragDropUploadZone } from './components/DragDropUploadZone'
 import { apiService, VoiceProfile, AdapterType, ConversionRecord } from './services/api'
 import clsx from 'clsx'
 
@@ -30,23 +31,10 @@ function ConvertPage() {
     apiService.listProfiles().then(setProfiles).catch(console.error)
   }, [])
 
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    if (f) {
-      setFile(f)
-      setError(null)
-      setConversionStatus(null)
-    }
-  }, [])
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    const f = e.dataTransfer.files[0]
-    if (f && f.type.startsWith('audio/')) {
-      setFile(f)
-      setError(null)
-      setConversionStatus(null)
-    }
+  const handleFileSelect = useCallback((f: File) => {
+    setFile(f)
+    setError(null)
+    setConversionStatus(null)
   }, [])
 
   const handleConvert = async () => {
@@ -108,46 +96,19 @@ function ConvertPage() {
         {/* Upload Section */}
         <div className="bg-gray-800 rounded-lg p-6">
           <h2 className="text-lg font-semibold mb-4">1. Select Audio</h2>
-          <div
-            onDrop={handleDrop}
-            onDragOver={(e) => e.preventDefault()}
-            className={clsx(
-              'border-2 border-dashed rounded-lg p-8 text-center transition',
-              file ? 'border-green-500 bg-green-500/10' : 'border-gray-600 hover:border-gray-500'
-            )}
-          >
-            {file ? (
-              <div className="space-y-2">
-                <CheckCircle className="mx-auto h-10 w-10 text-green-500" />
-                <p className="text-white font-medium">{file.name}</p>
-                <p className="text-gray-400 text-sm">{(file.size / 1024 / 1024).toFixed(1)} MB</p>
-                <button
-                  onClick={() => setFile(null)}
-                  className="text-red-400 hover:text-red-300 text-sm"
-                >
-                  Remove
-                </button>
-              </div>
-            ) : (
-              <>
-                <Upload className="mx-auto h-12 w-12 text-gray-500 mb-3" />
-                <p className="text-gray-400 mb-3">Drop audio file here or click to upload</p>
-                <input
-                  type="file"
-                  accept="audio/*"
-                  className="hidden"
-                  id="audio-upload"
-                  onChange={handleFileSelect}
-                />
-                <label
-                  htmlFor="audio-upload"
-                  className="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer"
-                >
-                  Select File
-                </label>
-              </>
-            )}
-          </div>
+          <DragDropUploadZone
+            onFileSelect={handleFileSelect}
+            selectedFile={file}
+            disabled={isConverting}
+          />
+          {file && (
+            <button
+              onClick={() => setFile(null)}
+              className="mt-3 text-red-400 hover:text-red-300 text-sm"
+            >
+              Remove file
+            </button>
+          )}
         </div>
 
         {/* Profile & Adapter Selection */}
