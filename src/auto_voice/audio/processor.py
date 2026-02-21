@@ -6,6 +6,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_AUDIO_EXTENSIONS = {
+    'wav', 'mp3', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'wma', 'aiff', 'webm'
+}
+
 
 class AudioProcessor:
     """Core audio processing operations."""
@@ -50,3 +54,234 @@ class AudioProcessor:
         if audio.ndim == 1:
             return audio
         return np.mean(audio, axis=0)
+
+    def validate_format(self, file_path: str) -> bool:
+        """Validate if file has an allowed audio extension.
+
+        Args:
+            file_path: Path to the audio file
+
+        Returns:
+            True if file has valid audio extension
+
+        Raises:
+            ValueError: If file path is invalid or has unsupported extension
+        """
+        if not file_path or '.' not in file_path:
+            raise ValueError("Invalid file path: must contain an extension")
+
+        ext = file_path.rsplit('.', 1)[1].lower()
+        if ext not in ALLOWED_AUDIO_EXTENSIONS:
+            raise ValueError(
+                f"Unsupported audio format: .{ext}. "
+                f"Allowed formats: {', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))}"
+            )
+
+        return True
+
+    def get_audio_info(self, file_path: str) -> dict:
+        """Get audio file metadata.
+
+        Args:
+            file_path: Path to the audio file
+
+        Returns:
+            Dictionary containing audio metadata:
+                - duration: Duration in seconds (float)
+                - sample_rate: Sample rate in Hz (int)
+                - channels: Number of audio channels (int)
+                - format: Audio format/subtype (str)
+                - frames: Total number of frames (int)
+
+        Raises:
+            FileNotFoundError: If audio file does not exist
+            RuntimeError: If unable to read audio file metadata
+
+        Example:
+            >>> processor = AudioProcessor()
+            >>> info = processor.get_audio_info('song.wav')
+            >>> print(f"Duration: {info['duration']:.2f}s")
+            Duration: 180.50s
+        """
+        import os
+        import soundfile as sf
+
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"Audio file not found: {file_path}")
+
+        try:
+            with sf.SoundFile(file_path) as audio_file:
+                frames = len(audio_file)
+                sample_rate = audio_file.samplerate
+                channels = audio_file.channels
+                audio_format = audio_file.format
+                subtype = audio_file.subtype
+
+                duration = frames / sample_rate if sample_rate > 0 else 0.0
+
+                return {
+                    'duration': duration,
+                    'sample_rate': sample_rate,
+                    'channels': channels,
+                    'format': f"{audio_format}/{subtype}",
+                    'frames': frames,
+                }
+        except Exception as e:
+            raise RuntimeError(f"Failed to read audio file metadata: {e}") from e
+
+    def validate_duration(
+        self,
+        file_path: str,
+        min_duration: float = 0,
+        max_duration: Optional[float] = None
+    ) -> bool:
+        """Validate audio duration against min/max limits.
+
+        Args:
+            file_path: Path to the audio file
+            min_duration: Minimum allowed duration in seconds (default: 0)
+            max_duration: Maximum allowed duration in seconds (default: None, no limit)
+
+        Returns:
+            True if duration is within valid range
+
+        Raises:
+            ValueError: If duration is outside the specified range
+            FileNotFoundError: If audio file does not exist
+            RuntimeError: If unable to read audio file metadata
+
+        Example:
+            >>> processor = AudioProcessor()
+            >>> # Validate song is between 30s and 600s
+            >>> processor.validate_duration('song.wav', min_duration=30, max_duration=600)
+            True
+        """
+        info = self.get_audio_info(file_path)
+        duration = info['duration']
+
+        if duration < min_duration:
+            raise ValueError(
+                f"Audio duration {duration:.2f}s is below minimum {min_duration:.2f}s"
+            )
+
+        if max_duration is not None and duration > max_duration:
+            raise ValueError(
+                f"Audio duration {duration:.2f}s exceeds maximum {max_duration:.2f}s"
+            )
+
+        return True
+
+    def validate_sample_rate(
+        self,
+        file_path: str,
+        allowed_rates: Optional[list] = None
+    ) -> bool:
+        """Validate audio sample rate against allowed values.
+
+        Args:
+            file_path: Path to the audio file
+            allowed_rates: List of allowed sample rates in Hz (default: None, no restriction)
+
+        Returns:
+            True if sample rate is valid
+
+        Raises:
+            ValueError: If sample rate is not in allowed_rates
+            FileNotFoundError: If audio file does not exist
+            RuntimeError: If unable to read audio file metadata
+
+        Example:
+            >>> processor = AudioProcessor()
+            >>> # Validate sample rate is one of the common rates
+            >>> processor.validate_sample_rate('song.wav', allowed_rates=[44100, 48000])
+            True
+        """
+        info = self.get_audio_info(file_path)
+        sample_rate = info['sample_rate']
+
+        if allowed_rates is not None and sample_rate not in allowed_rates:
+            raise ValueError(
+                f"Audio sample rate {sample_rate}Hz is not allowed. "
+                f"Allowed rates: {', '.join(map(str, allowed_rates))}Hz"
+            )
+
+        return True
+
+    def validate_audio_file(
+        self,
+        file_path: str,
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        allowed_sample_rates: Optional[list] = None
+    ) -> dict:
+        """Comprehensive audio file validation.
+
+        Validates file format, readability, and optionally duration and sample rate.
+        Reuses existing validation utilities for consistency.
+
+        Args:
+            file_path: Path to the audio file
+            min_duration: Minimum allowed duration in seconds (default: None, no minimum)
+            max_duration: Maximum allowed duration in seconds (default: None, no maximum)
+            allowed_sample_rates: List of allowed sample rates in Hz (default: None, no restriction)
+
+        Returns:
+            Dictionary containing audio metadata from get_audio_info():
+                - duration: Duration in seconds (float)
+                - sample_rate: Sample rate in Hz (int)
+                - channels: Number of audio channels (int)
+                - format: Audio format/subtype (str)
+                - frames: Total number of frames (int)
+
+        Raises:
+            ValueError: If file format, duration, or sample rate validation fails
+            FileNotFoundError: If audio file does not exist
+            RuntimeError: If unable to read audio file metadata
+
+        Example:
+            >>> processor = AudioProcessor()
+            >>> # Validate with all constraints
+            >>> info = processor.validate_audio_file(
+            ...     'song.wav',
+            ...     min_duration=30,
+            ...     max_duration=600,
+            ...     allowed_sample_rates=[44100, 48000]
+            ... )
+            >>> print(f"Valid audio: {info['duration']:.1f}s @ {info['sample_rate']}Hz")
+            Valid audio: 180.5s @ 44100Hz
+        """
+        logger.debug(f"Validating audio file: {file_path}")
+
+        # Step 1: Validate file format (extension)
+        self.validate_format(file_path)
+        logger.debug(f"Format validation passed for {file_path}")
+
+        # Step 2: Get audio metadata (also checks file existence and readability)
+        info = self.get_audio_info(file_path)
+        logger.debug(
+            f"Audio info retrieved: duration={info['duration']:.2f}s, "
+            f"sample_rate={info['sample_rate']}Hz, "
+            f"channels={info['channels']}, "
+            f"format={info['format']}"
+        )
+
+        # Step 3: Validate duration if constraints provided
+        if min_duration is not None or max_duration is not None:
+            self.validate_duration(
+                file_path,
+                min_duration=min_duration or 0,
+                max_duration=max_duration
+            )
+            logger.debug(f"Duration validation passed for {file_path}")
+
+        # Step 4: Validate sample rate if constraints provided
+        if allowed_sample_rates is not None:
+            self.validate_sample_rate(file_path, allowed_rates=allowed_sample_rates)
+            logger.debug(f"Sample rate validation passed for {file_path}")
+
+        logger.info(
+            f"Audio file validation successful: {file_path} "
+            f"({info['duration']:.1f}s, {info['sample_rate']}Hz)"
+        )
+
+        return info
