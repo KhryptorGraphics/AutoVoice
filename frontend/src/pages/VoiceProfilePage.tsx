@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award, Search, Filter } from 'lucide-react'
+import { User, Plus, Trash2, RefreshCw, ChevronRight, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award, Search, Filter } from 'lucide-react'
 import { apiService, VoiceProfile, TrainingJob, TrainingConfig, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType } from '../services/api'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { TrainingJobQueue } from '../components/TrainingJobQueue'
@@ -8,6 +8,7 @@ import { AddSongButton } from '../components/AddSongButton'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { TrainingSampleUpload } from '../components/TrainingSampleUpload'
 import { AdapterSelector } from '../components/AdapterSelector'
+import { DragDropUploadZone } from '../components/DragDropUploadZone'
 import clsx from 'clsx'
 
 // Training status badge component
@@ -505,39 +506,12 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
 
       <div>
         <label className="block text-sm text-gray-400 mb-1">Voice Sample</label>
-        <div className="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center">
-          {file ? (
-            <div className="flex items-center justify-center gap-2">
-              <Mic size={20} className="text-green-400" />
-              <span>{file.name}</span>
-              <button
-                type="button"
-                onClick={() => setFile(null)}
-                className="text-red-400 hover:text-red-300"
-              >
-                <XCircle size={16} />
-              </button>
-            </div>
-          ) : (
-            <>
-              <Upload className="mx-auto h-10 w-10 text-gray-500 mb-2" />
-              <p className="text-gray-400 text-sm mb-2">Upload audio sample (10-30 seconds)</p>
-              <input
-                type="file"
-                accept="audio/*"
-                onChange={e => setFile(e.target.files?.[0] || null)}
-                className="hidden"
-                id="profile-audio"
-              />
-              <label
-                htmlFor="profile-audio"
-                className="inline-block px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded cursor-pointer"
-              >
-                Select File
-              </label>
-            </>
-          )}
-        </div>
+        <DragDropUploadZone
+          onFileSelect={setFile}
+          disabled={creating}
+          selectedFile={file}
+          accept={['audio/*', '.mp3', '.wav', '.flac', '.ogg', '.m4a']}
+        />
       </div>
 
       {error && (
