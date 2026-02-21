@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { Upload, Loader2, Users, Filter, CheckCircle, AlertTriangle } from 'lucide-react';
 import { apiService, TrainingSample } from '../services/api';
 import { DiarizationTimeline } from './DiarizationTimeline';
+import { DragDropUploadZone } from './DragDropUploadZone';
 
 interface DiarizationSegment {
   start: number;
@@ -41,10 +42,7 @@ export function TrainingSampleUpload({
   const [enableDiarization, setEnableDiarization] = useState(true);
   const [isFiltering, setIsFiltering] = useState(false);
 
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
-
+  const handleFileSelect = useCallback((selectedFile: File) => {
     setFile(selectedFile);
     setAudioUrl(URL.createObjectURL(selectedFile));
     setDiarizationResult(null);
@@ -247,32 +245,13 @@ export function TrainingSampleUpload({
     <div className="bg-zinc-800 rounded-lg p-6 space-y-4">
       <h3 className="text-lg font-semibold text-white">Upload Training Sample</h3>
 
-      {/* File selection */}
-      <label className="block">
-        <div className="border-2 border-dashed border-zinc-600 hover:border-blue-500 rounded-lg p-6 text-center cursor-pointer transition-colors">
-          <input
-            type="file"
-            accept="audio/*"
-            onChange={handleFileSelect}
-            className="hidden"
-            disabled={stage !== 'idle'}
-          />
-          {file ? (
-            <div>
-              <p className="text-white font-medium">{file.name}</p>
-              <p className="text-zinc-400 text-sm mt-1">
-                {(file.size / 1024 / 1024).toFixed(2)} MB
-              </p>
-            </div>
-          ) : (
-            <div>
-              <Upload className="mx-auto text-zinc-500 mb-2" size={32} />
-              <p className="text-zinc-300">Click to select audio file</p>
-              <p className="text-zinc-500 text-sm mt-1">WAV, MP3, FLAC (10-60 seconds recommended)</p>
-            </div>
-          )}
-        </div>
-      </label>
+      {/* File selection with drag-drop */}
+      <DragDropUploadZone
+        onFileSelect={handleFileSelect}
+        accept={['audio/*', '.mp3', '.wav', '.flac', '.ogg', '.m4a']}
+        disabled={stage !== 'idle'}
+        selectedFile={file}
+      />
 
       {/* Diarization option */}
       <label className="flex items-center gap-3 p-3 bg-zinc-700 rounded-lg cursor-pointer">
