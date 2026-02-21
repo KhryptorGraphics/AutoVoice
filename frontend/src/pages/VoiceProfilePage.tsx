@@ -8,6 +8,7 @@ import { AddSongButton } from '../components/AddSongButton'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { TrainingSampleUpload } from '../components/TrainingSampleUpload'
 import { AdapterSelector } from '../components/AdapterSelector'
+import { ProfileCardSkeleton } from '../components/Skeleton'
 import clsx from 'clsx'
 
 // Training status badge component
@@ -706,8 +707,10 @@ export function VoiceProfilePage() {
       )}
 
       {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="animate-spin text-gray-400" size={32} />
+        <div className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <ProfileCardSkeleton key={i} />
+          ))}
         </div>
       ) : profiles.length === 0 ? (
         <div className="bg-gray-800 rounded-lg p-8 text-center">
