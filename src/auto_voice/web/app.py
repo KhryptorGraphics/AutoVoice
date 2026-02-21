@@ -115,9 +115,32 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: bool = False) -
     # Initialize components (skip in testing mode)
     if not testing:
         _init_components(app, socketio, config)
+    else:
+        # Initialize lightweight components even in testing mode
+        _init_test_components(app, socketio, config)
 
     logger.info("AutoVoice Flask app created")
     return app, socketio
+
+
+def _init_test_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
+    """Initialize lightweight components for testing mode."""
+    try:
+        from ..inference.conversion_job_manager import ConversionJobManager
+        from unittest.mock import MagicMock
+
+        # Create a mock singing pipeline for testing
+        mock_pipeline = MagicMock()
+
+        # Initialize ConversionJobManager with mock pipeline
+        conversion_job_manager = ConversionJobManager(
+            singing_pipeline=mock_pipeline,
+            socketio=socketio
+        )
+        app.conversion_job_manager = conversion_job_manager
+        logger.info("ConversionJobManager initialized (testing mode)")
+    except Exception as e:
+        logger.warning(f"Failed to initialize test components: {e}")
 
 
 def _init_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
@@ -159,6 +182,19 @@ def _init_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
             logger.info(f"Singing conversion pipeline initialized on {device}")
         except Exception as e:
             logger.warning(f"Failed to initialize singing conversion pipeline: {e}")
+
+    # Initialize ConversionJobManager if singing pipeline available
+    if singing_pipeline:
+        try:
+            from ..inference.conversion_job_manager import ConversionJobManager
+            conversion_job_manager = ConversionJobManager(
+                singing_pipeline=singing_pipeline,
+                socketio=socketio
+            )
+            app.conversion_job_manager = conversion_job_manager
+            logger.info("ConversionJobManager initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize ConversionJobManager: {e}")
 
     # Initialize voice cloner
     voice_cloner = None
