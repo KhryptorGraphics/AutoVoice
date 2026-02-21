@@ -284,8 +284,25 @@ export default function App() {
     { to: '/help', label: 'Help', icon: HelpCircle },
   ]
 
+  const handleSkipToContent = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault()
+    const mainContent = document.getElementById('main-content')
+    if (mainContent) {
+      mainContent.focus()
+      mainContent.scrollIntoView()
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
+      {/* Skip to content link - visually hidden until focused */}
+      <a
+        href="#main-content"
+        onClick={handleSkipToContent}
+        className="absolute left-0 top-0 z-50 -translate-y-full bg-blue-600 px-4 py-2 text-white transition focus:translate-y-0"
+      >
+        Skip to content
+      </a>
       <nav className="bg-gray-800 border-b border-gray-700">
         <div className="max-w-7xl mx-auto px-4 flex items-center h-14">
           <span className="text-xl font-bold text-blue-400 mr-8">AutoVoice</span>
@@ -311,7 +328,7 @@ export default function App() {
           </div>
         </div>
       </nav>
-      <main className="max-w-7xl mx-auto px-4 py-8">
+      <main id="main-content" tabIndex={-1} className="max-w-7xl mx-auto px-4 py-8 outline-none">
         <Routes>
           <Route path="/" element={<ConvertPage />} />
           <Route path="/karaoke" element={<KaraokePage />} />
