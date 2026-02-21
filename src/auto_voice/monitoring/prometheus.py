@@ -6,7 +6,7 @@ and other operational metrics.
 import logging
 import time
 from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +136,155 @@ if PROMETHEUS_AVAILABLE:
     )
 
 
+# ============================================================================
+# Conversion Analytics - Privacy-Respecting Metrics Aggregation
+# ============================================================================
+
+class ConversionAnalytics:
+    """Simple, privacy-respecting conversion analytics.
+
+    Only tracks aggregate metrics, no personal data or audio content.
+    Provides quick health check data without querying Prometheus.
+    """
+
+    def __init__(self):
+        self._metrics = {
+            'total_conversions': 0,
+            'successful_conversions': 0,
+            'failed_conversions': 0,
+            'total_audio_seconds': 0.0,
+            'total_errors': 0,
+            'avg_latency_ms': 0.0,
+            'avg_audio_duration_s': 0.0,
+            'gpu_utilization': 0.0,
+            'conversions_by_preset': {},  # preset -> count
+        }
+        self._conversion_count_for_avg = 0
+        self._latency_samples = []
+        self._audio_duration_samples = []
+
+    def record_conversion_start(self):
+        """Record a new conversion started."""
+        self._metrics['total_conversions'] += 1
+
+    def record_conversion_complete(
+        self,
+        preset: str,
+        latency_ms: float,
+        audio_duration_s: float,
+        success: bool = True
+    ):
+        """Record conversion completion.
+
+        Args:
+            preset: Conversion preset used (e.g., 'quality', 'realtime')
+            latency_ms: Processing latency in milliseconds
+            audio_duration_s: Duration of converted audio in seconds
+            success: Whether conversion succeeded
+        """
+        if success:
+            self._metrics['successful_conversions'] += 1
+        else:
+            self._metrics['failed_conversions'] += 1
+
+        self._metrics['total_audio_seconds'] += audio_duration_s
+
+        # Track conversions by preset
+        self._metrics['conversions_by_preset'][preset] = (
+            self._metrics['conversions_by_preset'].get(preset, 0) + 1
+        )
+
+        # Update rolling average latency (keep last 1000 samples)
+        self._latency_samples.append(latency_ms)
+        if len(self._latency_samples) > 1000:
+            self._latency_samples.pop(0)
+        self._metrics['avg_latency_ms'] = (
+            sum(self._latency_samples) / len(self._latency_samples)
+        )
+
+        # Update rolling average audio duration
+        self._audio_duration_samples.append(audio_duration_s)
+        if len(self._audio_duration_samples) > 1000:
+            self._audio_duration_samples.pop(0)
+        self._metrics['avg_audio_duration_s'] = (
+            sum(self._audio_duration_samples) / len(self._audio_duration_samples)
+        )
+
+    def record_error(self):
+        """Record an error occurrence."""
+        self._metrics['total_errors'] += 1
+
+    def update_gpu_utilization(self, utilization_percent: float):
+        """Update GPU utilization metric.
+
+        Args:
+            utilization_percent: Current GPU utilization (0-100)
+        """
+        self._metrics['gpu_utilization'] = utilization_percent
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get current aggregate metrics.
+
+        Returns:
+            Dict with keys:
+                - total_conversions: Total number of conversions
+                - successful_conversions: Number of successful conversions
+                - failed_conversions: Number of failed conversions
+                - total_audio_minutes: Total audio processed in minutes
+                - avg_latency_ms: Average processing latency
+                - avg_audio_duration_s: Average audio duration
+                - gpu_utilization: Current GPU utilization percent
+                - total_errors: Total error count
+                - conversions_by_preset: Breakdown by preset
+        """
+        return {
+            'total_conversions': self._metrics['total_conversions'],
+            'successful_conversions': self._metrics['successful_conversions'],
+            'failed_conversions': self._metrics['failed_conversions'],
+            'total_audio_minutes': round(self._metrics['total_audio_seconds'] / 60, 1),
+            'avg_latency_ms': round(self._metrics['avg_latency_ms'], 1),
+            'avg_audio_duration_s': round(self._metrics['avg_audio_duration_s'], 1),
+            'gpu_utilization': round(self._metrics['gpu_utilization'], 1),
+            'total_errors': self._metrics['total_errors'],
+            'conversions_by_preset': dict(self._metrics['conversions_by_preset']),
+        }
+
+
+# Global analytics instance
+_conversion_analytics = ConversionAnalytics()
+
+
+def get_conversion_analytics() -> Dict[str, Any]:
+    """Get conversion usage analytics (for health/monitoring endpoints).
+
+    Returns:
+        Dict containing aggregate conversion metrics including:
+        total_conversions, avg_latency_ms, gpu_utilization, etc.
+    """
+    return _conversion_analytics.get_metrics()
+
+
 def record_conversion(preset: str, duration: float, audio_duration: float,
                       success: bool = True):
-    """Record a voice conversion operation."""
+    """Record a voice conversion operation.
+
+    Records to both Prometheus metrics (if available) and in-memory analytics.
+
+    Args:
+        preset: Conversion preset used (e.g., 'quality', 'realtime')
+        duration: Processing duration in seconds
+        audio_duration: Duration of converted audio in seconds
+        success: Whether conversion succeeded
+    """
+    # Record to in-memory analytics (always available)
+    _conversion_analytics.record_conversion_complete(
+        preset=preset,
+        latency_ms=duration * 1000,  # Convert seconds to milliseconds
+        audio_duration_s=audio_duration,
+        success=success
+    )
+
+    # Record to Prometheus metrics (if available)
     if not PROMETHEUS_AVAILABLE:
         return
 
@@ -159,14 +305,17 @@ def record_cloning(success: bool = True):
 
 
 def update_gpu_metrics():
-    """Update GPU metrics from current state."""
-    if not PROMETHEUS_AVAILABLE:
-        return
+    """Update GPU metrics from current state.
 
+    Updates both Prometheus metrics (if available) and in-memory analytics.
+    """
     try:
         import torch
         if not torch.cuda.is_available():
             return
+
+        # Track first GPU's utilization for analytics
+        primary_gpu_util = 0.0
 
         for i in range(torch.cuda.device_count()):
             device_label = f'cuda:{i}'
@@ -174,8 +323,10 @@ def update_gpu_metrics():
             free, total = mem_info
             used = total - free
 
-            GPU_MEMORY_USED.labels(device=device_label).set(used)
-            GPU_MEMORY_TOTAL.labels(device=device_label).set(total)
+            # Update Prometheus metrics (if available)
+            if PROMETHEUS_AVAILABLE:
+                GPU_MEMORY_USED.labels(device=device_label).set(used)
+                GPU_MEMORY_TOTAL.labels(device=device_label).set(total)
 
             # Try pynvml for utilization
             try:
@@ -183,9 +334,18 @@ def update_gpu_metrics():
                 pynvml.nvmlInit()
                 handle = pynvml.nvmlDeviceGetHandleByIndex(i)
                 util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                GPU_UTILIZATION.labels(device=device_label).set(util.gpu)
+
+                if PROMETHEUS_AVAILABLE:
+                    GPU_UTILIZATION.labels(device=device_label).set(util.gpu)
+
+                # Track primary GPU utilization for analytics
+                if i == 0:
+                    primary_gpu_util = util.gpu
             except Exception:
                 pass
+
+        # Update analytics with primary GPU utilization
+        _conversion_analytics.update_gpu_utilization(primary_gpu_util)
 
     except Exception as e:
         logger.debug(f"GPU metrics update failed: {e}")
