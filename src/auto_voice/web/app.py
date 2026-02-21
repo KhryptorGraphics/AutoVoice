@@ -2,30 +2,64 @@
 import logging
 import time
 import threading
+import secrets
 from typing import Optional, Dict, Any, Tuple
 
 from flask import Flask, request, g
 from flask_socketio import SocketIO
 
+from auto_voice.config.secrets import SecretsManager
+
 logger = logging.getLogger(__name__)
 
 
-def create_app(config: Optional[Dict[str, Any]] = None, testing: bool = False) -> Tuple[Flask, SocketIO]:
+def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] = None) -> Tuple[Flask, SocketIO]:
     """Create and configure the Flask application.
 
     Args:
         config: Optional configuration dictionary
-        testing: If True, configure for testing (no ML components)
+        testing: If True, configure for testing (no ML components).
+                 If None (default), infer from config['TESTING'].
+                 If False, always use production mode.
 
     Returns:
         Tuple of (Flask app, SocketIO instance)
     """
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = config.get('SECRET_KEY', 'autovoice-dev-key') if config else 'autovoice-dev-key'
-    app.config['TESTING'] = testing
 
+    # Apply user config first so we can check TESTING flag
     if config:
         app.config.update(config)
+
+    # Determine testing mode for SECRET_KEY:
+    # - If testing parameter explicitly set, use it (for SECRET_KEY behavior)
+    # - Otherwise, infer from config TESTING flag (default False)
+    # Note: We DON'T overwrite app.config['TESTING'] if it was set in config,
+    # because tests may need TESTING=True for SocketIO threading mode
+    # while testing=False for production SECRET_KEY behavior
+    if testing is not None:
+        is_testing = testing
+        # Only set TESTING in config if it wasn't already set
+        if 'TESTING' not in app.config:
+            app.config['TESTING'] = testing
+    else:
+        is_testing = app.config.get('TESTING', False)
+
+    # Configure SECRET_KEY using SecretsManager
+    if is_testing:
+        # Generate secure random key for testing (32 bytes = 64 hex chars)
+        # Don't overwrite if SECRET_KEY already in config
+        if not app.config.get('SECRET_KEY'):
+            app.config['SECRET_KEY'] = secrets.token_hex(32)
+    else:
+        # Use SecretsManager for production - requires AUTOVOICE_SECRET_FLASK_SECRET_KEY env var
+        secrets_manager = SecretsManager()
+        if app.config.get('SECRET_KEY'):
+            # Config already has SECRET_KEY (e.g., from YAML or test), keep it
+            pass
+        else:
+            # Require secret from environment or secrets file
+            app.config['SECRET_KEY'] = secrets_manager.get_required('flask_secret_key')
 
     # Store app-level config for API access
     app.app_config = config if config else {}
@@ -91,7 +125,8 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: bool = False) -
 
     # Initialize SocketIO
     # Use threading mode in testing to avoid eventlet dependency
-    async_mode = 'threading' if (testing or app.config.get('TESTING')) else 'eventlet'
+    # Check both testing parameter and config TESTING flag for SocketIO mode
+    async_mode = 'threading' if (testing is True or app.config.get('TESTING', False)) else 'eventlet'
     socketio = SocketIO(app, cors_allowed_origins="*", async_mode=async_mode)
     app.socketio = socketio
 
@@ -113,7 +148,9 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: bool = False) -
     register_karaoke_namespace(socketio)
 
     # Initialize components (skip in testing mode)
-    if not testing:
+    # Only skip if testing parameter is explicitly True
+    # (maintains backward compatibility: if testing not provided, initialize components)
+    if testing is not True:
         _init_components(app, socketio, config)
 
     logger.info("AutoVoice Flask app created")
