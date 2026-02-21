@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Music, History, Activity, Mic, HelpCircle, User, Users, Youtube, Loader2, XCircle } from 'lucide-react'
+import { Music, History, Activity, Mic, HelpCircle, User, Users, Youtube, Loader2, CheckCircle, XCircle } from 'lucide-react'
 import { ConversionHistoryPage } from './pages/ConversionHistoryPage'
 import { SystemStatusPage } from './pages/SystemStatusPage'
 import { KaraokePage } from './pages/KaraokePage'
