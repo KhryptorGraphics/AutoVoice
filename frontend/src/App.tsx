@@ -11,10 +11,11 @@ import HelpPage from './pages/HelpPage'
 import { AdapterSelector, AdapterBadge } from './components/AdapterSelector'
 import { PipelineSelector, PipelineBadge, type PipelineType, getPreferredPipeline } from './components/PipelineSelector'
 import { apiService, VoiceProfile, AdapterType, ConversionRecord } from './services/api'
-import { ToastProvider } from './contexts/ToastContext'
+import { ToastProvider, useToastContext } from './contexts/ToastContext'
 import clsx from 'clsx'
 
 function ConvertPage() {
+  const toast = useToastContext()
   const [profiles, setProfiles] = useState<VoiceProfile[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null)
   const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null)
@@ -72,16 +73,21 @@ function ConvertPage() {
         if (status.status === 'processing' || status.status === 'queued') {
           setTimeout(pollStatus, 1000)
         } else if (status.status === 'error') {
-          setError(status.error || 'Conversion failed')
+          const errorMsg = status.error || 'Conversion failed'
+          setError(errorMsg)
+          toast.error(errorMsg)
           setIsConverting(false)
         } else if (status.status === 'complete' || status.status === 'completed') {
+          toast.success('Conversion completed successfully!')
           setIsConverting(false)
         }
       }
 
       pollStatus()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Conversion failed')
+      const errorMsg = err instanceof Error ? err.message : 'Conversion failed'
+      setError(errorMsg)
+      toast.error(errorMsg)
       setIsConverting(false)
     }
   }
@@ -97,7 +103,9 @@ function ConvertPage() {
       a.click()
       URL.revokeObjectURL(url)
     } catch (err) {
-      setError('Download failed')
+      const errorMsg = 'Download failed'
+      setError(errorMsg)
+      toast.error(errorMsg)
     }
   }
 
