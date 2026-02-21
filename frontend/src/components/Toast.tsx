@@ -41,7 +41,7 @@ const VARIANT_STYLES: Record<ToastVariant, {
   },
 }
 
-const VARIANT_ICONS: Record<ToastVariant, React.ComponentType<{ size?: number; className?: string }>> = {
+const VARIANT_ICONS: Record<ToastVariant, any> = {
   success: CheckCircle,
   error: XCircle,
   warning: AlertTriangle,
