@@ -76,7 +76,15 @@ class StreamingConversionPipeline:
         self._min_chunk_size = int(sample_rate * 0.01)
 
     def _create_crossfade_window(self) -> torch.Tensor:
-        """Create Hann crossfade window for overlap-add synthesis."""
+        """Create Hann crossfade window for overlap-add synthesis.
+
+        Generates fade-in and fade-out windows using Hann function to ensure
+        smooth transitions between overlapping chunks without audio glitches.
+
+        Returns:
+            Tensor of shape (2, overlap_size) containing [fade_in, fade_out] windows,
+            or ones(1) if no overlap is configured
+        """
         if self.overlap_size <= 0:
             return torch.ones(1)
 
@@ -187,7 +195,12 @@ class StreamingConversionPipeline:
         return output
 
     def reset(self) -> None:
-        """Reset overlap buffer and latency history."""
+        """Reset overlap buffer and latency history.
+
+        Clears internal state to start fresh processing. Call this when
+        starting a new audio stream or after stopping to prevent artifacts
+        from previous sessions.
+        """
         self.overlap_buffer = None
         self._latency_history.clear()
 
@@ -209,15 +222,22 @@ class StreamingConversionPipeline:
     def start_session(self, speaker_embedding: torch.Tensor) -> None:
         """Start a streaming conversion session.
 
+        Initializes the pipeline for real-time processing with the target
+        speaker embedding. Resets all internal buffers and state.
+
         Args:
-            speaker_embedding: Target speaker embedding (256-dim)
+            speaker_embedding: Target speaker embedding (256-dim) to convert to
         """
         self._speaker_embedding = speaker_embedding.to(self.device)
         self.reset()
         self.is_running = True
 
     def stop_session(self) -> None:
-        """Stop the streaming conversion session."""
+        """Stop the streaming conversion session.
+
+        Cleans up session state, clears speaker embedding, and resets buffers.
+        Call this when finishing real-time processing to free resources.
+        """
         self.is_running = False
         self._speaker_embedding = None
         self.reset()
@@ -292,7 +312,11 @@ class AudioInputStream:
             raise RuntimeError(f"Failed to start audio capture: {e}")
 
     def stop(self) -> None:
-        """Stop audio capture."""
+        """Stop audio capture and release resources.
+
+        Closes the audio stream and frees the audio device. Safe to call
+        multiple times.
+        """
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()
@@ -301,7 +325,11 @@ class AudioInputStream:
 
     @property
     def is_running(self) -> bool:
-        """Check if audio capture is active."""
+        """Check if audio capture is active.
+
+        Returns:
+            True if currently capturing audio, False otherwise
+        """
         return self._is_running
 
 
@@ -333,8 +361,11 @@ class AudioOutputStream:
     def write(self, audio: torch.Tensor) -> None:
         """Write audio data to output stream.
 
+        Buffers audio for playback. If stream is running, audio is flushed
+        immediately. Otherwise, audio accumulates until start() is called.
+
         Args:
-            audio: Audio tensor to play
+            audio: Audio tensor of shape (samples,) to play
         """
         self._buffer.append(audio)
 
@@ -343,7 +374,12 @@ class AudioOutputStream:
             self._flush_buffer()
 
     def _flush_buffer(self) -> None:
-        """Flush buffered audio to output device."""
+        """Flush buffered audio to output device.
+
+        Concatenates all buffered audio chunks and sends to the audio output
+        device for playback. Clears the buffer after flushing. Silently fails
+        if sounddevice is not available.
+        """
         if not self._buffer:
             return
 
@@ -362,7 +398,13 @@ class AudioOutputStream:
             pass  # Buffer audio but can't play without sounddevice
 
     def start(self) -> None:
-        """Start audio output stream."""
+        """Start audio output stream.
+
+        Enables audio playback. Any buffered audio will be flushed immediately.
+
+        Raises:
+            RuntimeError: If sounddevice package is not installed
+        """
         try:
             import sounddevice as sd
             self._is_running = True
@@ -370,11 +412,19 @@ class AudioOutputStream:
             raise RuntimeError("sounddevice package required for audio output")
 
     def stop(self) -> None:
-        """Stop audio output stream."""
+        """Stop audio output stream and clear buffer.
+
+        Stops playback and discards any buffered audio. Safe to call
+        multiple times.
+        """
         self._is_running = False
         self._buffer.clear()
 
     @property
     def is_running(self) -> bool:
-        """Check if output stream is active."""
+        """Check if output stream is active.
+
+        Returns:
+            True if currently playing audio, False otherwise
+        """
         return self._is_running

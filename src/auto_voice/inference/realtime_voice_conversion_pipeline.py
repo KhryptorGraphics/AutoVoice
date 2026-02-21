@@ -27,6 +27,18 @@ class RealtimeVoiceConversionPipeline:
     """
 
     def __init__(self, device=None, config: Optional[Dict[str, Any]] = None):
+        """Initialize realtime voice conversion pipeline.
+
+        Args:
+            device: torch.device for computation (default: auto-detect CUDA)
+            config: Configuration dict with keys:
+                - sample_rate: Audio sample rate (default: 22050)
+                - chunk_size: Processing window size in samples (default: 4096)
+                - hop_size: Overlap size in samples (default: 2048)
+                - crossfade_size: Crossfade window size (default: 512)
+                - use_consistency: Use consistency student for 1-step inference
+                - speaker_id: Default speaker ID
+        """
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.config = config or {}
 
@@ -75,19 +87,36 @@ class RealtimeVoiceConversionPipeline:
 
     @property
     def is_running(self) -> bool:
-        """Whether the pipeline is actively processing."""
+        """Whether the pipeline is actively processing.
+
+        Returns:
+            True if processing thread is running, False otherwise
+        """
         return self._running
 
     @property
     def latency_ms(self) -> float:
-        """Current average processing latency in milliseconds."""
+        """Current average processing latency in milliseconds.
+
+        Computed from the last 100 processed chunks.
+
+        Returns:
+            Average processing latency in ms, or 0.0 if no samples
+        """
         if not self._latency_samples:
             return 0.0
         return float(np.mean(list(self._latency_samples)) * 1000)
 
     @property
     def buffer_latency_ms(self) -> float:
-        """Theoretical minimum latency from buffer size."""
+        """Theoretical minimum latency from buffer size.
+
+        This is the time it takes to fill one processing chunk,
+        representing the lower bound on latency.
+
+        Returns:
+            Minimum latency in milliseconds based on chunk size
+        """
         return (self.chunk_size / self.sample_rate) * 1000
 
     def set_target_voice(self, embedding: np.ndarray):
@@ -162,7 +191,9 @@ class RealtimeVoiceConversionPipeline:
     def clear_speaker(self) -> None:
         """Clear the current speaker, stopping voice conversion.
 
-        After calling this, audio will pass through unchanged.
+        After calling this, audio will pass through unchanged until
+        a new speaker is set via set_speaker() or set_target_voice().
+        This is thread-safe and can be called while pipeline is running.
         """
         with self._lock:
             self._target_embedding = None
@@ -173,9 +204,17 @@ class RealtimeVoiceConversionPipeline:
               on_error: Optional[Callable] = None):
         """Start the realtime processing pipeline.
 
+        Starts a background thread that continuously processes audio chunks
+        from the input buffer. If callbacks are provided, the pipeline runs
+        in push mode where process_chunk() queues audio. Without callbacks,
+        use pull mode where process_chunk() returns converted audio directly.
+
         Args:
             on_output: Callback(audio_chunk: np.ndarray) for processed output
             on_error: Callback(error: Exception) for errors
+
+        Raises:
+            RuntimeWarning: If pipeline is already running (logged, not raised)
         """
         if self._running:
             logger.warning("Pipeline already running")
@@ -196,7 +235,12 @@ class RealtimeVoiceConversionPipeline:
         logger.info("Realtime pipeline started")
 
     def stop(self):
-        """Stop the processing pipeline."""
+        """Stop the processing pipeline.
+
+        Signals the background thread to stop, waits up to 2 seconds for it
+        to finish, then clears all buffers and resets state. Safe to call
+        multiple times.
+        """
         self._running = False
         if self._process_thread is not None:
             self._process_thread.join(timeout=2.0)
@@ -236,7 +280,12 @@ class RealtimeVoiceConversionPipeline:
             return self._convert_chunk(audio_chunk)
 
     def _processing_loop(self):
-        """Background processing loop for push mode."""
+        """Background processing loop for push mode.
+
+        Continuously pulls chunks from input buffer, converts them,
+        and sends output to the registered callback. Handles errors
+        via the on_error callback if provided.
+        """
         while self._running:
             if self._input_buffer:
                 try:
@@ -254,8 +303,15 @@ class RealtimeVoiceConversionPipeline:
     def _convert_chunk(self, audio: np.ndarray) -> Optional[np.ndarray]:
         """Convert a single audio chunk.
 
-        Applies STFT-based conversion with target voice characteristics.
+        Applies voice conversion with target voice characteristics.
         Uses crossfading for smooth transitions between chunks.
+        If no target embedding is set, returns audio unchanged.
+
+        Args:
+            audio: Input audio samples (float32, mono)
+
+        Returns:
+            Converted audio chunk with original length, or original on error
         """
         start_time = time.perf_counter()
 
@@ -303,7 +359,17 @@ class RealtimeVoiceConversionPipeline:
             return audio[:original_len]  # Return original length on error
 
     def _get_model_manager(self):
-        """Get ModelManager instance. Raises if not configured."""
+        """Get or create ModelManager instance.
+
+        Lazy-loads the model manager on first access using config parameters.
+        This allows pipeline initialization without loading heavy models.
+
+        Returns:
+            ModelManager instance with loaded models
+
+        Raises:
+            RuntimeError: If required model paths not in config
+        """
         if self._model_manager is None:
             from .model_manager import ModelManager
             self._model_manager = ModelManager(device=self.device, config=self.config)
@@ -340,7 +406,16 @@ class RealtimeVoiceConversionPipeline:
         """Apply voice conversion using trained model.
 
         Uses consistency student (1-step) if loaded, otherwise uses
-        full model manager pipeline. Raises RuntimeError if neither available.
+        full model manager pipeline.
+
+        Args:
+            audio: Input audio tensor (float32, mono)
+
+        Returns:
+            Converted audio tensor
+
+        Raises:
+            RuntimeError: If neither consistency student nor model manager available
         """
         if self._use_consistency and self._consistency_student is not None:
             return self._apply_consistency_conversion(audio)
@@ -358,6 +433,16 @@ class RealtimeVoiceConversionPipeline:
 
         Extracts content+pitch features, constructs conditioning tensor,
         and runs single-step inference through the student model + vocoder.
+        This is much faster than the full diffusion pipeline.
+
+        Args:
+            audio: Input audio tensor (float32, mono)
+
+        Returns:
+            Converted audio tensor
+
+        Raises:
+            RuntimeError: If vocoder not loaded in model manager
         """
         from ..models.encoder import ContentEncoder, PitchEncoder
 
@@ -413,7 +498,20 @@ class RealtimeVoiceConversionPipeline:
         )
 
     def get_metrics(self) -> Dict[str, Any]:
-        """Get pipeline performance metrics."""
+        """Get pipeline performance metrics.
+
+        Returns:
+            Dict containing:
+                - is_running: Whether pipeline is active
+                - chunks_processed: Total chunks processed since start
+                - avg_latency_ms: Average processing latency
+                - buffer_latency_ms: Theoretical minimum latency
+                - input_queue_size: Number of chunks waiting for processing
+                - output_queue_size: Number of processed chunks in output queue
+                - sample_rate: Audio sample rate
+                - chunk_size: Processing chunk size
+                - has_target_voice: Whether target embedding is set
+        """
         return {
             'is_running': self._running,
             'chunks_processed': self._chunks_processed,

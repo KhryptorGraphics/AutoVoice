@@ -66,6 +66,9 @@ class SOTAConversionPipeline:
             profile_store: Voice profile storage for loading trained weights
             profile_id: Profile ID to load LoRA weights from (requires profile_store)
             require_gpu: If True, raise RuntimeError if CUDA unavailable
+
+        Raises:
+            RuntimeError: If require_gpu is True and CUDA is not available
         """
         if require_gpu and not torch.cuda.is_available():
             raise RuntimeError("CUDA is required for SOTAConversionPipeline")
@@ -119,6 +122,9 @@ class SOTAConversionPipeline:
         Args:
             profile_store: Voice profile storage
             profile_id: Profile ID to load weights from
+
+        Raises:
+            RuntimeError: If loading or applying LoRA weights fails
         """
         if not profile_store.has_trained_model(profile_id):
             logger.info(f"Profile {profile_id} has no trained model, skipping LoRA")
@@ -148,13 +154,20 @@ class SOTAConversionPipeline:
         and the 256-dim speaker embedding from the profile.
 
         Prefers HQ adapters (standalone MLP) over layer-injection adapters when available.
+        HQ adapters transform content features before decoding, while standard adapters
+        modify decoder layers directly.
+
+        The speaker embedding is validated for correct shape and L2 normalization.
+        If the embedding is not normalized, it will be normalized automatically with
+        a warning.
 
         Args:
-            profile_id: UUID of the voice profile to switch to.
+            profile_id: UUID of the voice profile to switch to
 
         Raises:
-            FileNotFoundError: If no adapter or embedding exists for the profile.
-            RuntimeError: If adapter loading fails.
+            FileNotFoundError: If no adapter or embedding exists for the profile
+            ValueError: If embedding has invalid shape (not [256])
+            RuntimeError: If adapter loading or application fails
         """
         if profile_id == self._current_speaker_id:
             logger.debug(f"Speaker {profile_id} already loaded, skipping")
@@ -229,16 +242,24 @@ class SOTAConversionPipeline:
     def get_current_speaker(self) -> Optional[str]:
         """Get the currently loaded speaker profile ID.
 
+        Useful for tracking which voice is currently active in the pipeline.
+        Returns None if no speaker has been set via set_speaker() or if
+        clear_speaker() was called.
+
         Returns:
-            Profile ID of the current speaker, or None if no speaker loaded.
+            Profile ID of the current speaker, or None if no speaker loaded
         """
         return self._current_speaker_id
 
     def get_speaker_embedding(self) -> Optional[torch.Tensor]:
         """Get the currently loaded speaker embedding.
 
+        Returns the mel-statistics based speaker embedding (mean + std of 128 mel
+        bands, L2-normalized to unit length). This embedding is used by the decoder
+        to condition the voice conversion.
+
         Returns:
-            [256] speaker embedding tensor, or None if no speaker loaded.
+            [256] L2-normalized speaker embedding tensor on device, or None if no speaker loaded
         """
         return self._speaker_embedding
 
@@ -246,7 +267,11 @@ class SOTAConversionPipeline:
         """Clear the current speaker adapter, reverting to base model.
 
         This zeros out LoRA contributions without removing the LoRA layers
-        and clears the stored speaker embedding.
+        and clears the stored speaker embedding. Handles both HQ and standard
+        adapter architectures.
+
+        Returns:
+            None
         """
         if self._current_speaker_id is None:
             logger.debug("No speaker loaded, nothing to clear")
@@ -267,13 +292,17 @@ class SOTAConversionPipeline:
                   to_sr: int) -> torch.Tensor:
         """Resample audio tensor between sample rates.
 
+        Uses linear interpolation to change the sample rate. If from_sr equals
+        to_sr, returns the input unchanged. Handles both mono [T] and stereo
+        [C, T] audio tensors.
+
         Args:
             audio: [T] or [C, T] audio tensor
-            from_sr: Source sample rate
-            to_sr: Target sample rate
+            from_sr: Source sample rate in Hz
+            to_sr: Target sample rate in Hz
 
         Returns:
-            Resampled audio tensor
+            Resampled audio tensor with same channel configuration as input
         """
         if from_sr == to_sr:
             return audio
@@ -303,6 +332,9 @@ class SOTAConversionPipeline:
 
         Returns:
             [T] mono audio tensor
+
+        Raises:
+            RuntimeError: If audio has unexpected shape (not 1D or 2D)
         """
         if audio.dim() == 1:
             return audio
@@ -315,17 +347,20 @@ class SOTAConversionPipeline:
     def _encode_pitch(self, f0: torch.Tensor) -> torch.Tensor:
         """Encode F0 values to 256-dim pitch embeddings.
 
-        Uses the PitchEncoder-style mel-quantized approach:
-        F0 → coarse bin → embedding lookup.
+        Uses Fourier features to create a rich representation of pitch:
+        1. Convert F0 to log2 scale and normalize to [0, 1]
+        2. Generate 128 sin + 128 cos harmonics (256 total dimensions)
+        3. Return phase-shifted sinusoids that encode pitch continuously
 
-        For integration, we use a learned linear projection from
-        log-F0 features to match the decoder's expected 256-dim input.
+        This approach provides a continuous pitch representation that's more
+        expressive than discrete bins, allowing the decoder to interpolate
+        smoothly between pitch values.
 
         Args:
-            f0: [B, T] F0 in Hz
+            f0: [B, T] F0 in Hz (unvoiced frames should be 0 or low values)
 
         Returns:
-            [B, T, 256] pitch embeddings
+            [B, T, 256] pitch embeddings using Fourier features
         """
         B, T = f0.shape
 
@@ -352,21 +387,32 @@ class SOTAConversionPipeline:
                 ) -> Dict[str, Any]:
         """Convert audio to target speaker voice.
 
+        Executes the complete SOTA voice conversion pipeline:
+        1. Vocal separation using MelBandRoFormer at 44.1kHz
+        2. Content feature extraction using ContentVec at 16kHz
+        3. Pitch extraction using RMVPE at 16kHz
+        4. Frame alignment and pitch encoding to 256-dim
+        5. Mel spectrogram generation using CoMoSVC decoder
+        6. Waveform synthesis using BigVGAN vocoder at 24kHz
+
+        The output is normalized to peak amplitude of 0.95 to prevent clipping
+        while maintaining reasonable loudness.
+
         Args:
-            audio: [T] or [C, T] input audio tensor
-            sample_rate: Input sample rate
-            speaker_embedding: [256] target speaker embedding (mel-statistics)
-            on_progress: Optional callback(stage_name, progress_fraction)
+            audio: [T] or [C, T] input audio tensor (any sample rate)
+            sample_rate: Input sample rate in Hz
+            speaker_embedding: [256] target speaker embedding (mel-statistics, L2-normalized)
+            on_progress: Optional callback(stage_name, progress_fraction) for tracking
 
         Returns:
             Dict with:
-                - audio: [T] output waveform at 24kHz
-                - sample_rate: 24000
-                - metadata: processing info
+                - audio: [T] output waveform at 24kHz, normalized to peak 0.95
+                - sample_rate: 24000 (output sample rate)
+                - metadata: Dict containing processing_time, n_steps, n_frames, output_duration, device
 
         Raises:
-            RuntimeError: On empty/too-short audio, wrong dimensions, or
-                         component failures.
+            RuntimeError: If audio is empty, too short (<100ms), has wrong dimensions,
+                         or if any component fails during processing
         """
         start_time = time.time()
 

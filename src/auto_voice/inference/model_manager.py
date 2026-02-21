@@ -35,6 +35,23 @@ class ModelManager:
     VALID_ENCODER_TYPES = ('linear', 'conformer')
 
     def __init__(self, device=None, config: Optional[Dict] = None):
+        """Initialize ModelManager with device and configuration.
+
+        Args:
+            device: PyTorch device (cuda/cpu). Auto-detects if None.
+            config: Optional configuration dict. Supported keys:
+                - sample_rate (int): Audio sample rate. Default: 22050.
+                - vocoder_type (str): 'hifigan' or 'bigvgan'. Default: 'hifigan'.
+                - encoder_backend (str): 'hubert' or 'contentvec'. Default: 'hubert'.
+                - encoder_type (str): 'linear' or 'conformer'. Default: 'linear'.
+                - conformer_config (dict): Conformer hyperparams if encoder_type='conformer'.
+
+        Raises:
+            RuntimeError: If config contains invalid vocoder_type, encoder_backend,
+                or encoder_type values.
+
+        Models are not loaded until load() is called.
+        """
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.config = config or {}
 
@@ -53,7 +70,20 @@ class ModelManager:
         self._speaker_embeddings: Dict[str, np.ndarray] = {}
 
     def _validate_config(self, config: Dict) -> None:
-        """Validate configuration values. Raises RuntimeError for invalid values."""
+        """Validate configuration values against allowed options.
+
+        Args:
+            config: Configuration dict to validate. Checks keys:
+                - vocoder_type: Must be in VALID_VOCODER_TYPES
+                - encoder_backend: Must be in VALID_ENCODER_BACKENDS
+                - encoder_type: Must be in VALID_ENCODER_TYPES
+
+        Raises:
+            RuntimeError: If any config value is invalid. Error message
+                includes the invalid value and list of valid options.
+
+        Unknown config keys are ignored (future compatibility).
+        """
         if 'vocoder_type' in config:
             if config['vocoder_type'] not in self.VALID_VOCODER_TYPES:
                 raise RuntimeError(
@@ -125,7 +155,21 @@ class ModelManager:
 
     def load_voice_model(self, model_path: str, speaker_id: str,
                          speaker_embedding: Optional[np.ndarray] = None):
-        """Load a trained per-speaker SoVitsSvc model."""
+        """Load a trained per-speaker SoVitsSvc model for voice conversion.
+
+        Args:
+            model_path: Path to trained SoVitsSvc checkpoint file.
+            speaker_id: Unique identifier for this speaker (used in infer()).
+            speaker_embedding: Optional 256-dim speaker embedding vector.
+                If provided, stored for later retrieval.
+
+        The loaded model is stored in _sovits_models dict keyed by speaker_id.
+        Multiple models can be loaded for different speakers.
+
+        Raises:
+            FileNotFoundError: If model_path does not exist.
+            RuntimeError: If checkpoint cannot be loaded.
+        """
         from ..models.so_vits_svc import SoVitsSvc
         model = SoVitsSvc.load_pretrained(model_path, device=self.device)
         self._sovits_models[speaker_id] = model

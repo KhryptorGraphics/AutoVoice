@@ -117,6 +117,11 @@ class RealtimePipeline:
     3. SimpleDecoder - generates mel spectrogram conditioned on speaker
     4. HiFiGAN vocoder - synthesizes waveform (22kHz output)
 
+    Buffer Management:
+    - Maintains circular buffers (maxlen=100) for latency tracking per component
+    - Tracks: content_encoder, pitch_extractor, decoder, vocoder, total
+    - Used for realtime performance monitoring via get_latency_metrics()
+
     Usage:
         pipeline = RealtimePipeline()
         pipeline.set_speaker_embedding(embedding)
@@ -170,6 +175,10 @@ class RealtimePipeline:
 
     def _init_content_encoder(self, model_id: Optional[str]):
         """Initialize ContentVec encoder with error handling.
+
+        Args:
+            model_id: HuggingFace model ID or local path to ContentVec weights.
+                     If None, uses default pretrained model.
 
         Raises:
             RuntimeError: If ContentVec fails to load (missing model, OOM, etc.)
@@ -258,6 +267,10 @@ class RealtimePipeline:
 
     def _init_vocoder(self, checkpoint: Optional[str]):
         """Initialize HiFiGAN vocoder with error handling.
+
+        Args:
+            checkpoint: Path to HiFiGAN checkpoint file (.ckpt or .pt).
+                       If None, uses default pretrained weights.
 
         Raises:
             RuntimeError: If vocoder fails to initialize
@@ -427,10 +440,14 @@ class RealtimePipeline:
             return audio.astype(np.float32)
 
     def get_latency_metrics(self) -> Dict[str, float]:
-        """Get average latency for each pipeline component.
+        """Get average latency for each pipeline component from circular buffers.
+
+        Computes rolling average from last 100 measurements per component.
+        Useful for monitoring realtime performance and detecting bottlenecks.
 
         Returns:
-            Dict with latency in milliseconds for each component
+            Dict with keys: content_encoder_ms, pitch_extractor_ms, decoder_ms,
+            vocoder_ms, total_ms. Returns 0.0 if no measurements recorded yet.
         """
         metrics = {}
         for name, history in self._latency_history.items():
@@ -442,7 +459,16 @@ class RealtimePipeline:
         return metrics
 
     def get_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive pipeline metrics."""
+        """Get comprehensive pipeline metrics including latency and configuration.
+
+        Returns:
+            Dict containing:
+            - device: Current torch device (cuda/cpu)
+            - sample_rate: Input audio sample rate (16000)
+            - output_sample_rate: Output audio sample rate (22050)
+            - has_speaker: Whether speaker embedding is loaded
+            - *_ms: Average latency per component (from circular buffers)
+        """
         latency = self.get_latency_metrics()
         return {
             'device': str(self.device),
@@ -453,7 +479,11 @@ class RealtimePipeline:
         }
 
     def _log_gpu_memory(self) -> None:
-        """Log current GPU memory state for debugging."""
+        """Log current GPU memory state for debugging OOM errors.
+
+        Logs allocated and reserved memory in GB. Called after CUDA errors
+        to help diagnose memory issues during realtime processing.
+        """
         if torch.cuda.is_available():
             try:
                 allocated = torch.cuda.memory_allocated(self.device) / 1e9

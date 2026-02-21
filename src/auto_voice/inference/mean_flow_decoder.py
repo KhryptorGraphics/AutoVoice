@@ -243,6 +243,17 @@ class TimeEmbedding(nn.Module):
     """Sinusoidal time embedding (same as DiT/CFM models)."""
 
     def __init__(self, dim: int, max_period: int = 10000):
+        """Initialize time embedding layer.
+
+        Creates sinusoidal positional encodings for continuous time values,
+        similar to the positional encoding in transformers but for scalar
+        time inputs. The embeddings are processed through an MLP for
+        additional expressiveness.
+
+        Args:
+            dim: Embedding dimension (output size)
+            max_period: Maximum period for sinusoidal encoding (default: 10000)
+        """
         super().__init__()
         self.dim = dim
         self.max_period = max_period

@@ -93,7 +93,15 @@ class TRTStreamingPipeline:
         return all((engine_dir / name).exists() for name in required)
 
     def _create_crossfade_window(self) -> torch.Tensor:
-        """Create Hann crossfade window for overlap-add synthesis."""
+        """Create Hann crossfade window for overlap-add synthesis.
+
+        Generates a symmetric Hann window split into fade-in and fade-out
+        components for smooth crossfading between overlapping audio chunks.
+
+        Returns:
+            Tensor of shape (2, overlap_size) containing [fade_in, fade_out]
+            windows, or scalar 1.0 if no overlap configured.
+        """
         if self.overlap_size <= 0:
             return torch.ones(1, device=self.device)
 
@@ -140,7 +148,19 @@ class TRTStreamingPipeline:
         logger.info(f"TRT engines loaded in {elapsed:.0f}ms")
 
     def _resample(self, audio: torch.Tensor, from_sr: int, to_sr: int) -> torch.Tensor:
-        """Resample audio tensor."""
+        """Resample audio tensor to target sample rate.
+
+        Uses linear interpolation for fast resampling during real-time processing.
+        Automatically handles 1D and 2D input tensors.
+
+        Args:
+            audio: Input audio tensor (samples,) or (channels, samples)
+            from_sr: Source sample rate in Hz
+            to_sr: Target sample rate in Hz
+
+        Returns:
+            Resampled audio tensor with same dimensionality as input
+        """
         if from_sr == to_sr:
             return audio
         if audio.dim() == 1:
@@ -153,7 +173,17 @@ class TRTStreamingPipeline:
         return audio
 
     def _encode_pitch(self, f0: torch.Tensor) -> torch.Tensor:
-        """Encode F0 to pitch embeddings using sinusoidal encoding."""
+        """Encode F0 to pitch embeddings using sinusoidal encoding.
+
+        Converts fundamental frequency values to 256-dimensional pitch embeddings
+        using log-scaled sinusoidal position encoding (128 sin + 128 cos components).
+
+        Args:
+            f0: Fundamental frequency tensor of shape (batch, frames) in Hz
+
+        Returns:
+            Pitch embeddings of shape (batch, frames, 256)
+        """
         B, T = f0.shape
         log_f0 = torch.log2(f0.clamp(min=1.0))
         log_f0_norm = (log_f0 - 5.6) / (10.1 - 5.6)
@@ -251,7 +281,18 @@ class TRTStreamingPipeline:
         return output
 
     def _apply_overlap_add(self, converted: torch.Tensor) -> torch.Tensor:
-        """Apply overlap-add synthesis for continuous output."""
+        """Apply overlap-add synthesis for continuous output.
+
+        Crossfades the current chunk with the tail of the previous chunk
+        to eliminate discontinuities at chunk boundaries. Uses Hann window
+        for smooth transitions.
+
+        Args:
+            converted: Converted audio chunk tensor (samples,)
+
+        Returns:
+            Audio chunk with overlap-add applied (samples,)
+        """
         if self.overlap_size <= 0 or self.overlap_buffer is None:
             if self.overlap_size > 0 and converted.shape[0] >= self.overlap_size:
                 self.overlap_buffer = converted[-self.overlap_size:].clone()
@@ -275,12 +316,24 @@ class TRTStreamingPipeline:
         return output
 
     def reset(self):
-        """Reset overlap buffer and latency history."""
+        """Reset overlap buffer and latency history.
+
+        Clears the internal state to restart streaming from a clean state.
+        Call this between different audio streams or after long pauses.
+        """
         self.overlap_buffer = None
         self._latency_history.clear()
 
     def get_latency_stats(self) -> Dict[str, float]:
-        """Get latency statistics from recent chunks."""
+        """Get latency statistics from recent chunks.
+
+        Provides min, max, and average processing latency based on
+        the last 100 processed chunks for performance monitoring.
+
+        Returns:
+            Dictionary with keys 'min_ms', 'max_ms', 'avg_ms' containing
+            latency values in milliseconds. Returns zeros if no chunks processed.
+        """
         if not self._latency_history:
             return {'min_ms': 0.0, 'max_ms': 0.0, 'avg_ms': 0.0}
 
@@ -291,7 +344,14 @@ class TRTStreamingPipeline:
         }
 
     def get_engine_memory_usage(self) -> int:
-        """Get total memory usage of all TRT engines in bytes."""
+        """Get total memory usage of all TRT engines in bytes.
+
+        Sums GPU memory allocated for all four TensorRT engines
+        (content extractor, pitch extractor, decoder, vocoder).
+
+        Returns:
+            Total GPU memory usage in bytes, or 0 if engines not loaded
+        """
         if not self._engines_loaded:
             return 0
         total = 0

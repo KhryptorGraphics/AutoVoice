@@ -41,14 +41,31 @@ if str(MEANVC_SRC) not in sys.path:
 
 
 def _amp_to_db(x: torch.Tensor, min_level_db: float) -> torch.Tensor:
-    """Convert amplitude to decibels."""
+    """Convert amplitude spectrogram to decibels with floor clipping.
+
+    Args:
+        x: Amplitude spectrogram tensor
+        min_level_db: Minimum dB level for floor clipping (e.g., -115)
+
+    Returns:
+        Spectrogram in dB scale with values >= min_level_db
+    """
     min_level = np.exp(min_level_db / 20 * np.log(10))
     min_level = torch.ones_like(x) * min_level
     return 20 * torch.log10(torch.maximum(min_level, x))
 
 
 def _normalize(S: torch.Tensor, max_abs_value: float, min_db: float) -> torch.Tensor:
-    """Normalize spectrogram."""
+    """Normalize spectrogram to [-max_abs_value, max_abs_value] range.
+
+    Args:
+        S: Spectrogram tensor in dB scale
+        max_abs_value: Maximum absolute value for output range (typically 1.0)
+        min_db: Minimum dB value used for normalization (e.g., -115)
+
+    Returns:
+        Normalized spectrogram clamped to [-max_abs_value, max_abs_value]
+    """
     return torch.clamp(
         (2 * max_abs_value) * ((S - min_db) / (-min_db)) - max_abs_value,
         -max_abs_value, max_abs_value
@@ -56,7 +73,11 @@ def _normalize(S: torch.Tensor, max_abs_value: float, min_db: float) -> torch.Te
 
 
 class MelSpectrogramFeatures(nn.Module):
-    """Mel spectrogram extractor for MeanVC."""
+    """Mel spectrogram extractor for MeanVC vocoder input.
+
+    Extracts 80-dim mel spectrograms at 16kHz with normalized dB scale.
+    Uses cached mel filterbanks and Hann windows for efficiency across devices.
+    """
 
     def __init__(
         self,
@@ -69,6 +90,18 @@ class MelSpectrogramFeatures(nn.Module):
         fmax: int = 8000,
         center: bool = True,
     ):
+        """Initialize mel spectrogram extractor.
+
+        Args:
+            sample_rate: Audio sample rate in Hz (default 16000)
+            n_fft: FFT size (default 1024)
+            win_size: Window size in samples (default 640 = 40ms at 16kHz)
+            hop_length: Hop size in samples (default 160 = 10ms at 16kHz)
+            n_mels: Number of mel bins (default 80)
+            fmin: Minimum frequency in Hz (default 0)
+            fmax: Maximum frequency in Hz (default 8000 = Nyquist at 16kHz)
+            center: Whether to center STFT frames (default True)
+        """
         super().__init__()
         self.sample_rate = sample_rate
         self.n_fft = n_fft
@@ -82,6 +115,15 @@ class MelSpectrogramFeatures(nn.Module):
         self.hann_window = {}
 
     def forward(self, y: torch.Tensor) -> torch.Tensor:
+        """Extract mel spectrogram from audio waveform.
+
+        Args:
+            y: Audio waveform tensor of shape [B, T] or [T]
+
+        Returns:
+            Mel spectrogram of shape [B, n_mels, T'] where T' = T // hop_length.
+            Values are normalized to [-1, 1] range after dB conversion.
+        """
         dtype_device = str(y.dtype) + '_' + str(y.device)
         fmax_dtype_device = str(self.fmax) + '_' + dtype_device
         wnsize_dtype_device = str(self.win_size) + '_' + dtype_device
@@ -124,7 +166,20 @@ def extract_fbanks(
     frame_length: float = 25,
     frame_shift: float = 10,
 ) -> torch.Tensor:
-    """Extract filter bank features for ASR model."""
+    """Extract Kaldi-style filter bank features for ASR content encoder.
+
+    Applies 16-bit quantization before FBANK extraction to match training.
+
+    Args:
+        wav: Audio waveform as float32 numpy array, range [-1, 1]
+        sample_rate: Sample rate in Hz (default 16000)
+        mel_bins: Number of mel frequency bins (default 80)
+        frame_length: Frame length in milliseconds (default 25)
+        frame_shift: Frame shift in milliseconds (default 10)
+
+    Returns:
+        Filter bank features of shape [1, T, mel_bins] where T = num_frames
+    """
     wav = wav * (1 << 15)
     wav = torch.from_numpy(wav).unsqueeze(0)
     fbanks = kaldi.fbank(
@@ -171,10 +226,16 @@ class MeanVCPipeline:
     ):
         """Initialize MeanVC pipeline.
 
+        Configures streaming parameters for 200ms chunks (3200 samples at 16kHz)
+        with autoregressive KV-cache for low-latency real-time processing.
+
         Args:
             device: Target device (defaults to CPU for real-time)
             steps: Number of inference steps (1 or 2, default 2)
             require_gpu: Whether to require GPU
+
+        Raises:
+            RuntimeError: If require_gpu=True but CUDA is not available
         """
         if require_gpu and not torch.cuda.is_available():
             raise RuntimeError("CUDA requested but not available")
@@ -240,7 +301,21 @@ class MeanVCPipeline:
         )
 
     def _reset_streaming_state(self) -> None:
-        """Reset streaming state for new session."""
+        """Reset streaming state for new conversion session.
+
+        Clears all autoregressive caches and state variables used for chunk-wise
+        processing. Must be called before starting a new audio stream.
+
+        State variables:
+            - _samples_cache: 720 sample audio cache (45ms at 16kHz) for context
+            - _att_cache/_cnn_cache: ASR encoder attention and CNN caches
+            - _asr_offset: Frame offset for ASR positional encoding
+            - _encoder_output_cache: Last ASR frame for overlap
+            - _vc_offset: Frame offset for VC model KV-cache
+            - _vc_cache/_vc_kv_cache: VC model output and key-value caches
+            - _vocoder_cache: 3-frame mel overlap cache for smooth transitions
+            - _last_wav: Previous chunk's tail for crossfade (320 samples)
+        """
         self._samples_cache_len = 720
         self._samples_cache = None
         self._att_cache = torch.zeros((0, 0, 0, 0), device=self.device)
@@ -263,7 +338,18 @@ class MeanVCPipeline:
         ).numpy()
 
     def _load_models(self) -> None:
-        """Lazy-load all models."""
+        """Lazy-load all MeanVC models on first use.
+
+        Loads JIT-compiled models for fast initialization:
+        - FastU2++ ASR encoder for content features
+        - MeanVC DiT model for voice conversion
+        - Vocos vocoder for waveform synthesis
+        - WavLM+ECAPA-TDNN for speaker embeddings
+
+        Raises:
+            FileNotFoundError: If required model checkpoint files are missing.
+                Run `cd models/meanvc && python download_ckpt.py` to download.
+        """
         if self._initialized:
             return
 
@@ -321,11 +407,15 @@ class MeanVCPipeline:
         audio: Union[np.ndarray, torch.Tensor],
         sample_rate: int = 16000,
     ) -> None:
-        """Set reference audio for voice cloning.
+        """Set reference audio for target voice and reset streaming state.
+
+        Extracts 256-dim speaker embedding and mel spectrogram prompt from
+        the reference audio. These are used as conditioning for all subsequent
+        voice conversions.
 
         Args:
-            audio: Reference audio waveform
-            sample_rate: Sample rate (will be resampled to 16kHz)
+            audio: Reference audio waveform (mono or will be converted)
+            sample_rate: Input sample rate (will be resampled to 16kHz if needed)
         """
         self._load_models()
 
@@ -365,11 +455,17 @@ class MeanVCPipeline:
         profile_id: str,
         reference_index: int = 0,
     ) -> None:
-        """Load reference audio using the AdapterBridge.
+        """Load reference audio from voice profile via AdapterBridge.
+
+        Retrieves voice profile metadata and loads the specified reference
+        audio file, then calls set_reference_audio() to extract embeddings.
 
         Args:
             profile_id: Voice profile UUID
             reference_index: Which reference audio to use (0 = best quality)
+
+        Raises:
+            ValueError: If profile has no reference audio files
         """
         from .adapter_bridge import get_adapter_bridge
         import librosa
@@ -394,13 +490,30 @@ class MeanVCPipeline:
         )
 
     def process_chunk(self, audio: np.ndarray) -> np.ndarray:
-        """Process a single audio chunk through voice conversion.
+        """Process a single audio chunk through streaming voice conversion.
+
+        Chunk size: 3200 samples (200ms at 16kHz)
+        Expected input: 16kHz mono audio, float32 in range [-1, 1]
+        Output: 16kHz converted audio with <100ms latency
+
+        Streaming state management:
+        - Maintains 720-sample audio cache for ASR context
+        - Stores ASR attention/CNN caches for autoregressive processing
+        - Tracks frame offsets for positional encoding
+        - Keeps VC model KV-cache (truncated at 100 frames)
+        - Uses 3-frame mel overlap for vocoder continuity
+        - Applies crossfade on 320-sample overlap between chunks
 
         Args:
-            audio: Input audio chunk at 16kHz, float32, mono
+            audio: Input audio chunk at 16kHz, float32, mono.
+                   Typically 3200 samples but flexible.
 
         Returns:
-            Converted audio chunk at 16kHz, float32
+            Converted audio chunk at 16kHz, float32.
+            Length varies due to overlap-add but approximately matches input.
+
+        Raises:
+            RuntimeError: If set_reference_audio() not called before processing
         """
         if self._spk_emb is None:
             raise RuntimeError("No reference audio set. Call set_reference_audio() first.")
@@ -552,17 +665,26 @@ class MeanVCPipeline:
         on_progress: Optional[Callable[[str, float], None]] = None,
         pitch_shift: int = 0,
     ) -> Dict[str, Any]:
-        """Convert full audio (non-streaming).
+        """Convert full audio file using chunk-wise streaming pipeline.
+
+        Processes audio in 3200-sample chunks (200ms at 16kHz) with streaming
+        state. Automatically handles resampling and mono conversion.
 
         Args:
-            audio: Input audio waveform
-            sample_rate: Input sample rate
-            speaker_embedding: Ignored (uses reference audio instead)
-            on_progress: Progress callback
-            pitch_shift: Ignored (MeanVC doesn't support pitch shift)
+            audio: Input audio waveform (mono or stereo)
+            sample_rate: Input sample rate (will be resampled to 16kHz)
+            speaker_embedding: Ignored (uses reference audio set via set_reference_audio)
+            on_progress: Optional callback(stage: str, progress: float) for progress updates
+            pitch_shift: Ignored (MeanVC doesn't support pitch shifting)
 
         Returns:
-            Dict with converted audio and metadata
+            Dict containing:
+                - audio: Converted waveform as torch.Tensor
+                - sample_rate: Output sample rate (16000)
+                - metadata: Dict with processing_time, steps, output_duration, device, pipeline
+
+        Raises:
+            RuntimeError: If set_reference_audio() not called before conversion
         """
         if self._spk_emb is None:
             raise RuntimeError("No reference audio set.")
@@ -637,7 +759,17 @@ class MeanVCPipeline:
         }
 
     def get_latency_metrics(self) -> Dict[str, float]:
-        """Get average latency for each component."""
+        """Get average latency for each pipeline component.
+
+        Tracks moving average over last 100 chunks for:
+        - asr_ms: ASR feature extraction time
+        - vc_ms: Voice conversion inference time
+        - vocoder_ms: Waveform synthesis time
+        - total_ms: End-to-end chunk processing time
+
+        Returns:
+            Dict mapping component names to average latency in milliseconds
+        """
         metrics = {}
         for name, history in self._latency_history.items():
             if history:
@@ -648,7 +780,18 @@ class MeanVCPipeline:
         return metrics
 
     def get_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive pipeline metrics."""
+        """Get comprehensive pipeline metrics and configuration.
+
+        Returns:
+            Dict containing:
+                - device: Device string (cpu or cuda:N)
+                - sample_rate: Input sample rate (16000)
+                - output_sample_rate: Output sample rate (16000)
+                - steps: Number of mean flow inference steps (1 or 2)
+                - has_reference: Whether reference audio is loaded
+                - chunk_size_ms: Chunk duration in milliseconds (200.0)
+                - asr_ms, vc_ms, vocoder_ms, total_ms: Average latencies
+        """
         latency = self.get_latency_metrics()
         return {
             'device': str(self.device),
@@ -661,11 +804,31 @@ class MeanVCPipeline:
         }
 
     def reset_session(self) -> None:
-        """Reset streaming session (keeps reference audio)."""
+        """Reset streaming session state while preserving reference audio.
+
+        Clears all autoregressive caches and offsets to start a new audio stream
+        with the same target voice. Use when starting a new input audio file
+        without changing the voice profile.
+
+        Preserves:
+            - Speaker embedding (_spk_emb)
+            - Prompt mel spectrogram (_prompt_mel)
+            - Reference audio (_reference_audio)
+
+        Resets:
+            - All ASR and VC caches
+            - Frame offsets
+            - Vocoder overlap buffers
+        """
         self._reset_streaming_state()
         logger.info("MeanVC streaming session reset")
 
     @property
     def chunk_size(self) -> int:
-        """Expected chunk size in samples."""
+        """Expected chunk size for optimal streaming performance.
+
+        Returns:
+            Chunk size in samples (3200 = 200ms at 16kHz). This is the
+            optimal size for the ASR and VC models' chunk configuration.
+        """
         return self._chunk_samples

@@ -38,6 +38,16 @@ class SingingConversionPipeline:
     """Main voice conversion pipeline for singing audio."""
 
     def __init__(self, device=None, config: Optional[Dict] = None, voice_cloner=None):
+        """Initialize the singing voice conversion pipeline.
+
+        Args:
+            device: PyTorch device (cpu/cuda). Auto-detects if None.
+            config: Configuration dict with model paths and settings.
+                Expected keys: hubert_path, vocoder_path, vocoder_type,
+                encoder_backend, encoder_type, conformer_config,
+                voice_model_path, speaker_id.
+            voice_cloner: Optional VoiceCloner instance for profile loading.
+        """
         import torch
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.config = config or {}
@@ -49,7 +59,11 @@ class SingingConversionPipeline:
         logger.info(f"SingingConversionPipeline initialized on {self.device}")
 
     def _get_separator(self):
-        """Lazy-load vocal separator."""
+        """Lazy-load vocal separator on first use.
+
+        Returns:
+            VocalSeparator instance configured for this device.
+        """
         if self._separator is None:
             from ..audio.separation import VocalSeparator
             self._separator = VocalSeparator(device=self.device)
@@ -57,7 +71,19 @@ class SingingConversionPipeline:
         return self._separator
 
     def _separate_vocals(self, audio: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
-        """Separate vocals from instrumental."""
+        """Separate vocals from instrumental using Demucs model.
+
+        Args:
+            audio: Input audio signal (mono or stereo)
+            sr: Sample rate of the audio
+
+        Returns:
+            Dict with 'vocals' and 'instrumental' keys, each containing
+            separated audio arrays at the same sample rate.
+
+        Raises:
+            SeparationError: If vocal separation fails
+        """
         separator = self._get_separator()
         try:
             return separator.separate(audio, sr)
@@ -65,7 +91,17 @@ class SingingConversionPipeline:
             raise SeparationError(f"Vocal separation failed: {e}")
 
     def _get_model_manager(self):
-        """Get or create ModelManager. Raises if not configured."""
+        """Get or create ModelManager and load models from config.
+
+        Lazy-loads ModelManager on first call, then loads models using paths
+        from self.config (hubert_path, vocoder_path, voice_model_path, etc).
+
+        Returns:
+            ModelManager instance with loaded models ready for inference.
+
+        Raises:
+            RuntimeError: If model loading fails or required paths not in config.
+        """
         if self._model_manager is None:
             from .model_manager import ModelManager
             self._model_manager = ModelManager(device=self.device, config=self.config)
@@ -95,9 +131,19 @@ class SingingConversionPipeline:
 
     def _convert_voice(self, vocals: np.ndarray, target_embedding: np.ndarray,
                        sr: int, preset: str = 'balanced') -> np.ndarray:
-        """Convert vocals to target voice using trained SoVitsSvc model.
+        """Convert vocals to target voice using trained So-VITS-SVC model.
 
-        Raises RuntimeError if models are not loaded. No fallback.
+        Args:
+            vocals: Input vocal audio signal (mono)
+            target_embedding: Target speaker embedding (256-dim L2-normalized)
+            sr: Sample rate of vocal audio
+            preset: Quality preset name (unused, reserved for future use)
+
+        Returns:
+            Converted vocal audio at the same sample rate.
+
+        Raises:
+            ConversionError: If voice conversion fails or models not loaded.
         """
         try:
             model_manager = self._get_model_manager()
@@ -107,7 +153,16 @@ class SingingConversionPipeline:
             raise ConversionError(f"Voice conversion failed: {e}")
 
     def _extract_pitch(self, audio: np.ndarray, sr: int) -> np.ndarray:
-        """Extract pitch contour from audio."""
+        """Extract pitch contour (F0) from audio using librosa pyin.
+
+        Args:
+            audio: Input audio signal (mono)
+            sr: Sample rate of the audio
+
+        Returns:
+            F0 contour array with NaN replaced by 0.0.
+            Falls back to zero array if extraction fails.
+        """
         try:
             import librosa
             f0, voiced, _ = librosa.pyin(audio, fmin=50, fmax=1100, sr=sr)
