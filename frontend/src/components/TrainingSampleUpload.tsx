@@ -249,6 +249,7 @@ export function TrainingSampleUpload({
 
       {/* File selection */}
       <label className="block">
+        <span className="sr-only">Select training sample audio file</span>
         <div className="border-2 border-dashed border-zinc-600 hover:border-blue-500 rounded-lg p-6 text-center cursor-pointer transition-colors">
           <input
             type="file"

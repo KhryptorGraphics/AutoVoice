@@ -115,23 +115,30 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
   if (compact) {
     return (
       <div className="flex items-center gap-2">
-        <select
-          onChange={(e) => {
-            const preset = presets?.find((p: UserPreset) => p.id === e.target.value)
-            if (preset) handleLoad(preset)
-          }}
-          className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm"
-          defaultValue=""
-        >
-          <option value="" disabled>Load preset...</option>
-          {presets?.map((preset: UserPreset) => (
-            <option key={preset.id} value={preset.id}>{preset.name}</option>
-          ))}
-        </select>
+        <div className="flex-1">
+          <label htmlFor="preset-select-compact" className="sr-only">
+            Load preset
+          </label>
+          <select
+            id="preset-select-compact"
+            onChange={(e) => {
+              const preset = presets?.find((p: UserPreset) => p.id === e.target.value)
+              if (preset) handleLoad(preset)
+            }}
+            className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm"
+            defaultValue=""
+          >
+            <option value="" disabled>Load preset...</option>
+            {presets?.map((preset: UserPreset) => (
+              <option key={preset.id} value={preset.id}>{preset.name}</option>
+            ))}
+          </select>
+        </div>
         <button
           onClick={() => setShowSaveDialog(true)}
           className="p-1.5 bg-gray-700 hover:bg-gray-600 rounded"
           title="Save as preset"
+          aria-label="Save as preset"
         >
           <Plus size={14} />
         </button>
@@ -189,6 +196,7 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
                       if (e.key === 'Enter') saveEdit()
                       if (e.key === 'Escape') setEditingId(null)
                     }}
+                    aria-label="Preset name"
                   />
                   <button
                     onClick={saveEdit}
