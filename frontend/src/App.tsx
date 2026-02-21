@@ -123,7 +123,7 @@ function ConvertPage() {
                 <p className="text-gray-400 text-sm">{(file.size / 1024 / 1024).toFixed(1)} MB</p>
                 <button
                   onClick={() => setFile(null)}
-                  className="text-red-400 hover:text-red-300 text-sm"
+                  className="text-red-400 hover:text-red-300 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 rounded px-2 py-1"
                 >
                   Remove
                 </button>
@@ -132,19 +132,21 @@ function ConvertPage() {
               <>
                 <Upload className="mx-auto h-12 w-12 text-gray-500 mb-3" />
                 <p className="text-gray-400 mb-3">Drop audio file here or click to upload</p>
-                <input
-                  type="file"
-                  accept="audio/*"
-                  className="hidden"
-                  id="audio-upload"
-                  onChange={handleFileSelect}
-                />
-                <label
-                  htmlFor="audio-upload"
-                  className="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer"
-                >
-                  Select File
-                </label>
+                <div className="inline-block">
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    className="absolute w-px h-px p-0 -m-px overflow-hidden whitespace-nowrap border-0 focus:outline-none"
+                    id="audio-upload"
+                    onChange={handleFileSelect}
+                  />
+                  <label
+                    htmlFor="audio-upload"
+                    className="inline-block px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer transition-all has-[:focus]:ring-2 has-[:focus]:ring-blue-400"
+                  >
+                    Select File
+                  </label>
+                </div>
               </>
             )}
           </div>
@@ -160,7 +162,7 @@ function ConvertPage() {
                 setSelectedProfile(e.target.value || null)
                 setSelectedAdapter(null) // Reset adapter when profile changes
               }}
-              className="w-full p-3 bg-gray-700 rounded-lg"
+              className="w-full p-3 bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="">Choose a profile...</option>
               {profiles.map((profile) => (
@@ -171,7 +173,7 @@ function ConvertPage() {
             </select>
             {profiles.length === 0 && (
               <p className="text-sm text-gray-500 mt-2">
-                No profiles found. <a href="/profiles" className="text-blue-400 hover:underline">Create one</a>
+                No profiles found. <a href="/profiles" className="text-blue-400 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 rounded">Create one</a>
               </p>
             )}
           </div>
@@ -223,7 +225,7 @@ function ConvertPage() {
               </div>
               <button
                 onClick={handleDownload}
-                className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded"
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded focus:outline-none focus:ring-2 focus:ring-green-400 transition-all"
               >
                 Download
               </button>
@@ -246,10 +248,10 @@ function ConvertPage() {
           onClick={handleConvert}
           disabled={!file || !selectedProfile || isConverting}
           className={clsx(
-            'w-full flex items-center justify-center gap-3 px-6 py-4 rounded-lg text-lg font-semibold transition',
+            'w-full flex items-center justify-center gap-3 px-6 py-4 rounded-lg text-lg font-semibold transition focus:outline-none focus:ring-2',
             !file || !selectedProfile || isConverting
-              ? 'bg-gray-600 cursor-not-allowed'
-              : 'bg-blue-600 hover:bg-blue-700'
+              ? 'bg-gray-600 cursor-not-allowed focus:ring-gray-500'
+              : 'bg-blue-600 hover:bg-blue-700 focus:ring-blue-400'
           )}
         >
           {isConverting ? (
@@ -299,7 +301,7 @@ export default function App() {
       <a
         href="#main-content"
         onClick={handleSkipToContent}
-        className="absolute left-0 top-0 z-50 -translate-y-full bg-blue-600 px-4 py-2 text-white transition focus:translate-y-0"
+        className="absolute left-0 top-0 z-50 -translate-y-full bg-blue-600 px-4 py-2 text-white transition focus:translate-y-0 focus:outline-none focus:ring-2 focus:ring-blue-400"
       >
         Skip to content
       </a>
@@ -314,7 +316,7 @@ export default function App() {
                 end={to === '/'}
                 className={({ isActive }) =>
                   clsx(
-                    'flex items-center gap-2 px-3 py-2 rounded text-sm',
+                    'flex items-center gap-2 px-3 py-2 rounded text-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500',
                     isActive
                       ? 'bg-gray-700 text-white'
                       : 'text-gray-400 hover:text-white hover:bg-gray-700/50'
