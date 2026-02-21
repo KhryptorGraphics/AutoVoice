@@ -1526,33 +1526,59 @@ def readiness_check():
 
 
 @api_bp.route('/metrics', methods=['GET'])
-def prometheus_metrics():
-    """Prometheus metrics endpoint for monitoring.
+def get_metrics_endpoint():
+    """Metrics endpoint for monitoring and dashboards.
 
-    Returns metrics in Prometheus text format including:
-    - Conversion counts and durations
-    - GPU memory and utilization
-    - HTTP request metrics
-    - Job queue metrics
+    Returns either JSON aggregated metrics (default) or Prometheus text format
+    based on Accept header or 'format' query parameter.
+
+    Query Parameters:
+        format (str): 'json' for aggregated metrics (default), 'prometheus' for text format
 
     Returns:
-        Prometheus-formatted metrics text
+        HTTP 200: JSON aggregated metrics or Prometheus text format
+
+    JSON Example Response:
+        {
+            "total_conversions": 156,
+            "avg_latency_ms": 245.3,
+            "gpu_utilization": 0.67,
+            "active_profiles": 8
+        }
     """
+    # Check if Prometheus text format is requested
+    accept_header = request.headers.get('Accept', '')
+    format_param = request.args.get('format', 'json')
+
+    # Return Prometheus text format if explicitly requested
+    if format_param == 'prometheus' or 'text/plain' in accept_header:
+        try:
+            from ..monitoring.prometheus import get_metrics, get_content_type, update_gpu_metrics
+
+            update_gpu_metrics()
+
+            metrics = get_metrics()
+            content_type = get_content_type()
+
+            from flask import Response
+            return Response(metrics, mimetype=content_type)
+        except ImportError:
+            return jsonify({
+                'error': 'Prometheus metrics not available',
+                'message': 'Install prometheus_client to enable metrics export'
+            }), 503
+
+    # Default: Return JSON aggregated metrics for dashboard consumption
     try:
-        from ..monitoring.prometheus import get_metrics, get_content_type, update_gpu_metrics
-
-        update_gpu_metrics()
-
-        metrics = get_metrics()
-        content_type = get_content_type()
-
-        from flask import Response
-        return Response(metrics, mimetype=content_type)
-    except ImportError:
+        from ..monitoring.prometheus import get_conversion_analytics
+        metrics = get_conversion_analytics()
+        return jsonify(metrics)
+    except Exception as e:
+        logger.error(f"Failed to get conversion analytics: {e}", exc_info=True)
         return jsonify({
-            'error': 'Prometheus metrics not available',
-            'message': 'Install prometheus_client to enable metrics export'
-        }), 503
+            'error': 'Failed to retrieve metrics',
+            'message': str(e)
+        }), 500
 
 
 @api_bp.route('/gpu/metrics', methods=['GET'])
