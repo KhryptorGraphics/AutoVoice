@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Youtube, Search, Download, Music, Users, Loader2, AlertCircle, CheckCircle, User, Plus, UserPlus, History } from 'lucide-react'
 import { api, YouTubeVideoInfo, YouTubeDownloadResult, VoiceProfile } from '../services/api'
+import { useToastContext } from '../contexts/ToastContext'
 
 type Stage = 'idle' | 'fetching' | 'info' | 'downloading' | 'diarizing' | 'complete' | 'error'
 type DownloadStep = 'download' | 'diarize' | 'complete'
@@ -25,6 +26,7 @@ interface DownloadHistoryItem {
 }
 
 export function YouTubeDownloadPage() {
+  const toast = useToastContext()
   const [url, setUrl] = useState('')
   const [stage, setStage] = useState<Stage>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -189,9 +191,12 @@ export function YouTubeDownloadPage() {
         addToHistory(result, videoInfo)
       }
 
+      toast.success('Download completed successfully!')
       setStage('complete')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Download failed')
+      const errorMsg = err instanceof Error ? err.message : 'Download failed'
+      setError(errorMsg)
+      toast.error(errorMsg)
       setStage('error')
     }
   }
