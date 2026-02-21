@@ -347,6 +347,7 @@ export function KaraokePage() {
                   const file = e.target.files?.[0];
                   if (file) handleFileSelect(file);
                 }}
+                aria-label="Upload song file"
               />
               <button
                 onClick={() => fileInputRef.current?.click()}
@@ -418,18 +419,24 @@ export function KaraokePage() {
               <Music size={20} />
               Voice Model
             </h3>
-            <select
-              value={selectedModel || ''}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              disabled={stage === 'performing'}
-              className="w-full p-3 bg-gray-700 rounded-lg mb-4"
-            >
-              {voiceModels.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name} ({model.type})
-                </option>
-              ))}
-            </select>
+            <div className="space-y-2">
+              <label htmlFor="voice-model-select" className="text-sm text-gray-400">
+                Select voice model
+              </label>
+              <select
+                id="voice-model-select"
+                value={selectedModel || ''}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                disabled={stage === 'performing'}
+                className="w-full p-3 bg-gray-700 rounded-lg"
+              >
+                {voiceModels.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name} ({model.type})
+                  </option>
+                ))}
+              </select>
+            </div>
 
             <button
               onClick={handleExtractVoice}

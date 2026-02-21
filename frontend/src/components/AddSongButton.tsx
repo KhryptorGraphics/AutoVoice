@@ -162,6 +162,7 @@ export function AddSongButton({ profileId, onSongAdded, className }: AddSongButt
         accept="audio/*"
         onChange={handleFileSelect}
         className="hidden"
+        aria-label="Select song file to upload"
       />
 
       {uploadState.status === 'idle' ? (
@@ -251,6 +252,7 @@ export function AddSongCompact({ profileId, onSongAdded }: AddSongButtonProps) {
         accept="audio/*"
         onChange={handleFileSelect}
         className="hidden"
+        aria-label="Select song file to upload"
       />
       <button
         onClick={() => fileInputRef.current?.click()}

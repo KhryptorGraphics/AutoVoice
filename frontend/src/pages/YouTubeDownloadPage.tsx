@@ -331,11 +331,18 @@ export function YouTubeDownloadPage() {
 
       {/* URL Input */}
       <div className="bg-gray-800 rounded-lg p-6 mb-6">
-        <label className="block text-sm font-medium text-gray-300 mb-2">
+        <label htmlFor="youtube-url" className="block text-sm text-gray-400 mb-1 flex items-center gap-1">
           YouTube URL
+          <span title="Supports YouTube videos and playlists. Works with youtube.com, youtu.be, and music.youtube.com URLs" className="cursor-help">
+            <Info size={12} className="text-gray-500" />
+          </span>
         </label>
+        <p className="text-xs text-gray-500 mb-2">
+          Paste any YouTube video URL to download audio for voice conversion training
+        </p>
         <div className="flex gap-3">
           <input
+            id="youtube-url"
             type="text"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
@@ -343,6 +350,7 @@ export function YouTubeDownloadPage() {
             className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
             disabled={stage === 'fetching' || stage === 'downloading'}
             onKeyDown={(e) => e.key === 'Enter' && handleFetchInfo()}
+            aria-label="YouTube URL input"
           />
           <button
             onClick={handleFetchInfo}
@@ -447,11 +455,18 @@ export function YouTubeDownloadPage() {
               <div className="space-y-4 mb-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm text-gray-400 mb-1">Audio Format</label>
+                    <label htmlFor="audio-format" className="block text-sm text-gray-400 mb-1 flex items-center gap-1">
+                      Audio Format
+                      <span title="WAV: Uncompressed, best quality for training. MP3: Compressed, smaller file size. FLAC: Lossless compression" className="cursor-help">
+                        <Info size={12} className="text-gray-500" />
+                      </span>
+                    </label>
                     <select
+                      id="audio-format"
                       value={audioFormat}
                       onChange={(e) => setAudioFormat(e.target.value as 'wav' | 'mp3' | 'flac')}
-                      className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2"
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 focus:outline-none focus:border-blue-500"
+                      aria-label="Select audio format"
                     >
                       <option value="wav">WAV (Best for training)</option>
                       <option value="mp3">MP3</option>
@@ -460,8 +475,9 @@ export function YouTubeDownloadPage() {
                   </div>
 
                   <div className="flex items-end">
-                    <label className="flex items-center gap-2 cursor-pointer">
+                    <label htmlFor="run-diarization" className="flex items-center gap-2 cursor-pointer">
                       <input
+                        id="run-diarization"
                         type="checkbox"
                         checked={runDiarization}
                         onChange={(e) => {
@@ -471,9 +487,13 @@ export function YouTubeDownloadPage() {
                           }
                         }}
                         className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                        aria-label="Enable speaker diarization to separate different voices"
                       />
-                      <span className="text-sm">
+                      <span className="text-sm flex items-center gap-1">
                         Run speaker diarization
+                        <span title="Automatically detects and separates different speakers in the audio. Useful for songs with multiple artists or featured vocals" className="cursor-help">
+                          <Info size={12} className="text-gray-500" />
+                        </span>
                         {videoInfo.featured_artists.length > 0 && (
                           <span className="text-purple-400 ml-1">
                             (Recommended - {videoInfo.featured_artists.length + 1} artists detected)
@@ -487,16 +507,21 @@ export function YouTubeDownloadPage() {
                 {/* Filter to main artist toggle - only show when diarization is enabled */}
                 {runDiarization && videoInfo.main_artist && (
                   <div className="bg-gray-700/50 rounded-lg p-3">
-                    <label className="flex items-center gap-2 cursor-pointer">
+                    <label htmlFor="filter-main-artist" className="flex items-center gap-2 cursor-pointer">
                       <input
+                        id="filter-main-artist"
                         type="checkbox"
                         checked={filterToMainArtist}
                         onChange={(e) => setFilterToMainArtist(e.target.checked)}
                         className="w-4 h-4 rounded bg-gray-700 border-gray-600"
+                        aria-label={`Filter audio to only ${videoInfo.main_artist}'s voice`}
                       />
                       <div>
-                        <span className="text-sm font-medium">
+                        <span className="text-sm font-medium flex items-center gap-1">
                           Filter to "{videoInfo.main_artist}" only
+                          <span title="Creates a clean voice profile by isolating only the main artist's vocals. Removes featured artists, backing vocals, and other speakers" className="cursor-help">
+                            <Info size={12} className="text-gray-500" />
+                          </span>
                         </span>
                         <p className="text-xs text-gray-400 mt-0.5">
                           Only keep audio segments from the main artist, removing featured artists and other voices
@@ -685,13 +710,16 @@ export function YouTubeDownloadPage() {
                 {artistsToCreate.map((artist, idx) => (
                   <label
                     key={idx}
+                    htmlFor={`artist-${idx}`}
                     className="flex items-center gap-3 p-2 rounded hover:bg-gray-600/50 cursor-pointer"
                   >
                     <input
+                      id={`artist-${idx}`}
                       type="checkbox"
                       checked={artist.selected}
                       onChange={() => toggleArtistSelection(idx)}
                       className="w-4 h-4 rounded bg-gray-600 border-gray-500"
+                      aria-label={`Create voice profile for ${artist.name}`}
                     />
                     <span className={artist.selected ? 'text-white' : 'text-gray-300'}>
                       {artist.name}
@@ -731,27 +759,37 @@ export function YouTubeDownloadPage() {
 
           {/* Actions */}
           <div className="space-y-4">
-            <div className="flex gap-4">
-              <select
-                value={selectedProfileId}
-                onChange={(e) => setSelectedProfileId(e.target.value)}
-                className="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-2"
-              >
-                <option value="">Select a profile to add to...</option>
-                {profiles.map((p) => (
-                  <option key={p.profile_id} value={p.profile_id}>
-                    {p.name || p.profile_id}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={handleAddToProfile}
-                disabled={!selectedProfileId}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-lg flex items-center gap-2"
-              >
-                <Plus size={18} />
-                Add to Profile
-              </button>
+            <div>
+              <label htmlFor="profile-select" className="block text-sm text-gray-400 mb-2 flex items-center gap-1">
+                Add to Existing Profile
+                <span title="Add this audio as a training sample to an existing voice profile" className="cursor-help">
+                  <Info size={12} className="text-gray-500" />
+                </span>
+              </label>
+              <div className="flex gap-4">
+                <select
+                  id="profile-select"
+                  value={selectedProfileId}
+                  onChange={(e) => setSelectedProfileId(e.target.value)}
+                  className="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-2 focus:outline-none focus:border-blue-500"
+                  aria-label="Select voice profile to add audio to"
+                >
+                  <option value="">Select a profile to add to...</option>
+                  {profiles.map((p) => (
+                    <option key={p.profile_id} value={p.profile_id}>
+                      {p.name || p.profile_id}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleAddToProfile}
+                  disabled={!selectedProfileId}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-lg flex items-center gap-2"
+                >
+                  <Plus size={18} />
+                  Add to Profile
+                </button>
+              </div>
             </div>
 
             <button

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award, Search, Filter } from 'lucide-react'
+import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award, Search, Filter, Info } from 'lucide-react'
 import { apiService, VoiceProfile, TrainingJob, TrainingConfig, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType } from '../services/api'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { TrainingJobQueue } from '../components/TrainingJobQueue'
@@ -263,14 +263,20 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                 <Users size={16} />
                 Smart Upload
               </button>
-              <label className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer">
+              <label
+                htmlFor="quick-upload-sample"
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer"
+                title="Upload a single audio file as a training sample"
+              >
                 <Upload size={16} />
                 Quick Upload
                 <input
+                  id="quick-upload-sample"
                   type="file"
                   accept="audio/*"
                   onChange={handleUploadSample}
                   className="hidden"
+                  aria-label="Quick upload training sample"
                 />
               </label>
             </div>
@@ -507,18 +513,33 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
       <h3 className="text-lg font-semibold">Create New Profile</h3>
 
       <div>
-        <label className="block text-sm text-gray-400 mb-1">Profile Name (optional)</label>
+        <label htmlFor="profile-name" className="flex items-center gap-1 text-sm text-gray-400 mb-1">
+          Profile Name (optional)
+          <span title="Use a descriptive name (e.g., 'My Voice', 'Singer Name'). Letters, numbers, spaces, and basic punctuation are recommended." className="cursor-help">
+            <Info size={12} className="text-gray-500" />
+          </span>
+        </label>
         <input
+          id="profile-name"
           type="text"
           value={name}
           onChange={e => setName(e.target.value)}
           placeholder="My Voice"
           className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+          aria-describedby="profile-name-hint"
         />
+        <p id="profile-name-hint" className="mt-1 text-xs text-gray-500">
+          A descriptive name helps identify this profile later
+        </p>
       </div>
 
       <div>
-        <label className="block text-sm text-gray-400 mb-1">Voice Sample</label>
+        <label htmlFor="profile-audio" className="flex items-center gap-1 text-sm text-gray-400 mb-1">
+          Voice Sample
+          <span title="Upload a clear audio sample of the target voice. 10-30 seconds of clean speech works best. Avoid background noise and music." className="cursor-help">
+            <Info size={12} className="text-gray-500" />
+          </span>
+        </label>
         <div className="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center">
           {file ? (
             <div className="flex items-center justify-center gap-2">
@@ -528,6 +549,7 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
                 type="button"
                 onClick={() => setFile(null)}
                 className="text-red-400 hover:text-red-300"
+                aria-label="Remove selected file"
               >
                 <XCircle size={16} />
               </button>
@@ -542,6 +564,7 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
                 onChange={e => setFile(e.target.files?.[0] || null)}
                 className="hidden"
                 id="profile-audio"
+                aria-describedby="profile-audio-hint"
               />
               <label
                 htmlFor="profile-audio"
@@ -552,6 +575,9 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
             </>
           )}
         </div>
+        <p id="profile-audio-hint" className="mt-1 text-xs text-gray-500">
+          Supported formats: MP3, WAV, FLAC, OGG. Best quality with 10-30 seconds of clean speech.
+        </p>
       </div>
 
       {error && (
@@ -668,15 +694,25 @@ export function VoiceProfilePage() {
       {profiles.length > 0 && (
         <div className="mb-4 flex flex-col sm:flex-row gap-3">
           {/* Search Input */}
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={16} />
-            <input
-              type="text"
-              placeholder="Search profiles..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:outline-none focus:border-blue-500"
-            />
+          <div className="flex-1">
+            <label htmlFor="profile-search" className="flex items-center gap-1 text-sm text-gray-400 mb-1">
+              Search Profiles
+              <span title="Search by profile name or ID" className="cursor-help">
+                <Info size={12} className="text-gray-500" />
+              </span>
+            </label>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={16} />
+              <input
+                id="profile-search"
+                type="text"
+                placeholder="Search profiles..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+                aria-label="Search profiles by name or ID"
+              />
+            </div>
           </div>
 
           {/* Filter Buttons */}
