@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Activity, Package, Zap, CheckCircle, XCircle, Clock } from 'lucide-react'
 import { apiService } from '../services/api'
 import { GPUMonitor } from '../components/GPUMonitor'
+import { GPUMonitorSkeleton, CardSkeleton } from '../components/Skeleton'
 import clsx from 'clsx'
 
 export function SystemStatusPage() {
@@ -35,12 +36,6 @@ export function SystemStatusPage() {
         </p>
       </div>
 
-      {isLoading && (
-        <div className="flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
-        </div>
-      )}
-
       {error && (
         <div className="bg-red-50 border-2 border-red-500 rounded-lg p-6">
           <p className="text-red-800 font-semibold">Failed to load system status</p>
@@ -50,17 +45,23 @@ export function SystemStatusPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* GPU Monitor - Full width on mobile, 2 cols on desktop */}
         <div className="lg:col-span-2">
-          <GPUMonitor refreshInterval={2000} />
+          {isLoading ? (
+            <GPUMonitorSkeleton />
+          ) : (
+            <GPUMonitor refreshInterval={2000} />
+          )}
         </div>
 
         {/* Health Status */}
-        <div className="bg-white rounded-lg shadow-lg p-6">
-          <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center space-x-2">
-            <Zap className="w-5 h-5 text-purple-600" />
-            <span>Health Status</span>
-          </h3>
+        {!healthStatus ? (
+          <CardSkeleton />
+        ) : (
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center space-x-2">
+              <Zap className="w-5 h-5 text-purple-600" />
+              <span>Health Status</span>
+            </h3>
 
-          {healthStatus && (
             <div className="space-y-3">
               <StatusItem
                 label="API Server"
@@ -93,11 +94,17 @@ export function SystemStatusPage() {
                 </div>
               )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Models Information */}
-        {modelsInfo && (
+        {!modelsInfo ? (
+          <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <CardSkeleton />
+            <CardSkeleton />
+            <CardSkeleton />
+          </div>
+        ) : (
           <div className="lg:col-span-3 bg-white rounded-lg shadow-lg p-6">
             <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center space-x-2">
               <Package className="w-5 h-5 text-purple-600" />
