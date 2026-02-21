@@ -2,10 +2,13 @@
 import logging
 import time
 import threading
+import secrets
 from typing import Optional, Dict, Any, Tuple
 
 from flask import Flask, request, g
 from flask_socketio import SocketIO
+
+from auto_voice.config.secrets import SecretsManager
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +24,21 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: bool = False) -
         Tuple of (Flask app, SocketIO instance)
     """
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = config.get('SECRET_KEY', 'autovoice-dev-key') if config else 'autovoice-dev-key'
     app.config['TESTING'] = testing
+
+    # Configure SECRET_KEY using SecretsManager
+    if testing:
+        # Generate secure random key for testing (32 bytes = 64 hex chars)
+        app.config['SECRET_KEY'] = secrets.token_hex(32)
+    else:
+        # Use SecretsManager for production - requires AUTOVOICE_SECRET_FLASK_SECRET_KEY env var
+        secrets_manager = SecretsManager()
+        if config and 'SECRET_KEY' in config:
+            # Allow config override (e.g., from YAML)
+            app.config['SECRET_KEY'] = config['SECRET_KEY']
+        else:
+            # Require secret from environment or secrets file
+            app.config['SECRET_KEY'] = secrets_manager.get_required('flask_secret_key')
 
     if config:
         app.config.update(config)
