@@ -316,11 +316,11 @@ def convert_song():
     logger.info(f"Converting song with profile {profile_id}, preset={preset}, stems={return_stems}, pipeline={pipeline_type}")
 
     tmp_file = None
-    job_manager = getattr(current_app, 'job_manager', None)
+    conversion_job_manager = getattr(current_app, 'conversion_job_manager', None)
     singing_pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
 
     try:
-        # Track whether job_manager path is used for cleanup logic
+        # Track whether conversion_job_manager path is used for cleanup logic
         used_job_manager = False
 
         # Secure file handling
@@ -330,8 +330,8 @@ def convert_song():
         )
         song_file.save(tmp_file.name)
 
-        if job_manager:
-            # Async job processing - mark that we're using job_manager
+        if conversion_job_manager:
+            # Async job processing - mark that we're using conversion_job_manager
             used_job_manager = True
 
             settings_dict = {
@@ -343,7 +343,7 @@ def convert_song():
                 'adapter_type': adapter_type,
                 'pipeline_type': pipeline_type,
             }
-            job_id = job_manager.create_job(tmp_file.name, profile_id, settings_dict)
+            job_id = conversion_job_manager.create_job(tmp_file.name, profile_id, settings_dict)
 
             logger.info(f"Created async job {job_id} for song conversion")
             # Notify via WebSocket that job is created (optional, for clients to auto-join room)
@@ -655,50 +655,51 @@ def convert_song():
 @api_bp.route('/convert/status/<job_id>', methods=['GET'])
 def get_conversion_status(job_id):
     """Get conversion job status - COMMENT 3 FIX"""
-    job_manager = getattr(current_app, 'job_manager', None)
-    if not job_manager:
+    conversion_job_manager = getattr(current_app, 'conversion_job_manager', None)
+    if not conversion_job_manager:
         return jsonify({'error': 'Job management service unavailable'}), 503
 
-    status = job_manager.get_job_status(job_id)
-    if status is None:
+    job = conversion_job_manager.get_job(job_id)
+    if job is None:
         logger.info(f"Status request for unknown job_id: {job_id}")
         return jsonify({
             'error': 'Job not found',
             'job_id': job_id
         }), 404
 
+    # Build status response from ConversionJob
+    status = job.to_dict()
+
     # COMMENT 3 FIX: Add download_url when job is completed and result is available
-    if status.get('status') == 'completed':
-        result_path = job_manager.get_job_result_path(job_id)
-        if result_path and os.path.exists(result_path):
+    if job.status == 'completed':
+        if job.result_path and os.path.exists(job.result_path):
             # Add both output_url (matches WebSocket event) and download_url for clarity
             status['output_url'] = f'/api/v1/convert/download/{job_id}'
             status['download_url'] = f'/api/v1/convert/download/{job_id}'
-        # Pitch data already included by get_job_status() if available
 
-    logger.info(f"Status request for job {job_id}: {status['status']}")
+    logger.info(f"Status request for job {job_id}: {job.status}")
     return jsonify(status)
 
 
 @api_bp.route('/convert/download/<job_id>', methods=['GET'])
 def download_converted_audio(job_id):
     """Download converted audio file"""
-    job_manager = getattr(current_app, 'job_manager', None)
-    if not job_manager:
+    conversion_job_manager = getattr(current_app, 'conversion_job_manager', None)
+    if not conversion_job_manager:
         return jsonify({'error': 'Job management service unavailable'}), 503
-    
-    result_path = job_manager.get_job_result_path(job_id)
-    if not result_path or not os.path.exists(result_path):
+
+    job = conversion_job_manager.get_job(job_id)
+    if not job or not job.result_path or not os.path.exists(job.result_path):
         logger.info(f"Download request for unavailable result: {job_id}")
         return jsonify({
             'error': 'Result not available',
             'job_id': job_id
         }), 404
-    
+
     try:
-        logger.info(f"Downloading result for job {job_id}: {result_path}")
+        logger.info(f"Downloading result for job {job_id}: {job.result_path}")
         return send_file(
-            result_path,
+            job.result_path,
             mimetype='audio/wav',
             as_attachment=True,
             download_name=f'converted_{job_id}.wav'
@@ -714,11 +715,11 @@ def download_converted_audio(job_id):
 @api_bp.route('/convert/cancel/<job_id>', methods=['POST'])
 def cancel_conversion(job_id):
     """Cancel a conversion job"""
-    job_manager = getattr(current_app, 'job_manager', None)
-    if not job_manager:
+    conversion_job_manager = getattr(current_app, 'conversion_job_manager', None)
+    if not conversion_job_manager:
         return jsonify({'error': 'Job management service unavailable'}), 503
 
-    cancelled = job_manager.cancel_job(job_id)
+    cancelled = conversion_job_manager.cancel_job(job_id)
     if not cancelled:
         logger.info(f"Cancel request for non-cancellable job: {job_id}")
         return jsonify({
@@ -736,30 +737,29 @@ def cancel_conversion(job_id):
 @api_bp.route('/convert/metrics/<job_id>', methods=['GET'])
 def get_conversion_metrics(job_id):
     """Get quality metrics for a completed conversion job"""
-    job_manager = getattr(current_app, 'job_manager', None)
-    if not job_manager:
+    conversion_job_manager = getattr(current_app, 'conversion_job_manager', None)
+    if not conversion_job_manager:
         return jsonify({'error': 'Job management service unavailable'}), 503
 
     # Check if job exists and is completed
-    status = job_manager.get_job_status(job_id)
-    if status is None:
+    job = conversion_job_manager.get_job(job_id)
+    if job is None:
         logger.info(f"Metrics request for unknown job_id: {job_id}")
         return jsonify({
             'error': 'Job not found',
             'job_id': job_id
         }), 404
 
-    if status.get('status') != 'completed':
-        logger.info(f"Metrics request for non-completed job: {job_id} (status: {status.get('status')})")
+    if job.status != 'completed':
+        logger.info(f"Metrics request for non-completed job: {job_id} (status: {job.status})")
         return jsonify({
             'error': 'Metrics only available for completed jobs',
             'job_id': job_id,
-            'status': status.get('status')
+            'status': job.status
         }), 400
 
-    # Retrieve metrics from job manager
-    metrics = job_manager.get_job_metrics(job_id)
-    if metrics is None:
+    # Retrieve metrics from ConversionJob
+    if job.metrics is None:
         logger.info(f"No metrics available for job: {job_id}")
         return jsonify({
             'error': 'Metrics not available for this job',
@@ -767,7 +767,7 @@ def get_conversion_metrics(job_id):
         }), 404
 
     logger.info(f"Metrics request for job {job_id}: success")
-    return jsonify(metrics)
+    return jsonify(job.metrics)
 
 
 @api_bp.route('/voice/clone', methods=['POST'])
@@ -1460,6 +1460,13 @@ def health_check():
         components['job_manager'] = {'status': 'up'}
     else:
         components['job_manager'] = {'status': 'down'}
+
+    # Check conversion job manager
+    conversion_job_manager = getattr(current_app, 'conversion_job_manager', None)
+    if conversion_job_manager:
+        components['conversion_job_manager'] = {'status': 'up'}
+    else:
+        components['conversion_job_manager'] = {'status': 'down'}
 
     # Check CUDA kernels availability
     try:
