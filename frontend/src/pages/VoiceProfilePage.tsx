@@ -8,7 +8,7 @@ import { AddSongButton } from '../components/AddSongButton'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { TrainingSampleUpload } from '../components/TrainingSampleUpload'
 import { AdapterSelector } from '../components/AdapterSelector'
-import { ProfileCardSkeleton } from '../components/Skeleton'
+import { ProfileCardSkeleton, Skeleton } from '../components/Skeleton'
 import clsx from 'clsx'
 
 // Training status badge component
@@ -279,9 +279,19 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
             />
           )}
           {loading ? (
-            <div className="flex items-center gap-2 text-gray-400">
-              <Loader2 className="animate-spin" size={16} />
-              Loading...
+            <div className="space-y-2">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="flex items-center justify-between p-3 bg-gray-750 rounded">
+                  <div className="flex items-center gap-3">
+                    <Skeleton variant="circular" width={16} height={16} />
+                    <div className="space-y-2">
+                      <Skeleton width={180} height={14} />
+                      <Skeleton width={120} height={12} />
+                    </div>
+                  </div>
+                  <Skeleton variant="rectangular" width={14} height={14} className="rounded" />
+                </div>
+              ))}
             </div>
           ) : samples.length === 0 ? (
             <p className="text-gray-500">No samples yet. Upload audio samples to train this voice profile.</p>
