@@ -17,6 +17,7 @@ Test Categories:
 All TensorRT operations are mocked to avoid GPU requirements.
 """
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -26,10 +27,22 @@ import numpy as np
 import pytest
 import torch
 
+# Mock tensorrt before importing the module
+mock_trt = MagicMock()
+mock_trt.Logger.WARNING = 1
+mock_trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH = 0
+mock_trt.MemoryPoolType.WORKSPACE = 0
+mock_trt.BuilderFlag.FP16 = 1
+mock_trt.BuilderFlag.INT8 = 2
+mock_trt.TensorIOMode.INPUT = 0
+mock_trt.TensorIOMode.OUTPUT = 1
+sys.modules['tensorrt'] = mock_trt
+
 from auto_voice.export.tensorrt_engine import (
     LatencyStats,
     ShapeProfile,
     TRTEngineBuilder,
+    trt,
 )
 
 

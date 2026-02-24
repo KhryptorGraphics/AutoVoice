@@ -224,15 +224,23 @@ class TestDiarizationExtractor:
         # Verify tracks are different
         assert not np.allclose(track_00, track_01)
 
-        # Verify speaker 0 has audio in their segments
-        assert np.abs(track_00[int(1.0 * sr)]) > 0.01
+        # Helper to compute RMS energy in a window
+        def rms_energy(track, center_sec, window_ms=100):
+            window = int(sr * window_ms / 1000)
+            center = int(center_sec * sr)
+            start = max(0, center - window // 2)
+            end = min(len(track), center + window // 2)
+            return np.sqrt(np.mean(track[start:end] ** 2))
 
+        # Verify speaker 0 has audio in their segments (RMS energy > threshold)
+        assert rms_energy(track_00, 1.0) > 0.01, "Speaker 0 should have audio at 1.0s"
+        
         # Verify speaker 1 has audio in their segments
-        assert np.abs(track_01[int(3.0 * sr)]) > 0.01
+        assert rms_energy(track_01, 3.0) > 0.01, "Speaker 1 should have audio at 3.0s"
 
-        # Verify mutual silence
-        assert np.abs(track_00[int(3.0 * sr)]) < 0.01
-        assert np.abs(track_01[int(1.0 * sr)]) < 0.01
+        # Verify mutual silence (opposite speaker should be silent)
+        assert rms_energy(track_00, 3.0) < 0.01, "Speaker 0 should be silent at 3.0s"
+        assert rms_energy(track_01, 1.0) < 0.01, "Speaker 1 should be silent at 1.0s"
 
     def test_extract_speaker_track_edge_case_overlapping(self, extractor, sample_audio):
         """Test edge case: overlapping speech (keeps target speaker)."""
@@ -247,11 +255,19 @@ class TestDiarizationExtractor:
 
         track_00 = extractor.extract_speaker_track(audio, sr, segments, "SPEAKER_00")
 
+        # Helper to compute RMS energy in a window
+        def rms_energy(track, center_sec, window_ms=100):
+            window = int(sr * window_ms / 1000)
+            center = int(center_sec * sr)
+            start = max(0, center - window // 2)
+            end = min(len(track), center + window // 2)
+            return np.sqrt(np.mean(track[start:end] ** 2))
+
         # Speaker 0 should have audio in their segment
-        assert np.abs(track_00[int(1.0 * sr)]) > 0.01
+        assert rms_energy(track_00, 1.0) > 0.01, "Speaker 0 should have audio at 1.0s"
 
         # Overlap region: speaker 0 still audible
-        assert np.abs(track_00[int(2.2 * sr)]) > 0.01
+        assert rms_energy(track_00, 2.2) > 0.01, "Speaker 0 should have audio at 2.2s (overlap)"
 
     def test_extract_speaker_track_edge_case_silence(self, extractor):
         """Test edge case: silent audio."""

@@ -15,11 +15,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-import tensorrt as trt
+try:
+    import tensorrt as trt
+    TRT_AVAILABLE = True
+except ImportError:
+    trt = None
+    TRT_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+TRT_LOGGER = trt.Logger(trt.Logger.WARNING) if trt else None
 
 
 @dataclass
