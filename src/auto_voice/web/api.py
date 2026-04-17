@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from flask import Blueprint, request, jsonify, current_app, send_file
 from werkzeug.utils import secure_filename
 from typing import Optional, Dict, Any
@@ -107,6 +108,12 @@ from .utils import (
     service_unavailable_response,
     error_response
 )
+from ..storage.paths import (
+    resolve_data_dir,
+    resolve_profiles_dir,
+    resolve_samples_dir,
+    resolve_trained_models_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +132,11 @@ def get_param(data, form_key, settings_key, default, validator=None, type_hint=N
     form_value = request.form.get(form_key)
     if form_value is not None:
         value = form_value
+
+    if value is None:
+        if validator and not validator(None):
+            raise ValueError(f'Invalid value for {form_key}')
+        return None
     
     try:
         if type_hint == 'float':
@@ -152,6 +164,146 @@ def _get_state_store():
     if state_store is None:
         raise RuntimeError('Application state store unavailable')
     return state_store
+
+
+def _get_data_dir() -> Path:
+    return resolve_data_dir(current_app.config.get('DATA_DIR'))
+
+
+def _get_profile_store():
+    from ..storage.voice_profiles import VoiceProfileStore
+
+    data_dir = _get_data_dir()
+    return VoiceProfileStore(
+        profiles_dir=str(resolve_profiles_dir(data_dir=str(data_dir))),
+        samples_dir=str(resolve_samples_dir(data_dir=str(data_dir))),
+    )
+
+
+def _get_adapter_manager():
+    from ..models.adapter_manager import AdapterManager, AdapterManagerConfig
+
+    data_dir = _get_data_dir()
+    return AdapterManager(AdapterManagerConfig(
+        adapters_dir=resolve_trained_models_dir(data_dir=str(data_dir)),
+        profiles_dir=resolve_profiles_dir(data_dir=str(data_dir)),
+    ))
+
+
+def _get_training_job_manager():
+    manager = getattr(current_app, '_training_job_manager', None)
+    if manager is not None:
+        return manager
+
+    from ..training.job_manager import TrainingJobManager
+
+    data_dir = _get_data_dir()
+    socketio = current_app.extensions.get('socketio') or getattr(current_app, 'socketio', None)
+    manager = TrainingJobManager(
+        storage_path=data_dir / 'app_state',
+        require_gpu=False,
+        socketio=socketio,
+        profiles_dir=str(resolve_profiles_dir(data_dir=str(data_dir))),
+        samples_dir=str(resolve_samples_dir(data_dir=str(data_dir))),
+    )
+    current_app._training_job_manager = manager
+    return manager
+
+
+def _serialize_training_job(job: Any) -> Dict[str, Any]:
+    if isinstance(job, dict):
+        return job
+    if hasattr(job, 'to_dict'):
+        return job.to_dict()
+    raise TypeError(f'Unsupported training job type: {type(job)}')
+
+
+def _load_runtime_profile(profile_id: str) -> Optional[Dict[str, Any]]:
+    store = _get_profile_store()
+    try:
+        return store.load(profile_id)
+    except Exception:
+        pass
+
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if voice_cloner is None:
+        return None
+    try:
+        return voice_cloner.load_voice_profile(profile_id)
+    except Exception:
+        return None
+
+
+def _ensure_profile_in_store(profile_id: str) -> Dict[str, Any]:
+    from ..storage.voice_profiles import ProfileNotFoundError
+
+    store = _get_profile_store()
+    try:
+        return store.load(profile_id)
+    except Exception:
+        pass
+
+    profile = _load_runtime_profile(profile_id)
+    if profile is None:
+        raise ProfileNotFoundError(f'Profile {profile_id} not found')
+
+    store.save(dict(profile))
+    return store.load(profile_id)
+
+
+def _get_frontend_adapter_type(profile: Optional[Dict[str, Any]]) -> str:
+    adapter_type = (profile or {}).get('selected_adapter')
+    if adapter_type in {'hq', 'nvfp4'}:
+        return adapter_type
+    return 'hq'
+
+
+def _get_canonical_adapter_artifact(profile_id: str, profile: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    adapter_manager = _get_adapter_manager()
+    adapter_path = adapter_manager.get_adapter_path(profile_id)
+    if adapter_path is None:
+        return None
+
+    adapter_type = _get_frontend_adapter_type(profile)
+    adapter_info = adapter_manager.get_adapter_info(profile_id)
+    checkpoint: Dict[str, Any] = {}
+    parameter_count = 0
+
+    if TORCH_AVAILABLE:
+        try:
+            checkpoint = torch.load(adapter_path, map_location='cpu', weights_only=False)
+        except Exception as exc:
+            logger.warning(f"Failed to load adapter checkpoint metadata for {adapter_path}: {exc}")
+
+    if checkpoint:
+        parameter_count = sum(
+            tensor.numel()
+            for tensor in checkpoint.values()
+            if hasattr(tensor, 'numel')
+        )
+
+    stat = adapter_path.stat()
+    configured_epochs = adapter_info.training_epochs if adapter_info else 0
+    epochs = configured_epochs or 0
+    if checkpoint and 'epoch' in checkpoint:
+        epochs = int(checkpoint.get('epoch', 0)) + 1
+
+    loss = checkpoint.get('loss')
+    if loss is None and adapter_info is not None:
+        loss = adapter_info.loss_final
+
+    return {
+        'type': adapter_type,
+        'path': str(adapter_path),
+        'size_kb': stat.st_size / 1024,
+        'epochs': epochs,
+        'loss': loss,
+        'precision': checkpoint.get('precision', 'unified'),
+        'config': checkpoint.get('config', {}),
+        'parameter_count': parameter_count,
+        'modified_time': datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        'adapter_info': adapter_info,
+    }
 
 
 @api_bp.route('/convert/song', methods=['POST'])
@@ -297,15 +449,13 @@ def convert_song():
     preset = preset_map.get(output_quality, 'balanced')
     logger.info(f'Selected preset: {preset} for quality: {output_quality}')
 
-    # Adapter type selection (hq or nvfp4)
+    # Adapter type selection (legacy hq/nvfp4 labels plus canonical unified adapter)
     adapter_type = get_param(
         settings_data, 'adapter_type', 'adapter_type', None,
-        lambda v: v in ['hq', 'nvfp4', None], type_hint='str'
+        lambda v: v in ['hq', 'nvfp4', 'unified', None], type_hint='str'
     )
 
-    # Task 4.2: Check for trained adapter using AdapterManager
-    from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
-    adapter_manager = AdapterManager(AdapterManagerConfig())
+    adapter_manager = _get_adapter_manager()
 
     # Task 4.4: Return error if adapter missing for profile
     if not adapter_manager.has_adapter(profile_id):
@@ -437,7 +587,6 @@ def convert_song():
                     pitch_shift=pitch_shift,
                     return_stems=return_stems,
                     preset=preset,
-                    adapter_type=adapter_type,
                 )
 
             # Comment 2: Defensive validation of pipeline result
@@ -864,14 +1013,7 @@ def get_voice_profiles():
     user_id = request.args.get('user_id')
     try:
         profiles = voice_cloner.list_voice_profiles(user_id=user_id)
-
-        # Task 4.5: Initialize AdapterManager once for all profiles
-        from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
-        try:
-            adapter_manager = AdapterManager(AdapterManagerConfig())
-        except Exception as e:
-            logger.warning(f"Failed to initialize AdapterManager: {e}")
-            adapter_manager = None
+        store = _get_profile_store()
 
         # Omit large embedding fields and normalize field names for frontend
         clean_profiles = []
@@ -883,18 +1025,8 @@ def get_voice_profiles():
             elif 'sample_count' not in clean_profile:
                 clean_profile['sample_count'] = 0
 
-            # Task 4.5: Add model availability status
-            if adapter_manager:
-                try:
-                    pid = clean_profile.get('profile_id')
-                    if pid:
-                        clean_profile['has_trained_model'] = adapter_manager.has_adapter(pid)
-                    else:
-                        clean_profile['has_trained_model'] = False
-                except Exception:
-                    clean_profile['has_trained_model'] = False
-            else:
-                clean_profile['has_trained_model'] = False
+            pid = clean_profile.get('profile_id')
+            clean_profile['has_trained_model'] = bool(pid and store.has_trained_model(pid))
 
             clean_profiles.append(clean_profile)
 
@@ -929,19 +1061,12 @@ def get_voice_profile(profile_id):
         # Omit large embedding field
         clean_profile = {k: v for k, v in profile.items() if k != 'embedding'}
 
-        # Task 4.5: Add model availability status
-        from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
-        try:
-            adapter_manager = AdapterManager(AdapterManagerConfig())
-            has_model = adapter_manager.has_adapter(profile_id)
-            adapter_path = adapter_manager.get_adapter_path(profile_id) if has_model else None
+        store = _get_profile_store()
+        clean_profile['has_trained_model'] = store.has_trained_model(profile_id)
 
-            clean_profile['has_trained_model'] = has_model
-            if adapter_path:
-                clean_profile['adapter_path'] = str(adapter_path)
-        except Exception as e:
-            logger.warning(f"Failed to check adapter for {profile_id}: {e}")
-            clean_profile['has_trained_model'] = False
+        adapter_artifact = _get_canonical_adapter_artifact(profile_id, profile)
+        if adapter_artifact is not None:
+            clean_profile['adapter_path'] = adapter_artifact['path']
 
         return jsonify(clean_profile)
     except ProfileNotFoundError:
@@ -1005,52 +1130,24 @@ def get_profile_adapters(profile_id):
         - adapters: list of adapter objects with type, path, size, loss, epochs
         - selected: currently selected adapter type (default: 'hq' if available, else 'nvfp4')
     """
-    from pathlib import Path
-    import torch
-
-    # Check if profile exists
-    voice_cloner = getattr(current_app, 'voice_cloner', None)
-    if voice_cloner is None:
-        return service_unavailable_response('Voice cloning service unavailable')
-
-    try:
-        profile = voice_cloner.load_voice_profile(profile_id)
-        if profile is None:
-            return not_found_response('Voice profile not found')
-    except Exception:
+    profile = _load_runtime_profile(profile_id)
+    if profile is None:
         return not_found_response('Voice profile not found')
 
-    # Scan for adapters
-    base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
     adapters = []
-
-    adapter_types = ['hq', 'nvfp4']
-    for adapter_type in adapter_types:
-        adapter_dir = base_dir / adapter_type
-        adapter_file = adapter_dir / f"{profile_id}_{adapter_type}_lora.pt"
-
-        if adapter_file.exists():
-            try:
-                # Load metadata without full weights
-                ckpt = torch.load(adapter_file, map_location='cpu', weights_only=False)
-                adapters.append({
-                    'type': adapter_type,
-                    'path': str(adapter_file),
-                    'size_kb': adapter_file.stat().st_size / 1024,
-                    'epochs': ckpt.get('epoch', 0) + 1,
-                    'loss': ckpt.get('loss', None),
-                    'precision': ckpt.get('precision', 'fp16' if adapter_type == 'hq' else 'nvfp4'),
-                    'config': ckpt.get('config', {}),
-                })
-            except Exception as e:
-                logger.warning(f"Failed to load adapter metadata {adapter_file}: {e}")
-
-    # Determine selected adapter (prefer hq > nvfp4)
     selected = None
-    if any(a['type'] == 'hq' for a in adapters):
-        selected = 'hq'
-    elif any(a['type'] == 'nvfp4' for a in adapters):
-        selected = 'nvfp4'
+    adapter_artifact = _get_canonical_adapter_artifact(profile_id, profile)
+    if adapter_artifact is not None:
+        adapters.append({
+            'type': adapter_artifact['type'],
+            'path': adapter_artifact['path'],
+            'size_kb': adapter_artifact['size_kb'],
+            'epochs': adapter_artifact['epochs'],
+            'loss': adapter_artifact['loss'],
+            'precision': adapter_artifact['precision'],
+            'config': adapter_artifact['config'],
+        })
+        selected = adapter_artifact['type']
 
     return jsonify({
         'profile_id': profile_id,
@@ -1075,9 +1172,6 @@ def get_profile_model(profile_id):
         - embedding_shape: tuple - embedding dimensions
         - created_at: str - adapter creation timestamp
     """
-    from pathlib import Path
-    from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
-
     # Task 4.4: Validate profile_id format
     if not profile_id or len(profile_id) != 36:
         return jsonify({
@@ -1085,45 +1179,35 @@ def get_profile_model(profile_id):
             'message': 'Profile ID must be a valid UUID (36 characters)'
         }), 400
 
-    # Check if profile exists
-    voice_cloner = getattr(current_app, 'voice_cloner', None)
-    if voice_cloner is None:
-        return service_unavailable_response('Voice cloning service unavailable')
-
-    try:
-        profile = voice_cloner.load_voice_profile(profile_id)
-        if profile is None:
-            return jsonify({
-                'error': 'Voice profile not found',
-                'profile_id': profile_id
-            }), 404
-    except Exception as e:
-        logger.warning(f"Profile {profile_id} not found: {e}")
+    profile = _load_runtime_profile(profile_id)
+    if profile is None:
         return jsonify({
             'error': 'Voice profile not found',
             'profile_id': profile_id
         }), 404
 
-    # Use AdapterManager to check for trained model
     try:
-        adapter_manager = AdapterManager(AdapterManagerConfig())
-
-        # Check if adapter exists
+        adapter_manager = _get_adapter_manager()
         has_model = adapter_manager.has_adapter(profile_id)
+        adapter_path = adapter_manager.get_adapter_path(profile_id) if has_model else None
 
         if not has_model:
-            # Task 4.4: Clear error when no adapter
+            full_model_path = resolve_trained_models_dir(data_dir=str(_get_data_dir())) / f"{profile_id}_full_model.pt"
+            has_full_model = full_model_path.exists()
             return jsonify({
                 'profile_id': profile_id,
-                'has_model': False,
-                'message': 'No trained model available for this profile',
-            }), 404
+                'has_model': has_full_model,
+                'model_type': 'full_model' if has_full_model else None,
+                'model_path': str(full_model_path) if has_full_model else None,
+                'message': (
+                    'Full model checkpoint available for this profile'
+                    if has_full_model
+                    else 'No trained model available for this profile'
+                ),
+            }), 404 if not has_full_model else 200
 
-        # Get adapter info
         adapter_info = adapter_manager.get_adapter_info(profile_id)
-        adapter_path = adapter_manager.get_adapter_path(profile_id)
 
-        # Check embedding
         embedding_path = Path(adapter_manager.config.profiles_dir) / f"{profile_id}.npy"
         embedding_exists = embedding_path.exists()
         embedding_shape = None
@@ -1147,7 +1231,9 @@ def get_profile_model(profile_id):
         return jsonify({
             'profile_id': profile_id,
             'has_model': True,
+            'model_type': 'adapter',
             'adapter_path': str(adapter_path) if adapter_path else None,
+            'selected_adapter': _get_frontend_adapter_type(profile),
             'adapter_info': {
                 'rank': adapter_info.rank if adapter_info else None,
                 'alpha': adapter_info.alpha if adapter_info else None,
@@ -1179,47 +1265,35 @@ def select_profile_adapter(profile_id):
     Returns:
         JSON confirming the selection.
     """
-    from pathlib import Path
-
     data = request.get_json() or {}
     adapter_type = data.get('adapter_type')
 
-    if adapter_type not in ['hq', 'nvfp4']:
+    if adapter_type not in ['hq', 'nvfp4', 'unified']:
         return jsonify({
             'error': 'Invalid adapter_type',
-            'message': "Must be 'hq' or 'nvfp4'"
+            'message': "Must be 'hq', 'nvfp4', or 'unified'"
         }), 400
 
-    # Check if adapter exists
-    base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
-    adapter_file = base_dir / adapter_type / f"{profile_id}_{adapter_type}_lora.pt"
-
-    if not adapter_file.exists():
+    profile = _ensure_profile_in_store(profile_id)
+    adapter_artifact = _get_canonical_adapter_artifact(profile_id, profile)
+    if adapter_artifact is None:
         return jsonify({
             'error': 'Adapter not found',
-            'message': f"No {adapter_type} adapter exists for profile {profile_id}"
+            'message': f'No trained adapter exists for profile {profile_id}'
         }), 404
 
-    # Store selection in profile metadata
-    voice_cloner = getattr(current_app, 'voice_cloner', None)
-    if voice_cloner is None:
-        return service_unavailable_response('Voice cloning service unavailable')
-
     try:
-        # Update profile with selected adapter
-        profile = voice_cloner.load_voice_profile(profile_id)
-        if profile is None:
-            return not_found_response('Voice profile not found')
-
-        # Store adapter preference
+        store = _get_profile_store()
         profile['selected_adapter'] = adapter_type
-        voice_cloner.save_voice_profile(profile_id, profile)
+        store.save(dict(profile))
 
         return jsonify({
+            'status': 'success',
             'success': True,
             'profile_id': profile_id,
+            'selected': _get_frontend_adapter_type({'selected_adapter': adapter_type}),
             'selected_adapter': adapter_type,
-            'adapter_path': str(adapter_file),
+            'adapter_path': adapter_artifact['path'],
         })
     except Exception as e:
         logger.error(f"Failed to select adapter: {e}", exc_info=True)
@@ -1236,84 +1310,53 @@ def get_adapter_metrics(profile_id):
         - model architecture (rank, layers, parameters)
         - performance estimates (inference speed, memory usage)
     """
-    from pathlib import Path
-    import torch
-    from datetime import datetime
-
-    # Check if profile exists
-    voice_cloner = getattr(current_app, 'voice_cloner', None)
-    if voice_cloner is None:
-        return service_unavailable_response('Voice cloning service unavailable')
-
-    try:
-        profile = voice_cloner.load_voice_profile(profile_id)
-        if profile is None:
-            return not_found_response('Voice profile not found')
-    except Exception:
+    profile = _load_runtime_profile(profile_id)
+    if profile is None:
         return not_found_response('Voice profile not found')
 
-    base_dir = Path('/home/kp/repo2/autovoice/data/trained_models')
     metrics = {}
-
-    for adapter_type in ['hq', 'nvfp4']:
-        adapter_file = base_dir / adapter_type / f"{profile_id}_{adapter_type}_lora.pt"
-
-        if not adapter_file.exists():
-            continue
-
-        try:
-            ckpt = torch.load(adapter_file, map_location='cpu', weights_only=False)
-            config = ckpt.get('config', {})
-
-            # Calculate parameter count from LoRA state
-            lora_state = ckpt.get('lora_state', {})
-            param_count = sum(t.numel() for t in lora_state.values())
-
-            # File stats
-            stat = adapter_file.stat()
-
-            metrics[adapter_type] = {
-                # Training metrics
-                'epochs': ckpt.get('epoch', 0) + 1,
-                'loss': ckpt.get('loss'),
-                'precision': ckpt.get('precision', 'fp16' if adapter_type == 'hq' else 'nvfp4'),
-                'trained_on': ckpt.get('trained_on'),
-
-                # Architecture
-                'architecture': {
-                    'input_dim': config.get('input_dim', 768),
-                    'hidden_dim': config.get('hidden_dim', 1024 if adapter_type == 'hq' else 512),
-                    'output_dim': config.get('output_dim', 768),
-                    'num_layers': config.get('num_layers', 6 if adapter_type == 'hq' else 4),
-                    'lora_rank': config.get('lora_rank', 128 if adapter_type == 'hq' else 32),
-                    'lora_alpha': config.get('lora_alpha', 256.0 if adapter_type == 'hq' else 64.0),
-                },
-
-                # Size and parameters
-                'file_size_kb': stat.st_size / 1024,
-                'parameter_count': param_count,
-                'parameter_count_formatted': f"{param_count / 1e6:.2f}M" if param_count > 1e6 else f"{param_count / 1e3:.1f}K",
-
-                # File metadata
-                'file_path': str(adapter_file),
-                'modified_time': datetime.fromtimestamp(stat.st_mtime).isoformat(),
-
-                # Performance estimates (rough)
-                'performance': {
-                    'relative_quality': 'high' if adapter_type == 'hq' else 'good',
-                    'relative_speed': 'normal' if adapter_type == 'hq' else 'fast',
-                    'memory_estimate_mb': param_count * 4 / (1024 * 1024) * 2,  # FP32 with gradients
-                }
+    adapter_artifact = _get_canonical_adapter_artifact(profile_id, profile)
+    if adapter_artifact is not None:
+        adapter_type = adapter_artifact['type']
+        adapter_info = adapter_artifact['adapter_info']
+        config = dict(adapter_artifact['config'])
+        param_count = adapter_artifact['parameter_count']
+        file_size_mb = adapter_artifact['size_kb'] / 1024
+        metrics[adapter_type] = {
+            'epochs': adapter_artifact['epochs'],
+            'loss': adapter_artifact['loss'],
+            'precision': adapter_artifact['precision'],
+            'trained_on': None,
+            'architecture': {
+                'input_dim': config.get('input_dim', 768),
+                'hidden_dim': config.get('hidden_dim', 1024),
+                'output_dim': config.get('output_dim', 768),
+                'num_layers': config.get('num_layers', 6),
+                'lora_rank': config.get('lora_rank', adapter_info.rank if adapter_info else 8),
+                'lora_alpha': config.get('lora_alpha', adapter_info.alpha if adapter_info else 16),
+            },
+            'file_size_kb': round(adapter_artifact['size_kb'], 1),
+            'parameter_count': param_count,
+            'parameter_count_formatted': (
+                f"{param_count / 1e6:.2f}M"
+                if param_count > 1e6
+                else f"{param_count / 1e3:.1f}K" if param_count else 'N/A'
+            ),
+            'file_path': adapter_artifact['path'],
+            'modified_time': adapter_artifact['modified_time'],
+            'performance': {
+                'relative_quality': 'high',
+                'relative_speed': 'normal',
+                'memory_estimate_mb': round(file_size_mb, 2),
             }
-        except Exception as e:
-            logger.warning(f"Failed to load metrics for {adapter_file}: {e}")
+        }
 
     return jsonify({
         'profile_id': profile_id,
         'profile_name': profile.get('name', 'Unknown'),
         'adapters': metrics,
         'adapter_count': len(metrics),
-        'recommended': 'hq' if 'hq' in metrics else 'nvfp4' if 'nvfp4' in metrics else None,
+        'recommended': next(iter(metrics.keys()), None),
     })
 
 
@@ -1327,9 +1370,9 @@ def get_profile_training_status(profile_id):
         - training_status: str - 'pending', 'training', 'ready', 'failed'
         - model_version: str | None - version identifier if trained
     """
-    from ..storage.voice_profiles import VoiceProfileStore, ProfileNotFoundError
+    from ..storage.voice_profiles import ProfileNotFoundError
 
-    store = VoiceProfileStore()
+    store = _get_profile_store()
 
     try:
         # Check if profile exists
@@ -2015,8 +2058,8 @@ def list_training_jobs():
     """List all training jobs, optionally filtered by profile."""
     try:
         profile_id = request.args.get('profile_id')
-        jobs = _get_state_store().list_training_jobs(profile_id)
-        jobs = [_sanitize_job(j) for j in jobs]
+        job_manager = _get_training_job_manager()
+        jobs = [_sanitize_job(_serialize_training_job(job)) for job in job_manager.list_jobs(profile_id)]
         return jsonify(jobs)
     except Exception as e:
         logger.error(f"Error listing training jobs: {e}", exc_info=True)
@@ -2035,224 +2078,46 @@ def create_training_job():
         if not profile_id:
             return validation_error_response('profile_id is required')
 
-        sample_ids = data.get('sample_ids', [])
-        config = data.get('config', {})
+        config_payload = data.get('config') or {}
+        if not isinstance(config_payload, dict):
+            return validation_error_response('config must be an object')
 
-        job_id = str(uuid.uuid4())
-        job = {
-            'job_id': job_id,
-            'profile_id': profile_id,
-            'status': 'pending',
-            'created_at': _utcnow_iso(),
-            'started_at': None,
-            'completed_at': None,
-            'progress': 0,
-            'sample_ids': sample_ids,
-            'config': config,
-            'error': None,
-            'results': None
-        }
-        _training_jobs[job_id] = job
-        _save_training_job(job)
-        logger.info(f"Created training job {job_id} for profile {profile_id}")
+        _ensure_profile_in_store(profile_id)
+        store = _get_profile_store()
+        available_samples = store.list_training_samples(profile_id)
+        if not available_samples:
+            return validation_error_response('No training samples found for this profile')
 
-        # Start training in background
-        import threading
-        app = current_app._get_current_object()  # Get actual app object for thread context
+        sample_ids = data.get('sample_ids') or [sample.sample_id for sample in available_samples]
+        sample_ids = [sample_id for sample_id in sample_ids if isinstance(sample_id, str)]
+        if not sample_ids:
+            return validation_error_response('At least one valid sample_id is required')
 
-        def run_training():
-            import shutil
-            from pathlib import Path
-            import torch
-            try:
-                with app.app_context():  # Required for Flask context in thread
-                    from ..storage.voice_profiles import VoiceProfileStore
-                    from ..training.trainer import Trainer
+        from ..training.job_manager import TrainingConfig
 
-                    # Update status to running
-                    job['status'] = 'running'
-                    job['started_at'] = _utcnow_iso()
-                    _save_training_job(job)
+        training_mode = config_payload.get('training_mode', 'lora')
+        if training_mode not in {'lora', 'full'}:
+            return validation_error_response('training_mode must be "lora" or "full"')
 
-                    # Get sample audio paths
-                    store = VoiceProfileStore()
-                    training_samples = store.list_training_samples(profile_id)
+        normalized_config = dict(config_payload)
+        normalized_config['training_mode'] = training_mode
+        if training_mode == 'full':
+            normalized_config.setdefault('epochs', 500)
+            normalized_config.setdefault('learning_rate', 5e-5)
+            normalized_config['lora_rank'] = 0
+            normalized_config['lora_alpha'] = 0
 
-                    if not training_samples:
-                        raise ValueError(f"No training samples found for profile {profile_id}")
+        job_manager = _get_training_job_manager()
+        job = job_manager.create_job(
+            profile_id=profile_id,
+            sample_ids=sample_ids,
+            config=TrainingConfig.from_dict(normalized_config),
+        )
+        job_manager.execute_job(job.job_id)
 
-                    # Create temporary training directory
-                    train_dir = Path(f"/tmp/autovoice_training/{job_id}")
-                    train_dir.mkdir(parents=True, exist_ok=True)
-
-                    sample_files = []
-                    for sample in training_samples:
-                        if sample.sample_id in sample_ids or not sample_ids:
-                            src_path = Path(sample.vocals_path)
-                            if not src_path.is_absolute():
-                                src_path = Path.cwd() / sample.vocals_path
-                            if src_path.exists():
-                                dst_path = train_dir / f"{sample.sample_id}.wav"
-                                shutil.copy2(src_path, dst_path)
-                                sample_files.append(str(dst_path))
-                                logger.info(f"Copied sample: {src_path} -> {dst_path}")
-
-                    if not sample_files:
-                        raise ValueError("No valid audio samples could be loaded")
-
-                    # Training configuration
-                    # Training mode: 'lora' (default, fast) or 'full' (from scratch, higher quality)
-                    training_mode = config.get('training_mode', 'lora')
-
-                    # Adjust defaults based on training mode
-                    if training_mode == 'full':
-                        # Full training needs more epochs and lower LR
-                        default_epochs = 500
-                        default_lr = 5e-5
-                    else:
-                        # LoRA fine-tuning is faster
-                        default_epochs = 100
-                        default_lr = 1e-4
-
-                    epochs = config.get('epochs', default_epochs)
-                    learning_rate = config.get('learning_rate', default_lr)
-                    batch_size = config.get('batch_size', 4)
-
-                    trainer_config = {
-                        'epochs': epochs,
-                        'learning_rate': learning_rate,
-                        'batch_size': batch_size,
-                        'checkpoint_dir': str(Path(app.config.get('DATA_DIR', 'data')) / 'checkpoints' / profile_id),
-                    }
-
-                    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-                    # Create the SVC decoder model for training
-                    # ContentVec encoder outputs 768-dim, PitchEncoder outputs 256-dim
-                    from ..models.svc_decoder import CoMoSVCDecoder
-                    model = CoMoSVCDecoder(
-                        content_dim=768,  # ContentVec 768-dim for better speaker disentanglement
-                        pitch_dim=256,    # Pitch embedding
-                        speaker_dim=256,  # Speaker embedding
-                        n_mels=100,       # Output mel bins
-                        hidden_dim=512,
-                        n_layers=8,
-                        device=device,
-                    )
-
-                    # Apply training mode
-                    if training_mode == 'lora':
-                        # LoRA: Parameter-efficient fine-tuning (~1MB checkpoint)
-                        lora_rank = config.get('lora_rank', 8)
-                        lora_alpha = config.get('lora_alpha', 16)
-                        lora_dropout = config.get('lora_dropout', 0.1)
-                        model.inject_lora(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
-                        logger.info(f"Training mode: LoRA (rank={lora_rank}, alpha={lora_alpha})")
-                    else:
-                        # Full: Train entire model from scratch (~184MB checkpoint)
-                        logger.info(f"Training mode: FULL (training all {sum(p.numel() for p in model.parameters())} parameters)")
-
-                    trainer = Trainer(model=model, config=trainer_config, device=device)
-                    logger.info(f"Training on device: {device}, epochs: {epochs}, model: CoMoSVCDecoder")
-
-                    # Set speaker embedding from training audio (required before training)
-                    trainer.set_speaker_embedding(str(train_dir))
-                    logger.info(f"Speaker embedding computed from {train_dir}")
-
-                    # Patch train to update progress
-                    original_train_epoch = trainer._train_epoch
-                    def patched_train_epoch(loader, epoch):
-                        loss = original_train_epoch(loader, epoch)
-                        progress = int(100 * (epoch + 1) / epochs)
-                        job['progress'] = progress
-                        job['results'] = job.get('results') or {}
-                        job['results']['current_loss'] = loss
-                        job['results']['current_epoch'] = epoch + 1
-                        _save_training_job(job)
-
-                        # Emit WebSocket event (socketio from outer scope)
-                        try:
-                            from flask import current_app as ca
-                            socketio = ca.extensions.get('socketio')
-                            if socketio:
-                                socketio.emit('training_progress', {
-                                    'job_id': job_id,
-                                    'profile_id': profile_id,
-                                    'epoch': epoch + 1,
-                                    'total_epochs': epochs,
-                                    'step': epoch + 1,
-                                    'total_steps': epochs,
-                                    'loss': loss,
-                                    'learning_rate': learning_rate,
-                                })
-                        except Exception as emit_err:
-                            logger.warning(f"Failed to emit progress: {emit_err}")
-                        return loss
-
-                    trainer._train_epoch = patched_train_epoch
-
-                    # Run training
-                    trainer.train(str(train_dir))
-
-                    # Update job as completed
-                    job['status'] = 'completed'
-                    job['completed_at'] = _utcnow_iso()
-                    job['progress'] = 100
-                    # Convert Infinity to None for valid JSON
-                    best_loss = trainer.best_loss if trainer.best_loss != float('inf') else None
-                    job['results'] = {
-                        'final_loss': trainer.train_losses[-1] if trainer.train_losses else 0,
-                        'best_loss': best_loss,
-                        'epochs_completed': epochs,
-                        'checkpoint_path': str(trainer.checkpoint_dir / 'final.pth'),
-                    }
-                    _save_training_job(job)
-
-                    # Emit completion event
-                    try:
-                        from flask import current_app as ca
-                        socketio = ca.extensions.get('socketio')
-                        if socketio:
-                            socketio.emit('training_complete', {
-                                'job_id': job_id,
-                                'profile_id': profile_id,
-                                'results': job['results'],
-                            })
-                    except Exception as emit_err:
-                        logger.warning(f"Failed to emit completion: {emit_err}")
-
-                    logger.info(f"Training job {job_id} completed successfully")
-
-                    # Cleanup temp directory
-                    shutil.rmtree(train_dir, ignore_errors=True)
-
-            except Exception as e:
-                logger.error(f"Training job {job_id} failed: {e}", exc_info=True)
-                job['status'] = 'failed'
-                job['completed_at'] = _utcnow_iso()
-                job['error'] = str(e)
-                with app.app_context():
-                    _save_training_job(job)
-
-                # Emit error event
-                try:
-                    with app.app_context():
-                        from flask import current_app as ca
-                        socketio = ca.extensions.get('socketio')
-                        if socketio:
-                            socketio.emit('training_error', {
-                                'job_id': job_id,
-                                'profile_id': profile_id,
-                                'error': str(e),
-                            })
-                except Exception as emit_err:
-                    logger.warning(f"Failed to emit error: {emit_err}")
-
-        training_thread = threading.Thread(target=run_training, daemon=True)
-        training_thread.start()
-        logger.info(f"Training job {job_id} started in background")
-
-        return jsonify(job), 201
+        serialized = _sanitize_job(_serialize_training_job(job))
+        logger.info(f"Created training job {job.job_id} for profile {profile_id}")
+        return jsonify(serialized), 201
     except Exception as e:
         logger.error(f"Error creating training job: {e}", exc_info=True)
         return error_response(str(e))
@@ -2261,26 +2126,26 @@ def create_training_job():
 @api_bp.route('/training/jobs/<job_id>', methods=['GET'])
 def get_training_job(job_id: str):
     """Get details of a specific training job."""
-    job = _get_state_store().get_training_job(job_id)
+    job = _get_training_job_manager().get_job(job_id)
     if not job:
         return not_found_response('Training job not found')
-    return jsonify(_sanitize_job(job))
+    return jsonify(_sanitize_job(_serialize_training_job(job)))
 
 
 @api_bp.route('/training/jobs/<job_id>/cancel', methods=['POST'])
 def cancel_training_job(job_id: str):
     """Cancel a training job."""
-    job = _get_state_store().get_training_job(job_id)
-    if not job:
+    job_manager = _get_training_job_manager()
+    job = job_manager.get_job(job_id)
+    if job is None:
         return not_found_response('Training job not found')
-    if job['status'] in ('completed', 'failed', 'cancelled'):
-        return validation_error_response(f"Cannot cancel job in {job['status']} state")
-    job['status'] = 'cancelled'
-    job['completed_at'] = _utcnow_iso()
-    _training_jobs[job_id] = job
-    _save_training_job(job)
+    serialized = _serialize_training_job(job)
+    if serialized['status'] in ('completed', 'failed', 'cancelled'):
+        return validation_error_response(f"Cannot cancel job in {serialized['status']} state")
+    if not job_manager.cancel_job(job_id):
+        return validation_error_response(f"Cannot cancel job in {serialized['status']} state")
     logger.info(f"Cancelled training job {job_id}")
-    return jsonify(job)
+    return jsonify(_sanitize_job(_serialize_training_job(job_manager.get_job(job_id))))
 
 
 # =============================================================================
@@ -2291,34 +2156,51 @@ def cancel_training_job(job_id: str):
 _profile_samples: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
+def _serialize_training_sample(profile_id: str, training_sample: Any) -> Dict[str, Any]:
+    return {
+        'id': training_sample.sample_id,
+        'sample_id': training_sample.sample_id,
+        'profile_id': profile_id,
+        'audio_path': training_sample.vocals_path,
+        'file_path': training_sample.vocals_path,
+        'duration_seconds': training_sample.duration,
+        'duration': training_sample.duration,
+        'sample_rate': 44100,
+        'created': training_sample.created_at,
+        'created_at': training_sample.created_at,
+        'source_file': training_sample.source_file,
+        'filename': os.path.basename(training_sample.vocals_path),
+        'metadata': {
+            'source_file': training_sample.source_file,
+            'instrumental_path': training_sample.instrumental_path,
+        },
+    }
+
+
+def _find_training_sample(profile_id: str, sample_id: str):
+    store = _get_profile_store()
+    for sample in store.list_training_samples(profile_id):
+        if sample.sample_id == sample_id:
+            return sample
+    return None
+
+
 @api_bp.route('/profiles/<profile_id>/samples', methods=['GET'])
 def list_samples(profile_id: str):
     """List all samples for a profile."""
-    from ..storage.voice_profiles import VoiceProfileStore
-    store = VoiceProfileStore()
-
-    # First try to get samples from VoiceProfileStore (persistent)
     try:
+        profile = _load_runtime_profile(profile_id)
+        if profile is None:
+            return not_found_response('Profile not found')
+
+        store = _get_profile_store()
         training_samples = store.list_training_samples(profile_id)
-        if training_samples:
-            # Convert TrainingSample objects to API format matching frontend interface
-            samples = []
-            for ts in training_samples:
-                samples.append({
-                    'id': ts.sample_id,  # Frontend expects 'id' not 'sample_id'
-                    'sample_id': ts.sample_id,
-                    'profile_id': profile_id,
-                    'audio_path': ts.vocals_path,
-                    'duration_seconds': ts.duration,
-                    'sample_rate': 44100,  # Default, could be read from file
-                    'created': ts.created_at,
-                    'source_file': ts.source_file,
-                })
+        samples = [_serialize_training_sample(profile_id, sample) for sample in training_samples]
+        if samples:
             return jsonify(samples)
     except Exception as e:
         logger.warning(f"Failed to get samples from VoiceProfileStore: {e}")
 
-    # Fallback to in-memory storage
     samples = _profile_samples.get(profile_id, {})
     return jsonify(list(samples.values()))
 
@@ -2327,6 +2209,8 @@ def list_samples(profile_id: str):
 def upload_sample(profile_id: str):
     """Upload a new training sample for a profile."""
     try:
+        _ensure_profile_in_store(profile_id)
+
         # Accept both 'file' and 'audio' field names for flexibility
         file = None
         if 'file' in request.files:
@@ -2342,15 +2226,12 @@ def upload_sample(profile_id: str):
         if not allowed_file(file.filename):
             return validation_error_response('Invalid file type')
 
-        # Save file temporarily
+        # Save file temporarily before moving into the canonical sample store.
         filename = secure_filename(file.filename)
-        sample_id = str(uuid.uuid4())
-
-        # Create upload directory if needed
-        upload_dir = os.path.join(UPLOAD_FOLDER, 'samples', profile_id)
+        upload_dir = os.path.join(UPLOAD_FOLDER, 'incoming-samples', profile_id)
         os.makedirs(upload_dir, exist_ok=True)
 
-        file_path = os.path.join(upload_dir, f"{sample_id}_{filename}")
+        file_path = os.path.join(upload_dir, f"{uuid.uuid4()}_{filename}")
         file.save(file_path)
 
         # Get metadata from form
@@ -2361,22 +2242,28 @@ def upload_sample(profile_id: str):
             except json.JSONDecodeError:
                 pass
 
-        sample = {
-            'sample_id': sample_id,
-            'profile_id': profile_id,
-            'filename': filename,
-            'file_path': file_path,
-            'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-            'duration': None,  # TODO: compute from file
-            'metadata': metadata
-        }
+        duration = 0.0
+        if SOUNDFILE_AVAILABLE:
+            try:
+                duration = float(soundfile.info(file_path).duration)
+            except Exception:
+                duration = 0.0
 
-        if profile_id not in _profile_samples:
-            _profile_samples[profile_id] = {}
-        _profile_samples[profile_id][sample_id] = sample
+        store = _get_profile_store()
+        training_sample = store.add_training_sample(
+            profile_id=profile_id,
+            vocals_path=file_path,
+            source_file=metadata.get('source_file') or filename,
+            duration=duration,
+        )
+        if metadata:
+            sample_payload = _serialize_training_sample(profile_id, training_sample)
+            sample_payload['metadata'].update(metadata)
+        else:
+            sample_payload = _serialize_training_sample(profile_id, training_sample)
 
-        logger.info(f"Uploaded sample {sample_id} for profile {profile_id}")
-        return jsonify(sample), 201
+        logger.info(f"Uploaded sample {training_sample.sample_id} for profile {profile_id}")
+        return jsonify(sample_payload), 201
     except Exception as e:
         logger.error(f"Error uploading sample: {e}", exc_info=True)
         return error_response(str(e))
@@ -2396,6 +2283,7 @@ def add_sample_from_path(profile_id: str):
         skip_separation: If true, skip vocal separation (default: false)
     """
     try:
+        _ensure_profile_in_store(profile_id)
         data = request.get_json() or {}
         audio_path = data.get('audio_path')
         skip_separation = data.get('skip_separation', False)
@@ -2406,14 +2294,8 @@ def add_sample_from_path(profile_id: str):
         if not os.path.exists(audio_path):
             return not_found_response(f'File not found: {audio_path}')
 
-        # Generate sample ID
-        sample_id = str(uuid.uuid4())
         filename = os.path.basename(audio_path)
         base_name = os.path.splitext(filename)[0]
-
-        # Create upload directory if needed
-        upload_dir = os.path.join(UPLOAD_FOLDER, 'samples', profile_id)
-        os.makedirs(upload_dir, exist_ok=True)
 
         # Get metadata from request
         metadata = data.get('metadata', {})
@@ -2422,7 +2304,9 @@ def add_sample_from_path(profile_id: str):
 
         if skip_separation:
             # Skip vocal separation - just copy the file as-is
-            dest_path = os.path.join(upload_dir, f"{sample_id}_{filename}")
+            upload_dir = os.path.join(UPLOAD_FOLDER, 'incoming-samples', profile_id)
+            os.makedirs(upload_dir, exist_ok=True)
+            dest_path = os.path.join(upload_dir, f"{uuid.uuid4()}_{filename}")
             import shutil
             shutil.copy2(audio_path, dest_path)
             logger.info(f"Added sample without separation: {dest_path}")
@@ -2462,13 +2346,16 @@ def add_sample_from_path(profile_id: str):
             logger.info(f"Separation complete: vocals={vocals.shape}, instrumental={instrumental.shape}")
 
             # Save vocals as the training sample
-            vocals_filename = f"{sample_id}_{base_name}_vocals.wav"
+            upload_dir = os.path.join(UPLOAD_FOLDER, 'incoming-samples', profile_id)
+            os.makedirs(upload_dir, exist_ok=True)
+            sample_prefix = str(uuid.uuid4())
+            vocals_filename = f"{sample_prefix}_{base_name}_vocals.wav"
             dest_path = os.path.join(upload_dir, vocals_filename)
             soundfile.write(dest_path, vocals, sr)
             logger.info(f"Saved vocals to: {dest_path}")
 
             # Also save instrumental for reference
-            instrumental_filename = f"{sample_id}_{base_name}_instrumental.wav"
+            instrumental_filename = f"{sample_prefix}_{base_name}_instrumental.wav"
             instrumental_path = os.path.join(upload_dir, instrumental_filename)
             soundfile.write(instrumental_path, instrumental, sr)
             logger.info(f"Saved instrumental to: {instrumental_path}")
@@ -2487,22 +2374,19 @@ def add_sample_from_path(profile_id: str):
             except Exception as e:
                 logger.warning(f"Could not get duration: {e}")
 
-        sample = {
-            'sample_id': sample_id,
-            'profile_id': profile_id,
-            'filename': filename,
-            'file_path': dest_path,
-            'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-            'duration': duration,
-            'metadata': metadata
-        }
+        store = _get_profile_store()
+        training_sample = store.add_training_sample(
+            profile_id=profile_id,
+            vocals_path=dest_path,
+            instrumental_path=metadata.get('instrumental_path'),
+            source_file=metadata.get('original_path') or filename,
+            duration=duration or 0.0,
+        )
+        sample_payload = _serialize_training_sample(profile_id, training_sample)
+        sample_payload['metadata'].update(metadata)
 
-        if profile_id not in _profile_samples:
-            _profile_samples[profile_id] = {}
-        _profile_samples[profile_id][sample_id] = sample
-
-        logger.info(f"Added sample {sample_id} (vocals) from path for profile {profile_id}")
-        return jsonify(sample), 201
+        logger.info(f"Added sample {training_sample.sample_id} (vocals) from path for profile {profile_id}")
+        return jsonify(sample_payload), 201
     except Exception as e:
         logger.error(f"Error adding sample from path: {e}", exc_info=True)
         return error_response(str(e))
@@ -2660,27 +2544,35 @@ def get_separation_status(job_id: str):
 @api_bp.route('/profiles/<profile_id>/samples/<sample_id>', methods=['GET'])
 def get_sample(profile_id: str, sample_id: str):
     """Get details of a specific sample."""
+    sample = _find_training_sample(profile_id, sample_id)
+    if sample is not None:
+        return jsonify(_serialize_training_sample(profile_id, sample))
+
     samples = _profile_samples.get(profile_id, {})
-    sample = samples.get(sample_id)
-    if not sample:
+    fallback = samples.get(sample_id)
+    if fallback is None:
         return not_found_response('Sample not found')
-    return jsonify(sample)
+    return jsonify(fallback)
 
 
 @api_bp.route('/profiles/<profile_id>/samples/<sample_id>', methods=['DELETE'])
 def delete_sample(profile_id: str, sample_id: str):
     """Delete a sample."""
+    store = _get_profile_store()
+    if store.delete_training_sample(profile_id, sample_id):
+        logger.info(f"Deleted sample {sample_id} from profile {profile_id}")
+        return '', 204
+
     samples = _profile_samples.get(profile_id, {})
     sample = samples.get(sample_id)
-    if not sample:
+    if sample is None:
         return not_found_response('Sample not found')
 
-    # Delete file if exists
     if sample.get('file_path') and os.path.exists(sample['file_path']):
         os.remove(sample['file_path'])
 
     del _profile_samples[profile_id][sample_id]
-    logger.info(f"Deleted sample {sample_id} from profile {profile_id}")
+    logger.info(f"Deleted fallback sample {sample_id} from profile {profile_id}")
     return '', 204
 
 
@@ -2784,20 +2676,16 @@ def filter_sample(profile_id: str, sample_id: str):
     """
     try:
         from auto_voice.audio.training_filter import TrainingDataFilter
-        from auto_voice.storage.voice_profiles import VoiceProfileStore
-
-        # Get sample
-        samples = _profile_samples.get(profile_id, {})
-        sample = samples.get(sample_id)
-        if not sample:
+        sample = _find_training_sample(profile_id, sample_id)
+        if sample is None:
             return not_found_response('Sample not found')
 
-        audio_path = sample.get('file_path')
+        audio_path = sample.vocals_path
         if not audio_path or not os.path.exists(audio_path):
             return not_found_response('Sample audio file not found')
 
         # Get profile's speaker embedding
-        store = VoiceProfileStore()
+        store = _get_profile_store()
         embedding = store.load_speaker_embedding(profile_id)
 
         if embedding is None:
@@ -2816,9 +2704,6 @@ def filter_sample(profile_id: str, sample_id: str):
         )
 
         # Update sample with filtered path
-        sample['filtered_path'] = str(output_path)
-        sample['filter_metadata'] = metadata
-
         response = {
             'sample_id': sample_id,
             'original_path': audio_path,
@@ -2851,9 +2736,8 @@ def set_profile_speaker_embedding(profile_id: str):
     """
     try:
         from auto_voice.audio.speaker_diarization import SpeakerDiarizer
-        from auto_voice.storage.voice_profiles import VoiceProfileStore
 
-        store = VoiceProfileStore()
+        store = _get_profile_store()
         if not store.exists(profile_id):
             return not_found_response('Profile not found')
 
@@ -2898,9 +2782,7 @@ def set_profile_speaker_embedding(profile_id: str):
 def get_profile_speaker_embedding(profile_id: str):
     """Check if profile has a speaker embedding."""
     try:
-        from auto_voice.storage.voice_profiles import VoiceProfileStore
-
-        store = VoiceProfileStore()
+        store = _get_profile_store()
         if not store.exists(profile_id):
             return not_found_response('Profile not found')
 
@@ -2938,7 +2820,6 @@ def assign_diarization_segment():
     """
     try:
         from auto_voice.audio.speaker_diarization import SpeakerDiarizer
-        from auto_voice.storage.voice_profiles import VoiceProfileStore
 
         data = request.get_json()
         if not data:
@@ -2963,7 +2844,7 @@ def assign_diarization_segment():
         segment = segments[segment_index]
 
         # Verify profile exists
-        store = VoiceProfileStore()
+        store = _get_profile_store()
         if not store.exists(profile_id):
             return not_found_response('Profile not found')
 
@@ -3038,9 +2919,7 @@ def get_profile_segments(profile_id: str):
     Returns segments from diarization assignments and training samples.
     """
     try:
-        from auto_voice.storage.voice_profiles import VoiceProfileStore
-
-        store = VoiceProfileStore()
+        store = _get_profile_store()
         if not store.exists(profile_id):
             return not_found_response('Profile not found')
 
@@ -3100,7 +2979,6 @@ def auto_create_profile_from_diarization():
     """
     try:
         from auto_voice.audio.speaker_diarization import SpeakerDiarizer, DiarizationResult, SpeakerSegment
-        from auto_voice.storage.voice_profiles import VoiceProfileStore
         import numpy as np
 
         data = request.get_json()
@@ -3142,7 +3020,7 @@ def auto_create_profile_from_diarization():
         )
 
         # Create profile
-        store = VoiceProfileStore()
+        store = _get_profile_store()
         user_id = data.get('user_id', 'system')
 
         # Extract all segments as audio files if requested

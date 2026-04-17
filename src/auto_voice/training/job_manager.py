@@ -12,7 +12,6 @@ Task 4.2: Implement TrainingJobManager with job queue (GPU-only execution)
 
 import json
 import logging
-import os
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -21,6 +20,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import torch
+
+from auto_voice.storage.paths import (
+    resolve_checkpoints_dir,
+    resolve_profiles_dir,
+    resolve_samples_dir,
+    resolve_trained_models_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +69,8 @@ class TrainingConfig:
     - LoRA config: rank=8, alpha=16 (from federated LoRA research)
     - EWC lambda: 1000.0 (from EVCL paper)
     """
+
+    training_mode: str = "lora"
 
     # LoRA configuration
     lora_rank: int = 8
@@ -131,6 +139,24 @@ class TrainingJob:
     def update_progress(self, progress: int) -> None:
         """Update training progress (0-100)."""
         self.progress = max(0, min(100, progress))
+
+    def start(self, gpu_device: Optional[int] = None) -> None:
+        self.status = JobStatus.RUNNING.value
+        self.started_at = datetime.now()
+        if gpu_device is not None:
+            self.gpu_device = gpu_device
+
+    def complete(self, results: Optional[Dict[str, Any]] = None) -> None:
+        self.status = JobStatus.COMPLETED.value
+        self.completed_at = datetime.now()
+        self.progress = 100
+        if results is not None:
+            self.results = results
+
+    def fail(self, error: str) -> None:
+        self.status = JobStatus.FAILED.value
+        self.completed_at = datetime.now()
+        self.error = error
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict for persistence."""
@@ -227,6 +253,14 @@ class TrainingJobManager:
         self._socketio = socketio
         self._profiles_dir = profiles_dir
         self._samples_dir = samples_dir
+        if self._profiles_dir:
+            self._data_dir = Path(self._profiles_dir).parent
+        elif self._samples_dir:
+            self._data_dir = Path(self._samples_dir).parent
+        elif self.storage_path.name == "app_state":
+            self._data_dir = self.storage_path.parent
+        else:
+            self._data_dir = self.storage_path
         self._jobs: Dict[str, TrainingJob] = {}
         self._is_initialized = False
 
@@ -262,6 +296,18 @@ class TrainingJobManager:
     def _jobs_file_path(self) -> Path:
         """Path to jobs persistence file."""
         return self.storage_path / self.JOBS_FILENAME
+
+    def _resolve_profiles_dir(self) -> Path:
+        return resolve_profiles_dir(self._profiles_dir, data_dir=str(self._data_dir))
+
+    def _resolve_samples_dir(self) -> Path:
+        return resolve_samples_dir(self._samples_dir, data_dir=str(self._data_dir))
+
+    def _resolve_trained_models_dir(self) -> Path:
+        return resolve_trained_models_dir(data_dir=str(self._data_dir))
+
+    def _resolve_checkpoints_dir(self, profile_id: str) -> Path:
+        return resolve_checkpoints_dir(data_dir=str(self._data_dir)) / profile_id
 
     def _load_jobs(self) -> None:
         """Load jobs from persistence file."""
@@ -342,6 +388,13 @@ class TrainingJobManager:
             TrainingJob or None if not found
         """
         return self._jobs.get(job_id)
+
+    def list_jobs(self, profile_id: Optional[str] = None) -> List[TrainingJob]:
+        """List all jobs, optionally filtered by profile."""
+        jobs = list(self._jobs.values())
+        if profile_id:
+            jobs = [job for job in jobs if job.profile_id == profile_id]
+        return sorted(jobs, key=lambda job: job.created_at or datetime.min, reverse=True)
 
     def get_pending_jobs(self) -> List[TrainingJob]:
         """Get all pending jobs in FIFO order.
@@ -507,31 +560,36 @@ class TrainingJobManager:
 
     def _emit_started_event(self, job: TrainingJob) -> None:
         """Emit training.started event when job begins."""
-        self._emit_event('training.started', {
+        payload = {
             'job_id': job.job_id,
             'profile_id': job.profile_id,
             'sample_count': len(job.sample_ids),
             'config': job.config.to_dict() if job.config else {},
             'started_at': job.started_at.isoformat() if job.started_at else None,
-        })
+        }
+        self._emit_event('training.started', payload)
 
     def _emit_completed_event(self, job: TrainingJob) -> None:
         """Emit training.completed event when job finishes successfully."""
-        self._emit_event('training.completed', {
+        payload = {
             'job_id': job.job_id,
             'profile_id': job.profile_id,
             'results': job.results or {},
             'completed_at': job.completed_at.isoformat() if job.completed_at else None,
-        })
+        }
+        self._emit_event('training.completed', payload)
+        self._emit_event('training_complete', payload)
 
     def _emit_failed_event(self, job: TrainingJob) -> None:
         """Emit training.failed event when job fails."""
-        self._emit_event('training.failed', {
+        payload = {
             'job_id': job.job_id,
             'profile_id': job.profile_id,
             'error': job.error or 'Unknown error',
             'failed_at': job.completed_at.isoformat() if job.completed_at else None,
-        })
+        }
+        self._emit_event('training.failed', payload)
+        self._emit_event('training_error', payload)
 
     def emit_training_progress(
         self,
@@ -573,6 +631,16 @@ class TrainingJobManager:
             'learning_rate': learning_rate,
             'progress_percent': round(overall_progress, 1),
         })
+        self._emit_event('training_progress', {
+            'job_id': job_id,
+            'profile_id': job.profile_id,
+            'epoch': epoch,
+            'total_epochs': total_epochs,
+            'step': step,
+            'total_steps': total_steps,
+            'loss': loss,
+            'learning_rate': learning_rate,
+        })
 
         # Also update job progress
         job.update_progress(int(overall_progress))
@@ -587,7 +655,8 @@ class TrainingJobManager:
             RuntimeError: If CUDA is not available
             ValueError: If job not found or not in pending state
         """
-        # Enforce GPU requirement at execution time
+        # Training execution remains GPU-only; require_gpu=False only skips
+        # the constructor-time availability check so queue operations can run.
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "CUDA is required for training execution. "
@@ -603,34 +672,35 @@ class TrainingJobManager:
                 f"Job {job_id} is not in pending state (current: {job.status})"
             )
 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         # Mark job as running
-        job.start()
+        gpu_device = device.index if device.type == "cuda" else None
+        job.start(gpu_device=gpu_device)
         self._save_jobs()
         self._emit_started_event(job)
         logger.info(f"Starting training job {job_id}")
 
         try:
-            import threading
             import shutil
-            from auto_voice.storage.voice_profiles import VoiceProfileStore
+            import tempfile
+            import threading
 
             # Get sample audio paths
-            store = VoiceProfileStore()
+            store = self._get_profile_store()
             training_samples = store.list_training_samples(job.profile_id)
 
             if not training_samples:
                 raise ValueError(f"No training samples found for profile {job.profile_id}")
 
             # Create temporary training directory with audio files
-            train_dir = Path(f"/tmp/autovoice_training/{job_id}")
-            train_dir.mkdir(parents=True, exist_ok=True)
+            train_dir = Path(tempfile.mkdtemp(prefix=f"autovoice-training-{job_id}-"))
 
             sample_files = []
+            selected_sample_ids = set(job.sample_ids)
             for sample in training_samples:
-                if sample.sample_id in job.sample_ids or not job.sample_ids:
+                if sample.sample_id in selected_sample_ids or not selected_sample_ids:
                     src_path = Path(sample.vocals_path)
-                    if not src_path.is_absolute():
-                        src_path = Path("/home/kp/repo2/autovoice") / sample.vocals_path
                     if src_path.exists():
                         dst_path = train_dir / f"{sample.sample_id}.wav"
                         shutil.copy2(src_path, dst_path)
@@ -643,43 +713,70 @@ class TrainingJobManager:
             # Run training in background thread to not block
             def run_training():
                 try:
+                    from auto_voice.models.svc_decoder import CoMoSVCDecoder
                     from auto_voice.training.trainer import Trainer
 
-                    # Configure trainer
+                    training_mode = job.config.training_mode if job.config else "lora"
+                    if training_mode not in {"lora", "full"}:
+                        training_mode = "lora"
+
+                    default_epochs = 500 if training_mode == "full" else 100
+                    default_lr = 5e-5 if training_mode == "full" else 1e-4
+                    batch_size = job.config.batch_size if job.config else 4
+                    epochs = job.config.epochs if job.config else default_epochs
+                    learning_rate = job.config.learning_rate if job.config else default_lr
+
                     config = {
-                        'epochs': job.config.epochs if job.config else 100,
-                        'learning_rate': job.config.learning_rate if job.config else 1e-4,
-                        'batch_size': job.config.batch_size if job.config else 4,
-                        'checkpoint_dir': f"/home/kp/repo2/autovoice/data/checkpoints/{job.profile_id}",
+                        'epochs': epochs,
+                        'learning_rate': learning_rate,
+                        'batch_size': batch_size,
+                        'checkpoint_dir': str(self._resolve_checkpoints_dir(job.profile_id)),
                     }
 
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-                    trainer = Trainer(config=config, device=device)
-                    logger.info(f"Training on device: {device}")
+                    model = CoMoSVCDecoder(
+                        content_dim=768,
+                        pitch_dim=256,
+                        speaker_dim=256,
+                        n_mels=100,
+                        hidden_dim=512,
+                        n_layers=8,
+                        device=device,
+                    )
+
+                    if training_mode == "lora":
+                        lora_rank = job.config.lora_rank if job.config else 8
+                        lora_alpha = job.config.lora_alpha if job.config else 16
+                        lora_dropout = job.config.lora_dropout if job.config else 0.1
+                        model.inject_lora(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
+
+                    trainer = Trainer(model=model, config=config, device=device)
+                    logger.info(
+                        "Training job %s on %s in %s mode",
+                        job_id,
+                        device,
+                        training_mode,
+                    )
 
                     # Monkey-patch to emit progress events
                     original_train_epoch = trainer._train_epoch
                     def patched_train_epoch(loader, epoch):
                         loss = original_train_epoch(loader, epoch)
-                        progress = int(100 * (epoch + 1) / config['epochs'])
+                        progress = int(100 * (epoch + 1) / max(config['epochs'], 1))
                         job.update_progress(progress)
                         job.results = job.results or {}
                         job.results['current_loss'] = loss
-                        job.results['current_epoch'] = epoch
+                        job.results['current_epoch'] = epoch + 1
+                        job.results['job_type'] = training_mode
                         self._save_jobs()
-
-                        # Emit WebSocket event
-                        if self._socketio:
-                            self._socketio.emit('training_progress', {
-                                'job_id': job_id,
-                                'profile_id': job.profile_id,
-                                'epoch': epoch + 1,
-                                'total_epochs': config['epochs'],
-                                'step': epoch + 1,
-                                'total_steps': config['epochs'],
-                                'loss': loss,
-                                'learning_rate': config['learning_rate'],
-                            })
+                        self.emit_training_progress(
+                            job_id=job_id,
+                            epoch=epoch + 1,
+                            total_epochs=config['epochs'],
+                            step=epoch + 1,
+                            total_steps=config['epochs'],
+                            loss=loss,
+                            learning_rate=config['learning_rate'],
+                        )
                         return loss
 
                     trainer._train_epoch = patched_train_epoch
@@ -704,12 +801,19 @@ class TrainingJobManager:
                         'best_loss': trainer.best_loss,
                         'epochs_completed': config['epochs'],
                         'checkpoint_path': str(trainer.checkpoint_dir / 'final.pth'),
+                        'job_type': training_mode,
                         'adapter_path': adapter_saved.get('adapter_path') if adapter_saved else None,
                         'embedding_path': adapter_saved.get('embedding_path') if adapter_saved else None,
+                        'artifact_type': adapter_saved.get('artifact_type') if adapter_saved else None,
                     }
 
                     # Mark as completed
                     job.complete(results)
+                    self._update_profile_training_state(
+                        profile_id=job.profile_id,
+                        results=results,
+                        sample_count=len(sample_files),
+                    )
                     self._save_jobs()
 
                     # Task 3.3: Emit training_complete event with profile_id
@@ -722,8 +826,11 @@ class TrainingJobManager:
                 except Exception as e:
                     logger.error(f"Training job {job_id} failed: {e}", exc_info=True)
                     job.fail(str(e))
+                    self._mark_profile_training_failed(job.profile_id, str(e))
                     self._save_jobs()
                     self._emit_failed_event(job)
+                finally:
+                    shutil.rmtree(train_dir, ignore_errors=True)
 
             # Start training in background
             training_thread = threading.Thread(target=run_training, daemon=True)
@@ -762,9 +869,10 @@ class TrainingJobManager:
         from auto_voice.models.adapter_manager import AdapterManager, AdapterManagerConfig
 
         try:
-            # Task 3.4: Save adapter to data/trained_models/
-            trained_models_dir = Path("/home/kp/repo2/autovoice/data/trained_models")
+            trained_models_dir = self._resolve_trained_models_dir()
+            profiles_dir = self._resolve_profiles_dir()
             trained_models_dir.mkdir(parents=True, exist_ok=True)
+            profiles_dir.mkdir(parents=True, exist_ok=True)
 
             # Check if model has LoRA injected
             has_lora = getattr(trainer.model, '_lora_injected', False)
@@ -790,13 +898,14 @@ class TrainingJobManager:
                     logger.warning(f"Normalizing speaker embedding (norm={norm:.4f})")
                     embedding_np = embedding_np / norm
 
-                embedding_path = trained_models_dir / f"{profile_id}_embedding.npy"
+                embedding_path = profiles_dir / f"{profile_id}.npy"
                 np.save(embedding_path, embedding_np)
                 logger.info(f"Saved speaker embedding: {embedding_path}")
 
                 return {
                     'adapter_path': str(full_checkpoint_path),
                     'embedding_path': str(embedding_path),
+                    'artifact_type': 'full_model',
                 }
 
             # Task 3.1: Extract LoRA adapter weights
@@ -825,25 +934,17 @@ class TrainingJobManager:
                 logger.warning(f"Normalizing speaker embedding (norm={norm:.4f})")
                 embedding_np = embedding_np / norm
 
-            embedding_path = trained_models_dir / f"{profile_id}_embedding.npy"
+            embedding_path = profiles_dir / f"{profile_id}.npy"
             np.save(embedding_path, embedding_np)
             logger.info(f"Saved speaker embedding: {embedding_path}")
-
-            # Also save embedding to voice_profiles directory for pipeline compatibility
-            import shutil
-            profiles_dir = Path("/home/kp/repo2/autovoice/data/voice_profiles")
-            profiles_dir.mkdir(parents=True, exist_ok=True)
-            profile_embedding_path = profiles_dir / f"{profile_id}.npy"
-            shutil.copy2(embedding_path, profile_embedding_path)
-            logger.info(f"Copied embedding to profiles: {profile_embedding_path}")
 
             # Task 3.2: Post-training validation
             logger.info(f"Validating saved adapter for profile {profile_id}")
 
             # Use AdapterManager to validate the saved adapter can be loaded
             adapter_manager = AdapterManager(AdapterManagerConfig(
-                adapters_dir=str(trained_models_dir),
-                profiles_dir="/home/kp/repo2/autovoice/data/voice_profiles",
+                adapters_dir=trained_models_dir,
+                profiles_dir=profiles_dir,
             ))
 
             # Try loading the adapter to verify it's valid
@@ -873,11 +974,46 @@ class TrainingJobManager:
             return {
                 'adapter_path': str(adapter_path),
                 'embedding_path': str(embedding_path),
+                'artifact_type': 'adapter',
             }
 
         except Exception as e:
             logger.error(f"Failed to save trained adapter for {profile_id}: {e}", exc_info=True)
             raise RuntimeError(f"Adapter save failed: {e}") from e
+
+    def _update_profile_training_state(
+        self,
+        profile_id: str,
+        results: Dict[str, Any],
+        sample_count: int,
+    ) -> None:
+        """Persist successful training metadata into the canonical profile manifest."""
+        store = self._get_profile_store()
+        profile = store.load(profile_id)
+        profile['training_status'] = 'ready'
+        profile['has_trained_model'] = True
+        profile['last_trained_at'] = datetime.now().isoformat()
+        profile['model_version'] = profile.get('model_version') or '1.0'
+        profile['model_path'] = results.get('adapter_path')
+        profile['training_epochs'] = results.get('epochs_completed')
+        profile['loss_final'] = results.get('final_loss')
+        profile['sample_count'] = sample_count
+        if results.get('artifact_type') == 'adapter':
+            profile['selected_adapter'] = profile.get('selected_adapter') or 'unified'
+        profile.pop('embedding', None)
+        store.save(profile)
+
+    def _mark_profile_training_failed(self, profile_id: str, error: str) -> None:
+        """Persist failed training state without deleting prior artifacts."""
+        try:
+            store = self._get_profile_store()
+            profile = store.load(profile_id)
+            profile['training_status'] = 'failed'
+            profile['last_training_error'] = error
+            profile.pop('embedding', None)
+            store.save(profile)
+        except Exception as exc:
+            logger.warning(f"Failed to persist training failure for {profile_id}: {exc}")
 
     def _mark_job_completed(self, job_id: str, results: Optional[Dict[str, Any]] = None) -> None:
         """Mark a job as completed (internal method for testing).
@@ -953,12 +1089,10 @@ class TrainingJobManager:
         """Get VoiceProfileStore with configured paths."""
         from auto_voice.storage.voice_profiles import VoiceProfileStore
 
-        if self._profiles_dir and self._samples_dir:
-            return VoiceProfileStore(
-                profiles_dir=self._profiles_dir,
-                samples_dir=self._samples_dir,
-            )
-        return VoiceProfileStore()
+        return VoiceProfileStore(
+            profiles_dir=str(self._resolve_profiles_dir()),
+            samples_dir=str(self._resolve_samples_dir()),
+        )
 
     def check_needs_training(
         self,
@@ -1003,11 +1137,9 @@ class TrainingJobManager:
         sample_count = len(samples)
 
         # Check if adapter exists
-        from pathlib import Path as PathLib
-
         adapter_manager = AdapterManager(AdapterManagerConfig(
-            adapters_dir=PathLib("data/trained_models"),
-            profiles_dir=PathLib("data/voice_profiles"),
+            adapters_dir=self._resolve_trained_models_dir(),
+            profiles_dir=self._resolve_profiles_dir(),
         ))
 
         try:
@@ -1330,8 +1462,7 @@ class TrainingJobManager:
         sample_count = len(samples)
 
         # Check current adapter type
-        from pathlib import Path as PathLib
-        trained_models_dir = PathLib("data/trained_models")
+        trained_models_dir = self._resolve_trained_models_dir()
 
         current_adapter_type = "none"
         if (trained_models_dir / f"{profile_id}_full_model.pt").exists():

@@ -21,6 +21,8 @@ import json
 import torch
 import torch.nn as nn
 
+from auto_voice.storage.paths import resolve_profiles_dir, resolve_trained_models_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,10 +45,10 @@ class AdapterInfo:
 @dataclass
 class AdapterManagerConfig:
     """Configuration for AdapterManager."""
-    adapters_dir: Path = Path("data/trained_models")
-    profiles_dir: Path = Path("data/voice_profiles")
+    adapters_dir: Path = field(default_factory=lambda: resolve_trained_models_dir())
+    profiles_dir: Path = field(default_factory=lambda: resolve_profiles_dir())
     cache_size: int = 5  # Number of adapters to keep in memory
-    device: str = "cuda"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
     auto_validate: bool = True
 
 

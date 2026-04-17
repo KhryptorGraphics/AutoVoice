@@ -4,16 +4,21 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 import numpy as np
 import torch
 
+from .paths import (
+    resolve_profiles_dir,
+    resolve_samples_dir,
+    resolve_trained_models_dir,
+)
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROFILES_DIR = 'data/voice_profiles'
-DEFAULT_SAMPLES_DIR = 'data/samples'
+DEFAULT_PROFILES_DIR = None
+DEFAULT_SAMPLES_DIR = None
 
 
 class ProfileNotFoundError(Exception):
@@ -52,12 +57,17 @@ class TrainingSample:
 class VoiceProfileStore:
     """File-based voice profile storage with progressive training sample support."""
 
-    def __init__(self, profiles_dir: str = DEFAULT_PROFILES_DIR,
-                 samples_dir: str = DEFAULT_SAMPLES_DIR):
-        self.profiles_dir = profiles_dir
-        self.samples_dir = samples_dir
-        os.makedirs(profiles_dir, exist_ok=True)
-        os.makedirs(samples_dir, exist_ok=True)
+    def __init__(
+        self,
+        profiles_dir: Optional[str] = DEFAULT_PROFILES_DIR,
+        samples_dir: Optional[str] = DEFAULT_SAMPLES_DIR,
+    ):
+        self.profiles_dir = str(resolve_profiles_dir(profiles_dir))
+        self.samples_dir = str(resolve_samples_dir(samples_dir))
+        self.trained_models_dir = str(resolve_trained_models_dir())
+        os.makedirs(self.profiles_dir, exist_ok=True)
+        os.makedirs(self.samples_dir, exist_ok=True)
+        os.makedirs(self.trained_models_dir, exist_ok=True)
 
     def _profile_path(self, profile_id: str) -> str:
         return os.path.join(self.profiles_dir, f"{profile_id}.json")
@@ -140,8 +150,16 @@ class VoiceProfileStore:
         return os.path.exists(self._profile_path(profile_id))
 
     def _lora_weights_path(self, profile_id: str) -> str:
-        """Get path to LoRA weights file for a profile."""
+        """Get path to the canonical adapter file for a profile."""
+        return os.path.join(self.trained_models_dir, f"{profile_id}_adapter.pt")
+
+    def _legacy_lora_weights_path(self, profile_id: str) -> str:
+        """Get the legacy in-profile-dir adapter path kept for backward compatibility."""
         return os.path.join(self.profiles_dir, f"{profile_id}_lora_weights.pt")
+
+    def _full_model_path(self, profile_id: str) -> str:
+        """Get path to a full model checkpoint for a profile."""
+        return os.path.join(self.trained_models_dir, f"{profile_id}_full_model.pt")
 
     def save_lora_weights(
         self, profile_id: str, state_dict: Dict[str, torch.Tensor]
@@ -158,9 +176,11 @@ class VoiceProfileStore:
         if not self.exists(profile_id):
             raise ValueError(f"Profile {profile_id} not found")
 
-        weights_path = self._lora_weights_path(profile_id)
-        torch.save(state_dict, weights_path)
-        logger.info(f"Saved LoRA weights for profile {profile_id}")
+        canonical_path = self._lora_weights_path(profile_id)
+        legacy_path = self._legacy_lora_weights_path(profile_id)
+        torch.save(state_dict, canonical_path)
+        torch.save(state_dict, legacy_path)
+        logger.info(f"Saved LoRA weights for profile {profile_id} at {canonical_path}")
 
     def load_lora_weights(self, profile_id: str) -> Dict[str, torch.Tensor]:
         """Load LoRA adapter weights for a voice profile.
@@ -180,6 +200,8 @@ class VoiceProfileStore:
 
         weights_path = self._lora_weights_path(profile_id)
         if not os.path.exists(weights_path):
+            weights_path = self._legacy_lora_weights_path(profile_id)
+        if not os.path.exists(weights_path):
             raise FileNotFoundError(f"No LoRA weights saved for profile {profile_id}")
 
         return torch.load(weights_path, map_location="cpu")
@@ -195,7 +217,14 @@ class VoiceProfileStore:
         """
         if not self.exists(profile_id):
             return False
-        return os.path.exists(self._lora_weights_path(profile_id))
+        return any(
+            os.path.exists(path)
+            for path in (
+                self._lora_weights_path(profile_id),
+                self._legacy_lora_weights_path(profile_id),
+                self._full_model_path(profile_id),
+            )
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Progressive Training Sample Management

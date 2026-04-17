@@ -12,6 +12,7 @@ from flask_socketio import SocketIO
 
 from auto_voice.config.secrets import SecretsManager
 from auto_voice.web.persistence import AppStateStore
+from auto_voice.storage.paths import resolve_profiles_dir, resolve_samples_dir
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,11 @@ def _init_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
     if not config or config.get('voice_cloning_enabled', True):
         try:
             from ..inference.voice_cloner import VoiceCloner
-            voice_cloner = VoiceCloner(device=device)
+            voice_cloner = VoiceCloner(
+                device=device,
+                profiles_dir=str(resolve_profiles_dir(data_dir=app.config['DATA_DIR'])),
+                samples_dir=str(resolve_samples_dir(data_dir=app.config['DATA_DIR'])),
+            )
             app.voice_cloner = voice_cloner
             logger.info(f"Voice cloner initialized on {device}")
         except Exception as e:

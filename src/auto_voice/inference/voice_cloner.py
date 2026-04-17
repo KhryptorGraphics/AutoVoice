@@ -61,8 +61,13 @@ def _get_vocal_separator(device):
 class VoiceCloner:
     """Creates and manages voice profiles using speaker embeddings."""
 
-    def __init__(self, device=None, profiles_dir: str = 'data/voice_profiles',
-                 auto_separate_vocals: bool = True):
+    def __init__(
+        self,
+        device=None,
+        profiles_dir: str = 'data/voice_profiles',
+        samples_dir: str = 'data/samples',
+        auto_separate_vocals: bool = True,
+    ):
         """Initialize voice cloner with storage and processing settings.
 
         Args:
@@ -72,7 +77,7 @@ class VoiceCloner:
         """
         import torch
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.store = VoiceProfileStore(profiles_dir)
+        self.store = VoiceProfileStore(profiles_dir=profiles_dir, samples_dir=samples_dir)
         self._sample_rate = 16000
         self._min_duration = 3.0  # seconds
         self._auto_separate_vocals = auto_separate_vocals
