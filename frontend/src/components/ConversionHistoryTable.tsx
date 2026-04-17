@@ -22,9 +22,11 @@ type SortDirection = 'asc' | 'desc'
 const statusConfig: Record<ConversionRecord['status'], { icon: typeof CheckCircle; color: string; label: string }> = {
   queued: { icon: Clock, color: 'text-yellow-400', label: 'Queued' },
   processing: { icon: Loader2, color: 'text-blue-400', label: 'Processing' },
+  in_progress: { icon: Loader2, color: 'text-blue-400', label: 'Processing' },
   complete: { icon: CheckCircle, color: 'text-green-400', label: 'Complete' },
   completed: { icon: CheckCircle, color: 'text-green-400', label: 'Complete' },
   error: { icon: AlertCircle, color: 'text-red-400', label: 'Failed' },
+  failed: { icon: AlertCircle, color: 'text-red-400', label: 'Failed' },
   cancelled: { icon: AlertCircle, color: 'text-gray-400', label: 'Cancelled' },
 }
 

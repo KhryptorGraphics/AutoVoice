@@ -272,6 +272,8 @@ export function KaraokePage() {
         profileId: selectedProfileId || undefined,
         adapterType: selectedAdapter || undefined,
         collectSamples: collectTrainingSamples,
+        vocalsPath: separationJob?.vocals_path,
+        instrumentalPath: separationJob?.instrumental_path,
       });
       await client.startStreaming();
       setStage('performing');

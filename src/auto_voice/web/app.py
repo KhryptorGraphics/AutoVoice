@@ -1,14 +1,17 @@
 """Flask application factory for AutoVoice."""
 import logging
-import time
-import threading
+import os
 import secrets
+import tempfile
+import threading
+import time
 from typing import Optional, Dict, Any, Tuple
 
 from flask import Flask, request, g
 from flask_socketio import SocketIO
 
 from auto_voice.config.secrets import SecretsManager
+from auto_voice.web.persistence import AppStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +29,19 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
         Tuple of (Flask app, SocketIO instance)
     """
     app = Flask(__name__)
+    app.start_time = time.time()
 
     # Apply user config first so we can check TESTING flag
     if config:
         app.config.update(config)
+
+    if 'DATA_DIR' not in app.config:
+        if os.environ.get('DATA_DIR'):
+            app.config['DATA_DIR'] = os.environ['DATA_DIR']
+        elif app.config.get('TESTING') or testing is True:
+            app.config['DATA_DIR'] = tempfile.mkdtemp(prefix='autovoice-test-data-')
+        else:
+            app.config['DATA_DIR'] = 'data'
 
     # Determine testing mode for SECRET_KEY:
     # - If testing parameter explicitly set, use it (for SECRET_KEY behavior)
@@ -57,12 +69,15 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
         if app.config.get('SECRET_KEY'):
             # Config already has SECRET_KEY (e.g., from YAML or test), keep it
             pass
+        elif os.environ.get('SECRET_KEY'):
+            app.config['SECRET_KEY'] = os.environ['SECRET_KEY']
         else:
             # Require secret from environment or secrets file
             app.config['SECRET_KEY'] = secrets_manager.get_required('flask_secret_key')
 
     # Store app-level config for API access
     app.app_config = config if config else {}
+    app.state_store = AppStateStore(app.config['DATA_DIR'])
 
     # Request tracking for graceful shutdown
     app._active_requests = 0
@@ -131,7 +146,7 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
     app.socketio = socketio
 
     # Register API blueprints
-    from .api import api_bp
+    from .api import api_bp, health_check as api_health_check, readiness_check as api_readiness_check
     from .karaoke_api import karaoke_bp
     from .speaker_api import speaker_bp
     from auto_voice.profiles.api import profiles_bp
@@ -142,6 +157,8 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
     app.register_blueprint(profiles_bp)
     app.register_blueprint(docs_bp, url_prefix='/api/v1')
     app.register_blueprint(swagger_ui_blueprint)
+    app.add_url_rule('/health', 'health_check_alias', api_health_check)
+    app.add_url_rule('/ready', 'readiness_check_alias', api_readiness_check)
 
     # Register WebSocket namespaces
     from .karaoke_events import register_karaoke_namespace
@@ -222,7 +239,8 @@ def _init_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
                 config=jm_config,
                 socketio=socketio,
                 singing_pipeline=singing_pipeline,
-                voice_profile_manager=voice_cloner
+                voice_profile_manager=voice_cloner,
+                state_store=app.state_store,
             )
             app.job_manager = job_manager
             job_manager.start_cleanup_thread()

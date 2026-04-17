@@ -45,7 +45,7 @@ export class AudioStreamingClient {
     }
 
     return new Promise((resolve, reject) => {
-      this.socket = io(this.serverUrl, {
+      this.socket = io(`${this.serverUrl}/karaoke`, {
         path: '/socket.io',
         transports: ['websocket'],
       });
@@ -54,6 +54,10 @@ export class AudioStreamingClient {
         console.log('WebSocket connected');
         this.emitEvent('connected', null);
         resolve();
+      });
+
+      this.socket.on('connected', () => {
+        this.emitEvent('connected', null);
       });
 
       this.socket.on('connect_error', (error) => {
@@ -68,7 +72,7 @@ export class AudioStreamingClient {
       });
 
       // Handle converted audio from server
-      this.socket.on('audio_output', (data: { audio: ArrayBuffer; latency_ms: number }) => {
+      this.socket.on('converted_audio', (data: { audio: string; latency_ms: number }) => {
         this.latencyMs = data.latency_ms;
         this.chunksProcessed++;
         this.playAudio(data.audio);
@@ -87,7 +91,7 @@ export class AudioStreamingClient {
         this.emitEvent('session_started', data);
       });
 
-      this.socket.on('session_ended', () => {
+      this.socket.on('session_stopped', () => {
         this.sessionId = null;
         this.emitEvent('session_ended', null);
       });
@@ -121,32 +125,53 @@ export class AudioStreamingClient {
       profileId?: string;
       adapterType?: 'hq' | 'nvfp4';
       collectSamples?: boolean;
+      vocalsPath?: string;
+      instrumentalPath?: string;
     }
   ): Promise<{ session_id: string }> {
     if (!this.socket?.connected) {
       throw new Error('Not connected to server');
     }
 
+    const sessionId = globalThis.crypto?.randomUUID?.() ?? `karaoke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
     return new Promise((resolve, reject) => {
-      this.socket!.emit(
-        'start_session',
-        {
-          song_id: songId,
-          voice_model_id: voiceModelId,
-          pipeline_type: pipelineType,
-          profile_id: options?.profileId,
-          adapter_type: options?.adapterType,
-          collect_samples: options?.collectSamples ?? false,
-        },
-        (response: { session_id?: string; error?: string }) => {
-          if (response.error) {
-            reject(new Error(response.error));
-          } else {
-            this.sessionId = response.session_id!;
-            resolve({ session_id: this.sessionId });
-          }
-        }
-      );
+      const handleStarted = (data: { session_id: string }) => {
+        if (data.session_id !== sessionId) return;
+        cleanup();
+        this.sessionId = data.session_id;
+        resolve({ session_id: data.session_id });
+      };
+
+      const handleError = (error: { message?: string }) => {
+        cleanup();
+        reject(new Error(error.message || 'Failed to start session'));
+      };
+
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('Timed out waiting for karaoke session to start'));
+      }, 10000);
+
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        this.socket?.off('session_started', handleStarted);
+        this.socket?.off('error', handleError);
+      };
+
+      this.socket!.on('session_started', handleStarted);
+      this.socket!.on('error', handleError);
+      this.socket!.emit('start_session', {
+        session_id: sessionId,
+        song_id: songId,
+        voice_model_id: voiceModelId,
+        pipeline_type: pipelineType,
+        profile_id: options?.profileId,
+        adapter_type: options?.adapterType,
+        collect_samples: options?.collectSamples ?? false,
+        vocals_path: options?.vocalsPath,
+        instrumental_path: options?.instrumentalPath,
+      });
     });
   }
 
@@ -159,13 +184,9 @@ export class AudioStreamingClient {
     }
 
     this.stopStreaming();
-
-    return new Promise((resolve) => {
-      this.socket!.emit('end_session', { session_id: this.sessionId }, () => {
-        this.sessionId = null;
-        resolve();
-      });
-    });
+    const sessionId = this.sessionId;
+    this.socket!.emit('stop_session', { session_id: sessionId });
+    this.sessionId = null;
   }
 
   /**
@@ -213,10 +234,10 @@ export class AudioStreamingClient {
       const audioBuffer = new Float32Array(inputData);
 
       // Send audio to server
-      this.socket!.emit('audio_input', {
+      this.socket!.emit('audio_chunk', {
         session_id: this.sessionId,
-        audio: audioBuffer.buffer,
-        sample_rate: this.sampleRate,
+        audio: this.encodeFloat32ToBase64(audioBuffer),
+        timestamp: Date.now(),
       });
 
       this.emitEvent('audio_sent', { samples: audioBuffer.length });
@@ -256,13 +277,13 @@ export class AudioStreamingClient {
   /**
    * Play received audio.
    */
-  private async playAudio(audioBuffer: ArrayBuffer): Promise<void> {
+  private async playAudio(audioBase64: string): Promise<void> {
     if (!this.audioContext) {
       this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
     }
 
     try {
-      const floatArray = new Float32Array(audioBuffer);
+      const floatArray = this.decodeBase64ToFloat32(audioBase64);
       const buffer = this.audioContext.createBuffer(
         1,
         floatArray.length,
@@ -293,6 +314,25 @@ export class AudioStreamingClient {
     if (this.eventCallback) {
       this.eventCallback(event, data);
     }
+  }
+
+  private encodeFloat32ToBase64(audioBuffer: Float32Array): string {
+    const bytes = new Uint8Array(audioBuffer.buffer.slice(0));
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      const chunk = bytes.subarray(i, i + 0x8000);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  }
+
+  private decodeBase64ToFloat32(audioBase64: string): Float32Array {
+    const binary = atob(audioBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new Float32Array(bytes.buffer);
   }
 
   /**

@@ -21,7 +21,7 @@ import clsx from 'clsx'
 // Extended conversion status from backend
 export interface ConversionStatus {
   job_id: string
-  status: 'queued' | 'processing' | 'completed' | 'error' | 'cancelled'
+  status: 'queued' | 'processing' | 'in_progress' | 'completed' | 'failed' | 'error' | 'cancelled'
   progress: number
   stage?: ConversionStage
   message?: string
@@ -105,17 +105,22 @@ export function ConversionProgress({
   const fetchStatus = useCallback(async () => {
     try {
       const data = await apiService.getConversionStatus(jobId) as unknown as ConversionStatus
+      const normalizedStatus =
+        data.status === 'in_progress' ? 'processing' :
+        data.status === 'failed' ? 'error' :
+        data.status
       setStatus(prev => ({
         ...prev,
         ...data,
+        status: normalizedStatus,
         pipeline_type: data.pipeline_type || pipelineType,
         adapter_type: data.adapter_type || adapterType,
       }))
 
-      if (data.status === 'completed') {
+      if (normalizedStatus === 'completed') {
         setIsPolling(false)
-        onComplete?.(data)
-      } else if (data.status === 'error') {
+        onComplete?.({ ...data, status: normalizedStatus })
+      } else if (normalizedStatus === 'error') {
         setIsPolling(false)
         onError?.(data.error || 'Conversion failed')
       }

@@ -14,14 +14,14 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-
-    env_file:
-      - .env
-    environment:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - SECRET_KEY=${SECRET_KEY:-autovoice-dev-key}
       - CUDA_VISIBLE_DEVICES=0
       - MAX_WORKERS=${MAX_WORKERS:-4}
+      - DATA_DIR=/app/data
+
+    env_file:
+      - .env
 
     ports:
       - "${HOST_PORT:-10001}:5000"

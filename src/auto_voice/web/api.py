@@ -143,6 +143,17 @@ def get_param(data, form_key, settings_key, default, validator=None, type_hint=N
         raise ValueError(f'Invalid {form_key}: {e}')
 
 
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def _get_state_store():
+    state_store = getattr(current_app, 'state_store', None)
+    if state_store is None:
+        raise RuntimeError('Application state store unavailable')
+    return state_store
+
+
 @api_bp.route('/convert/song', methods=['POST'])
 def convert_song():
     """Convert singing voice in song using singing conversion pipeline.
@@ -1434,6 +1445,7 @@ def health_check():
         'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'components': components,
         'cuda_kernels_available': cuda_kernels,
+        'uptime': max(0.0, time.time() - getattr(current_app, 'start_time', time.time())),
         'version': '0.1.0'
     })
 
@@ -1991,17 +2003,19 @@ def _sanitize_job(job: dict) -> dict:
     return sanitized
 
 
+def _save_training_job(job: dict) -> dict:
+    """Persist a training job to the durable state store."""
+    sanitized = _sanitize_job(job)
+    _get_state_store().save_training_job(sanitized)
+    return sanitized
+
+
 @api_bp.route('/training/jobs', methods=['GET'])
 def list_training_jobs():
     """List all training jobs, optionally filtered by profile."""
     try:
         profile_id = request.args.get('profile_id')
-        jobs = list(_training_jobs.values())
-        if profile_id:
-            jobs = [j for j in jobs if j.get('profile_id') == profile_id]
-        # Sort by created_at descending
-        jobs.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-        # Sanitize for valid JSON
+        jobs = _get_state_store().list_training_jobs(profile_id)
         jobs = [_sanitize_job(j) for j in jobs]
         return jsonify(jobs)
     except Exception as e:
@@ -2029,7 +2043,7 @@ def create_training_job():
             'job_id': job_id,
             'profile_id': profile_id,
             'status': 'pending',
-            'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'created_at': _utcnow_iso(),
             'started_at': None,
             'completed_at': None,
             'progress': 0,
@@ -2039,6 +2053,7 @@ def create_training_job():
             'results': None
         }
         _training_jobs[job_id] = job
+        _save_training_job(job)
         logger.info(f"Created training job {job_id} for profile {profile_id}")
 
         # Start training in background
@@ -2056,7 +2071,8 @@ def create_training_job():
 
                     # Update status to running
                     job['status'] = 'running'
-                    job['started_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                    job['started_at'] = _utcnow_iso()
+                    _save_training_job(job)
 
                     # Get sample audio paths
                     store = VoiceProfileStore()
@@ -2074,7 +2090,7 @@ def create_training_job():
                         if sample.sample_id in sample_ids or not sample_ids:
                             src_path = Path(sample.vocals_path)
                             if not src_path.is_absolute():
-                                src_path = Path("/home/kp/repo2/autovoice") / sample.vocals_path
+                                src_path = Path.cwd() / sample.vocals_path
                             if src_path.exists():
                                 dst_path = train_dir / f"{sample.sample_id}.wav"
                                 shutil.copy2(src_path, dst_path)
@@ -2106,7 +2122,7 @@ def create_training_job():
                         'epochs': epochs,
                         'learning_rate': learning_rate,
                         'batch_size': batch_size,
-                        'checkpoint_dir': f"/home/kp/repo2/autovoice/data/checkpoints/{profile_id}",
+                        'checkpoint_dir': str(Path(app.config.get('DATA_DIR', 'data')) / 'checkpoints' / profile_id),
                     }
 
                     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -2152,6 +2168,7 @@ def create_training_job():
                         job['results'] = job.get('results') or {}
                         job['results']['current_loss'] = loss
                         job['results']['current_epoch'] = epoch + 1
+                        _save_training_job(job)
 
                         # Emit WebSocket event (socketio from outer scope)
                         try:
@@ -2179,7 +2196,7 @@ def create_training_job():
 
                     # Update job as completed
                     job['status'] = 'completed'
-                    job['completed_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                    job['completed_at'] = _utcnow_iso()
                     job['progress'] = 100
                     # Convert Infinity to None for valid JSON
                     best_loss = trainer.best_loss if trainer.best_loss != float('inf') else None
@@ -2189,6 +2206,7 @@ def create_training_job():
                         'epochs_completed': epochs,
                         'checkpoint_path': str(trainer.checkpoint_dir / 'final.pth'),
                     }
+                    _save_training_job(job)
 
                     # Emit completion event
                     try:
@@ -2211,7 +2229,10 @@ def create_training_job():
             except Exception as e:
                 logger.error(f"Training job {job_id} failed: {e}", exc_info=True)
                 job['status'] = 'failed'
+                job['completed_at'] = _utcnow_iso()
                 job['error'] = str(e)
+                with app.app_context():
+                    _save_training_job(job)
 
                 # Emit error event
                 try:
@@ -2240,7 +2261,7 @@ def create_training_job():
 @api_bp.route('/training/jobs/<job_id>', methods=['GET'])
 def get_training_job(job_id: str):
     """Get details of a specific training job."""
-    job = _training_jobs.get(job_id)
+    job = _get_state_store().get_training_job(job_id)
     if not job:
         return not_found_response('Training job not found')
     return jsonify(_sanitize_job(job))
@@ -2249,13 +2270,15 @@ def get_training_job(job_id: str):
 @api_bp.route('/training/jobs/<job_id>/cancel', methods=['POST'])
 def cancel_training_job(job_id: str):
     """Cancel a training job."""
-    job = _training_jobs.get(job_id)
+    job = _get_state_store().get_training_job(job_id)
     if not job:
         return not_found_response('Training job not found')
     if job['status'] in ('completed', 'failed', 'cancelled'):
         return validation_error_response(f"Cannot cancel job in {job['status']} state")
     job['status'] = 'cancelled'
-    job['completed_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    job['completed_at'] = _utcnow_iso()
+    _training_jobs[job_id] = job
+    _save_training_job(job)
     logger.info(f"Cancelled training job {job_id}")
     return jsonify(job)
 
@@ -3188,7 +3211,7 @@ _presets: Dict[str, Dict[str, Any]] = {}
 @api_bp.route('/presets', methods=['GET'])
 def list_presets():
     """List all user presets."""
-    return jsonify(list(_presets.values()))
+    return jsonify(_get_state_store().list_presets())
 
 
 @api_bp.route('/presets', methods=['POST'])
@@ -3208,10 +3231,11 @@ def create_preset():
             'id': preset_id,
             'name': name,
             'config': data.get('config', {}),
-            'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-            'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            'created_at': _utcnow_iso(),
+            'updated_at': _utcnow_iso()
         }
         _presets[preset_id] = preset
+        _get_state_store().save_preset(preset)
         logger.info(f"Created preset {preset_id}: {name}")
         return jsonify(preset), 201
     except Exception as e:
@@ -3222,16 +3246,16 @@ def create_preset():
 @api_bp.route('/presets/<preset_id>', methods=['GET'])
 def get_preset(preset_id: str):
     """Get a specific preset."""
-    preset = _presets.get(preset_id)
+    preset = _get_state_store().get_preset(preset_id)
     if not preset:
         return not_found_response('Preset not found')
     return jsonify(preset)
 
 
-@api_bp.route('/presets/<preset_id>', methods=['PUT'])
+@api_bp.route('/presets/<preset_id>', methods=['PUT', 'PATCH'])
 def update_preset(preset_id: str):
     """Update a preset."""
-    preset = _presets.get(preset_id)
+    preset = _get_state_store().get_preset(preset_id)
     if not preset:
         return not_found_response('Preset not found')
 
@@ -3244,8 +3268,10 @@ def update_preset(preset_id: str):
             preset['name'] = data['name']
         if 'config' in data:
             preset['config'] = data['config']
-        preset['updated_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        preset['updated_at'] = _utcnow_iso()
 
+        _presets[preset_id] = preset
+        _get_state_store().save_preset(preset)
         logger.info(f"Updated preset {preset_id}")
         return jsonify(preset)
     except Exception as e:
@@ -3256,9 +3282,9 @@ def update_preset(preset_id: str):
 @api_bp.route('/presets/<preset_id>', methods=['DELETE'])
 def delete_preset(preset_id: str):
     """Delete a preset."""
-    if preset_id not in _presets:
+    if not _get_state_store().delete_preset(preset_id):
         return not_found_response('Preset not found')
-    del _presets[preset_id]
+    _presets.pop(preset_id, None)
     logger.info(f"Deleted preset {preset_id}")
     return '', 204
 
@@ -3403,16 +3429,20 @@ def build_tensorrt():
 # Default configurations
 _separation_config = {
     'model': 'htdemucs',
+    'stems': ['vocals'],
     'overlap': 0.25,
-    'segment': 10,
+    'segment_length': None,
     'shifts': 1,
     'device': 'cuda' if TORCH_AVAILABLE and torch.cuda.is_available() else 'cpu'
 }
 
 _pitch_config = {
-    'method': 'crepe',
+    'method': 'rmvpe',
     'hop_length': 160,
+    'f0_min': 50,
+    'f0_max': 1100,
     'threshold': 0.3,
+    'use_gpu': bool(TORCH_AVAILABLE and torch.cuda.is_available()),
     'device': 'cuda' if TORCH_AVAILABLE and torch.cuda.is_available() else 'cpu'
 }
 
@@ -3422,7 +3452,10 @@ _audio_router_config = {
     'voice_gain': 1.0,
     'instrumental_gain': 0.8,
     'speaker_enabled': True,
-    'headphone_enabled': True
+    'headphone_enabled': True,
+    'speaker_device': None,
+    'headphone_device': None,
+    'sample_rate': 24000,
 }
 
 
@@ -3432,7 +3465,7 @@ def get_separation_config():
     return jsonify(_separation_config)
 
 
-@api_bp.route('/config/separation', methods=['POST'])
+@api_bp.route('/config/separation', methods=['POST', 'PATCH'])
 def update_separation_config():
     """Update vocal separation configuration."""
     try:
@@ -3440,9 +3473,18 @@ def update_separation_config():
         if not data:
             return validation_error_response('No JSON data provided')
 
-        for key in ['model', 'overlap', 'segment', 'shifts', 'device']:
+        key_map = {
+            'model': 'model',
+            'stems': 'stems',
+            'overlap': 'overlap',
+            'segment': 'segment_length',
+            'segment_length': 'segment_length',
+            'shifts': 'shifts',
+            'device': 'device',
+        }
+        for key, mapped_key in key_map.items():
             if key in data:
-                _separation_config[key] = data[key]
+                _separation_config[mapped_key] = data[key]
 
         logger.info(f"Updated separation config: {_separation_config}")
         return jsonify(_separation_config)
@@ -3457,7 +3499,7 @@ def get_pitch_config():
     return jsonify(_pitch_config)
 
 
-@api_bp.route('/config/pitch', methods=['POST'])
+@api_bp.route('/config/pitch', methods=['POST', 'PATCH'])
 def update_pitch_config():
     """Update pitch extraction configuration."""
     try:
@@ -3465,9 +3507,11 @@ def update_pitch_config():
         if not data:
             return validation_error_response('No JSON data provided')
 
-        for key in ['method', 'hop_length', 'threshold', 'device']:
+        for key in ['method', 'hop_length', 'f0_min', 'f0_max', 'threshold', 'use_gpu', 'device']:
             if key in data:
                 _pitch_config[key] = data[key]
+        if 'use_gpu' in data:
+            _pitch_config['device'] = 'cuda' if data['use_gpu'] else 'cpu'
 
         logger.info(f"Updated pitch config: {_pitch_config}")
         return jsonify(_pitch_config)
@@ -3482,7 +3526,7 @@ def get_audio_router_config():
     return jsonify(_audio_router_config)
 
 
-@api_bp.route('/audio/router/config', methods=['POST'])
+@api_bp.route('/audio/router/config', methods=['POST', 'PATCH'])
 def update_audio_router_config():
     """Update audio router configuration."""
     try:
@@ -3491,7 +3535,8 @@ def update_audio_router_config():
             return validation_error_response('No JSON data provided')
 
         for key in ['speaker_gain', 'headphone_gain', 'voice_gain',
-                    'instrumental_gain', 'speaker_enabled', 'headphone_enabled']:
+                    'instrumental_gain', 'speaker_enabled', 'headphone_enabled',
+                    'speaker_device', 'headphone_device', 'sample_rate']:
             if key in data:
                 _audio_router_config[key] = data[key]
 
@@ -3514,20 +3559,16 @@ _conversion_history: Dict[str, Dict[str, Any]] = {}
 def get_conversion_history():
     """Get conversion history, optionally filtered by profile."""
     profile_id = request.args.get('profile_id')
-    history = list(_conversion_history.values())
-    if profile_id:
-        history = [h for h in history if h.get('profile_id') == profile_id]
-    # Sort by created_at descending
-    history.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    history = _get_state_store().list_conversion_history(profile_id)
     return jsonify(history)
 
 
 @api_bp.route('/convert/history/<record_id>', methods=['DELETE'])
 def delete_conversion_record(record_id: str):
     """Delete a conversion record."""
-    if record_id not in _conversion_history:
+    if not _get_state_store().delete_conversion_record(record_id):
         return not_found_response('Record not found')
-    del _conversion_history[record_id]
+    _conversion_history.pop(record_id, None)
     logger.info(f"Deleted conversion record {record_id}")
     return '', 204
 
@@ -3535,7 +3576,7 @@ def delete_conversion_record(record_id: str):
 @api_bp.route('/convert/history/<record_id>', methods=['PATCH'])
 def update_conversion_record(record_id: str):
     """Update a conversion record (e.g., add notes, favorite)."""
-    record = _conversion_history.get(record_id)
+    record = _get_state_store().get_conversion_record(record_id)
     if not record:
         return not_found_response('Record not found')
 
@@ -3549,6 +3590,8 @@ def update_conversion_record(record_id: str):
             if key in data:
                 record[key] = data[key]
 
+        _conversion_history[record_id] = record
+        _get_state_store().save_conversion_record(record)
         logger.info(f"Updated conversion record {record_id}")
         return jsonify(record)
     except Exception as e:
@@ -3567,15 +3610,13 @@ _profile_checkpoints: Dict[str, Dict[str, Dict[str, Any]]] = {}
 @api_bp.route('/profiles/<profile_id>/checkpoints', methods=['GET'])
 def list_checkpoints(profile_id: str):
     """List all checkpoints for a profile."""
-    checkpoints = _profile_checkpoints.get(profile_id, {})
-    return jsonify(list(checkpoints.values()))
+    return jsonify(_get_state_store().list_checkpoints(profile_id))
 
 
 @api_bp.route('/profiles/<profile_id>/checkpoints/<checkpoint_id>/rollback', methods=['POST'])
 def rollback_checkpoint(profile_id: str, checkpoint_id: str):
     """Rollback to a specific checkpoint."""
-    checkpoints = _profile_checkpoints.get(profile_id, {})
-    checkpoint = checkpoints.get(checkpoint_id)
+    checkpoint = _get_state_store().get_checkpoint(profile_id, checkpoint_id)
     if not checkpoint:
         return not_found_response('Checkpoint not found')
 
@@ -3587,11 +3628,10 @@ def rollback_checkpoint(profile_id: str, checkpoint_id: str):
 @api_bp.route('/profiles/<profile_id>/checkpoints/<checkpoint_id>', methods=['DELETE'])
 def delete_checkpoint(profile_id: str, checkpoint_id: str):
     """Delete a checkpoint."""
-    checkpoints = _profile_checkpoints.get(profile_id, {})
-    if checkpoint_id not in checkpoints:
+    if not _get_state_store().delete_checkpoint(profile_id, checkpoint_id):
         return not_found_response('Checkpoint not found')
-
-    del _profile_checkpoints[profile_id][checkpoint_id]
+    if profile_id in _profile_checkpoints:
+        _profile_checkpoints[profile_id].pop(checkpoint_id, None)
     logger.info(f"Deleted checkpoint {checkpoint_id} from profile {profile_id}")
     return '', 204
 
@@ -3614,6 +3654,68 @@ def get_youtube_downloader() -> 'YouTubeDownloader':
         os.makedirs(output_dir, exist_ok=True)
         _youtube_downloader = YouTubeDownloader(output_dir)
     return _youtube_downloader
+
+
+@api_bp.route('/youtube/history', methods=['GET'])
+def list_youtube_history():
+    """List persisted YouTube download history."""
+    try:
+        limit = request.args.get('limit', type=int)
+        return jsonify(_get_state_store().list_youtube_history(limit=limit))
+    except Exception as e:
+        logger.error(f"Failed to list YouTube history: {e}", exc_info=True)
+        return error_response(str(e))
+
+
+@api_bp.route('/youtube/history', methods=['POST'])
+def save_youtube_history():
+    """Create or update a persisted YouTube download history item."""
+    try:
+        data = request.get_json()
+        if not data:
+            return validation_error_response('No JSON data provided')
+
+        history_item = {
+            'id': data.get('id') or f"{int(time.time())}-{uuid.uuid4().hex[:8]}",
+            'url': data.get('url'),
+            'title': data.get('title'),
+            'mainArtist': data.get('mainArtist'),
+            'featuredArtists': data.get('featuredArtists', []),
+            'hasDiarization': bool(data.get('hasDiarization', False)),
+            'numSpeakers': int(data.get('numSpeakers', 0)),
+            'timestamp': data.get('timestamp') or _utcnow_iso(),
+            'audioPath': data.get('audioPath'),
+            'filteredPath': data.get('filteredPath'),
+            'videoId': data.get('videoId'),
+        }
+        _get_state_store().save_youtube_history_item(history_item)
+        return jsonify(history_item), 201
+    except Exception as e:
+        logger.error(f"Failed to save YouTube history: {e}", exc_info=True)
+        return error_response(str(e))
+
+
+@api_bp.route('/youtube/history', methods=['DELETE'])
+def clear_youtube_history():
+    """Clear persisted YouTube download history."""
+    try:
+        _get_state_store().clear_youtube_history()
+        return '', 204
+    except Exception as e:
+        logger.error(f"Failed to clear YouTube history: {e}", exc_info=True)
+        return error_response(str(e))
+
+
+@api_bp.route('/youtube/history/<item_id>', methods=['DELETE'])
+def delete_youtube_history_item(item_id: str):
+    """Delete one persisted YouTube history item."""
+    try:
+        if not _get_state_store().delete_youtube_history_item(item_id):
+            return not_found_response('History item not found')
+        return '', 204
+    except Exception as e:
+        logger.error(f"Failed to delete YouTube history item: {e}", exc_info=True)
+        return error_response(str(e))
 
 
 @api_bp.route('/youtube/info', methods=['POST'])
@@ -3800,6 +3902,23 @@ def youtube_download():
             except Exception as e:
                 logger.warning(f"Diarization failed: {e}")
                 response['diarization_error'] = str(e)
+
+        try:
+            _get_state_store().save_youtube_history_item({
+                'id': f"{int(time.time())}-{result.video_id or uuid.uuid4().hex[:8]}",
+                'url': url,
+                'title': result.title,
+                'mainArtist': result.main_artist,
+                'featuredArtists': result.featured_artists,
+                'hasDiarization': bool(response.get('diarization_result')),
+                'numSpeakers': response.get('diarization_result', {}).get('num_speakers', 0),
+                'timestamp': _utcnow_iso(),
+                'audioPath': result.audio_path,
+                'filteredPath': response.get('filtered_audio_path'),
+                'videoId': result.video_id,
+            })
+        except Exception as history_error:
+            logger.warning(f"Failed to persist YouTube history: {history_error}")
 
         return jsonify(response)
 

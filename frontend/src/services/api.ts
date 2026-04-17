@@ -1,6 +1,6 @@
+import { io, Socket } from 'socket.io-client'
+
 const API_BASE = '/api/v1'
-const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-const WS_BASE = `${WS_PROTOCOL}//${window.location.host}`
 
 // WebSocket event types
 export type WSEventType =
@@ -41,7 +41,7 @@ export type WSEventHandler<T = unknown> = (event: WSEvent<T>) => void
 
 export interface ConversionRecord {
   id: string
-  status: 'queued' | 'processing' | 'complete' | 'completed' | 'error' | 'cancelled'
+  status: 'queued' | 'processing' | 'in_progress' | 'complete' | 'completed' | 'error' | 'failed' | 'cancelled'
   created_at: string
   started_at?: string
   completed_at?: string
@@ -68,6 +68,20 @@ export interface ConversionRecord {
   originalFileName?: string
   notes?: string
   resultUrl?: string
+}
+
+export interface YouTubeHistoryItem {
+  id: string
+  url: string
+  title: string
+  mainArtist: string | null
+  featuredArtists: string[]
+  hasDiarization: boolean
+  numSpeakers: number
+  timestamp: string
+  audioPath: string | null
+  filteredPath: string | null
+  videoId?: string | null
 }
 
 export interface VoiceProfile {
@@ -536,12 +550,22 @@ class ApiService {
         error.details
       )
     }
-    return response.json()
+
+    if (response.status === 204) {
+      return undefined as T
+    }
+
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.includes('application/json')) {
+      return undefined as T
+    }
+
+    const text = await response.text()
+    return (text ? JSON.parse(text) : undefined) as T
   }
 
   async getHealth(): Promise<HealthStatus> {
-    const response = await fetch('/health')
-    return response.json()
+    return this.request('/health')
   }
 
   async getSystemInfo(): Promise<SystemInfo> {
@@ -1094,6 +1118,26 @@ class ApiService {
       }),
     })
   }
+
+  async getYouTubeHistory(limit?: number): Promise<YouTubeHistoryItem[]> {
+    const params = limit ? `?limit=${limit}` : ''
+    return this.request(`/youtube/history${params}`)
+  }
+
+  async saveYouTubeHistory(item: Partial<YouTubeHistoryItem>): Promise<YouTubeHistoryItem> {
+    return this.request('/youtube/history', {
+      method: 'POST',
+      body: JSON.stringify(item),
+    })
+  }
+
+  async deleteYouTubeHistoryItem(id: string): Promise<void> {
+    await this.request(`/youtube/history/${id}`, { method: 'DELETE' })
+  }
+
+  async clearYouTubeHistory(): Promise<void> {
+    await this.request('/youtube/history', { method: 'DELETE' })
+  }
 }
 
 // Diarization types
@@ -1215,6 +1259,9 @@ export interface YouTubeDownloadResult {
     }>
   }
   diarization_error?: string
+  filtered_audio_path?: string | null
+  main_speaker_id?: string | null
+  filtered_duration?: number
 }
 
 export const apiService = new ApiService()
@@ -1224,61 +1271,60 @@ export const api = apiService
 
 // WebSocket Manager for real-time updates
 class WebSocketManager {
-  private socket: WebSocket | null = null
+  private socket: Socket | null = null
   private handlers: Map<WSEventType, Set<WSEventHandler>> = new Map()
-  private reconnectAttempts = 0
-  private maxReconnectAttempts = 5
-  private reconnectDelay = 1000
 
   connect(): void {
-    if (this.socket?.readyState === WebSocket.OPEN) return
+    if (this.socket?.connected) return
 
-    this.socket = new WebSocket(`${WS_BASE}/ws`)
-
-    this.socket.onopen = () => {
-      console.log('WebSocket connected')
-      this.reconnectAttempts = 0
-    }
-
-    this.socket.onmessage = (event) => {
-      try {
-        const wsEvent = JSON.parse(event.data) as WSEvent
-        this.dispatch(wsEvent)
-      } catch (e) {
-        console.error('Failed to parse WebSocket message:', e)
-      }
-    }
-
-    this.socket.onclose = () => {
-      console.log('WebSocket disconnected')
-      this.attemptReconnect()
-    }
-
-    this.socket.onerror = (error) => {
-      console.error('WebSocket error:', error)
-    }
-  }
-
-  private attemptReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('Max reconnect attempts reached')
+    if (this.socket) {
+      this.socket.connect()
       return
     }
 
-    this.reconnectAttempts++
-    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1)
-    console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
-    setTimeout(() => this.connect(), delay)
+    this.socket = io(window.location.origin, {
+      path: '/socket.io',
+      transports: ['websocket'],
+    })
+
+    this.socket.on('connect', () => {
+      console.log('WebSocket connected')
+    })
+
+    this.socket.on('disconnect', () => {
+      console.log('WebSocket disconnected')
+    })
+
+    ;([
+      'conversion_progress',
+      'conversion_complete',
+      'conversion_error',
+      'training_progress',
+      'training_complete',
+      'training_error',
+      'gpu_metrics',
+      'model_loaded',
+      'model_unloaded',
+    ] as WSEventType[]).forEach((eventType) => {
+      this.socket!.on(eventType, (data: unknown) => {
+        this.dispatch({
+          type: eventType,
+          timestamp: new Date().toISOString(),
+          data,
+        })
+      })
+    })
   }
 
   disconnect(): void {
     if (this.socket) {
-      this.socket.close()
+      this.socket.disconnect()
       this.socket = null
     }
   }
 
   subscribe<T = unknown>(eventType: WSEventType, handler: WSEventHandler<T>): () => void {
+    this.connect()
     if (!this.handlers.has(eventType)) {
       this.handlers.set(eventType, new Set())
     }

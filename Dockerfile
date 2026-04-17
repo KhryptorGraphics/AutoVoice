@@ -71,10 +71,10 @@ EXPOSE 5000
 
 # Health check (liveness probe)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:5000/health || exit 1
+    CMD curl -f http://localhost:5000/api/v1/health || exit 1
 
 # Graceful shutdown timeout
 STOPSIGNAL SIGTERM
 
 # Default command
-CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "5000"]
+CMD ["autovoice", "serve", "--host", "0.0.0.0", "--port", "5000"]

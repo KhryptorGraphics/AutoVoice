@@ -234,6 +234,7 @@ class KaraokeNamespace(Namespace):
         song_id = data.get('song_id')
         vocals_path = data.get('vocals_path')
         instrumental_path = data.get('instrumental_path')
+        voice_model_id = data.get('voice_model_id')
         client_id = request.sid
 
         # Pipeline selection (realtime/realtime_meanvc for karaoke, quality/quality_seedvc/quality_shortcut for offline)
@@ -270,6 +271,11 @@ class KaraokeNamespace(Namespace):
                     np.frombuffer(embedding_bytes, dtype=np.float32)
                 )
                 session.set_speaker_embedding(embedding)
+            elif voice_model_id:
+                from .karaoke_api import _get_voice_model_registry
+
+                registry = _get_voice_model_registry()
+                session.load_voice_model(registry, voice_model_id)
 
             session.start()
             self._sessions[session_id] = session

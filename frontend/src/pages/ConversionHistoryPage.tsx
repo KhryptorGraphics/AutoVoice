@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Clock, Download, Play, Trash2, Music, Star, Search, Filter, FileText } from 'lucide-react'
-import { ConversionRecord } from '../services/api'
+import { apiService, ConversionRecord } from '../services/api'
 import { PipelineBadge, type PipelineType } from '../components/PipelineSelector'
 import { AdapterBadge } from '../components/AdapterSelector'
 
@@ -25,44 +25,47 @@ export function ConversionHistoryPage() {
   const [notesText, setNotesText] = useState('')
 
   useEffect(() => {
-    // Load history from localStorage
-    const savedHistory = localStorage.getItem('conversionHistory')
-    if (savedHistory) {
-      const parsed = JSON.parse(savedHistory)
-      setHistory(parsed.map((item: any) => ({
-        ...item,
-        timestamp: new Date(item.timestamp),
-      })))
-    }
+    void loadHistory()
   }, [])
 
-  const handleDelete = (id: string) => {
-    const newHistory = history.filter((item) => item.id !== id)
-    setHistory(newHistory)
-    localStorage.setItem('conversionHistory', JSON.stringify(newHistory))
+  const loadHistory = async () => {
+    const records = await apiService.getConversionHistory()
+    setHistory(records.map((item) => ({
+      ...item,
+      timestamp: new Date(String(item.timestamp ?? item.completed_at ?? item.created_at)),
+      quality: item.quality ?? item.preset,
+      resultUrl: item.resultUrl ?? item.output_url ?? item.download_url,
+    })))
   }
 
-  const handleToggleFavorite = (id: string) => {
-    const updated = history.map((item) =>
-      item.id === id ? { ...item, isFavorite: !item.isFavorite } : item
-    )
-    setHistory(updated)
-    localStorage.setItem('conversionHistory', JSON.stringify(updated))
+  const handleDelete = async (id: string) => {
+    await apiService.deleteConversionRecord(id)
+    setHistory((prev) => prev.filter((item) => item.id !== id))
   }
 
-  const handleSaveNotes = (id: string) => {
-    const updated = history.map((item) =>
-      item.id === id ? { ...item, notes: notesText } : item
-    )
-    setHistory(updated)
-    localStorage.setItem('conversionHistory', JSON.stringify(updated))
+  const handleToggleFavorite = async (id: string) => {
+    const item = history.find((entry) => entry.id === id)
+    if (!item) return
+    const updatedRecord = await apiService.updateConversionRecord(id, {
+      isFavorite: !item.isFavorite,
+    })
+    setHistory((prev) => prev.map((entry) => (
+      entry.id === id ? { ...entry, ...updatedRecord, timestamp: new Date(String(updatedRecord.timestamp ?? updatedRecord.completed_at ?? updatedRecord.created_at)) } : entry
+    )))
+  }
+
+  const handleSaveNotes = async (id: string) => {
+    const updatedRecord = await apiService.updateConversionRecord(id, { notes: notesText })
+    setHistory((prev) => prev.map((item) => (
+      item.id === id ? { ...item, ...updatedRecord, timestamp: new Date(String(updatedRecord.timestamp ?? updatedRecord.completed_at ?? updatedRecord.created_at)) } : item
+    )))
     setEditingNotes(null)
   }
 
-  const handleClearAll = () => {
+  const handleClearAll = async () => {
     if (confirm('Are you sure you want to clear all history?')) {
+      await Promise.all(history.map((item) => apiService.deleteConversionRecord(item.id)))
       setHistory([])
-      localStorage.removeItem('conversionHistory')
     }
   }
 
@@ -92,7 +95,7 @@ export function ConversionHistoryPage() {
     }
 
     // Quality filter
-    const qualityMatch = filters.quality === 'all' || item.quality === filters.quality
+    const qualityMatch = filters.quality === 'all' || (item.quality ?? item.preset) === filters.quality
 
     // Favorites filter
     const favoritesMatch = !filters.favorites || item.isFavorite
@@ -285,7 +288,7 @@ export function ConversionHistoryPage() {
                       </div>
                       <p className="text-sm text-gray-600">
                         Voice: {item.targetVoice ?? 'Unknown'} • Duration: {formatDuration(item.duration ?? 0)} • Quality:{' '}
-                        <span className="font-medium">{item.quality ?? 'N/A'}</span>
+                        <span className="font-medium">{item.quality ?? item.preset ?? 'N/A'}</span>
                       </p>
                       {/* Pipeline and adapter badges */}
                       <div className="flex items-center gap-2 mt-1">
@@ -311,11 +314,11 @@ export function ConversionHistoryPage() {
                   </div>
 
                   <div className="flex items-center space-x-1 flex-shrink-0">
-                    {item.resultUrl && (
+                    {(item.resultUrl ?? item.output_url ?? item.download_url) && (
                       <>
                         <button
                           onClick={() => {
-                            const audio = new Audio(item.resultUrl!)
+                            const audio = new Audio(item.resultUrl ?? item.output_url ?? item.download_url!)
                             audio.play()
                           }}
                           className="p-2 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
@@ -324,7 +327,7 @@ export function ConversionHistoryPage() {
                           <Play className="w-5 h-5" />
                         </button>
                         <a
-                          href={item.resultUrl}
+                          href={item.resultUrl ?? item.output_url ?? item.download_url}
                           download
                           className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
                           title="Download"
@@ -403,4 +406,3 @@ export function ConversionHistoryPage() {
     </div>
   )
 }
-

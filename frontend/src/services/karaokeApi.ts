@@ -20,6 +20,8 @@ export interface SeparationJob {
   estimated_remaining?: number;
   vocals_ready?: boolean;
   instrumental_ready?: boolean;
+  vocals_path?: string;
+  instrumental_path?: string;
   error?: string;
 }
 

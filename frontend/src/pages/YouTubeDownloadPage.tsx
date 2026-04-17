@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Youtube, Search, Download, Music, Users, Loader2, AlertCircle, CheckCircle, User, Plus, UserPlus, History } from 'lucide-react'
-import { api, YouTubeVideoInfo, YouTubeDownloadResult, VoiceProfile } from '../services/api'
+import { Youtube, Search, Download, Music, Users, Loader2, AlertCircle, CheckCircle, User, Plus, UserPlus, History, Info } from 'lucide-react'
+import { api, YouTubeVideoInfo, YouTubeDownloadResult, VoiceProfile, type YouTubeHistoryItem } from '../services/api'
 import { useToastContext } from '../contexts/ToastContext'
 
 type Stage = 'idle' | 'fetching' | 'info' | 'downloading' | 'diarizing' | 'complete' | 'error'
@@ -10,19 +10,6 @@ interface ArtistToCreate {
   name: string
   speakerId?: string
   selected: boolean
-}
-
-interface DownloadHistoryItem {
-  id: string
-  url: string
-  title: string
-  mainArtist: string | null
-  featuredArtists: string[]
-  hasDiarization: boolean
-  numSpeakers: number
-  timestamp: Date
-  audioPath: string | null
-  filteredPath: string | null
 }
 
 export function YouTubeDownloadPage() {
@@ -40,53 +27,13 @@ export function YouTubeDownloadPage() {
   const [creatingProfiles, setCreatingProfiles] = useState(false)
   const [downloadStep, setDownloadStep] = useState<DownloadStep>('download')
   const [filterToMainArtist, setFilterToMainArtist] = useState(false)
-  const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>(() => {
-    // Load from localStorage on init
-    try {
-      const stored = localStorage.getItem('youtube_download_history')
-      if (stored) {
-        const parsed = JSON.parse(stored)
-        return parsed.map((item: DownloadHistoryItem) => ({
-          ...item,
-          timestamp: new Date(item.timestamp)
-        }))
-      }
-    } catch (e) {
-      console.error('Failed to load download history:', e)
-    }
-    return []
-  })
+  const [downloadHistory, setDownloadHistory] = useState<YouTubeHistoryItem[]>([])
 
   // Load profiles on mount
   useEffect(() => {
     loadProfiles()
+    void loadDownloadHistory()
   }, [])
-
-  // Save history to localStorage when it changes
-  useEffect(() => {
-    try {
-      localStorage.setItem('youtube_download_history', JSON.stringify(downloadHistory))
-    } catch (e) {
-      console.error('Failed to save download history:', e)
-    }
-  }, [downloadHistory])
-
-  const addToHistory = (result: YouTubeDownloadResult, _info: YouTubeVideoInfo) => {
-    void _info // Mark as intentionally unused (kept for potential future use)
-    const historyItem: DownloadHistoryItem = {
-      id: `${Date.now()}-${result.video_id}`,
-      url,
-      title: result.title,
-      mainArtist: result.main_artist,
-      featuredArtists: result.featured_artists,
-      hasDiarization: !!result.diarization_result,
-      numSpeakers: result.diarization_result?.num_speakers ?? 0,
-      timestamp: new Date(),
-      audioPath: result.audio_path,
-      filteredPath: (result as any).filtered_audio_path ?? null,
-    }
-    setDownloadHistory(prev => [historyItem, ...prev.slice(0, 19)]) // Keep last 20
-  }
 
   const loadProfiles = async () => {
     try {
@@ -94,6 +41,15 @@ export function YouTubeDownloadPage() {
       setProfiles(profileList)
     } catch (err) {
       console.error('Failed to load profiles:', err)
+    }
+  }
+
+  const loadDownloadHistory = async () => {
+    try {
+      const history = await api.getYouTubeHistory(20)
+      setDownloadHistory(history)
+    } catch (err) {
+      console.error('Failed to load download history:', err)
     }
   }
 
@@ -186,10 +142,7 @@ export function YouTubeDownloadPage() {
 
       setArtistsToCreate(artists)
 
-      // Add to history
-      if (videoInfo) {
-        addToHistory(result, videoInfo)
-      }
+      await loadDownloadHistory()
 
       toast.success('Download completed successfully!')
       setStage('complete')
@@ -207,7 +160,8 @@ export function YouTubeDownloadPage() {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const formatTimestamp = (date: Date): string => {
+  const formatTimestamp = (timestamp: string): string => {
+    const date = new Date(timestamp)
     const now = new Date()
     const diffMs = now.getTime() - date.getTime()
     const diffMins = Math.floor(diffMs / 60000)
@@ -812,8 +766,7 @@ export function YouTubeDownloadPage() {
             </h3>
             <button
               onClick={() => {
-                setDownloadHistory([])
-                localStorage.removeItem('youtube_download_history')
+                void api.clearYouTubeHistory().then(() => setDownloadHistory([]))
               }}
               className="text-sm text-gray-500 hover:text-gray-300"
             >
@@ -866,7 +819,7 @@ export function YouTubeDownloadPage() {
                 </div>
 
                 <span className="text-xs text-gray-500 flex-shrink-0">
-                  {formatTimestamp(item.timestamp)}
+                    {formatTimestamp(item.timestamp)}
                 </span>
               </div>
             ))}
