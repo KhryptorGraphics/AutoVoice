@@ -10,6 +10,7 @@ import os
 import time
 from typing import Optional, List, Tuple
 
+import numpy as np
 import torch
 import torchaudio
 
@@ -181,6 +182,11 @@ class KaraokeSession:
         self.is_active = False
         self._speaker_embedding: Optional[torch.Tensor] = None
         self.voice_model_id: Optional[str] = None
+        self._source_voice_model_id: Optional[str] = None
+        self._target_profile_id: Optional[str] = None
+        self._target_model_type: Optional[str] = None
+        self._profiles_dir: Optional[str] = None
+        self._full_model_path: Optional[str] = None
 
         # Latency tracking
         self._latency_history: List[float] = []
@@ -215,6 +221,17 @@ class KaraokeSession:
         if embedding.dim() == 1:
             embedding = embedding.unsqueeze(0)
         self._speaker_embedding = embedding.to(self.device)
+        if self._streaming_pipeline is not None and hasattr(self._streaming_pipeline, 'set_target_voice'):
+            try:
+                self._streaming_pipeline.set_target_voice(
+                    self._speaker_embedding.squeeze(0).detach().cpu().numpy()
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Session %s: failed to update live target voice on existing pipeline: %s",
+                    self.session_id,
+                    exc,
+                )
         logger.info(f"Session {self.session_id}: Speaker embedding set, shape {embedding.shape}")
 
     def load_voice_model(self, registry: 'VoiceModelRegistry', model_id: str):
@@ -263,8 +280,46 @@ class KaraokeSession:
         not explicitly disabled. Falls back to StreamingConversionPipeline.
         """
         if self._streaming_pipeline is None:
+            if (
+                self._target_model_type == 'full_model'
+                and self._full_model_path
+                and os.path.exists(self._full_model_path)
+            ):
+                from ..inference.realtime_voice_conversion_pipeline import (
+                    RealtimeVoiceConversionPipeline,
+                )
+
+                self._streaming_pipeline = RealtimeVoiceConversionPipeline(
+                    sample_rate=self.sample_rate,
+                    device=self.device,
+                    config={
+                        'sample_rate': self.sample_rate,
+                        'speaker_id': self._target_profile_id or 'default',
+                        'voice_model_path': self._full_model_path,
+                    },
+                )
+                if self._speaker_embedding is not None:
+                    self._streaming_pipeline.set_target_voice(
+                        self._speaker_embedding.squeeze(0).detach().cpu().numpy()
+                    )
+                self._streaming_pipeline.start()
+                self._pipeline_type = 'pytorch_full_model'
+                logger.info(
+                    "Session %s: RealtimeVoiceConversionPipeline loaded with full model %s",
+                    self.session_id,
+                    self._full_model_path,
+                )
+                return self._streaming_pipeline
+
             # Determine whether to use TRT
             use_trt = self._use_trt
+            if self._target_profile_id:
+                use_trt = False
+                logger.info(
+                    "Session %s: disabling TRT path for target profile %s so trained target models are honored",
+                    self.session_id,
+                    self._target_profile_id,
+                )
             if use_trt is None:
                 use_trt = self._check_trt_available()
             elif use_trt is True and not self._check_trt_available():
@@ -291,6 +346,25 @@ class KaraokeSession:
                         sample_rate=self.sample_rate,
                         device=self.device
                     )
+                    if self._target_profile_id:
+                        try:
+                            self._streaming_pipeline.set_speaker(self._target_profile_id)
+                            logger.info(
+                                "Session %s: loaded target speaker %s into streaming pipeline",
+                                self.session_id,
+                                self._target_profile_id,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Session %s: failed to load target speaker %s into streaming pipeline: %s",
+                                self.session_id,
+                                self._target_profile_id,
+                                exc,
+                            )
+                            if self._speaker_embedding is not None:
+                                self._streaming_pipeline.start_session(self._speaker_embedding.squeeze(0))
+                    elif self._speaker_embedding is not None:
+                        self._streaming_pipeline.start_session(self._speaker_embedding.squeeze(0))
                     self._pipeline_type = 'pytorch'
                     logger.info(
                         f"Session {self.session_id}: StreamingConversionPipeline loaded"
@@ -331,6 +405,14 @@ class KaraokeSession:
             return
 
         self.is_active = False
+        if self._streaming_pipeline is not None:
+            try:
+                if hasattr(self._streaming_pipeline, 'stop_session'):
+                    self._streaming_pipeline.stop_session()
+                elif hasattr(self._streaming_pipeline, 'stop'):
+                    self._streaming_pipeline.stop()
+            except Exception as exc:
+                logger.debug("Session %s: pipeline stop failed: %s", self.session_id, exc)
         duration = time.time() - self._started_at if self._started_at else 0
         logger.info(
             f"Session {self.session_id} stopped after {duration:.1f}s, "
@@ -365,7 +447,18 @@ class KaraokeSession:
         # Process through streaming pipeline
         try:
             pipeline = self._get_pipeline()
-            output = pipeline.process_chunk(audio_chunk, self._speaker_embedding.squeeze(0))
+            if self._target_model_type == 'full_model' and hasattr(pipeline, 'process_chunk') and hasattr(pipeline, 'set_target_voice'):
+                pipeline.set_target_voice(
+                    self._speaker_embedding.squeeze(0).detach().cpu().numpy()
+                )
+                output_np = pipeline.process_chunk(audio_chunk.detach().cpu().numpy())
+                output = (
+                    torch.from_numpy(np.asarray(output_np, dtype=np.float32)).to(self.device)
+                    if output_np is not None
+                    else audio_chunk
+                )
+            else:
+                output = pipeline.process_chunk(audio_chunk, self._speaker_embedding.squeeze(0))
         except RuntimeError:
             # Fallback for testing: return input unchanged
             output = audio_chunk

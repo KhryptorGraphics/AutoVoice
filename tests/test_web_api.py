@@ -1,8 +1,26 @@
 """Tests for Flask REST API endpoints."""
 import json
 import io
+import os
 import pytest
 import numpy as np
+
+
+def _save_test_profile(client_full, profile_id: str, *, role: str, has_full_model: bool = False):
+    store = client_full.application.voice_cloner.store
+    store.save({
+        'profile_id': profile_id,
+        'name': f'{role}-{profile_id[-4:]}',
+        'embedding': np.zeros(256, dtype=np.float32).tolist(),
+        'profile_role': role,
+        'sample_count': 1,
+        'has_trained_model': has_full_model,
+    })
+    if has_full_model:
+        full_model_path = os.path.join(store.trained_models_dir, f'{profile_id}_full_model.pt')
+        with open(full_model_path, 'wb') as handle:
+            handle.write(b'full-model')
+    return store.load(profile_id)
 
 
 class TestHealthEndpoint:
@@ -109,7 +127,8 @@ class TestVoiceProfilesEndpoint:
 
     def test_profiles_service_unavailable_when_disabled(self, client):
         resp = client.get('/api/v1/voice/profiles')
-        assert resp.status_code == 503
+        assert resp.status_code == 200
+        assert isinstance(resp.get_json(), list)
 
     def test_profiles_returns_list(self, client_full):
         resp = client_full.get('/api/v1/voice/profiles')
@@ -147,6 +166,55 @@ class TestConvertSongEndpoint:
         resp = client.post('/api/v1/convert/song', data=data,
                            content_type='multipart/form-data')
         assert resp.status_code == 503
+
+    def test_convert_rejects_source_artist_profile(self, client_full):
+        profile_id = '00000000-0000-0000-0000-000000000101'
+        _save_test_profile(client_full, profile_id, role='source_artist')
+
+        data = {
+            'song': (io.BytesIO(b'audio'), 'test.wav'),
+            'profile_id': profile_id,
+        }
+        resp = client_full.post('/api/v1/convert/song', data=data,
+                                content_type='multipart/form-data')
+        assert resp.status_code == 400
+        assert 'target user profile' in resp.get_json()['error'].lower()
+
+    def test_convert_allows_full_model_without_adapter(self, client_full, monkeypatch):
+        profile_id = '00000000-0000-0000-0000-000000000102'
+        _save_test_profile(client_full, profile_id, role='target_user', has_full_model=True)
+
+        def _fake_convert_song(**kwargs):
+            assert kwargs['target_profile_id'] == profile_id
+            return {
+                'mixed_audio': np.zeros(22050, dtype=np.float32),
+                'sample_rate': 22050,
+                'duration': 1.0,
+                'metadata': {
+                    'target_profile_id': profile_id,
+                    'active_model_type': 'full_model',
+                },
+                'f0_contour': np.array([], dtype=np.float32),
+                'f0_original': np.array([], dtype=np.float32),
+            }
+
+        monkeypatch.setattr(client_full.application, 'job_manager', None, raising=False)
+        monkeypatch.setattr(
+            client_full.application.singing_conversion_pipeline,
+            'convert_song',
+            _fake_convert_song,
+        )
+
+        data = {
+            'song': (io.BytesIO(b'audio'), 'test.wav'),
+            'profile_id': profile_id,
+        }
+        resp = client_full.post('/api/v1/convert/song', data=data,
+                                content_type='multipart/form-data')
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload['active_model_type'] == 'full_model'
+        assert payload['adapter_type'] is None
 
 
 class TestConvertStatusEndpoint:

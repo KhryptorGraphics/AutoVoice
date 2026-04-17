@@ -27,10 +27,28 @@ function ConvertPage() {
   const [isConverting, setIsConverting] = useState(false)
   const [conversionStatus, setConversionStatus] = useState<ConversionRecord | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const targetProfiles = profiles.filter(
+    (profile) => profile.profile_role !== 'source_artist' && profile.has_trained_model
+  )
+  const selectedProfileRecord = selectedProfile
+    ? targetProfiles.find((profile) => profile.profile_id === selectedProfile) ?? null
+    : null
 
   useEffect(() => {
     apiService.listProfiles().then(setProfiles).catch(console.error)
   }, [])
+
+  useEffect(() => {
+    if (selectedProfileRecord?.active_model_type === 'full_model' && selectedAdapter) {
+      setSelectedAdapter(null)
+    }
+  }, [selectedAdapter, selectedProfileRecord?.active_model_type])
+
+  useEffect(() => {
+    if (selectedProfile && !selectedProfileRecord) {
+      setSelectedProfile(targetProfiles[0]?.profile_id ?? null)
+    }
+  }, [selectedProfile, selectedProfileRecord, targetProfiles])
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -62,7 +80,10 @@ function ConvertPage() {
       const result = await apiService.convertSong(file, selectedProfile, {
         preset: 'balanced',
         pipeline_type: pipeline,
-        adapter_type: selectedAdapter || undefined,
+        adapter_type:
+          selectedProfileRecord?.active_model_type === 'full_model'
+            ? undefined
+            : (selectedAdapter || undefined),
       })
 
       // Poll for status
@@ -172,21 +193,34 @@ function ConvertPage() {
               className="w-full p-3 bg-gray-700 rounded-lg"
             >
               <option value="">Choose a profile...</option>
-              {profiles.map((profile) => (
+              {targetProfiles.map((profile) => (
                 <option key={profile.profile_id} value={profile.profile_id}>
-                  {profile.name || profile.profile_id} ({profile.sample_count} samples)
+                  {profile.name || profile.profile_id} (
+                  {profile.active_model_type === 'full_model' ? 'full model' : 'LoRA'} ·
+                  {' '}
+                  {profile.sample_count} samples)
                 </option>
               ))}
             </select>
-            {profiles.length === 0 && (
+            {targetProfiles.length === 0 && (
               <p className="text-sm text-gray-500 mt-2">
-                No profiles found. <a href="/profiles" className="text-blue-400 hover:underline">Create one</a>
+                No trained target profiles found. <a href="/profiles" className="text-blue-400 hover:underline">Create or train one</a>
               </p>
+            )}
+            {selectedProfileRecord && (
+              <div className="mt-3 flex items-center gap-2 text-sm text-gray-300">
+                <span className="rounded-full border border-gray-600 px-2 py-0.5">
+                  {selectedProfileRecord.active_model_type === 'full_model' ? 'Full model' : 'LoRA target'}
+                </span>
+                <span>
+                  {selectedProfileRecord.clean_vocal_minutes?.toFixed(1) ?? '0.0'} min clean vocals
+                </span>
+              </div>
             )}
           </div>
 
           {/* Adapter Selection */}
-          {selectedProfile && (
+          {selectedProfile && selectedProfileRecord?.active_model_type !== 'full_model' && (
             <div>
               <h2 className="text-lg font-semibold mb-4">3. Select Adapter</h2>
               <AdapterSelector
@@ -196,6 +230,11 @@ function ConvertPage() {
                 showMetrics={true}
                 size="md"
               />
+            </div>
+          )}
+          {selectedProfileRecord?.active_model_type === 'full_model' && (
+            <div className="rounded-lg border border-violet-500/40 bg-violet-500/10 p-4 text-sm text-violet-100">
+              This target profile has a dedicated full model. Offline conversion will use that model directly instead of a LoRA adapter.
             </div>
           )}
 
@@ -270,9 +309,13 @@ function ConvertPage() {
             <>
               <Music size={24} />
               Convert Song
-              {selectedAdapter && (
+              {selectedProfileRecord?.active_model_type === 'full_model' ? (
+                <span className="rounded-full bg-violet-500/20 px-2 py-0.5 text-sm text-violet-200">
+                  Full model
+                </span>
+              ) : selectedAdapter ? (
                 <AdapterBadge adapterType={selectedAdapter} />
-              )}
+              ) : null}
             </>
           )}
         </button>

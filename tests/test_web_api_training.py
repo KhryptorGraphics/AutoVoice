@@ -15,6 +15,7 @@ import os
 import tempfile
 from unittest.mock import MagicMock, patch, PropertyMock
 import wave
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -65,6 +66,42 @@ def audio_file():
         wav.writeframes(b'\x00' * 22050 * 2)  # 1 second
     buffer.seek(0)
     return buffer
+
+
+def _write_wav(path: Path, duration_seconds: float = 1.0, sample_rate: int = 22050) -> None:
+    frames = int(duration_seconds * sample_rate)
+    with wave.open(str(path), 'wb') as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b'\x00' * frames * 2)
+
+
+def _create_profile_with_sample(app_with_training, *, profile_id: str, profile_role: str, duration_seconds: float) -> str:
+    from auto_voice.storage.paths import resolve_profiles_dir, resolve_samples_dir
+    from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+    data_dir = app_with_training.config['DATA_DIR']
+    store = VoiceProfileStore(
+        profiles_dir=str(resolve_profiles_dir(data_dir=data_dir)),
+        samples_dir=str(resolve_samples_dir(data_dir=data_dir)),
+    )
+    store.save({
+        'profile_id': profile_id,
+        'name': f'{profile_role}-{profile_id}',
+        'profile_role': profile_role,
+        'created_from': 'manual',
+    })
+
+    sample_path = Path(tempfile.mkdtemp(prefix='autovoice-test-sample-')) / f'{profile_id}.wav'
+    _write_wav(sample_path, duration_seconds=duration_seconds)
+    store.add_training_sample(
+        profile_id=profile_id,
+        vocals_path=str(sample_path),
+        duration=duration_seconds,
+        source_file=sample_path.name,
+    )
+    return profile_id
 
 
 class TestListTrainingJobs:
@@ -152,6 +189,49 @@ class TestCreateTrainingJob:
 
         # Accept various status codes based on implementation
         assert response.status_code in (200, 201, 202, 400, 500)
+
+    def test_full_training_requires_30_minutes_of_clean_vocals(self, client, app_with_training):
+        """Full-model training is gated by clean-vocal duration, not sample count."""
+        profile_id = _create_profile_with_sample(
+            app_with_training,
+            profile_id='target-profile-short',
+            profile_role='target_user',
+            duration_seconds=120.0,
+        )
+
+        response = client.post(
+            '/api/v1/training/jobs',
+            json={
+                'profile_id': profile_id,
+                'config': {
+                    'training_mode': 'full',
+                },
+            },
+            content_type='application/json',
+        )
+
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert '30 minutes' in data['error']
+
+    def test_source_artist_profiles_cannot_be_trained(self, client, app_with_training):
+        """Source artist profiles are reference profiles, not trainable targets."""
+        profile_id = _create_profile_with_sample(
+            app_with_training,
+            profile_id='source-profile-ref',
+            profile_role='source_artist',
+            duration_seconds=2000.0,
+        )
+
+        response = client.post(
+            '/api/v1/training/jobs',
+            json={'profile_id': profile_id},
+            content_type='application/json',
+        )
+
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert 'Only target user profiles can be trained' in data['error']
 
 
 class TestGetTrainingJob:

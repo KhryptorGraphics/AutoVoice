@@ -151,6 +151,10 @@ class TestAssignSegmentEndpoint:
             'audio_duration': 3.0,
             'sample_rate': 16000,
             'num_speakers': 2,
+            'metadata': {
+                'source': 'youtube_download',
+                'title': 'Test Duet',
+            },
             'segments': [
                 {'start': 0.0, 'end': 1.5, 'speaker_id': 'speaker_0', 'confidence': 0.95},
                 {'start': 1.5, 'end': 3.0, 'speaker_id': 'speaker_1', 'confidence': 0.90},
@@ -302,6 +306,13 @@ class TestAutoCreateProfileEndpoint:
                 assert data['name'] == 'Test Artist'
                 assert data['num_segments'] == 1
                 assert data['embedding_dim'] == 512
+                assert data['profile_role'] == 'source_artist'
+
+                mock_store.create_profile_from_diarization.assert_called_once()
+                kwargs = mock_store.create_profile_from_diarization.call_args.kwargs
+                assert kwargs['profile_role'] == 'source_artist'
+                assert kwargs['metadata']['source_speaker_id'] == 'speaker_0'
+                assert kwargs['metadata']['source_audio_path'] == test_audio_file
 
         # Cleanup
         del api._diarization_results[diarization_id]
@@ -356,6 +367,54 @@ class TestAutoCreateProfileEndpoint:
         )
 
         assert response.status_code == 400
+
+
+class TestYouTubeDownloadBootstrap:
+    """Tests for diarization bootstrap data returned from YouTube download."""
+
+    def test_youtube_download_returns_diarization_bootstrap(self, client, test_audio_file, mock_diarization_result):
+        """YouTube download should expose diarization_id and per-speaker durations."""
+        download_result = MagicMock()
+        download_result.success = True
+        download_result.audio_path = test_audio_file
+        download_result.title = 'Test Duet'
+        download_result.duration = 3.0
+        download_result.main_artist = 'Artist A'
+        download_result.featured_artists = ['Artist B']
+        download_result.is_cover = False
+        download_result.original_artist = None
+        download_result.song_title = 'Test Song'
+        download_result.thumbnail_url = None
+        download_result.video_id = 'yt-test'
+        download_result.error = None
+
+        with patch('auto_voice.web.api.get_youtube_downloader') as mock_get_downloader:
+            mock_downloader = MagicMock()
+            mock_downloader.download.return_value = download_result
+            mock_get_downloader.return_value = mock_downloader
+
+            with patch('auto_voice.web.api.YOUTUBE_DOWNLOADER_AVAILABLE', True), \
+                 patch('auto_voice.audio.speaker_diarization.SpeakerDiarizer') as MockDiarizer:
+                mock_diarizer = MagicMock()
+                mock_diarizer.diarize.return_value = mock_diarization_result
+                MockDiarizer.return_value = mock_diarizer
+
+                response = client.post(
+                    '/api/v1/youtube/download',
+                    json={
+                        'url': 'https://youtube.com/watch?v=yt-test',
+                        'run_diarization': True,
+                    },
+                    content_type='application/json',
+                )
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data['success'] is True
+        assert data['diarization_id']
+        assert data['speaker_durations']['speaker_0'] == pytest.approx(1.5)
+        assert data['diarization_result']['diarization_id'] == data['diarization_id']
+        assert data['diarization_result']['speaker_durations']['speaker_1'] == pytest.approx(1.5)
 
 
 class TestSpeakerEmbeddingEndpoints:

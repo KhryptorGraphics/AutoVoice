@@ -53,6 +53,7 @@ export interface ConversionRecord {
   // Pipeline and adapter info
   pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
   adapter_type?: 'hq' | 'nvfp4' | 'unified'
+  active_model_type?: ActiveModelType
   // Quality metrics
   processing_time_seconds?: number
   rtf?: number  // Real-time factor (processing_time / audio_duration)
@@ -84,17 +85,33 @@ export interface YouTubeHistoryItem {
   videoId?: string | null
 }
 
+export type ProfileRole = 'source_artist' | 'target_user'
+export type ActiveModelType = 'base' | 'adapter' | 'full_model'
+
 export interface VoiceProfile {
   profile_id: string
   user_id?: string
   name?: string
   created_at: string
+  created_from?: string
+  profile_role?: ProfileRole
   sample_count: number
+  training_sample_count?: number
+  clean_vocal_seconds?: number
+  clean_vocal_minutes?: number
+  full_model_unlock_seconds?: number
+  full_model_remaining_seconds?: number
+  full_model_remaining_minutes?: number
+  full_model_eligible?: boolean
   model_version?: string
   last_trained?: string
   quality_score?: number
   training_status?: TrainingStatusType
   has_trained_model?: boolean
+  has_full_model?: boolean
+  has_adapter_model?: boolean
+  active_model_type?: ActiveModelType
+  selected_adapter?: 'hq' | 'nvfp4' | 'unified' | null
 }
 
 // Training status for voice profiles
@@ -173,12 +190,14 @@ export interface TrainingJob {
     initial_loss?: number
     final_loss?: number
     loss_curve?: number[]
+    artifact_type?: 'adapter' | 'full_model'
+    job_type?: 'lora' | 'full_model'
   }
 }
 
 // Full training configuration with all LoRA/EWC parameters
 export interface TrainingConfig {
-  // Training mode: 'lora' (fast, ~1MB checkpoint) or 'full' (from scratch, ~184MB, higher quality)
+  // Training mode: 'lora' by default, 'full' unlocks after 30 minutes of clean user vocals
   training_mode: 'lora' | 'full'
   // LoRA configuration (only used when training_mode='lora')
   lora_rank: number
@@ -439,6 +458,8 @@ export interface ConversionJobResponse {
   job_id: string
   websocket_room?: string
   message?: string
+  active_model_type?: ActiveModelType
+  adapter_type?: 'hq' | 'nvfp4' | 'unified'
   // When sync processing is used, result may be inline
   output_url?: string
   download_url?: string
@@ -455,6 +476,7 @@ export interface ConversionStatusExtended extends ConversionRecord {
   // Pipeline info used
   pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
   adapter_type?: 'hq' | 'nvfp4' | 'unified'
+  active_model_type?: ActiveModelType
 }
 
 // CUDA kernel metrics
@@ -724,7 +746,7 @@ class ApiService {
       instrumental_volume?: number
       pitch_shift?: number
       pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
-      adapter_type?: 'hq' | 'nvfp4'
+      adapter_type?: 'hq' | 'nvfp4' | 'unified'
     }
   ): Promise<ConversionJobResponse> {
     const formData = new FormData()
@@ -1048,7 +1070,11 @@ class ApiService {
     speakerId: string,
     name: string,
     userId?: string,
-    extractSegments: boolean = true
+    extractSegments: boolean = true,
+    options?: {
+      profileRole?: ProfileRole
+      metadata?: Record<string, unknown>
+    }
   ): Promise<AutoCreateProfileResult> {
     return this.request<AutoCreateProfileResult>('/profiles/auto-create', {
       method: 'POST',
@@ -1058,6 +1084,8 @@ class ApiService {
         name,
         user_id: userId,
         extract_segments: extractSegments,
+        profile_role: options?.profileRole,
+        metadata: options?.metadata,
       }),
     })
   }
@@ -1188,9 +1216,11 @@ export interface AutoCreateProfileResult {
   profile_id: string
   name: string
   speaker_id: string
+  profile_role: ProfileRole
   num_segments: number
   total_duration: number
   embedding_dim: number
+  metadata?: Record<string, unknown>
   status: string
 }
 
@@ -1249,8 +1279,12 @@ export interface YouTubeDownloadResult {
   thumbnail_url: string | null
   video_id: string | null
   error: string | null
+  diarization_id?: string
+  speaker_durations?: Record<string, number>
   diarization_result?: {
+    diarization_id?: string
     num_speakers: number
+    speaker_durations?: Record<string, number>
     segments: Array<{
       speaker_id: string
       start: number

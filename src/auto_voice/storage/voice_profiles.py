@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PROFILES_DIR = None
 DEFAULT_SAMPLES_DIR = None
+PROFILE_ROLE_SOURCE_ARTIST = "source_artist"
+PROFILE_ROLE_TARGET_USER = "target_user"
+FULL_MODEL_TRAINING_UNLOCK_SECONDS = 30 * 60.0
 
 
 class ProfileNotFoundError(Exception):
@@ -75,9 +78,80 @@ class VoiceProfileStore:
     def _embedding_path(self, profile_id: str) -> str:
         return os.path.join(self.profiles_dir, f"{profile_id}.npy")
 
+    def _normalize_profile(self, profile_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure profile metadata exposes the canonical workflow fields."""
+        normalized = dict(profile_data)
+        profile_id = normalized.get("profile_id")
+        has_adapter = False
+        has_full_model = False
+
+        if profile_id:
+            has_adapter = any(
+                os.path.exists(path)
+                for path in (
+                    self._lora_weights_path(profile_id),
+                    self._legacy_lora_weights_path(profile_id),
+                )
+            )
+            has_full_model = os.path.exists(self._full_model_path(profile_id))
+
+        sample_count = normalized.get("training_sample_count")
+        total_training_duration = normalized.get("total_training_duration")
+
+        if profile_id:
+            samples = self.list_training_samples(profile_id)
+            if sample_count is None:
+                sample_count = len(samples)
+            if total_training_duration is None:
+                total_training_duration = sum(sample.duration for sample in samples)
+
+        sample_count = int(sample_count or normalized.get("sample_count") or 0)
+        total_training_duration = float(
+            total_training_duration
+            or normalized.get("clean_vocal_seconds")
+            or 0.0
+        )
+        clean_vocal_seconds = float(
+            normalized.get("clean_vocal_seconds", total_training_duration)
+        )
+        remaining_seconds = max(
+            FULL_MODEL_TRAINING_UNLOCK_SECONDS - clean_vocal_seconds,
+            0.0,
+        )
+
+        normalized.setdefault("profile_role", PROFILE_ROLE_TARGET_USER)
+        normalized.setdefault("created_from", "manual")
+        normalized["training_sample_count"] = sample_count
+        normalized["sample_count"] = sample_count
+        normalized["total_training_duration"] = total_training_duration
+        normalized["clean_vocal_seconds"] = clean_vocal_seconds
+        normalized["full_model_unlock_seconds"] = FULL_MODEL_TRAINING_UNLOCK_SECONDS
+        normalized["full_model_remaining_seconds"] = remaining_seconds
+        normalized["full_model_eligible"] = (
+            clean_vocal_seconds >= FULL_MODEL_TRAINING_UNLOCK_SECONDS
+        )
+        normalized["has_adapter_model"] = bool(has_adapter)
+        normalized["has_full_model"] = bool(has_full_model)
+        normalized["has_trained_model"] = bool(
+            normalized.get("has_trained_model") or has_adapter or has_full_model
+        )
+
+        if normalized["has_full_model"]:
+            normalized["active_model_type"] = "full_model"
+        elif normalized["has_trained_model"]:
+            normalized.setdefault("active_model_type", "adapter")
+        else:
+            normalized["active_model_type"] = "base"
+
+        if normalized["has_adapter_model"]:
+            normalized.setdefault("selected_adapter", "unified")
+
+        return normalized
+
     def save(self, profile_data: Dict[str, Any]) -> str:
         """Save a voice profile. Returns profile_id."""
         profile_id = profile_data.get('profile_id', str(uuid.uuid4()))
+        profile_data = self._normalize_profile(dict(profile_data))
         profile_data['profile_id'] = profile_id
         profile_data.setdefault('created_at', datetime.now(timezone.utc).isoformat())
 
@@ -110,7 +184,7 @@ class VoiceProfileStore:
         if os.path.exists(emb_path):
             profile['embedding'] = np.load(emb_path)
 
-        return profile
+        return self._normalize_profile(profile)
 
     def list_profiles(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """List all profiles, optionally filtered by user_id."""
@@ -125,7 +199,7 @@ class VoiceProfileStore:
                 with open(os.path.join(self.profiles_dir, fname)) as f:
                     profile = json.load(f)
                 if user_id is None or profile.get('user_id') == user_id:
-                    profiles.append(profile)
+                    profiles.append(self._normalize_profile(profile))
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"Failed to read profile {fname}: {e}")
 
@@ -481,6 +555,8 @@ class VoiceProfileStore:
         speaker_embedding: np.ndarray,
         user_id: str = "system",
         audio_segments: Optional[List[str]] = None,
+        profile_role: str = PROFILE_ROLE_SOURCE_ARTIST,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Create a new profile from diarization results.
 
@@ -489,6 +565,8 @@ class VoiceProfileStore:
             speaker_embedding: Speaker embedding from diarization
             user_id: User ID for the profile
             audio_segments: Optional list of audio file paths to add as samples
+            profile_role: Profile role for workflow routing
+            metadata: Additional metadata to persist into the manifest
 
         Returns:
             Profile ID of the created profile
@@ -498,7 +576,10 @@ class VoiceProfileStore:
             "name": name,
             "user_id": user_id,
             "created_from": "diarization",
+            "profile_role": profile_role,
         }
+        if metadata:
+            profile_data.update(metadata)
         profile_id = self.save(profile_data)
 
         # Save speaker embedding

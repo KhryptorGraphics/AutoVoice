@@ -129,7 +129,12 @@ export function DiarizationResultsPage() {
     await api.autoCreateProfileFromDiarization(
       diarizationResult.diarization_id,
       speakerId,
-      name
+      name,
+      undefined,
+      true,
+      {
+        profileRole: 'source_artist',
+      }
     );
 
     // Refresh profiles

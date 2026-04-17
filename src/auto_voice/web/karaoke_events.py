@@ -263,6 +263,8 @@ class KaraokeNamespace(Namespace):
             # Store user's requested pipeline type for reference/logging
             session._user_pipeline_preference = pipeline_type
 
+            session._source_voice_model_id = voice_model_id
+
             # Set speaker embedding if provided
             if 'speaker_embedding' in data:
                 import base64
@@ -271,11 +273,43 @@ class KaraokeNamespace(Namespace):
                     np.frombuffer(embedding_bytes, dtype=np.float32)
                 )
                 session.set_speaker_embedding(embedding)
+            elif profile_id:
+                from flask import current_app
+                from auto_voice.storage.voice_profiles import VoiceProfileStore
+                from auto_voice.storage.paths import (
+                    resolve_data_dir,
+                    resolve_profiles_dir,
+                    resolve_samples_dir,
+                )
+
+                voice_cloner = getattr(current_app, 'voice_cloner', None)
+                store = voice_cloner.store if voice_cloner is not None else VoiceProfileStore(
+                    profiles_dir=str(resolve_profiles_dir(data_dir=str(resolve_data_dir(current_app.config.get('DATA_DIR'))))),
+                    samples_dir=str(resolve_samples_dir(data_dir=str(resolve_data_dir(current_app.config.get('DATA_DIR'))))),
+                )
+                profile = store.load(profile_id)
+                embedding = store.load_speaker_embedding(profile_id)
+                if embedding is None:
+                    embedding = profile.get('embedding')
+                if embedding is None:
+                    raise ValueError(
+                        f'Profile {profile_id} has no speaker embedding for live conversion'
+                    )
+                session.set_speaker_embedding(
+                    torch.from_numpy(np.asarray(embedding, dtype=np.float32))
+                )
+                session.voice_model_id = profile_id
+                session._target_profile_id = profile_id
+                session._target_model_type = profile.get('active_model_type', 'base')
+                session._profiles_dir = store.profiles_dir
+                full_model_path = os.path.join(store.trained_models_dir, f"{profile_id}_full_model.pt")
+                session._full_model_path = full_model_path if os.path.exists(full_model_path) else None
             elif voice_model_id:
                 from .karaoke_api import _get_voice_model_registry
 
                 registry = _get_voice_model_registry()
                 session.load_voice_model(registry, voice_model_id)
+                session._target_model_type = 'registry_model'
 
             session.start()
             self._sessions[session_id] = session
@@ -315,6 +349,9 @@ class KaraokeNamespace(Namespace):
                 'session_id': session_id,
                 'status': 'ready',
                 'sample_collection_enabled': sample_collection_enabled,
+                'target_profile_id': profile_id,
+                'active_model_type': getattr(session, '_target_model_type', None),
+                'source_voice_model_id': voice_model_id,
             })
             logger.info(f"Karaoke session started: {session_id} for client {client_id[:8]}...")
 

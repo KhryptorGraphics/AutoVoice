@@ -7,12 +7,13 @@ import { Activity, User, Timer, Wifi, WifiOff } from 'lucide-react'
 import clsx from 'clsx'
 import { PipelineBadge, type PipelineType } from './PipelineSelector'
 import { AdapterBadge } from './AdapterSelector'
-import { AdapterType } from '../services/api'
+import { AdapterType, ActiveModelType } from '../services/api'
 
 interface KaraokeSessionInfoProps {
   pipeline: PipelineType
   profileName?: string
   adapterType?: AdapterType | null
+  modelType?: ActiveModelType
   latencyMs: number
   isConnected: boolean
   isStreaming: boolean
@@ -73,6 +74,7 @@ export function KaraokeSessionInfo({
   pipeline,
   profileName,
   adapterType,
+  modelType,
   latencyMs,
   isConnected,
   isStreaming,
@@ -112,6 +114,18 @@ export function KaraokeSessionInfo({
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-blue-900/50 text-blue-300">
             <User size={12} />
             {profileName}
+          </span>
+        )}
+        {modelType && (
+          <span className={clsx(
+            'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium',
+            modelType === 'full_model'
+              ? 'bg-violet-900/50 text-violet-300'
+              : modelType === 'adapter'
+                ? 'bg-emerald-900/50 text-emerald-300'
+                : 'bg-gray-700 text-gray-300'
+          )}>
+            {modelType === 'full_model' ? 'Full model' : modelType === 'adapter' ? 'LoRA target' : 'Base'}
           </span>
         )}
         {adapterType && <AdapterBadge adapterType={adapterType} />}

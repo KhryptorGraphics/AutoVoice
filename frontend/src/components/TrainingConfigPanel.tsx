@@ -7,6 +7,8 @@ interface TrainingConfigPanelProps {
   config: TrainingConfig
   onChange: (config: TrainingConfig) => void
   disabled?: boolean
+  allowFullTraining?: boolean
+  fullTrainingHint?: string
 }
 
 interface SliderInputProps {
@@ -144,12 +146,31 @@ function Toggle({ label, checked, onChange, tooltip, disabled }: ToggleProps) {
   )
 }
 
-export function TrainingConfigPanel({ config, onChange, disabled }: TrainingConfigPanelProps) {
+export function TrainingConfigPanel({
+  config,
+  onChange,
+  disabled,
+  allowFullTraining = true,
+  fullTrainingHint,
+}: TrainingConfigPanelProps) {
   const [expanded, setExpanded] = useState(false)
 
   const update = <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => {
     onChange({ ...config, [key]: value })
   }
+
+  useEffect(() => {
+    if (!allowFullTraining && config.training_mode === 'full') {
+      onChange({
+        ...config,
+        training_mode: 'lora',
+        epochs: Math.min(config.epochs, 100),
+        learning_rate: 1e-4,
+        lora_rank: config.lora_rank || DEFAULT_TRAINING_CONFIG.lora_rank,
+        lora_alpha: config.lora_alpha || DEFAULT_TRAINING_CONFIG.lora_alpha,
+      })
+    }
+  }, [allowFullTraining, config, onChange])
 
   const resetToDefaults = () => {
     onChange(DEFAULT_TRAINING_CONFIG)
@@ -175,7 +196,7 @@ export function TrainingConfigPanel({ config, onChange, disabled }: TrainingConf
       <div className="space-y-2">
         <label className="text-sm text-gray-400 flex items-center gap-1">
           Training Mode
-          <span title="LoRA: Fast fine-tuning (~1MB). Full: Train from scratch for higher quality (~184MB, needs 1+ hour of audio)." className="cursor-help">
+          <span title="LoRA: fast fine-tuning for the target user voice. Full: unlocks after 30 minutes of clean user singing for higher-accuracy conversion." className="cursor-help">
             <Info size={12} className="text-gray-500" />
           </span>
         </label>
@@ -203,6 +224,7 @@ export function TrainingConfigPanel({ config, onChange, disabled }: TrainingConf
           </button>
           <button
             onClick={() => {
+              if (!allowFullTraining) return
               onChange({
                 ...config,
                 training_mode: 'full',
@@ -216,13 +238,19 @@ export function TrainingConfigPanel({ config, onChange, disabled }: TrainingConf
               config.training_mode === 'full'
                 ? 'border-purple-500 bg-purple-500/10'
                 : 'border-gray-600 hover:border-gray-500',
+              !allowFullTraining && 'opacity-50',
               disabled && 'opacity-50 cursor-not-allowed'
             )}
           >
             <div className="font-medium">Full Training</div>
-            <div className="text-xs text-gray-400 mt-1">Higher quality • ~184MB • 1+ hour audio</div>
+            <div className="text-xs text-gray-400 mt-1">Higher quality • dedicated model • unlocks at 30 minutes</div>
           </button>
         </div>
+        {!allowFullTraining && (
+          <p className="text-xs text-yellow-400">
+            {fullTrainingHint || 'Full training is locked until this target profile reaches 30 minutes of clean vocals.'}
+          </p>
+        )}
       </div>
 
       {/* Always visible: key parameters */}

@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import uuid
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 import numpy as np
@@ -129,8 +130,36 @@ class SingingConversionPipeline:
                 self._model_manager.load_voice_model(voice_model_path, speaker_id)
         return self._model_manager
 
+    def _resolve_target_speaker(self, target_profile_id: str, target_embedding: np.ndarray) -> tuple[str, str]:
+        """Resolve which target model should drive conversion for a profile.
+
+        Returns:
+            Tuple of (speaker_id, model_type), where model_type is one of
+            ``full_model`` or ``adapter``.
+        """
+        model_manager = self._get_model_manager()
+
+        store = getattr(self._voice_cloner, 'store', None)
+        trained_models_dir = getattr(store, 'trained_models_dir', None)
+        if trained_models_dir:
+            full_model_path = Path(trained_models_dir) / f"{target_profile_id}_full_model.pt"
+            if full_model_path.exists():
+                model_manager.load_voice_model(
+                    str(full_model_path),
+                    target_profile_id,
+                    speaker_embedding=target_embedding,
+                )
+                logger.info(
+                    "Using dedicated full model for target profile %s from %s",
+                    target_profile_id,
+                    full_model_path,
+                )
+                return target_profile_id, 'full_model'
+
+        return self.config.get('speaker_id', 'default'), 'adapter'
+
     def _convert_voice(self, vocals: np.ndarray, target_embedding: np.ndarray,
-                       sr: int, preset: str = 'balanced') -> np.ndarray:
+                       sr: int, speaker_id: str, preset: str = 'balanced') -> np.ndarray:
         """Convert vocals to target voice using trained So-VITS-SVC model.
 
         Args:
@@ -147,7 +176,6 @@ class SingingConversionPipeline:
         """
         try:
             model_manager = self._get_model_manager()
-            speaker_id = self.config.get('speaker_id', 'default')
             return model_manager.infer(vocals, speaker_id, target_embedding, sr)
         except RuntimeError as e:
             raise ConversionError(f"Voice conversion failed: {e}")
@@ -256,6 +284,11 @@ class SingingConversionPipeline:
         if isinstance(target_embedding, list):
             target_embedding = np.array(target_embedding)
 
+        speaker_id, model_type = self._resolve_target_speaker(
+            target_profile_id,
+            target_embedding,
+        )
+
         # Separate vocals and instrumental
         stems = self._separate_vocals(audio, sr)
         vocals = stems['vocals']
@@ -284,7 +317,13 @@ class SingingConversionPipeline:
                 logger.warning(f"Pitch shift failed: {e}")
 
         # Convert vocals to target voice
-        converted_vocals = self._convert_voice(vocals, target_embedding, sr, preset)
+        converted_vocals = self._convert_voice(
+            vocals,
+            target_embedding,
+            sr,
+            speaker_id=speaker_id,
+            preset=preset,
+        )
 
         # Extract converted pitch
         f0_contour = self._extract_pitch(converted_vocals, sr)
@@ -316,6 +355,8 @@ class SingingConversionPipeline:
                 'instrumental_volume': instrumental_volume,
                 'processing_time': elapsed,
                 'target_profile_id': target_profile_id,
+                'active_model_type': model_type,
+                'speaker_id': speaker_id,
             },
             'f0_contour': f0_contour,
             'f0_original': f0_original,
@@ -338,7 +379,7 @@ class SingingConversionPipeline:
 
         logger.info(
             f"Song conversion complete: {duration:.1f}s audio in {elapsed:.1f}s "
-            f"(preset={preset}, profile={target_profile_id})"
+            f"(preset={preset}, profile={target_profile_id}, model_type={model_type})"
         )
 
         return result

@@ -71,6 +71,7 @@ class StreamingConversionPipeline:
         # Session state
         self.is_running = False
         self._speaker_embedding: Optional[torch.Tensor] = None
+        self._current_speaker_id: Optional[str] = None
 
         # Minimum chunk size for processing (10ms worth of samples)
         self._min_chunk_size = int(sample_rate * 0.01)
@@ -229,6 +230,7 @@ class StreamingConversionPipeline:
             speaker_embedding: Target speaker embedding (256-dim) to convert to
         """
         self._speaker_embedding = speaker_embedding.to(self.device)
+        self._current_speaker_id = None
         self.reset()
         self.is_running = True
 
@@ -240,7 +242,21 @@ class StreamingConversionPipeline:
         """
         self.is_running = False
         self._speaker_embedding = None
+        self._current_speaker_id = None
         self.reset()
+
+    def set_speaker(self, profile_id: str) -> None:
+        """Load a trained speaker adapter into the underlying SOTA pipeline."""
+        self._pipeline.set_speaker(profile_id)
+        speaker_embedding = self._pipeline.get_speaker_embedding()
+        if speaker_embedding is None:
+            raise RuntimeError(f"Speaker {profile_id} did not expose an embedding")
+        self._speaker_embedding = speaker_embedding.detach().clone()
+        self._current_speaker_id = profile_id
+
+    def get_current_speaker(self) -> Optional[str]:
+        """Return the profile ID for the currently loaded speaker adapter."""
+        return self._current_speaker_id
 
 
 class AudioInputStream:

@@ -251,6 +251,50 @@ def _ensure_profile_in_store(profile_id: str) -> Dict[str, Any]:
     return store.load(profile_id)
 
 
+def _serialize_profile_for_response(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip bulky fields and expose the canonical profile workflow contract."""
+    clean_profile = {k: v for k, v in profile.items() if k != 'embedding'}
+    sample_count = int(
+        clean_profile.get('sample_count', clean_profile.get('training_sample_count', 0))
+    )
+    clean_vocal_seconds = float(
+        clean_profile.get('clean_vocal_seconds', clean_profile.get('total_training_duration', 0.0))
+    )
+    remaining_seconds = float(
+        clean_profile.get(
+            'full_model_remaining_seconds',
+            max(float(clean_profile.get('full_model_unlock_seconds', 1800.0)) - clean_vocal_seconds, 0.0),
+        )
+    )
+
+    clean_profile['sample_count'] = sample_count
+    clean_profile['training_sample_count'] = sample_count
+    clean_profile['profile_role'] = clean_profile.get('profile_role', 'target_user')
+    clean_profile['created_from'] = clean_profile.get('created_from', 'manual')
+    if clean_profile.get('last_trained_at') and not clean_profile.get('last_trained'):
+        clean_profile['last_trained'] = clean_profile['last_trained_at']
+    clean_profile['clean_vocal_seconds'] = clean_vocal_seconds
+    clean_profile['clean_vocal_minutes'] = round(clean_vocal_seconds / 60.0, 2)
+    clean_profile['full_model_remaining_seconds'] = remaining_seconds
+    clean_profile['full_model_remaining_minutes'] = round(remaining_seconds / 60.0, 2)
+    clean_profile['full_model_unlock_seconds'] = float(
+        clean_profile.get('full_model_unlock_seconds', 1800.0)
+    )
+    clean_profile['full_model_eligible'] = bool(
+        clean_profile.get('full_model_eligible', remaining_seconds <= 0.0)
+    )
+    clean_profile['has_trained_model'] = bool(clean_profile.get('has_trained_model'))
+    clean_profile['has_full_model'] = bool(clean_profile.get('has_full_model'))
+    clean_profile['has_adapter_model'] = bool(clean_profile.get('has_adapter_model'))
+    clean_profile['active_model_type'] = clean_profile.get(
+        'active_model_type',
+        'full_model' if clean_profile['has_full_model'] else (
+            'adapter' if clean_profile['has_trained_model'] else 'base'
+        ),
+    )
+    return clean_profile
+
+
 def _get_frontend_adapter_type(profile: Optional[Dict[str, Any]]) -> str:
     adapter_type = (profile or {}).get('selected_adapter')
     if adapter_type in {'hq', 'nvfp4'}:
@@ -395,13 +439,20 @@ def convert_song():
 
     profile = None
     try:
-        profile = voice_cloner.load_voice_profile(profile_id)
+        profile = _ensure_profile_in_store(profile_id)
     except ProfileNotFoundError:
         profile = None
 
     if profile is None:
         logger.warning(f"Profile not found during validation: {profile_id}")
         return not_found_response(f'Voice profile {profile_id} not found')
+
+    serialized_profile = _serialize_profile_for_response(profile)
+    if serialized_profile.get('profile_role') != 'target_user':
+        return validation_error_response(
+            'Source artist profiles cannot be used as conversion targets. '
+            'Select a target user profile instead.'
+        )
 
     # Define preset_map locally (Comment 1 fix)
     preset_map = {
@@ -456,9 +507,10 @@ def convert_song():
     )
 
     adapter_manager = _get_adapter_manager()
+    has_adapter_model = adapter_manager.has_adapter(profile_id)
+    has_full_model = bool(serialized_profile.get('has_full_model'))
 
-    # Task 4.4: Return error if adapter missing for profile
-    if not adapter_manager.has_adapter(profile_id):
+    if not serialized_profile.get('has_trained_model'):
         logger.warning(f"No trained adapter found for profile {profile_id}")
         return jsonify({
             'error': 'No trained model available',
@@ -466,14 +518,37 @@ def convert_song():
             'profile_id': profile_id
         }), 404
 
-    # If no adapter_type specified, use profile's selected adapter or default to unified adapter
-    if adapter_type is None:
-        adapter_type = profile.get('selected_adapter')
-        if adapter_type is None:
-            # Default: use unified adapter (new format)
-            adapter_type = 'unified'
+    active_model_type = serialized_profile.get('active_model_type', 'base')
+    use_full_model = bool(has_full_model and active_model_type == 'full_model')
+    if use_full_model:
+        if adapter_type is not None:
+            logger.info(
+                "Ignoring adapter selection %s for full-model target profile %s",
+                adapter_type,
+                profile_id,
+            )
+        adapter_type = None
+    else:
+        if not has_adapter_model:
+            logger.warning(f"No trained adapter found for profile {profile_id}")
+            return jsonify({
+                'error': 'No trained model available',
+                'message': f'Profile {profile_id} does not have a usable target model. Please train the model first.',
+                'profile_id': profile_id
+            }), 404
 
-    logger.info(f'Using adapter type: {adapter_type} for profile {profile_id}')
+        # If no adapter_type specified, use profile's selected adapter or default to unified adapter
+        if adapter_type is None:
+            adapter_type = profile.get('selected_adapter')
+            if adapter_type is None:
+                adapter_type = 'unified'
+
+    logger.info(
+        "Using model_type=%s adapter_type=%s for profile %s",
+        active_model_type,
+        adapter_type,
+        profile_id,
+    )
 
     # Pipeline type selection
     # - realtime: Low-latency for live karaoke (<100ms)
@@ -517,6 +592,7 @@ def convert_song():
                 'preset': preset,
                 'adapter_type': adapter_type,
                 'pipeline_type': pipeline_type,
+                'active_model_type': active_model_type,
             }
             job_id = job_manager.create_job(tmp_file.name, profile_id, settings_dict)
 
@@ -536,7 +612,9 @@ def convert_song():
                 'status': 'queued',
                 'job_id': job_id,
                 'websocket_room': job_id,      # Add this field
-                'message': 'Join WebSocket room with job_id to receive progress updates'
+                'message': 'Join WebSocket room with job_id to receive progress updates',
+                'active_model_type': active_model_type,
+                'adapter_type': adapter_type,
             }, ), 202
         elif singing_pipeline:
             # Fallback to synchronous processing
@@ -559,7 +637,6 @@ def convert_song():
                     return validation_error_response('Profile missing speaker embedding for realtime conversion')
 
                 # Convert using realtime pipeline
-                import numpy as np
                 if isinstance(speaker_embedding, list):
                     speaker_embedding = np.array(speaker_embedding, dtype=np.float32)
 
@@ -574,6 +651,7 @@ def convert_song():
                     'metadata': {
                         'pipeline': 'realtime',
                         'profile_id': profile_id,
+                        'active_model_type': active_model_type,
                     },
                     'stems': {},  # Realtime doesn't do separation
                 }
@@ -640,14 +718,17 @@ def convert_song():
 
                 # Save to WAV buffer
                 buffer = io.BytesIO()
+                encoded_with_torchaudio = False
                 if TORCHAUDIO_AVAILABLE:
                     torch_audio = torch.from_numpy(audio_data).float()
                     logger.debug(f"[ENCODE] torch_audio shape: {torch_audio.shape}")
                     try:
                         torchaudio.save(buffer, torch_audio, sample_rate, format='wav')
-                    except Exception:
-                        raise RuntimeError('Torchaudio encoding failed')
-                else:
+                        encoded_with_torchaudio = True
+                    except Exception as exc:
+                        logger.warning("Torchaudio encoding failed, falling back to wave writer: %s", exc)
+                        buffer = io.BytesIO()
+                if not encoded_with_torchaudio:
                     # Fallback to wave
                     import wave
                     audio_int16 = (audio_data * 32767).astype(np.int16)
@@ -671,7 +752,9 @@ def convert_song():
                 'format': 'wav',
                 'sample_rate': result['sample_rate'],
                 'duration': result['duration'],
-                'metadata': result['metadata']
+                'metadata': result['metadata'],
+                'active_model_type': active_model_type,
+                'adapter_type': adapter_type,
             }
 
             # Add pitch contour data if available
@@ -1002,34 +1085,14 @@ def clone_voice():
 @api_bp.route('/voice/profiles', methods=['GET'])
 def get_voice_profiles():
     """List voice profiles for optional user_id."""
-    voice_cloner = getattr(current_app, 'voice_cloner', None)
-    if voice_cloner is None:
-        logger.warning("Voice cloner service unavailable")
-        return jsonify({
-            'error': 'Voice cloning service unavailable',
-            'message': 'Voice cloner not initialized'
-        }), 503
-
     user_id = request.args.get('user_id')
     try:
-        profiles = voice_cloner.list_voice_profiles(user_id=user_id)
         store = _get_profile_store()
-
-        # Omit large embedding fields and normalize field names for frontend
-        clean_profiles = []
-        for profile in profiles:
-            clean_profile = {k: v for k, v in profile.items() if k != 'embedding'}
-            # Normalize field names for frontend compatibility
-            if 'training_sample_count' in clean_profile:
-                clean_profile['sample_count'] = clean_profile.pop('training_sample_count')
-            elif 'sample_count' not in clean_profile:
-                clean_profile['sample_count'] = 0
-
-            pid = clean_profile.get('profile_id')
-            clean_profile['has_trained_model'] = bool(pid and store.has_trained_model(pid))
-
-            clean_profiles.append(clean_profile)
-
+        profiles = store.list_profiles(user_id=user_id)
+        clean_profiles = [
+            _serialize_profile_for_response(profile)
+            for profile in profiles
+        ]
         return jsonify(clean_profiles)
     except Exception as e:
         # COMMENT 2 FIX: Treat unexpected internal failures as transient service issues (503)
@@ -1058,11 +1121,7 @@ def get_voice_profile(profile_id):
                 'profile_id': profile_id
             }), 404
 
-        # Omit large embedding field
-        clean_profile = {k: v for k, v in profile.items() if k != 'embedding'}
-
-        store = _get_profile_store()
-        clean_profile['has_trained_model'] = store.has_trained_model(profile_id)
+        clean_profile = _serialize_profile_for_response(profile)
 
         adapter_artifact = _get_canonical_adapter_artifact(profile_id, profile)
         if adapter_artifact is not None:
@@ -1190,6 +1249,7 @@ def get_profile_model(profile_id):
         adapter_manager = _get_adapter_manager()
         has_model = adapter_manager.has_adapter(profile_id)
         adapter_path = adapter_manager.get_adapter_path(profile_id) if has_model else None
+        serialized_profile = _serialize_profile_for_response(profile)
 
         if not has_model:
             full_model_path = resolve_trained_models_dir(data_dir=str(_get_data_dir())) / f"{profile_id}_full_model.pt"
@@ -1199,6 +1259,9 @@ def get_profile_model(profile_id):
                 'has_model': has_full_model,
                 'model_type': 'full_model' if has_full_model else None,
                 'model_path': str(full_model_path) if has_full_model else None,
+                'profile_role': serialized_profile['profile_role'],
+                'clean_vocal_seconds': serialized_profile['clean_vocal_seconds'],
+                'full_model_eligible': serialized_profile['full_model_eligible'],
                 'message': (
                     'Full model checkpoint available for this profile'
                     if has_full_model
@@ -1232,8 +1295,12 @@ def get_profile_model(profile_id):
             'profile_id': profile_id,
             'has_model': True,
             'model_type': 'adapter',
+            'active_model_type': serialized_profile['active_model_type'],
             'adapter_path': str(adapter_path) if adapter_path else None,
             'selected_adapter': _get_frontend_adapter_type(profile),
+            'profile_role': serialized_profile['profile_role'],
+            'clean_vocal_seconds': serialized_profile['clean_vocal_seconds'],
+            'full_model_eligible': serialized_profile['full_model_eligible'],
             'adapter_info': {
                 'rank': adapter_info.rank if adapter_info else None,
                 'alpha': adapter_info.alpha if adapter_info else None,
@@ -1394,6 +1461,9 @@ def get_profile_training_status(profile_id):
             'has_trained_model': has_trained,
             'training_status': training_status if not has_trained else 'ready',
             'model_version': profile.get('model_version'),
+            'profile_role': profile.get('profile_role', 'target_user'),
+            'clean_vocal_seconds': profile.get('clean_vocal_seconds', 0.0),
+            'full_model_eligible': profile.get('full_model_eligible', False),
         })
     except ProfileNotFoundError:
         return jsonify({
@@ -2082,11 +2152,17 @@ def create_training_job():
         if not isinstance(config_payload, dict):
             return validation_error_response('config must be an object')
 
-        _ensure_profile_in_store(profile_id)
         store = _get_profile_store()
+        profile = _ensure_profile_in_store(profile_id)
         available_samples = store.list_training_samples(profile_id)
         if not available_samples:
             return validation_error_response('No training samples found for this profile')
+
+        if profile.get('profile_role', 'target_user') != 'target_user':
+            return validation_error_response(
+                'Only target user profiles can be trained. '
+                'Source artist profiles are reference voices extracted from songs.'
+            )
 
         sample_ids = data.get('sample_ids') or [sample.sample_id for sample in available_samples]
         sample_ids = [sample_id for sample_id in sample_ids if isinstance(sample_id, str)]
@@ -2101,18 +2177,35 @@ def create_training_job():
 
         normalized_config = dict(config_payload)
         normalized_config['training_mode'] = training_mode
+        job_manager = _get_training_job_manager()
+
         if training_mode == 'full':
+            eligibility = job_manager.check_needs_full_model(profile_id)
+            if not eligibility['needs_full_model']:
+                minutes = eligibility.get('clean_vocal_seconds', 0.0) / 60.0
+                needed_minutes = eligibility.get('remaining_seconds', 0.0) / 60.0
+                return validation_error_response(
+                    'Full model training is locked until this target profile has '
+                    f'30 minutes of clean singing vocals. Current clean vocal duration: '
+                    f'{minutes:.1f} minutes. Need {needed_minutes:.1f} more minutes.'
+                )
             normalized_config.setdefault('epochs', 500)
             normalized_config.setdefault('learning_rate', 5e-5)
             normalized_config['lora_rank'] = 0
             normalized_config['lora_alpha'] = 0
 
-        job_manager = _get_training_job_manager()
-        job = job_manager.create_job(
-            profile_id=profile_id,
-            sample_ids=sample_ids,
-            config=TrainingConfig.from_dict(normalized_config),
-        )
+        training_config = TrainingConfig.from_dict(normalized_config)
+        if training_mode == 'full':
+            job = job_manager.create_full_model_job(
+                profile_id=profile_id,
+                config=training_config,
+            )
+        else:
+            job = job_manager.create_job(
+                profile_id=profile_id,
+                sample_ids=sample_ids,
+                config=training_config,
+            )
         job_manager.execute_job(job.job_id)
 
         serialized = _sanitize_job(_serialize_training_job(job))
@@ -2182,6 +2275,17 @@ def _find_training_sample(profile_id: str, sample_id: str):
     for sample in store.list_training_samples(profile_id):
         if sample.sample_id == sample_id:
             return sample
+    legacy_samples = _profile_samples.get(profile_id, {})
+    legacy_sample = legacy_samples.get(sample_id)
+    if legacy_sample:
+        return type('LegacyTrainingSample', (), {
+            'sample_id': legacy_sample.get('sample_id', sample_id),
+            'vocals_path': legacy_sample.get('vocals_path') or legacy_sample.get('file_path'),
+            'duration': legacy_sample.get('duration', legacy_sample.get('duration_seconds', 0.0)),
+            'source_file': legacy_sample.get('source_file'),
+            'created_at': legacy_sample.get('created_at') or legacy_sample.get('created'),
+            'instrumental_path': legacy_sample.get('instrumental_path'),
+        })()
     return None
 
 
@@ -2979,7 +3083,6 @@ def auto_create_profile_from_diarization():
     """
     try:
         from auto_voice.audio.speaker_diarization import SpeakerDiarizer, DiarizationResult, SpeakerSegment
-        import numpy as np
 
         data = request.get_json()
         if not data:
@@ -3022,6 +3125,17 @@ def auto_create_profile_from_diarization():
         # Create profile
         store = _get_profile_store()
         user_id = data.get('user_id', 'system')
+        profile_role = data.get('profile_role', 'source_artist')
+        request_metadata = data.get('metadata') or {}
+        speaker_duration = sum(s['end'] - s['start'] for s in speaker_segments)
+        profile_metadata = {
+            'source_audio_path': audio_path,
+            'source_diarization_id': diarization_id,
+            'source_speaker_id': speaker_id,
+            'source_speaker_duration': speaker_duration,
+        }
+        profile_metadata.update(diarization_data.get('metadata') or {})
+        profile_metadata.update(request_metadata)
 
         # Extract all segments as audio files if requested
         audio_segments = []
@@ -3057,19 +3171,23 @@ def auto_create_profile_from_diarization():
             speaker_embedding=embedding,
             user_id=user_id,
             audio_segments=audio_segments,
+            profile_role=profile_role,
+            metadata=profile_metadata,
         )
 
         # Calculate total duration
-        total_duration = sum(s['end'] - s['start'] for s in speaker_segments)
+        total_duration = speaker_duration
 
         logger.info(f"Auto-created profile '{name}' ({profile_id}) from diarization")
         return jsonify({
             'profile_id': profile_id,
             'name': name,
             'speaker_id': speaker_id,
+            'profile_role': profile_role,
             'num_segments': len(speaker_segments),
             'total_duration': total_duration,
             'embedding_dim': len(embedding),
+            'metadata': profile_metadata,
             'status': 'success',
         }), 201
 
@@ -3735,18 +3853,46 @@ def youtube_download():
                 from ..audio.speaker_diarization import SpeakerDiarizer
                 diarizer = SpeakerDiarizer()
                 diarization_result = diarizer.diarize(result.audio_path)
-                response['diarization_result'] = {
+                diarization_id = str(uuid.uuid4())
+                speaker_durations = {}
+                segments = []
+                for seg in diarization_result.segments:
+                    speaker_durations[seg.speaker_id] = (
+                        speaker_durations.get(seg.speaker_id, 0.0) + seg.duration
+                    )
+                    segments.append({
+                        'speaker_id': seg.speaker_id,
+                        'start': seg.start,
+                        'end': seg.end,
+                        'duration': seg.duration,
+                    })
+
+                _diarization_results[diarization_id] = {
+                    'audio_path': result.audio_path,
+                    'audio_duration': result.duration or 0.0,
                     'num_speakers': diarization_result.num_speakers,
-                    'segments': [
-                        {
-                            'speaker_id': seg.speaker_id,
-                            'start': seg.start,
-                            'end': seg.end,
-                            'duration': seg.duration
-                        }
-                        for seg in diarization_result.segments
-                    ]
+                    'segments': segments,
+                    'created_at': time.time(),
+                    'metadata': {
+                        'source': 'youtube_download',
+                        'title': result.title,
+                        'video_id': result.video_id,
+                        'main_artist': result.main_artist,
+                        'featured_artists': result.featured_artists,
+                        'song_title': result.song_title,
+                        'original_artist': result.original_artist,
+                        'thumbnail_url': result.thumbnail_url,
+                    },
                 }
+
+                response['diarization_result'] = {
+                    'diarization_id': diarization_id,
+                    'num_speakers': diarization_result.num_speakers,
+                    'speaker_durations': speaker_durations,
+                    'segments': segments,
+                }
+                response['diarization_id'] = diarization_id
+                response['speaker_durations'] = speaker_durations
 
                 # Filter to main artist only if requested
                 if filter_to_main_artist and diarization_result.num_speakers > 1:

@@ -221,6 +221,13 @@ export function YouTubeDownloadPage() {
       return
     }
 
+    const diarizationId =
+      downloadResult?.diarization_id || downloadResult?.diarization_result?.diarization_id
+    if (!diarizationId) {
+      setError('Run diarization first so source artist profiles can be created from detected singers.')
+      return
+    }
+
     setCreatingProfiles(true)
     setError(null)
 
@@ -229,24 +236,26 @@ export function YouTubeDownloadPage() {
 
       for (const artist of selected) {
         try {
-          // For now, create a basic profile with the name
-          // In a full implementation, we would extract the speaker's segments
-          // and use them as the reference audio
-          const response = await fetch('/api/v1/voice/clone', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: artist.name,
-              from_youtube: true,
-              audio_path: downloadResult?.audio_path,
-              speaker_id: artist.speakerId,
-            }),
-          })
-
-          if (response.ok) {
-            await response.json() // consume response
-            createdProfiles.push(artist.name)
-          }
+          if (!artist.speakerId) continue
+          await api.autoCreateProfileFromDiarization(
+            diarizationId,
+            artist.speakerId,
+            artist.name,
+            undefined,
+            true,
+            {
+              profileRole: 'source_artist',
+              metadata: {
+                source: 'youtube_download',
+                title: downloadResult?.title,
+                video_id: downloadResult?.video_id,
+                main_artist: downloadResult?.main_artist,
+                featured_artists: downloadResult?.featured_artists,
+                song_title: downloadResult?.song_title,
+              },
+            }
+          )
+          createdProfiles.push(artist.name)
         } catch (err) {
           console.error(`Failed to create profile for ${artist.name}:`, err)
         }
@@ -256,7 +265,7 @@ export function YouTubeDownloadPage() {
       await loadProfiles()
 
       if (createdProfiles.length > 0) {
-        alert(`Created ${createdProfiles.length} profile(s): ${createdProfiles.join(', ')}`)
+        toast.success(`Created ${createdProfiles.length} source profile(s): ${createdProfiles.join(', ')}`)
       }
 
       // Clear selection

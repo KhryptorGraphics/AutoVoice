@@ -27,6 +27,10 @@ from auto_voice.storage.paths import (
     resolve_samples_dir,
     resolve_trained_models_dir,
 )
+from auto_voice.storage.voice_profiles import (
+    FULL_MODEL_TRAINING_UNLOCK_SECONDS,
+    PROFILE_ROLE_TARGET_USER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -998,8 +1002,12 @@ class TrainingJobManager:
         profile['training_epochs'] = results.get('epochs_completed')
         profile['loss_final'] = results.get('final_loss')
         profile['sample_count'] = sample_count
-        if results.get('artifact_type') == 'adapter':
+        artifact_type = results.get('artifact_type')
+        if artifact_type == 'adapter':
             profile['selected_adapter'] = profile.get('selected_adapter') or 'unified'
+            profile['active_model_type'] = 'adapter'
+        elif artifact_type == 'full_model':
+            profile['active_model_type'] = 'full_model'
         profile.pop('embedding', None)
         store.save(profile)
 
@@ -1151,12 +1159,15 @@ class TrainingJobManager:
         # Check status flag
         status = profile.get("status", "")
         needs_training_flag = status == "needs_training"
+        profile_role = profile.get("profile_role", PROFILE_ROLE_TARGET_USER)
 
         # Determine if training needed
         needs_training = False
         reason = "none"
 
-        if sample_count < min_samples:
+        if profile_role != PROFILE_ROLE_TARGET_USER:
+            reason = f"unsupported_profile_role ({profile_role})"
+        elif sample_count < min_samples:
             reason = f"insufficient_samples (have {sample_count}, need {min_samples})"
         elif not has_adapter:
             needs_training = True
@@ -1300,6 +1311,13 @@ class TrainingJobManager:
             logger.warning(f"Profile {profile_id} not found: {e}")
             return None
 
+        if profile.get("profile_role", PROFILE_ROLE_TARGET_USER) != PROFILE_ROLE_TARGET_USER:
+            logger.debug(
+                f"Skipping auto-training for non-target profile {profile_id}: "
+                f"{profile.get('profile_role')}"
+            )
+            return None
+
         # Check if already queued
         existing_jobs = self.get_jobs_for_profile(profile_id)
         pending_or_running = [
@@ -1420,29 +1438,34 @@ class TrainingJobManager:
     # Phase 4.4: Full Model Training for High-Sample Profiles
     # =========================================================================
 
-    SAMPLES_FOR_FULL_MODEL = 50  # Threshold from spec
+    FULL_MODEL_UNLOCK_SECONDS = FULL_MODEL_TRAINING_UNLOCK_SECONDS
 
     def check_needs_full_model(
         self,
         profile_id: str,
-        samples_threshold: int = None,
+        duration_threshold_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Check if a profile should upgrade to full model training.
 
-        Phase 4.4: Full model training for profiles with >50 samples.
+        Phase 4.4: Full model training for target-user profiles with sufficient
+        accumulated clean singing vocals.
 
         Args:
             profile_id: Voice profile ID
-            samples_threshold: Override default threshold (default: 50)
+            duration_threshold_seconds: Override default threshold in seconds
 
         Returns:
             Dict with keys:
             - needs_full_model: bool
             - reason: str
             - sample_count: int
+            - clean_vocal_seconds: float
+            - remaining_seconds: float
             - current_adapter_type: str
         """
-        threshold = samples_threshold or self.SAMPLES_FOR_FULL_MODEL
+        threshold_seconds = float(
+            duration_threshold_seconds or self.FULL_MODEL_UNLOCK_SECONDS
+        )
 
         store = self._get_profile_store()
 
@@ -1454,12 +1477,21 @@ class TrainingJobManager:
                 "needs_full_model": False,
                 "reason": "profile_not_found",
                 "sample_count": 0,
+                "clean_vocal_seconds": 0.0,
+                "remaining_seconds": threshold_seconds,
                 "current_adapter_type": "none",
             }
 
         # Count samples
         samples = store.list_training_samples(profile_id)
         sample_count = len(samples)
+        clean_vocal_seconds = float(
+            profile.get("clean_vocal_seconds")
+            or profile.get("total_training_duration")
+            or sum(sample.duration for sample in samples)
+        )
+        remaining_seconds = max(threshold_seconds - clean_vocal_seconds, 0.0)
+        profile_role = profile.get("profile_role", PROFILE_ROLE_TARGET_USER)
 
         # Check current adapter type
         trained_models_dir = self._resolve_trained_models_dir()
@@ -1478,18 +1510,28 @@ class TrainingJobManager:
         needs_full_model = False
         reason = "none"
 
-        if sample_count < threshold:
-            reason = f"insufficient_samples (have {sample_count}, need {threshold})"
+        if profile_role != PROFILE_ROLE_TARGET_USER:
+            reason = f"unsupported_profile_role ({profile_role})"
+        elif clean_vocal_seconds < threshold_seconds:
+            reason = (
+                "insufficient_clean_vocals "
+                f"(have {clean_vocal_seconds:.1f}s, need {threshold_seconds:.1f}s)"
+            )
         elif current_adapter_type == "full_model":
             reason = "already_full_model"
         else:
             needs_full_model = True
-            reason = f"upgrade_recommended (has {sample_count} samples, current: {current_adapter_type})"
+            reason = (
+                "upgrade_recommended "
+                f"(has {clean_vocal_seconds:.1f}s clean vocals, current: {current_adapter_type})"
+            )
 
         return {
             "needs_full_model": needs_full_model,
             "reason": reason,
             "sample_count": sample_count,
+            "clean_vocal_seconds": clean_vocal_seconds,
+            "remaining_seconds": remaining_seconds,
             "current_adapter_type": current_adapter_type,
         }
 
@@ -1500,7 +1542,8 @@ class TrainingJobManager:
     ) -> TrainingJob:
         """Create a full model training job (not LoRA).
 
-        Phase 4.4: For profiles with >50 samples, train full model
+        Phase 4.4: For profiles with >=30 minutes of clean user vocals, train
+        full model
         for higher quality conversion.
 
         Args:
@@ -1511,17 +1554,19 @@ class TrainingJobManager:
             Created TrainingJob with full_model flag
 
         Raises:
-            ValueError: If insufficient samples for full model
+            ValueError: If insufficient clean vocals for full model
         """
         # Check if eligible
         check = self.check_needs_full_model(profile_id)
 
         if not check["needs_full_model"]:
-            if check["sample_count"] < self.SAMPLES_FOR_FULL_MODEL:
+            if check["clean_vocal_seconds"] < self.FULL_MODEL_UNLOCK_SECONDS:
                 raise ValueError(
-                    f"Profile {profile_id} has only {check['sample_count']} samples. "
-                    f"Need at least {self.SAMPLES_FOR_FULL_MODEL} for full model training."
+                    f"Profile {profile_id} has only {check['clean_vocal_seconds']:.1f}s "
+                    f"of clean vocals. Need at least "
+                    f"{self.FULL_MODEL_UNLOCK_SECONDS:.1f}s for full model training."
                 )
+            raise ValueError(check["reason"])
 
         store = self._get_profile_store()
         samples = store.list_training_samples(profile_id)
@@ -1530,6 +1575,7 @@ class TrainingJobManager:
         # Enhanced config for full model training
         if config is None:
             config = TrainingConfig(
+                training_mode="full",
                 # Full model uses more epochs and lower LR
                 epochs=50,
                 learning_rate=5e-5,
@@ -1543,6 +1589,7 @@ class TrainingJobManager:
             )
         else:
             # Override LoRA settings for full model
+            config.training_mode = "full"
             config.lora_rank = 0
             config.lora_alpha = 0
 
@@ -1561,7 +1608,7 @@ class TrainingJobManager:
 
         logger.info(
             f"Created full model training job {job.job_id} for {profile_id} "
-            f"with {len(sample_ids)} samples"
+            f"with {check['clean_vocal_seconds']:.1f}s clean vocals"
         )
 
         return job
@@ -1569,20 +1616,21 @@ class TrainingJobManager:
     def auto_queue_full_model_training(
         self,
         profile_id: str,
-        samples_threshold: int = None,
+        duration_threshold_seconds: Optional[float] = None,
     ) -> Optional[TrainingJob]:
         """Automatically queue full model training if threshold met.
 
-        Phase 4.4: Auto-upgrade from LoRA to full model when samples >= 50.
+        Phase 4.4: Auto-upgrade from LoRA to full model when clean vocals
+        meet the canonical duration threshold.
 
         Args:
             profile_id: Voice profile ID
-            samples_threshold: Override threshold (default: 50)
+            duration_threshold_seconds: Override threshold (default: canonical unlock)
 
         Returns:
             TrainingJob if queued, None otherwise
         """
-        check = self.check_needs_full_model(profile_id, samples_threshold)
+        check = self.check_needs_full_model(profile_id, duration_threshold_seconds)
 
         if not check["needs_full_model"]:
             logger.debug(

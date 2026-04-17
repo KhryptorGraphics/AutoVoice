@@ -74,6 +74,12 @@ export function KaraokePage() {
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [collectTrainingSamples, setCollectTrainingSamples] = useState(false);
   const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null);
+  const trainedTargetProfiles = voiceProfiles.filter(
+    (profile) => profile.profile_role !== 'source_artist' && profile.has_trained_model
+  );
+  const selectedProfile = selectedProfileId
+    ? voiceProfiles.find((profile) => profile.profile_id === selectedProfileId) ?? null
+    : null;
 
   // Streaming state
   const [streamingStats, setStreamingStats] = useState<StreamingStats>({
@@ -97,6 +103,21 @@ export function KaraokePage() {
     loadVoiceModels();
     loadVoiceProfiles();
   }, []);
+
+  useEffect(() => {
+    if (selectedProfile?.active_model_type === 'full_model' && selectedAdapter) {
+      setSelectedAdapter(null);
+    }
+  }, [selectedAdapter, selectedProfile?.active_model_type]);
+
+  useEffect(() => {
+    if (
+      selectedProfileId &&
+      !trainedTargetProfiles.some((profile) => profile.profile_id === selectedProfileId)
+    ) {
+      setSelectedProfileId(trainedTargetProfiles[0]?.profile_id ?? null);
+    }
+  }, [selectedProfileId, trainedTargetProfiles]);
 
   // Setup streaming client events
   useEffect(() => {
@@ -187,8 +208,13 @@ export function KaraokePage() {
     try {
       const profiles = await apiService.listProfiles();
       setVoiceProfiles(profiles);
-      if (profiles.length > 0 && !selectedProfileId) {
-        setSelectedProfileId(profiles[0].profile_id);
+      if (!selectedProfileId) {
+        const defaultProfile = profiles.find(
+          (profile) => profile.profile_role !== 'source_artist' && profile.has_trained_model
+        );
+        if (defaultProfile) {
+          setSelectedProfileId(defaultProfile.profile_id);
+        }
       }
     } catch (error) {
       console.error('Failed to load voice profiles:', error);
@@ -465,28 +491,28 @@ export function KaraokePage() {
                   className="w-full p-3 bg-gray-700 rounded-lg"
                 >
                   <option value="">No profile (use voice model only)</option>
-                  {voiceProfiles
-                    .filter((profile) => profile.has_trained_model)
-                    .map((profile) => (
+                  {trainedTargetProfiles.map((profile) => (
                       <option key={profile.profile_id} value={profile.profile_id}>
-                        {profile.name || profile.profile_id} ({profile.sample_count} samples)
+                        {profile.name || profile.profile_id} ({profile.active_model_type === 'full_model' ? 'full model' : 'LoRA'} · {profile.sample_count} samples)
                       </option>
                     ))}
                 </select>
-                {voiceProfiles.filter((p) => p.has_trained_model).length === 0 && (
+                {trainedTargetProfiles.length === 0 && (
                   <p className="text-xs text-yellow-400 mt-2">
-                    No trained profiles. Train one on Voice Profiles page for better quality.
+                    No trained target user profiles. Train one on Voice Profiles page for better quality.
                   </p>
                 )}
-                {selectedProfileId && (
+                {selectedProfile && (
                   <p className="text-xs text-gray-500 mt-1">
-                    Uses trained LoRA adapter for enhanced voice conversion quality.
+                    {selectedProfile.active_model_type === 'full_model'
+                      ? 'Using the dedicated full model for this target user voice in live conversion.'
+                      : 'Using the trained LoRA path for this target user voice.'}
                   </p>
                 )}
               </div>
 
               {/* Adapter Selection (shown when profile selected) */}
-              {selectedProfileId && (
+              {selectedProfileId && selectedProfile?.active_model_type !== 'full_model' && (
                 <div>
                   <label className="text-sm text-gray-400 mb-2 block">LoRA Adapter</label>
                   <AdapterDropdown
@@ -498,6 +524,11 @@ export function KaraokePage() {
                   <p className="text-xs text-gray-500 mt-1">
                     {selectedAdapter === 'nvfp4' ? 'Fast inference (recommended for live)' : 'Maximum quality'}
                   </p>
+                </div>
+              )}
+              {selectedProfileId && selectedProfile?.active_model_type === 'full_model' && (
+                <div className="rounded-lg border border-violet-700 bg-violet-950/30 p-3 text-xs text-violet-200">
+                  This target profile has a dedicated full model. Adapter selection is not used while the full model is active.
                 </div>
               )}
 
@@ -614,8 +645,9 @@ export function KaraokePage() {
           {/* Session Info with Real-time Latency */}
           <KaraokeSessionInfo
             pipeline={pipeline}
-            profileName={selectedProfileId ? voiceProfiles.find(p => p.profile_id === selectedProfileId)?.name || selectedProfileId : undefined}
+            profileName={selectedProfile?.name || selectedProfileId || undefined}
             adapterType={selectedAdapter}
+            modelType={selectedProfile?.active_model_type}
             latencyMs={streamingStats.latencyMs}
             isConnected={streamingStats.isConnected}
             isStreaming={streamingStats.isStreaming}

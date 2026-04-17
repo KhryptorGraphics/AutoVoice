@@ -8,7 +8,12 @@ from typing import Optional, Dict, Any, List
 
 import numpy as np
 
-from ..storage.voice_profiles import VoiceProfileStore, ProfileNotFoundError, TrainingSample
+from ..storage.voice_profiles import (
+    VoiceProfileStore,
+    ProfileNotFoundError,
+    TrainingSample,
+    PROFILE_ROLE_TARGET_USER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +294,8 @@ class VoiceCloner:
             'profile_id': profile_id,
             'user_id': user_id,
             'name': name,
+            'created_from': 'manual',
+            'profile_role': PROFILE_ROLE_TARGET_USER,
             'audio_duration': audio_duration,
             'vocal_range': vocal_range,
             'vocals_extracted': vocals_extracted,
@@ -309,20 +316,22 @@ class VoiceCloner:
             logger.info(f"Created voice profile {profile_id} (duration={audio_duration:.1f}s){separation_note}")
             logger.info(f"  Vocals: {separated_tracks['vocals']}")
             logger.info(f"  Instrumental: {separated_tracks['instrumental']}")
-
-            # Add as first training sample for progressive training
-            source_name = os.path.basename(audio)
-            self.store.add_training_sample(
-                profile_id=profile_id,
-                vocals_path=separated_tracks['vocals'],
-                instrumental_path=separated_tracks['instrumental'],
-                source_file=source_name,
-                duration=audio_duration,
-            )
-            logger.info(f"  Added as training sample for progressive improvement")
         else:
             logger.info(f"Created voice profile {profile_id} (duration={audio_duration:.1f}s){separation_note}")
-        return profile_data
+
+        # Count the initial reference audio as the first target-user training sample.
+        source_name = os.path.basename(audio)
+        self.store.add_training_sample(
+            profile_id=profile_id,
+            vocals_path=separated_tracks['vocals'] if separated_tracks else audio_for_embedding,
+            instrumental_path=(
+                separated_tracks['instrumental'] if separated_tracks else None
+            ),
+            source_file=source_name,
+            duration=audio_duration,
+        )
+        logger.info(f"  Added as training sample for progressive improvement")
+        return self.store.load(profile_id)
 
     def load_voice_profile(self, profile_id: str) -> Dict[str, Any]:
         """Load a voice profile by ID.

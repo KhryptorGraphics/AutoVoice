@@ -56,6 +56,7 @@ interface ProfileDetailProps {
 
 function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const toast = useToastContext()
+  const [detailProfile, setDetailProfile] = useState<VoiceProfile>(profile)
   const [samples, setSamples] = useState<TrainingSample[]>([])
   const [loading, setLoading] = useState(true)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -68,12 +69,29 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const [loadingSegments, setLoadingSegments] = useState(false)
   const [adapters, setAdapters] = useState<AdapterListResponse | null>(null)
   const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null)
+  const isSourceProfile = detailProfile.profile_role === 'source_artist'
+  const cleanVocalMinutes = detailProfile.clean_vocal_minutes ?? ((detailProfile.clean_vocal_seconds ?? 0) / 60)
+  const remainingMinutes = detailProfile.full_model_remaining_minutes ?? ((detailProfile.full_model_remaining_seconds ?? 0) / 60)
+  const allowFullTraining = Boolean(detailProfile.full_model_eligible)
+  const fullTrainingHint = allowFullTraining
+    ? 'Full-model training is unlocked for this target profile.'
+    : `Full-model training unlocks after 30 minutes of clean user vocals. ${Math.max(remainingMinutes, 0).toFixed(1)} minutes remaining.`
+
+  const refreshProfile = useCallback(async () => {
+    try {
+      const updated = await apiService.getProfileDetails(profile.profile_id)
+      setDetailProfile(updated)
+    } catch (error) {
+      console.error('Failed to refresh profile details:', error)
+    }
+  }, [profile.profile_id])
 
   useEffect(() => {
     const fetchSamples = async () => {
       try {
         const data = await apiService.listSamples(profile.profile_id)
         setSamples(data)
+        await refreshProfile()
       } catch (error) {
         console.error('Failed to fetch samples:', error)
       } finally {
@@ -81,7 +99,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
       }
     }
     fetchSamples()
-  }, [profile.profile_id])
+  }, [profile.profile_id, refreshProfile])
 
   // Fetch adapters on mount
   useEffect(() => {
@@ -113,7 +131,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   }, [profile.profile_id, activeTab])
 
   const handleDelete = async () => {
-    if (!confirm(`Delete profile "${profile.name || profile.profile_id}"? This cannot be undone.`)) return
+    if (!confirm(`Delete profile "${detailProfile.name || detailProfile.profile_id}"? This cannot be undone.`)) return
     setIsDeleting(true)
     try {
       await apiService.deleteProfile(profile.profile_id)
@@ -134,7 +152,9 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     setStartingTraining(true)
     try {
       const sampleIds = samples.map(s => s.id)
-      await apiService.createTrainingJob(profile.profile_id, sampleIds, trainingConfig)
+      const job = await apiService.createTrainingJob(profile.profile_id, sampleIds, trainingConfig)
+      setSelectedJob(job)
+      await refreshProfile()
       toast.success('Training job started successfully')
       setActiveTab('jobs')
     } catch (error) {
@@ -151,6 +171,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     try {
       const sample = await apiService.uploadSample(profile.profile_id, file)
       setSamples(prev => [...prev, sample])
+      await refreshProfile()
       toast.success('Sample uploaded successfully')
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Failed to upload sample'
@@ -164,6 +185,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     try {
       await apiService.deleteSample(profile.profile_id, sampleId)
       setSamples(prev => prev.filter(s => s.id !== sampleId))
+      await refreshProfile()
       toast.success('Sample deleted successfully')
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Failed to delete sample'
@@ -180,7 +202,23 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
         >
           ← Back
         </button>
-        <h2 className="text-2xl font-bold">{profile.name || profile.profile_id}</h2>
+        <h2 className="text-2xl font-bold">{detailProfile.name || detailProfile.profile_id}</h2>
+      </div>
+
+      <div className={clsx(
+        'rounded-lg p-4 border',
+        isSourceProfile
+          ? 'bg-blue-950/30 border-blue-800 text-blue-100'
+          : 'bg-emerald-950/30 border-emerald-800 text-emerald-100'
+      )}>
+        <div className="font-medium mb-1">
+          {isSourceProfile ? 'Source Artist Profile' : 'Target User Profile'}
+        </div>
+        <p className="text-sm opacity-90">
+          {isSourceProfile
+            ? 'This profile was extracted from diarized song vocals. Use it as a source-performance reference, review its segments, or pair it with a target user profile for conversion.'
+            : 'This profile represents the target user voice. Upload clean singing here, train a LoRA first, and unlock full-model training after 30 minutes of clean vocals.'}
+        </p>
       </div>
 
       {/* Stats cards */}
@@ -190,18 +228,34 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
           <div className="text-2xl font-bold">{samples.length}</div>
         </div>
         <div className="bg-gray-800 rounded-lg p-4">
+          <div className="text-gray-400 text-sm">Profile Role</div>
+          <div className="mt-1">
+            <span className={clsx(
+              'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium',
+              isSourceProfile ? 'bg-blue-600 text-blue-100' : 'bg-emerald-600 text-emerald-100'
+            )}>
+              {isSourceProfile ? 'Source artist' : 'Target user'}
+            </span>
+          </div>
+        </div>
+        <div className="bg-gray-800 rounded-lg p-4">
           <div className="text-gray-400 text-sm">Training Status</div>
           <div className="mt-1">
-            <TrainingStatusBadge status={profile.training_status} />
+            <TrainingStatusBadge status={detailProfile.training_status} />
           </div>
         </div>
         <div className="bg-gray-800 rounded-lg p-4">
           <div className="text-gray-400 text-sm">Model Status</div>
           <div className="text-2xl font-bold">
-            {profile.has_trained_model ? (
+            {detailProfile.active_model_type === 'full_model' ? (
+              <span className="flex items-center gap-2 text-violet-400">
+                <Award size={20} />
+                Full
+              </span>
+            ) : detailProfile.has_trained_model ? (
               <span className="flex items-center gap-2 text-green-400">
                 <Award size={20} />
-                Ready
+                LoRA
               </span>
             ) : (
               'Base'
@@ -209,16 +263,43 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
           </div>
         </div>
         <div className="bg-gray-800 rounded-lg p-4">
-          <div className="text-gray-400 text-sm">Quality Score</div>
+          <div className="text-gray-400 text-sm">Clean Vocals</div>
           <div className="text-2xl font-bold">
-            {profile.quality_score ? `${(profile.quality_score * 100).toFixed(0)}%` : 'N/A'}
+            {cleanVocalMinutes.toFixed(1)}m
           </div>
+          {!isSourceProfile && (
+            <div className="text-xs text-gray-500 mt-1">
+              {allowFullTraining ? 'Full training unlocked' : `${Math.max(remainingMinutes, 0).toFixed(1)}m to unlock`}
+            </div>
+          )}
         </div>
       </div>
 
+      {!isSourceProfile && (
+        <div className="bg-gray-800 rounded-lg p-4">
+          <div className="flex items-center justify-between text-sm mb-2">
+            <span className="text-gray-300">Full-model unlock progress</span>
+            <span className="text-gray-400">{Math.min((cleanVocalMinutes / 30) * 100, 100).toFixed(0)}%</span>
+          </div>
+          <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+            <div
+              className={clsx(
+                'h-full transition-all',
+                allowFullTraining ? 'bg-violet-500' : 'bg-emerald-500'
+              )}
+              style={{ width: `${Math.min((cleanVocalMinutes / 30) * 100, 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Tab navigation */}
       <div className="flex gap-1 p-1 bg-gray-800 rounded-lg">
-        {(['samples', 'adapters', 'segments', 'config', 'jobs'] as const).map(tab => (
+        {(
+          isSourceProfile
+            ? (['samples', 'segments'] as const)
+            : (['samples', 'adapters', 'segments', 'config', 'jobs'] as const)
+        ).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -248,6 +329,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                 onSongAdded={() => {
                   // Refresh samples after song is added and split
                   apiService.listSamples(profile.profile_id).then(setSamples)
+                  void refreshProfile()
                 }}
               />
               <button
@@ -286,10 +368,11 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
           {showAdvancedUpload && (
             <TrainingSampleUpload
               profileId={profile.profile_id}
-              profileName={profile.name}
+              profileName={detailProfile.name}
               onSampleAdded={(sample) => {
                 setSamples(prev => [...prev, sample])
                 setShowAdvancedUpload(false)
+                void refreshProfile()
               }}
             />
           )}
@@ -299,7 +382,11 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
               Loading...
             </div>
           ) : samples.length === 0 ? (
-            <p className="text-gray-500">No samples yet. Upload audio samples to train this voice profile.</p>
+            <p className="text-gray-500">
+              {isSourceProfile
+                ? 'No extracted singer segments yet. Upload or assign diarized segments to build this source reference.'
+                : 'No samples yet. Upload clean singing vocals to train this target voice profile.'}
+            </p>
           ) : (
             <div className="space-y-2">
               {samples.map(sample => (
@@ -352,8 +439,8 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
             <div className="p-4 bg-gray-750 rounded-lg">
               <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Last Trained</div>
               <div className="text-lg font-medium text-white">
-                {profile.last_trained
-                  ? new Date(profile.last_trained).toLocaleDateString(undefined, {
+                {detailProfile.last_trained
+                  ? new Date(detailProfile.last_trained).toLocaleDateString(undefined, {
                       year: 'numeric',
                       month: 'short',
                       day: 'numeric',
@@ -361,6 +448,14 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                   : 'Never'}
               </div>
             </div>
+            {!isSourceProfile && (
+              <div className="p-4 bg-gray-750 rounded-lg">
+                <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Full Training</div>
+                <div className="text-lg font-medium text-white">
+                  {allowFullTraining ? 'Unlocked' : `${Math.max(remainingMinutes, 0).toFixed(1)}m left`}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="mt-6 p-4 bg-gray-750 rounded-lg">
@@ -375,22 +470,32 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
 
       {activeTab === 'config' && (
         <div className="space-y-4">
-          <TrainingConfigPanel
-            config={trainingConfig}
-            onChange={setTrainingConfig}
-          />
-          <button
-            onClick={handleStartTraining}
-            disabled={startingTraining || samples.length === 0}
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed rounded"
-          >
-            {startingTraining ? (
-              <Loader2 className="animate-spin" size={16} />
-            ) : (
-              <Play size={16} />
-            )}
-            Start Training ({samples.length} samples)
-          </button>
+          {isSourceProfile ? (
+            <div className="bg-gray-800 rounded-lg p-6 text-sm text-gray-300">
+              Source artist profiles are extracted from uploaded songs and are not trainable target voices. Create or open a target user profile to train a LoRA or a full model.
+            </div>
+          ) : (
+            <>
+              <TrainingConfigPanel
+                config={trainingConfig}
+                onChange={setTrainingConfig}
+                allowFullTraining={allowFullTraining}
+                fullTrainingHint={fullTrainingHint}
+              />
+              <button
+                onClick={handleStartTraining}
+                disabled={startingTraining || samples.length === 0}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed rounded"
+              >
+                {startingTraining ? (
+                  <Loader2 className="animate-spin" size={16} />
+                ) : (
+                  <Play size={16} />
+                )}
+                Start {trainingConfig.training_mode === 'full' ? 'Full Model' : 'LoRA'} Training ({samples.length} samples)
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -510,7 +615,7 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
 
   return (
     <form onSubmit={handleSubmit} className="bg-gray-800 rounded-lg p-6 space-y-4">
-      <h3 className="text-lg font-semibold">Create New Profile</h3>
+      <h3 className="text-lg font-semibold">Create Target User Profile</h3>
 
       <div>
         <label htmlFor="profile-name" className="flex items-center gap-1 text-sm text-gray-400 mb-1">
@@ -536,7 +641,7 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
       <div>
         <label htmlFor="profile-audio" className="flex items-center gap-1 text-sm text-gray-400 mb-1">
           Voice Sample
-          <span title="Upload a clear audio sample of the target voice. 10-30 seconds of clean speech works best. Avoid background noise and music." className="cursor-help">
+          <span title="Upload a clean singing or spoken reference for the target user voice. This becomes the starting point for LoRA training and future full-model unlock progress." className="cursor-help">
             <Info size={12} className="text-gray-500" />
           </span>
         </label>
@@ -557,7 +662,7 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
           ) : (
             <>
               <Upload className="mx-auto h-10 w-10 text-gray-500 mb-2" />
-              <p className="text-gray-400 text-sm mb-2">Upload audio sample (10-30 seconds)</p>
+              <p className="text-gray-400 text-sm mb-2">Upload clean user vocals (10-30 seconds)</p>
               <input
                 type="file"
                 accept="audio/*"
@@ -576,7 +681,7 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
           )}
         </div>
         <p id="profile-audio-hint" className="mt-1 text-xs text-gray-500">
-          Supported formats: MP3, WAV, FLAC, OGG. Best quality with 10-30 seconds of clean speech.
+          Supported formats: MP3, WAV, FLAC, OGG. Best results come from clean isolated vocals with minimal background music.
         </p>
       </div>
 
@@ -805,16 +910,24 @@ export function VoiceProfilePage() {
                 <div>
                   <div className="font-medium">{profile.name || profile.profile_id}</div>
                   <div className="text-sm text-gray-400">
-                    {profile.sample_count} samples
+                    {profile.profile_role === 'source_artist' ? 'Source artist' : 'Target user'} · {profile.sample_count} samples
                     {profile.last_trained && ` · Trained ${new Date(profile.last_trained).toLocaleDateString()}`}
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-4">
+                <span className={clsx(
+                  'inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium',
+                  profile.profile_role === 'source_artist'
+                    ? 'bg-blue-100 text-blue-800'
+                    : 'bg-emerald-100 text-emerald-800'
+                )}>
+                  {profile.profile_role === 'source_artist' ? 'Source' : 'Target'}
+                </span>
                 {profile.has_trained_model && (
                   <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs font-medium">
                     <Award size={12} />
-                    Trained
+                    {profile.active_model_type === 'full_model' ? 'Full' : 'Trained'}
                   </span>
                 )}
                 <TrainingStatusBadge status={profile.training_status} />
