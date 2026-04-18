@@ -435,12 +435,9 @@ class TestCheckpointSaveLoad:
 
         checkpoint_dir.mkdir()
 
-        # save_checkpoint with filename only
-        checkpoint_name = "test_checkpoint.pt"
-        trainer.save_checkpoint(checkpoint_name)
+        trainer.save_checkpoint()
 
-        # It should save to checkpoint_dir / filename
-        checkpoint_path = checkpoint_dir / checkpoint_name
+        checkpoint_path = checkpoint_dir / "latest.pth"
         assert checkpoint_path.exists(), f"Expected checkpoint at {checkpoint_path}"
 
     def test_save_checkpoint_includes_all_state(self, tmp_path):
@@ -482,15 +479,22 @@ class TestCheckpointSaveLoad:
         checkpoint_dir = tmp_path / "checkpoints"
         checkpoint_dir.mkdir()
 
-        # Create checkpoint matching actual implementation format
+        source_model = MockModel()
+        with patch.object(source_model, 'to', return_value=source_model):
+            source_trainer = Trainer(source_model, config={'checkpoint_dir': str(checkpoint_dir)}, device='cpu')
+
+        source_trainer.current_epoch = 25
+        source_trainer.global_step = 5000
+        source_trainer.best_loss = 0.075
+
         checkpoint = {
-            'current_epoch': 25,
-            'global_step': 5000,
-            'best_loss': 0.075,
-            'model': model.state_dict(),
-            'optimizer': {},
-            'scheduler': {},
-            'config': {},
+            'current_epoch': source_trainer.current_epoch,
+            'global_step': source_trainer.global_step,
+            'best_loss': source_trainer.best_loss,
+            'model': source_trainer.model.state_dict(),
+            'optimizer': source_trainer.optimizer.state_dict(),
+            'scheduler': source_trainer.scheduler.state_dict(),
+            'config': source_trainer.config,
             'is_lora': False,
         }
         checkpoint_path = checkpoint_dir / "resume.pt"
@@ -512,7 +516,7 @@ class TestSpecComputation:
     """Test spectrogram computation."""
 
     def test_compute_spec_returns_correct_shape(self):
-        """_compute_spec returns mel spectrogram with correct shape."""
+        """_compute_spec returns batched linear spectrograms with correct shape."""
         from auto_voice.training.trainer import Trainer
 
         model = MockModel()
@@ -520,17 +524,15 @@ class TestSpecComputation:
         with patch.object(model, 'to', return_value=model):
             trainer = Trainer(model, device='cpu')
 
-        # Create audio tensor
-        audio = torch.randn(22050)  # 1 second at 22050 Hz
+        audio = torch.randn(2, 22050)
         target_frames = 64
 
         spec = trainer._compute_spec(audio, target_frames=target_frames)
 
-        assert spec.shape[0] == 80  # n_mels
-        assert spec.shape[1] == target_frames
+        assert spec.shape == (2, 513, target_frames)
 
-    def test_compute_spec_normalization(self):
-        """_compute_spec normalizes to [0, 1] range."""
+    def test_compute_spec_is_finite_and_non_negative(self):
+        """_compute_spec produces finite, non-negative magnitudes."""
         from auto_voice.training.trainer import Trainer
 
         model = MockModel()
@@ -538,12 +540,11 @@ class TestSpecComputation:
         with patch.object(model, 'to', return_value=model):
             trainer = Trainer(model, device='cpu')
 
-        audio = torch.randn(22050)
+        audio = torch.randn(2, 22050)
         spec = trainer._compute_spec(audio, target_frames=64)
 
-        # Should be normalized
+        assert torch.isfinite(spec).all()
         assert spec.min() >= 0.0
-        assert spec.max() <= 1.0
 
 
 @pytest.mark.smoke
