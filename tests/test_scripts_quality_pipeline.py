@@ -14,8 +14,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 import pytest
 import torch
 import numpy as np
+import soundfile as sf
 
-from quality_pipeline import QualityVoiceConverter, QualityConfig
+from quality_pipeline import (
+    QualityVoiceConverter,
+    QualityConfig,
+    build_arg_parser,
+    main,
+    resolve_reference_audio,
+)
 
 
 @pytest.fixture
@@ -50,6 +57,27 @@ class TestQualityConfig:
         assert config.diffusion_steps == 30
         assert config.fp16 is True
 
+    def test_build_arg_parser(self):
+        """CLI parser should accept the canonical offline arguments."""
+        parser = build_arg_parser()
+        args = parser.parse_args(
+            [
+                "--source-audio",
+                "source.wav",
+                "--reference-audio",
+                "reference.wav",
+                "--output",
+                "output.wav",
+                "--report-dir",
+                "reports",
+            ]
+        )
+
+        assert args.source_audio == "source.wav"
+        assert args.reference_audio == "reference.wav"
+        assert args.output == "output.wav"
+        assert args.report_dir == "reports"
+
 
 class TestQualityConverter:
     """Test converter."""
@@ -63,6 +91,72 @@ class TestQualityConverter:
         """Test unload."""
         converter.unload()
         # Models are lazily loaded, so unload should succeed even if not loaded
+
+    def test_resolve_reference_audio_from_path(self, tmp_path):
+        """CLI helper should load reference audio directly from disk."""
+        reference_path = tmp_path / "reference.wav"
+        audio = np.sin(2 * np.pi * 220 * np.linspace(0, 1, 16000, endpoint=False)).astype(np.float32)
+        sf.write(reference_path, audio, 16000)
+
+        loaded_audio, loaded_sr, resolved_path = resolve_reference_audio(str(reference_path), None)
+
+        assert loaded_sr == 16000
+        assert resolved_path == reference_path.resolve()
+        assert loaded_audio.shape[0] == audio.shape[0]
+
+    def test_main_cli_with_mocked_converter_and_report(self, tmp_path, monkeypatch):
+        """CLI should save output audio and invoke the report writer."""
+        source_path = tmp_path / "source.wav"
+        reference_path = tmp_path / "reference.wav"
+        output_path = tmp_path / "converted.wav"
+        report_dir = tmp_path / "reports"
+
+        source_audio = np.sin(2 * np.pi * 220 * np.linspace(0, 1, 16000, endpoint=False)).astype(np.float32)
+        reference_audio = np.sin(2 * np.pi * 330 * np.linspace(0, 1, 16000, endpoint=False)).astype(np.float32)
+        sf.write(source_path, source_audio, 16000)
+        sf.write(reference_path, reference_audio, 16000)
+
+        captured = {}
+
+        class DummyConverter:
+            def __init__(self, config):
+                self.config = config
+
+            def convert(self, source_audio, source_sr, reference_audio, reference_sr, pitch_shift, progress_callback):
+                del source_sr, reference_audio, reference_sr, pitch_shift
+                progress_callback(1.0, "Complete!")
+                return source_audio * 0.5, 16000
+
+            def unload(self):
+                captured["unloaded"] = True
+
+        def fake_report_writer(**kwargs):
+            captured["report_kwargs"] = kwargs
+
+        monkeypatch.setattr("quality_pipeline.QualityVoiceConverter", DummyConverter)
+        monkeypatch.setattr("quality_pipeline.write_quality_report", fake_report_writer)
+
+        exit_code = main(
+            [
+                "--source-audio",
+                str(source_path),
+                "--reference-audio",
+                str(reference_path),
+                "--output",
+                str(output_path),
+                "--report-dir",
+                str(report_dir),
+                "--device",
+                "cpu",
+                "--fp32",
+            ]
+        )
+
+        assert exit_code == 0
+        assert output_path.exists()
+        assert captured["unloaded"] is True
+        assert captured["report_kwargs"]["report_dir"] == report_dir.resolve()
+        assert captured["report_kwargs"]["output_path"] == output_path.resolve()
 
     @pytest.mark.cuda
     @pytest.mark.slow

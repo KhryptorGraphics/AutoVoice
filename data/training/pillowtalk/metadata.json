@@ -1,0 +1,42 @@
+{
+  "dataset_name": "pillowtalk",
+  "version": 1,
+  "generated_at": "2026-04-18T15:43:43.011793+00:00",
+  "sample_rate": 24000,
+  "defaults": {
+    "sample_rate": 24000,
+    "evaluation_mode": "offline_quality"
+  },
+  "samples": [
+    {
+      "sample_id": "william_to_conor_holdout",
+      "split": "holdout",
+      "source_audio": "holdout/william_to_conor/source.wav",
+      "reference_audio": "holdout/william_to_conor/reference.wav",
+      "target_speaker_embedding": "speakers/conor_maynard.npy",
+      "metadata": {
+        "source_artist": "william_singe",
+        "target_artist": "conor_maynard",
+        "song": "Pillowtalk",
+        "provenance": "tests/quality_samples fixtures"
+      }
+    },
+    {
+      "sample_id": "conor_to_william_holdout",
+      "split": "holdout",
+      "source_audio": "holdout/conor_to_william/source.wav",
+      "reference_audio": "holdout/conor_to_william/reference.wav",
+      "target_speaker_embedding": "speakers/william_singe.npy",
+      "metadata": {
+        "source_artist": "conor_maynard",
+        "target_artist": "william_singe",
+        "song": "Pillowtalk",
+        "provenance": "tests/quality_samples fixtures"
+      }
+    }
+  ],
+  "speaker_backends": {
+    "william_singe": "mel-statistics-fallback",
+    "conor_maynard": "mel-statistics-fallback"
+  }
+}

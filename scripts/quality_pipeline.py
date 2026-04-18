@@ -12,6 +12,7 @@ Design choices for quality:
 - Optional HQ-SVC enhancement
 """
 
+import argparse
 import os
 import sys
 import time
@@ -497,104 +498,210 @@ class QualityVoiceConverter:
         logger.info("Models unloaded")
 
 
-def load_speaker_embedding(profile_id: str) -> np.ndarray:
-    """Load speaker embedding from profile."""
-    embedding_path = Path(f"data/voice_profiles/{profile_id}.npy")
-    if not embedding_path.exists():
-        raise FileNotFoundError(f"Speaker embedding not found: {embedding_path}")
-    return np.load(str(embedding_path))
+def load_audio_file(path: Path) -> Tuple[np.ndarray, int]:
+    if not path.exists():
+        raise FileNotFoundError(f"Audio file not found: {path}")
+    audio, sample_rate = librosa.load(path, sr=None, mono=True)
+    return audio, sample_rate
 
 
-def main():
-    """Test the quality pipeline."""
-    print("\n" + "=" * 60)
-    print("  QUALITY VOICE CONVERSION PIPELINE TEST")
-    print("=" * 60 + "\n")
+def resolve_reference_audio(
+    reference_audio: Optional[str],
+    target_profile_id: Optional[str],
+) -> Tuple[np.ndarray, int, Path]:
+    if reference_audio:
+        reference_path = Path(reference_audio).resolve()
+        audio, sample_rate = load_audio_file(reference_path)
+        return audio, sample_rate, reference_path
+
+    if target_profile_id:
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+        store = VoiceProfileStore()
+        candidate_paths = [Path(path) for path in store.get_all_vocals_paths(target_profile_id)]
+        if not candidate_paths:
+            raise FileNotFoundError(
+                f"No training vocals found for target profile: {target_profile_id}"
+            )
+        reference_path = candidate_paths[0].resolve()
+        audio, sample_rate = load_audio_file(reference_path)
+        return audio, sample_rate, reference_path
+
+    raise ValueError("Either --reference-audio or --target-profile-id must be provided")
+
+
+def build_progress_callback():
+    def progress(progress_value: float, status: str):
+        bar_length = 40
+        filled = int(bar_length * progress_value)
+        bar = "=" * filled + "-" * (bar_length - filled)
+        print(f"\r[{bar}] {progress_value * 100:3.0f}% - {status}", end="", flush=True)
+
+    return progress
+
+
+def write_quality_report(
+    report_dir: Path,
+    source_path: Path,
+    output_path: Path,
+    reference_path: Path,
+    source_audio: np.ndarray,
+    converted_audio: np.ndarray,
+    reference_audio: np.ndarray,
+    output_sample_rate: int,
+    elapsed_seconds: float,
+):
+    from auto_voice.evaluation import BenchmarkRunner, QualityMetrics
+
+    if output_sample_rate <= 0:
+        raise ValueError("output_sample_rate must be positive")
+
+    metrics = QualityMetrics().compute_all(
+        reference_audio=torch.tensor(reference_audio),
+        converted_audio=torch.tensor(converted_audio),
+        sample_rate=output_sample_rate,
+    )
+    runner = BenchmarkRunner(metrics=QualityMetrics())
+    runner.write_report_artifacts(
+        results=[
+            {
+                "sample_id": source_path.stem,
+                "source_audio": torch.tensor(source_audio),
+                "reference_audio": torch.tensor(reference_audio),
+                "converted_audio": torch.tensor(converted_audio),
+                "metrics": metrics,
+                "latency_ms": elapsed_seconds * 1000,
+                "sample_rate": output_sample_rate,
+                "metadata": {
+                    "source_path": str(source_path),
+                    "reference_path": str(reference_path),
+                    "output_path": str(output_path),
+                },
+            }
+        ],
+        output_dir=str(report_dir),
+        title=f"Quality Pipeline Report: {source_path.stem}",
+    )
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-audio", required=True, help="Source vocals/audio to convert.")
+    parser.add_argument(
+        "--reference-audio",
+        help="Reference audio carrying the target voice. Optional when --target-profile-id is supplied.",
+    )
+    parser.add_argument(
+        "--target-profile-id",
+        help="Voice profile ID used to resolve a reference vocal sample when --reference-audio is omitted.",
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="Output path for the converted waveform.",
+    )
+    parser.add_argument(
+        "--report-dir",
+        help="Optional benchmark report directory. Emits summary.json, metrics.csv, report.md, figures/, tensorboard/.",
+    )
+    parser.add_argument("--pitch-shift", type=int, default=0, help="Pitch shift in semitones.")
+    parser.add_argument("--diffusion-steps", type=int, default=30, help="Seed-VC diffusion steps.")
+    parser.add_argument("--device", default="cuda", help="Inference device.")
+    parser.add_argument(
+        "--fp32",
+        action="store_true",
+        help="Disable FP16 inference and run the converter in full precision.",
+    )
+    parser.add_argument(
+        "--disable-f0-condition",
+        action="store_true",
+        help="Disable F0 conditioning for non-singing use cases.",
+    )
+    parser.add_argument(
+        "--disable-auto-f0-adjust",
+        action="store_true",
+        help="Disable automatic median F0 matching against the reference.",
+    )
+    return parser
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
 
     os.chdir(Path(__file__).parent.parent)
 
-    WILLIAM_ID = "7da05140-1303-40c6-95d9-5b6e2c3624df"
-    CONOR_ID = "9679a6ec-e6e2-43c4-b64e-1f004fed34f9"
+    source_path = Path(args.source_audio).resolve()
+    output_path = Path(args.output).resolve()
 
-    # Initialize converter
+    source_audio, source_sr = load_audio_file(source_path)
+    reference_audio, reference_sr, reference_path = resolve_reference_audio(
+        args.reference_audio,
+        args.target_profile_id,
+    )
+
     config = QualityConfig(
-        diffusion_steps=30,
-        f0_condition=True,
-        auto_f0_adjust=True,
-        fp16=True
+        diffusion_steps=args.diffusion_steps,
+        f0_condition=not args.disable_f0_condition,
+        auto_f0_adjust=not args.disable_auto_f0_adjust,
+        fp16=not args.fp32,
+        device=args.device,
     )
     converter = QualityVoiceConverter(config)
+    try:
+        progress_callback = build_progress_callback()
+        print("\nConverting with quality pipeline...")
+        start_time = time.time()
+        converted, output_sample_rate = converter.convert(
+            source_audio=source_audio,
+            source_sr=source_sr,
+            reference_audio=reference_audio,
+            reference_sr=reference_sr,
+            pitch_shift=args.pitch_shift,
+            progress_callback=progress_callback,
+        )
+        elapsed_seconds = time.time() - start_time
+        print()
 
-    # Load test audio (William's vocals)
-    vocals_path = f"data/separated/{WILLIAM_ID}/vocals.wav"
-    if not Path(vocals_path).exists():
-        # Try youtube downloads
-        youtube_dir = Path(f"data/youtube_downloads/william_singe")
-        if youtube_dir.exists():
-            wavs = list(youtube_dir.glob("*.wav"))
-            if wavs:
-                vocals_path = str(wavs[0])
-                print(f"Using: {vocals_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(str(output_path), converted, output_sample_rate)
+        print(f"Saved converted audio: {output_path}")
+        print(f"Elapsed: {elapsed_seconds:.2f}s")
 
-    if not Path(vocals_path).exists():
-        print(f"Test audio not found: {vocals_path}")
-        return
+        if args.report_dir:
+            report_dir = Path(args.report_dir).resolve()
+            report_dir.mkdir(parents=True, exist_ok=True)
+            reference_report_audio = reference_audio
+            if reference_sr != output_sample_rate:
+                reference_report_audio = librosa.resample(
+                    reference_audio,
+                    orig_sr=reference_sr,
+                    target_sr=output_sample_rate,
+                )
+            source_report_audio = source_audio
+            if source_sr != output_sample_rate:
+                source_report_audio = librosa.resample(
+                    source_audio,
+                    orig_sr=source_sr,
+                    target_sr=output_sample_rate,
+                )
+            write_quality_report(
+                report_dir=report_dir,
+                source_path=source_path,
+                output_path=output_path,
+                reference_path=reference_path,
+                source_audio=source_report_audio,
+                converted_audio=converted,
+                reference_audio=reference_report_audio,
+                output_sample_rate=output_sample_rate,
+                elapsed_seconds=elapsed_seconds,
+            )
+            print(f"Saved benchmark report bundle: {report_dir}")
 
-    source_audio, source_sr = librosa.load(vocals_path, sr=None, mono=True)
-    # Limit to 30 seconds for testing
-    max_samples = int(30 * source_sr)
-    source_audio = source_audio[:max_samples]
-    print(f"Source: {len(source_audio)/source_sr:.1f}s @ {source_sr}Hz")
-
-    # Load reference audio (Conor)
-    conor_dir = Path(f"data/youtube_downloads/conor_maynard")
-    if conor_dir.exists():
-        wavs = list(conor_dir.glob("*.wav"))
-        if wavs:
-            ref_path = str(wavs[0])
-            reference_audio, ref_sr = librosa.load(ref_path, sr=None, mono=True)
-            # Limit reference to 25 seconds
-            reference_audio = reference_audio[:int(25 * ref_sr)]
-            print(f"Reference: {len(reference_audio)/ref_sr:.1f}s @ {ref_sr}Hz (Conor)")
-        else:
-            print("No Conor reference audio found")
-            return
-    else:
-        print("Conor directory not found")
-        return
-
-    # Convert with progress callback
-    def progress(p, status):
-        bar_len = 40
-        filled = int(bar_len * p)
-        bar = '=' * filled + '-' * (bar_len - filled)
-        print(f"\r[{bar}] {p*100:.0f}% - {status}", end='', flush=True)
-
-    print("\nConverting William -> Conor style...")
-    start_time = time.time()
-    converted, out_sr = converter.convert(
-        source_audio, source_sr,
-        reference_audio, ref_sr,
-        pitch_shift=0,
-        progress_callback=progress
-    )
-    elapsed = time.time() - start_time
-    print()
-
-    rtf = elapsed / (len(source_audio) / source_sr)
-    print(f"\nConversion complete: {elapsed:.2f}s (RTF: {rtf:.3f})")
-
-    # Save output
-    output_dir = Path("data/conversions")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "william_as_conor_QUALITY.wav"
-    sf.write(str(output_path), converted, out_sr)
-    print(f"Saved: {output_path}")
-
-    # Cleanup
-    converter.unload()
-    print("\nQuality pipeline test complete!")
+        return 0
+    finally:
+        converter.unload()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

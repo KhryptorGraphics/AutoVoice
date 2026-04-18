@@ -1,34 +1,24 @@
-"""Comprehensive quality metrics for voice conversion evaluation.
+"""Comprehensive quality metrics for voice conversion evaluation."""
 
-Provides automated quality assessment including:
-- MCD (Mel Cepstral Distortion)
-- F0 RMSE (Pitch accuracy in cents)
-- Speaker Similarity (Cosine similarity of speaker embeddings)
+from __future__ import annotations
 
-Quality targets based on published SOTA results:
-- MCD < 5.0 dB
-- F0-RMSE < 20 cents
-- Speaker similarity > 0.85 cosine
-"""
-from typing import Dict, Optional, Any
+from typing import Any, Dict, Optional
+
+import librosa
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-import librosa
 
-from .metrics import pitch_rmse
+from .metrics import (
+    pesq as pesq_metric,
+    pitch_rmse,
+    signal_to_noise_ratio,
+    stoi as stoi_metric,
+)
 
 
 class QualityMetrics:
-    """Unified quality metrics for voice conversion evaluation.
-
-    Computes objective measures of conversion quality including
-    spectral distortion, pitch accuracy, and speaker similarity.
-
-    Args:
-        n_mfcc: Number of MFCCs for MCD computation (default: 13)
-        hop_length: Hop length for spectral analysis (default: 256)
-    """
+    """Unified quality metrics for voice conversion evaluation."""
 
     def __init__(
         self,
@@ -37,6 +27,30 @@ class QualityMetrics:
     ):
         self.n_mfcc = n_mfcc
         self.hop_length = hop_length
+        self._mos_predictor = None
+        self._speaker_similarity = None
+        self._pitch_accuracy = None
+
+    @staticmethod
+    def _to_numpy(audio: Any) -> np.ndarray:
+        if isinstance(audio, torch.Tensor):
+            return audio.detach().cpu().numpy().squeeze().astype(np.float64)
+        return np.asarray(audio, dtype=np.float64).squeeze()
+
+    def _get_mos_predictor(self):
+        if self._mos_predictor is None:
+            self._mos_predictor = MOSPredictor()
+        return self._mos_predictor
+
+    def _get_speaker_metric(self):
+        if self._speaker_similarity is None:
+            self._speaker_similarity = SpeakerSimilarity()
+        return self._speaker_similarity
+
+    def _get_pitch_metric(self):
+        if self._pitch_accuracy is None:
+            self._pitch_accuracy = PitchAccuracy()
+        return self._pitch_accuracy
 
     def compute_mcd(
         self,
@@ -57,42 +71,32 @@ class QualityMetrics:
         Returns:
             MCD value in dB
         """
-        # Convert to numpy
-        ref_np = reference.cpu().numpy() if isinstance(reference, torch.Tensor) else reference
-        conv_np = converted.cpu().numpy() if isinstance(converted, torch.Tensor) else converted
+        ref_np = self._to_numpy(reference).astype(np.float32)
+        conv_np = self._to_numpy(converted).astype(np.float32)
 
-        # Ensure 1D
-        ref_np = ref_np.squeeze()
-        conv_np = conv_np.squeeze()
-
-        # Align lengths
         min_len = min(len(ref_np), len(conv_np))
         ref_np = ref_np[:min_len]
         conv_np = conv_np[:min_len]
 
-        # Compute MFCCs
         ref_mfcc = librosa.feature.mfcc(
-            y=ref_np.astype(np.float32),
+            y=ref_np,
             sr=sample_rate,
             n_mfcc=self.n_mfcc,
             hop_length=self.hop_length,
         )
         conv_mfcc = librosa.feature.mfcc(
-            y=conv_np.astype(np.float32),
+            y=conv_np,
             sr=sample_rate,
             n_mfcc=self.n_mfcc,
             hop_length=self.hop_length,
         )
 
-        # Align frame lengths
         min_frames = min(ref_mfcc.shape[1], conv_mfcc.shape[1])
         ref_mfcc = ref_mfcc[:, :min_frames]
         conv_mfcc = conv_mfcc[:, :min_frames]
 
-        # Compute MCD (excluding 0th coefficient which is energy)
         diff = ref_mfcc[1:, :] - conv_mfcc[1:, :]
-        mcd = np.sqrt(2) * np.mean(np.sqrt(np.sum(diff ** 2, axis=0)))
-
+        mcd = np.sqrt(2.0) * np.mean(np.sqrt(np.sum(diff ** 2, axis=0)))
         return float(mcd)
 
     def compute_f0_rmse(
@@ -114,14 +118,9 @@ class QualityMetrics:
         Returns:
             F0 RMSE in cents (1200 cents = 1 octave)
         """
-        # Convert to numpy
-        ref_np = reference.cpu().numpy() if isinstance(reference, torch.Tensor) else reference
-        conv_np = converted.cpu().numpy() if isinstance(converted, torch.Tensor) else converted
+        ref_np = self._to_numpy(reference)
+        conv_np = self._to_numpy(converted)
 
-        ref_np = ref_np.squeeze().astype(np.float64)
-        conv_np = conv_np.squeeze().astype(np.float64)
-
-        # Extract F0 using pyin
         f0_ref, voiced_ref, _ = librosa.pyin(
             ref_np,
             fmin=librosa.note_to_hz('C2'),
@@ -137,12 +136,22 @@ class QualityMetrics:
             hop_length=self.hop_length,
         )
 
-        # Replace NaN with 0 for unvoiced
         f0_ref = np.nan_to_num(f0_ref, nan=0.0)
         f0_conv = np.nan_to_num(f0_conv, nan=0.0)
 
-        # Use existing pitch_rmse function
         return pitch_rmse(f0_conv, f0_ref, voiced_only=True)
+
+    def compute_pitch_correlation(
+        self,
+        reference: torch.Tensor,
+        converted: torch.Tensor,
+        sample_rate: int = 24000,
+    ) -> float:
+        return self._get_pitch_metric().compute_correlation(
+            self._to_numpy(reference),
+            self._to_numpy(converted),
+            sample_rate,
+        )
 
     def compute_speaker_similarity(
         self,
@@ -178,43 +187,106 @@ class QualityMetrics:
 
         return float(similarity.item())
 
+    def compute_audio_speaker_similarity(
+        self,
+        reference_audio: torch.Tensor,
+        converted_audio: torch.Tensor,
+        sample_rate: int = 24000,
+    ) -> float:
+        return self._get_speaker_metric().compute(
+            self._to_numpy(reference_audio),
+            self._to_numpy(converted_audio),
+            sample_rate,
+        )
+
+    def predict_mos(
+        self,
+        audio: torch.Tensor,
+        sample_rate: int = 24000,
+    ) -> float:
+        return self._get_mos_predictor().predict(self._to_numpy(audio), sample_rate)
+
+    def compute_pesq(
+        self,
+        reference_audio: torch.Tensor,
+        converted_audio: torch.Tensor,
+        sample_rate: int = 24000,
+    ) -> float:
+        reference_np = self._to_numpy(reference_audio).astype(np.float32)
+        converted_np = self._to_numpy(converted_audio).astype(np.float32)
+
+        if sample_rate not in {8000, 16000}:
+            reference_np = librosa.resample(reference_np, orig_sr=sample_rate, target_sr=16000)
+            converted_np = librosa.resample(converted_np, orig_sr=sample_rate, target_sr=16000)
+            sample_rate = 16000
+
+        try:
+            return pesq_metric(reference_np, converted_np, sr=sample_rate)
+        except ValueError:
+            return pesq_metric(reference_np, converted_np, sr=16000)
+
+    def compute_stoi(
+        self,
+        reference_audio: torch.Tensor,
+        converted_audio: torch.Tensor,
+        sample_rate: int = 24000,
+    ) -> float:
+        return stoi_metric(
+            self._to_numpy(reference_audio),
+            self._to_numpy(converted_audio),
+            sr=sample_rate,
+        )
+
+    def compute_snr(
+        self,
+        reference_audio: torch.Tensor,
+        converted_audio: torch.Tensor,
+    ) -> float:
+        return signal_to_noise_ratio(
+            self._to_numpy(reference_audio),
+            self._to_numpy(converted_audio),
+        )
+
     def compute_all(
         self,
         reference_audio: torch.Tensor,
         converted_audio: torch.Tensor,
-        target_speaker: torch.Tensor,
+        target_speaker: Optional[torch.Tensor] = None,
         sample_rate: int = 24000,
         converted_speaker: Optional[torch.Tensor] = None,
     ) -> Dict[str, float]:
-        """Compute all quality metrics at once.
+        """Compute the full benchmark metric set."""
+        results: Dict[str, float] = {
+            "mcd": self.compute_mcd(reference_audio, converted_audio, sample_rate),
+            "f0_rmse": self.compute_f0_rmse(reference_audio, converted_audio, sample_rate),
+            "pitch_corr": self.compute_pitch_correlation(
+                reference_audio,
+                converted_audio,
+                sample_rate,
+            ),
+            "mos_pred": self.predict_mos(converted_audio, sample_rate),
+            "pesq": self.compute_pesq(reference_audio, converted_audio, sample_rate),
+            "stoi": self.compute_stoi(reference_audio, converted_audio, sample_rate),
+            "snr": self.compute_snr(reference_audio, converted_audio),
+        }
 
-        Args:
-            reference_audio: Reference audio tensor
-            converted_audio: Converted audio tensor
-            target_speaker: Target speaker embedding
-            sample_rate: Audio sample rate
-            converted_speaker: Optional extracted speaker embedding from converted audio
-
-        Returns:
-            Dictionary with all metric values
-        """
-        results = {}
-
-        # MCD
-        results['mcd'] = self.compute_mcd(reference_audio, converted_audio, sample_rate)
-
-        # F0 RMSE
-        results['f0_rmse'] = self.compute_f0_rmse(reference_audio, converted_audio, sample_rate)
-
-        # Speaker similarity
-        if converted_speaker is not None:
-            results['speaker_similarity'] = self.compute_speaker_similarity(
-                target_speaker, converted_speaker
-            )
+        if target_speaker is not None and converted_speaker is not None:
+            try:
+                results["speaker_similarity"] = self.compute_speaker_similarity(
+                    target_speaker,
+                    converted_speaker,
+                )
+            except RuntimeError:
+                results["speaker_similarity"] = self.compute_audio_speaker_similarity(
+                    reference_audio,
+                    converted_audio,
+                    sample_rate,
+                )
         else:
-            # Self-similarity as placeholder
-            results['speaker_similarity'] = self.compute_speaker_similarity(
-                target_speaker, target_speaker
+            results["speaker_similarity"] = self.compute_audio_speaker_similarity(
+                reference_audio,
+                converted_audio,
+                sample_rate,
             )
 
         return results
