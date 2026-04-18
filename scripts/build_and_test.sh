@@ -1,34 +1,31 @@
 #!/bin/bash
 # Build CUDA extensions and run tests
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+source "$SCRIPT_DIR/common_env.sh"
+autovoice_activate_env
+
 echo "=== AutoVoice Build & Test ==="
-
-# Activate environment
-if command -v conda &>/dev/null; then
-    eval "$(conda shell.bash hook)"
-    conda activate autovoice-thor 2>/dev/null || true
-fi
-
-export PYTHONNOUSERSITE=1
-export CUDA_HOME=/usr/local/cuda-13.0
-export PATH=$CUDA_HOME/bin:$PATH
-export TORCH_CUDA_ARCH_LIST="11.0"
+echo "Python: $PYTHON"
 
 # Build CUDA extensions
 echo "Building CUDA extensions..."
-python setup.py build_ext --inplace 2>&1 || echo "CUDA extension build skipped (fallback available)"
+"$PYTHON" setup.py build_ext --inplace 2>&1 || echo "CUDA extension build skipped (fallback available)"
+
+# Verify runtime dependencies first
+echo "Verifying dependency stack..."
+"$PYTHON" scripts/verify_dependencies.py --require-env --require-tensorrt
 
 # Verify CUDA bindings
 echo "Verifying bindings..."
-python scripts/verify_bindings.py
+"$PYTHON" scripts/verify_bindings.py
 
 # Run tests
 echo "Running tests..."
-python -m pytest tests/ -v --tb=short
+"$PYTHON" -m pytest tests/ -v --tb=short
 
 echo "=== Build & Test Complete ==="

@@ -10,13 +10,14 @@
 #   ./scripts/launch_swarms.sh status    # Show status
 #   ./scripts/launch_swarms.sh stop      # Shutdown all swarms
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-PYTHON="${PYTHON:-/home/kp/anaconda3/envs/autovoice-thor/bin/python}"
 
 cd "$PROJECT_ROOT"
+source "$SCRIPT_DIR/common_env.sh"
+autovoice_activate_env
 
 # Colors
 RED='\033[0;31m'
@@ -67,14 +68,14 @@ launch_swarm() {
     local parallel=${2:-10}
 
     echo -e "${GREEN}Launching swarm: ${swarm}${NC}"
-    PYTHONNOUSERSITE=1 PYTHONPATH=src "$PYTHON" scripts/swarm_orchestrator.py \
+    "$PYTHON" scripts/swarm_orchestrator.py \
         --swarm "$swarm" \
         --parallel "$parallel"
 }
 
 show_status() {
     echo -e "${BLUE}Swarm Status:${NC}"
-    PYTHONNOUSERSITE=1 PYTHONPATH=src "$PYTHON" scripts/swarm_orchestrator.py --status
+    "$PYTHON" scripts/swarm_orchestrator.py --status
 
     # Also show hive-mind status
     echo ""
@@ -84,7 +85,7 @@ show_status() {
 
 stop_swarms() {
     echo -e "${YELLOW}Stopping all swarms...${NC}"
-    PYTHONNOUSERSITE=1 PYTHONPATH=src "$PYTHON" scripts/swarm_orchestrator.py --shutdown
+    "$PYTHON" scripts/swarm_orchestrator.py --shutdown
     claude-flow hive-mind shutdown 2>/dev/null || true
     echo -e "${GREEN}Swarms stopped${NC}"
 }
@@ -100,7 +101,7 @@ case "${1:-all}" in
 
         # Initialize queen first
         echo -e "${YELLOW}Step 1: Initialize Queen Coordinator${NC}"
-        PYTHONNOUSERSITE=1 PYTHONPATH=src "$PYTHON" scripts/swarm_orchestrator.py --init-only
+        "$PYTHON" scripts/swarm_orchestrator.py --init-only
 
         # Launch independent swarms in background
         echo ""

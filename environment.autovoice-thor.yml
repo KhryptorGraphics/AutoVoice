@@ -1,0 +1,17 @@
+name: autovoice-thor
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - ffmpeg
+  - libsndfile
+  - sox
+  - pip:
+      - -r requirements.txt
+      - flask-swagger-ui>=4.11
+      - pyworld==0.3.5
+      - pystoi>=0.4.1
+      - pesq>=0.0.4
+      - local-attention>=1.11

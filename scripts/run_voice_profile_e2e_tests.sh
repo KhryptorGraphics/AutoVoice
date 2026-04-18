@@ -15,6 +15,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
+source "$SCRIPT_DIR/common_env.sh"
+autovoice_activate_env
 
 # Colors
 RED='\033[0;31m'
@@ -23,7 +25,6 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-PYTHON="${PYTHON:-/home/kp/anaconda3/envs/autovoice-thor/bin/python}"
 PYTEST_ARGS="-x --tb=short -q"
 PHASE="${1:-all}"
 
@@ -34,9 +35,6 @@ echo "Python: $PYTHON"
 echo ""
 
 # Ensure test environment
-export PYTHONNOUSERSITE=1
-export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
-
 # Check if Flask app is running
 check_app_running() {
     if ! curl -s http://localhost:5000/health > /dev/null 2>&1; then
@@ -51,7 +49,7 @@ check_app_running() {
 # Run API tests
 run_api_tests() {
     echo -e "${GREEN}Running API Integration Tests...${NC}"
-    $PYTHON -m pytest tests/test_voice_profile_training_e2e.py \
+    "$PYTHON" -m pytest tests/test_voice_profile_training_e2e.py \
         -m "integration" \
         $PYTEST_ARGS \
         --junit-xml=test-results/voice-profile-api-e2e.xml
@@ -73,7 +71,7 @@ run_browser_tests() {
         return 1
     fi
 
-    $PYTHON -m pytest tests/test_browser_voice_profile_workflow.py \
+    "$PYTHON" -m pytest tests/test_browser_voice_profile_workflow.py \
         -m "browser" \
         $PYTEST_ARGS \
         --junit-xml=test-results/voice-profile-browser-e2e.xml
@@ -82,7 +80,7 @@ run_browser_tests() {
 # Run smoke tests
 run_smoke_tests() {
     echo -e "${GREEN}Running Smoke Tests...${NC}"
-    $PYTHON -m pytest tests/test_voice_profile_training_e2e.py \
+    "$PYTHON" -m pytest tests/test_voice_profile_training_e2e.py \
         -m "integration and not slow" \
         $PYTEST_ARGS \
         --junit-xml=test-results/voice-profile-smoke.xml

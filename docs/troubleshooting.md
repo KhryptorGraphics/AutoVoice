@@ -3636,13 +3636,17 @@ ModuleNotFoundError: No module named 'pyworld'
    pip install -e .
    ```
 
-2. **Use Compatible Python Version**:
+2. **Use the Canonical AutoVoice Environment**:
    ```bash
-   # Python 3.10 or 3.11 recommended for ARM64
-   conda create -n autovoice python=3.11 -y
-   conda activate autovoice
-   pip install pyworld
+   conda activate autovoice-thor
+   python --version
+   # Expected: Python 3.12.x
+
+   python -c "import pyworld; print(pyworld.__version__)"
    ```
+
+   The project-standard `autovoice-thor` environment is the supported runtime for this repo.
+   The breakage here is specific to Python 3.13 on ARM64, not to the working 3.12 env.
 
 3. **Skip PyWorld-dependent Features** (temporary workaround):
    ```python
@@ -3674,8 +3678,9 @@ python --version
 ```
 
 **Prevention**:
-- Use Python 3.10 or 3.11 on ARM64 platforms
-- Build PyWorld from source during initial setup
+- Use the existing `autovoice-thor` environment for this project
+- Avoid Python 3.13 on ARM64 for PyWorld-dependent paths
+- Build PyWorld from source during initial setup if the wheel is missing or incompatible
 - Add PyWorld check to test suite: `pytest tests/test_hq_svc_wrapper.py -v`
 
 ---
