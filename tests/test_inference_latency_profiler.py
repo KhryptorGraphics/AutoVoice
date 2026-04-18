@@ -182,11 +182,11 @@ class TestPipelineLatencyIntegration:
 
         # Profile multiple inferences
         # SoVitsSvc expects: content [B, T, content_dim], pitch [B, T, pitch_dim], speaker [B, speaker_dim]
-        # Default dims from model config: content_dim=256, pitch_dim=256, speaker_dim=256
+        # Default dims from model config: content_dim=768, pitch_dim=768, speaker_dim=256
         batch_size = 1
         seq_len = 100
-        content_dim = 256
-        pitch_dim = 256
+        content_dim = 768
+        pitch_dim = 768
         speaker_dim = 256
 
         for _ in range(3):
@@ -214,11 +214,11 @@ class TestPipelineLatencyIntegration:
         trained_model = SoVitsSvc().to(device)  # In practice, this would be fine-tuned
 
         # SoVitsSvc expects: content [B, T, content_dim], pitch [B, T, pitch_dim], speaker [B, speaker_dim]
-        # Default dims from model config: content_dim=256, pitch_dim=256, speaker_dim=256
+        # Default dims from model config: content_dim=768, pitch_dim=768, speaker_dim=256
         batch_size = 1
         seq_len = 100
-        content_dim = 256
-        pitch_dim = 256
+        content_dim = 768
+        pitch_dim = 768
         speaker_dim = 256
 
         def create_inputs():

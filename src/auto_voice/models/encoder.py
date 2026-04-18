@@ -3,8 +3,10 @@
 Uses HuBERT or ContentVec for content extraction (speaker-independent
 linguistic features) and a pitch encoder for F0 contour processing.
 """
+from importlib.machinery import ModuleSpec
 import logging
 from pathlib import Path
+import sys
 from typing import Optional, Tuple
 
 import numpy as np
@@ -13,6 +15,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_optional_module_spec(module_name: str) -> None:
+    """Normalize lazily mocked optional modules so importlib can inspect them."""
+    module = sys.modules.get(module_name)
+    if module is not None and getattr(module, "__spec__", None) is None:
+        module.__spec__ = ModuleSpec(module_name, loader=None)
 
 
 class ContentEncoder(nn.Module):
@@ -374,6 +383,7 @@ class ContentVecEncoder(nn.Module):
             return
 
         try:
+            _ensure_optional_module_spec("tensorrt")
             from transformers import HubertModel, HubertConfig
 
             if self.pretrained_id and Path(self.pretrained_id).exists():

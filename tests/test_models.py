@@ -360,7 +360,8 @@ class TestSoVitsSvc:
     def test_init_default(self):
         from auto_voice.models.so_vits_svc import SoVitsSvc
         model = SoVitsSvc()
-        assert model.content_dim == 256
+        assert model.content_dim == 768
+        assert model.pitch_dim == 768
         assert model.hidden_dim == 192
 
     def test_init_custom_config(self):
@@ -371,8 +372,8 @@ class TestSoVitsSvc:
     def test_infer_output_shape(self):
         from auto_voice.models.so_vits_svc import SoVitsSvc
         model = SoVitsSvc()
-        content = torch.randn(1, 50, 256)
-        pitch = torch.randn(1, 50, 256)
+        content = torch.randn(1, 50, 768)
+        pitch = torch.randn(1, 50, 768)
         speaker = torch.randn(1, 256)
         mel = model.infer(content, pitch, speaker)
         assert mel.shape == (1, 80, 50)
@@ -380,8 +381,8 @@ class TestSoVitsSvc:
     def test_forward_training(self):
         from auto_voice.models.so_vits_svc import SoVitsSvc
         model = SoVitsSvc()
-        content = torch.randn(2, 30, 256)
-        pitch = torch.randn(2, 30, 256)
+        content = torch.randn(2, 30, 768)
+        pitch = torch.randn(2, 30, 768)
         speaker = torch.randn(2, 256)
         spec = torch.randn(2, 513, 30)
         outputs = model(content, pitch, speaker, spec=spec)
@@ -393,8 +394,8 @@ class TestSoVitsSvc:
     def test_forward_inference(self):
         from auto_voice.models.so_vits_svc import SoVitsSvc
         model = SoVitsSvc()
-        content = torch.randn(1, 40, 256)
-        pitch = torch.randn(1, 40, 256)
+        content = torch.randn(1, 40, 768)
+        pitch = torch.randn(1, 40, 768)
         speaker = torch.randn(1, 256)
         outputs = model(content, pitch, speaker, spec=None)
         assert 'mel_pred' in outputs
@@ -404,8 +405,8 @@ class TestSoVitsSvc:
     def test_compute_loss(self):
         from auto_voice.models.so_vits_svc import SoVitsSvc
         model = SoVitsSvc()
-        content = torch.randn(2, 20, 256)
-        pitch = torch.randn(2, 20, 256)
+        content = torch.randn(2, 20, 768)
+        pitch = torch.randn(2, 20, 768)
         speaker = torch.randn(2, 256)
         spec = torch.randn(2, 513, 20)
         target_mel = torch.randn(2, 80, 20)
@@ -423,8 +424,8 @@ class TestSoVitsSvc:
         from auto_voice.models.so_vits_svc import SoVitsSvc
         model = SoVitsSvc.load_pretrained('/nonexistent.pth')
         # Should still work, just uninitialized
-        content = torch.randn(1, 10, 256)
-        pitch = torch.randn(1, 10, 256)
+        content = torch.randn(1, 10, 768)
+        pitch = torch.randn(1, 10, 768)
         speaker = torch.randn(1, 256)
         mel = model.infer(content, pitch, speaker)
         assert mel.shape == (1, 80, 10)
@@ -432,8 +433,8 @@ class TestSoVitsSvc:
     def test_gradient_flow(self):
         from auto_voice.models.so_vits_svc import SoVitsSvc
         model = SoVitsSvc()
-        content = torch.randn(1, 10, 256)
-        pitch = torch.randn(1, 10, 256)
+        content = torch.randn(1, 10, 768)
+        pitch = torch.randn(1, 10, 768)
         speaker = torch.randn(1, 256)
         spec = torch.randn(1, 513, 10)
         target = torch.randn(1, 80, 10)

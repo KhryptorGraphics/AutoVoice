@@ -212,7 +212,7 @@ class ModelManager:
         with torch.no_grad():
             content = self._content_encoder.extract_features(
                 audio_tensor, sr=sr
-            )  # [1, N, 256]
+            )  # [1, N, 768]
 
         # 2. Extract F0 (HOW it's being sung - original artist's melody)
         f0, voiced, _ = librosa.pyin(
@@ -221,7 +221,7 @@ class ModelManager:
         f0 = np.nan_to_num(f0, nan=0.0)
         f0_tensor = torch.from_numpy(f0).float().unsqueeze(0).to(self.device)  # [1, T]
         with torch.no_grad():
-            pitch = self._pitch_encoder(f0_tensor)  # [1, T, 256]
+            pitch = self._pitch_encoder(f0_tensor)  # [1, T, 768]
 
         # 3. Frame alignment - align content and pitch to same resolution
         target_frames = min(content.shape[1], pitch.shape[1])
@@ -231,11 +231,11 @@ class ModelManager:
         content = F.interpolate(
             content.transpose(1, 2), size=target_frames,
             mode='linear', align_corners=False
-        ).transpose(1, 2)  # [1, target_frames, 256]
+        ).transpose(1, 2)  # [1, target_frames, 768]
         pitch = F.interpolate(
             pitch.transpose(1, 2), size=target_frames,
             mode='linear', align_corners=False
-        ).transpose(1, 2)  # [1, target_frames, 256]
+        ).transpose(1, 2)  # [1, target_frames, 768]
 
         # 4. Speaker embedding (WHO should sing - target person)
         speaker = torch.from_numpy(speaker_embedding).float().unsqueeze(0).to(self.device)

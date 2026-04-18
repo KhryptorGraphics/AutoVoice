@@ -5,13 +5,58 @@ for high-quality singing voice conversion.
 """
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Mapping
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
+
+
+def _get_state_tensor(state_dict: Mapping[str, torch.Tensor], key: str) -> Optional[torch.Tensor]:
+    """Return a tensor from a checkpoint state dict, handling DataParallel prefixes."""
+    if key in state_dict:
+        return state_dict[key]
+    prefixed_key = f"module.{key}"
+    return state_dict.get(prefixed_key)
+
+
+def _extract_model_state_dict(checkpoint: Any) -> Any:
+    """Extract the actual model state dict from common checkpoint wrappers."""
+    if isinstance(checkpoint, dict):
+        if isinstance(checkpoint.get('model'), dict):
+            return checkpoint['model']
+        if isinstance(checkpoint.get('state_dict'), dict):
+            return checkpoint['state_dict']
+    return checkpoint
+
+
+def _infer_config_from_state_dict(state_dict: Any, base_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Infer model dimensions from a saved state dict when possible."""
+    config = dict(base_config or {})
+    if not isinstance(state_dict, Mapping):
+        return config
+
+    content_weight = _get_state_tensor(state_dict, 'content_proj.weight')
+    pitch_weight = _get_state_tensor(state_dict, 'pitch_proj.weight')
+    speaker_weight = _get_state_tensor(state_dict, 'speaker_proj.weight')
+    posterior_weight = _get_state_tensor(state_dict, 'posterior_encoder.pre.weight')
+    mel_weight = _get_state_tensor(state_dict, 'mel_decoder.2.weight')
+
+    if content_weight is not None:
+        config.setdefault('content_dim', content_weight.shape[1])
+        config.setdefault('hidden_dim', content_weight.shape[0])
+    if pitch_weight is not None:
+        config.setdefault('pitch_dim', pitch_weight.shape[1])
+    if speaker_weight is not None:
+        config.setdefault('speaker_dim', speaker_weight.shape[1])
+    if posterior_weight is not None:
+        config.setdefault('spec_channels', posterior_weight.shape[1])
+    if mel_weight is not None:
+        config.setdefault('n_mels', mel_weight.shape[0])
+
+    return config
 
 
 def _ssim_loss(pred: torch.Tensor, target: torch.Tensor,
@@ -174,8 +219,8 @@ class SoVitsSvc(nn.Module):
         super().__init__()
         config = config or {}
 
-        self.content_dim = config.get('content_dim', 256)
-        self.pitch_dim = config.get('pitch_dim', 256)
+        self.content_dim = config.get('content_dim', 768)
+        self.pitch_dim = config.get('pitch_dim', 768)
         self.speaker_dim = config.get('speaker_dim', 256)
         self.hidden_dim = config.get('hidden_dim', 192)
         self.n_mels = config.get('n_mels', 80)
@@ -257,23 +302,22 @@ class SoVitsSvc(nn.Module):
                         config: Optional[Dict] = None) -> 'SoVitsSvc':
         """Load pretrained So-VITS-SVC model."""
         device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = cls(config=config)
+        base_config = dict(config or {})
 
         path = Path(checkpoint_path)
         if path.exists():
             try:
                 checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-                if isinstance(checkpoint, dict):
-                    if 'model' in checkpoint:
-                        model.load_state_dict(checkpoint['model'], strict=False)
-                    elif 'state_dict' in checkpoint:
-                        model.load_state_dict(checkpoint['state_dict'], strict=False)
-                    else:
-                        model.load_state_dict(checkpoint, strict=False)
+                state_dict = _extract_model_state_dict(checkpoint)
+                model = cls(config=_infer_config_from_state_dict(state_dict, base_config))
+                if isinstance(state_dict, Mapping):
+                    model.load_state_dict(state_dict, strict=False)
                 logger.info(f"So-VITS-SVC loaded from {checkpoint_path}")
             except Exception as e:
+                model = cls(config=base_config)
                 logger.warning(f"Could not load checkpoint: {e}")
         else:
+            model = cls(config=base_config)
             logger.warning(f"Checkpoint not found: {checkpoint_path}")
 
         model.to(device)
