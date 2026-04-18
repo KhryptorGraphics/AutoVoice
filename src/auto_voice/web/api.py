@@ -1344,31 +1344,56 @@ def get_profile_model(profile_id):
 
     try:
         adapter_manager = _get_adapter_manager()
-        has_model = adapter_manager.has_adapter(profile_id)
-        adapter_path = adapter_manager.get_adapter_path(profile_id) if has_model else None
+        available_artifact_types = adapter_manager.get_available_artifact_types(profile_id)
+        has_adapter = "adapter" in available_artifact_types
+        adapter_path = adapter_manager.get_adapter_path(profile_id) if has_adapter else None
+        full_model_path = adapter_manager.get_full_model_path(profile_id)
+        tensorrt_engine_path = adapter_manager.get_tensorrt_engine_path(profile_id)
         serialized_profile = _serialize_profile_for_response(profile)
 
-        if not has_model:
-            full_model_path = resolve_trained_models_dir(data_dir=str(_get_data_dir())) / f"{profile_id}_full_model.pt"
-            has_full_model = full_model_path.exists()
+        if not available_artifact_types:
             return jsonify({
                 'profile_id': profile_id,
-                'has_model': has_full_model,
-                'model_type': 'full_model' if has_full_model else None,
-                'model_path': str(full_model_path) if has_full_model else None,
+                'has_model': False,
+                'model_type': None,
+                'model_path': None,
                 'profile_role': serialized_profile['profile_role'],
                 'clean_vocal_seconds': serialized_profile['clean_vocal_seconds'],
                 'full_model_eligible': serialized_profile['full_model_eligible'],
-                'message': (
-                    'Full model checkpoint available for this profile'
-                    if has_full_model
-                    else 'No trained model available for this profile'
+                'available_artifact_types': [],
+                'message': 'No trained model available for this profile',
+            }), 404
+
+        if not has_adapter:
+            selected_artifact_type = available_artifact_types[0]
+            selected_artifact_path = adapter_manager.get_artifact_path(
+                profile_id,
+                selected_artifact_type,
+            )
+            message = {
+                'full_model': 'Full model checkpoint available for this profile',
+                'tensorrt': 'TensorRT engine available for this profile',
+            }.get(selected_artifact_type, 'Trained model available for this profile')
+
+            return jsonify({
+                'profile_id': profile_id,
+                'has_model': True,
+                'model_type': selected_artifact_type,
+                'model_path': str(selected_artifact_path) if selected_artifact_path else None,
+                'profile_role': serialized_profile['profile_role'],
+                'clean_vocal_seconds': serialized_profile['clean_vocal_seconds'],
+                'full_model_eligible': serialized_profile['full_model_eligible'],
+                'available_artifact_types': available_artifact_types,
+                'full_model_path': str(full_model_path) if full_model_path else None,
+                'tensorrt_engine_path': (
+                    str(tensorrt_engine_path) if tensorrt_engine_path else None
                 ),
-            }), 404 if not has_full_model else 200
+                'message': message,
+            }), 200
 
         adapter_info = adapter_manager.get_adapter_info(profile_id)
 
-        embedding_path = Path(adapter_manager.config.profiles_dir) / f"{profile_id}.npy"
+        embedding_path = adapter_manager.get_embedding_path(profile_id)
         embedding_exists = embedding_path.exists()
         embedding_shape = None
 
@@ -1398,6 +1423,9 @@ def get_profile_model(profile_id):
             'profile_role': serialized_profile['profile_role'],
             'clean_vocal_seconds': serialized_profile['clean_vocal_seconds'],
             'full_model_eligible': serialized_profile['full_model_eligible'],
+            'available_artifact_types': available_artifact_types,
+            'full_model_path': str(full_model_path) if full_model_path else None,
+            'tensorrt_engine_path': str(tensorrt_engine_path) if tensorrt_engine_path else None,
             'adapter_info': {
                 'rank': adapter_info.rank if adapter_info else None,
                 'alpha': adapter_info.alpha if adapter_info else None,

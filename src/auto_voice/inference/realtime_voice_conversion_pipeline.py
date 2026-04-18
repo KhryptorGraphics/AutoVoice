@@ -152,27 +152,13 @@ class RealtimeVoiceConversionPipeline:
             return
 
         profiles_path = Path(profiles_dir)
-        embedding_path = profiles_path / f"{profile_id}.npy"
+        if profiles_path != Path(self._adapter_manager.config.profiles_dir):
+            self._adapter_manager.config.profiles_dir = profiles_path
 
-        if not embedding_path.exists():
-            raise FileNotFoundError(
-                f"No speaker embedding found for profile: {profile_id}"
-            )
-
-        # Load and validate embedding
-        embedding = np.load(embedding_path)
-        if embedding.shape != (256,):
-            raise ValueError(
-                f"Invalid embedding shape: {embedding.shape}, expected (256,)"
-            )
-
-        # Verify L2 normalization (should be ~1.0)
-        norm = np.linalg.norm(embedding)
-        if abs(norm - 1.0) > 0.01:
-            logger.warning(
-                f"Speaker embedding not L2-normalized (norm={norm:.4f}), normalizing"
-            )
-            embedding = embedding / norm
+        embedding = self._adapter_manager.load_speaker_embedding(
+            profile_id,
+            as_tensor=False,
+        )
 
         # Set the target voice
         self.set_target_voice(embedding)

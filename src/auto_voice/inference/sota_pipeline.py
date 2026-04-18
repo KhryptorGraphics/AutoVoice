@@ -184,51 +184,31 @@ class SOTAConversionPipeline:
 
         try:
             # Load speaker embedding first (needed for both adapter types)
-            from pathlib import Path
-            import numpy as np
-
-            profiles_dir = Path(self._adapter_manager.config.profiles_dir)
-            embedding_path = profiles_dir / f"{profile_id}.npy"
-
-            if not embedding_path.exists():
-                raise FileNotFoundError(
-                    f"No speaker embedding found for profile: {profile_id}"
-                )
-
-            # Load and validate embedding
-            embedding = np.load(embedding_path)
-            if embedding.shape != (256,):
-                raise ValueError(
-                    f"Invalid embedding shape: {embedding.shape}, expected (256,)"
-                )
-
-            # Verify L2 normalization (should be ~1.0)
-            norm = np.linalg.norm(embedding)
-            if abs(norm - 1.0) > 0.01:
-                logger.warning(
-                    f"Speaker embedding not L2-normalized (norm={norm:.4f}), normalizing"
-                )
-                embedding = embedding / norm
-
-            # Convert to tensor and move to device
-            self._speaker_embedding = torch.from_numpy(embedding).to(self.device)
+            self._speaker_embedding = self._adapter_manager.load_speaker_embedding(
+                profile_id,
+                as_tensor=True,
+            )
 
             # Prefer HQ adapter if available
             if has_hq_adapter:
+                self._adapter_manager.release_active_artifact()
                 # Load HQ adapter (standalone MLP architecture)
                 self._hq_adapter_bridge.load_adapter(profile_id)
                 self._use_hq_adapter = True
                 logger.info(f"Loaded HQ adapter for speaker: {profile_id}")
             else:
                 # Fall back to standard layer-injection adapter
-                adapter_state = self._adapter_manager.load_adapter(profile_id)
+                artifact = self._adapter_manager.swap_artifact(
+                    profile_id,
+                    artifact_type="adapter",
+                )
 
                 # Ensure decoder has LoRA layers injected
                 if not hasattr(self.decoder, 'lora_adapters') or not self.decoder.lora_adapters:
                     self.decoder.inject_lora(rank=8, alpha=16)
 
                 # Apply adapter weights to decoder
-                self._adapter_manager.apply_adapter(self.decoder, adapter_state)
+                self._adapter_manager.apply_adapter(self.decoder, artifact.handle)
                 self._use_hq_adapter = False
                 logger.info(f"Loaded standard adapter for speaker: {profile_id}")
 
@@ -283,6 +263,7 @@ class SOTAConversionPipeline:
             self._use_hq_adapter = False
         else:
             self._adapter_manager.remove_adapter(self.decoder)
+            self._adapter_manager.release_active_artifact()
 
         self._speaker_embedding = None
         self._current_speaker_id = None

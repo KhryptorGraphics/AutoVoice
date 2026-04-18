@@ -4,6 +4,7 @@ Tests the adapter loading, caching, validation, and application functionality
 for voice conversion adapters used across both REALTIME and QUALITY pipelines.
 """
 import json
+import numpy as np
 import pytest
 import torch
 import torch.nn as nn
@@ -88,6 +89,47 @@ def create_test_adapter(temp_dirs, mock_adapter_state, mock_profile_metadata):
             json.dump(mock_profile_metadata, f)
 
         return adapter_path, profile_path
+
+    return _create
+
+
+@pytest.fixture
+def create_test_full_model(temp_dirs):
+    """Helper to create full-model checkpoints."""
+    def _create(profile_id: str, suffix: str = ".pt"):
+        checkpoint_path = temp_dirs["adapters_dir"] / f"{profile_id}_full_model{suffix}"
+        torch.save({"weights": torch.ones(2, 2)}, checkpoint_path)
+        return checkpoint_path
+
+    return _create
+
+
+@pytest.fixture
+def create_test_engine(temp_dirs):
+    """Helper to create TensorRT engine files."""
+    def _create(profile_id: str, filename: str | None = None):
+        engines_dir = temp_dirs["tmp_path"] / "engines"
+        engines_dir.mkdir(exist_ok=True)
+        engine_path = engines_dir / (filename or f"{profile_id}_nvfp4.engine")
+        engine_path.write_bytes(b"serialized-engine")
+        return engine_path, engines_dir
+
+    return _create
+
+
+@pytest.fixture
+def create_test_embedding(temp_dirs):
+    """Helper to create profile embeddings."""
+    def _create(profile_id: str, embedding: np.ndarray | None = None):
+        embedding_path = temp_dirs["profiles_dir"] / f"{profile_id}.npy"
+        np.save(
+            embedding_path,
+            np.asarray(
+                embedding if embedding is not None else np.ones(256, dtype=np.float32),
+                dtype=np.float32,
+            ),
+        )
+        return embedding_path
 
     return _create
 
@@ -225,6 +267,38 @@ class TestAdapterManagerListing:
 
         assert path == adapter_path
 
+    def test_get_available_artifact_types_priority(
+        self,
+        adapter_config,
+        create_test_adapter,
+        create_test_full_model,
+        create_test_engine,
+    ):
+        create_test_adapter("profile1")
+        create_test_full_model("profile1")
+        _, engines_dir = create_test_engine("profile1")
+        adapter_config.tensorrt_dir = engines_dir
+
+        manager = AdapterManager(adapter_config)
+
+        assert manager.get_available_artifact_types("profile1") == [
+            "tensorrt",
+            "full_model",
+            "adapter",
+        ]
+
+    @pytest.mark.parametrize("suffix", [".pt", ".pth"])
+    def test_get_full_model_path_supports_checkpoint_suffixes(
+        self,
+        adapter_config,
+        create_test_full_model,
+        suffix,
+    ):
+        checkpoint_path = create_test_full_model("profile1", suffix=suffix)
+        manager = AdapterManager(adapter_config)
+
+        assert manager.get_full_model_path("profile1") == checkpoint_path
+
 
 class TestAdapterManagerLoading:
     """Test adapter loading functionality."""
@@ -273,6 +347,83 @@ class TestAdapterManagerLoading:
 
         # Should be different objects (not cached)
         assert state1 is not state2
+
+    def test_load_full_model_artifact(self, adapter_config, create_test_full_model):
+        checkpoint_path = create_test_full_model("profile1", suffix=".pth")
+
+        manager = AdapterManager(adapter_config)
+        artifact = manager.load_artifact("profile1", artifact_type="full_model")
+
+        assert artifact.profile_id == "profile1"
+        assert artifact.artifact_type == "full_model"
+        assert artifact.path == checkpoint_path
+        assert torch.equal(artifact.handle["weights"], torch.ones(2, 2))
+
+    def test_load_tensorrt_artifact(self, adapter_config, create_test_engine):
+        engine_path, engines_dir = create_test_engine("profile1")
+        adapter_config.tensorrt_dir = engines_dir
+
+        manager = AdapterManager(adapter_config)
+        with patch.object(manager, "_load_tensorrt_engine", return_value=b"engine") as loader:
+            artifact = manager.load_artifact("profile1", artifact_type="tensorrt")
+
+        loader.assert_called_once_with(engine_path)
+        assert artifact.artifact_type == "tensorrt"
+        assert artifact.handle == b"engine"
+
+    def test_load_speaker_embedding_normalizes_and_returns_tensor(
+        self,
+        adapter_config,
+        create_test_embedding,
+    ):
+        create_test_embedding("profile1", np.full(256, 2.0, dtype=np.float32))
+
+        manager = AdapterManager(adapter_config)
+        embedding = manager.load_speaker_embedding("profile1")
+        tensor = manager.load_speaker_embedding("profile1", as_tensor=True)
+
+        assert embedding.shape == (256,)
+        assert np.isclose(np.linalg.norm(embedding), 1.0, atol=1e-5)
+        assert isinstance(tensor, torch.Tensor)
+        assert tensor.shape == (256,)
+        assert torch.isclose(torch.norm(tensor), torch.tensor(1.0), atol=1e-5)
+
+    def test_load_speaker_embedding_rejects_invalid_shape(
+        self,
+        adapter_config,
+        create_test_embedding,
+    ):
+        create_test_embedding("profile1", np.ones((32,), dtype=np.float32))
+
+        manager = AdapterManager(adapter_config)
+
+        with pytest.raises(ValueError, match="Invalid embedding shape"):
+            manager.load_speaker_embedding("profile1")
+
+    def test_swap_artifact_tracks_active_state(
+        self,
+        adapter_config,
+        create_test_adapter,
+    ):
+        create_test_adapter("profile1")
+        manager = AdapterManager(adapter_config)
+
+        artifact = manager.swap_artifact("profile1", artifact_type="adapter")
+        stats = manager.get_cache_stats()
+
+        assert artifact.profile_id == "profile1"
+        assert stats["active_profile_id"] == "profile1"
+        assert stats["active_artifact_type"] == "adapter"
+        assert "profile1" in manager._cache
+
+        same_artifact = manager.swap_artifact("profile1", artifact_type="adapter")
+        assert same_artifact is artifact
+
+        manager.release_active_artifact()
+        released_stats = manager.get_cache_stats()
+        assert released_stats["active_profile_id"] is None
+        assert released_stats["active_artifact_type"] is None
+        assert "profile1" not in manager._cache
 
 
 class TestAdapterValidation:

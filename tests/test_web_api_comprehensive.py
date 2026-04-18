@@ -350,6 +350,20 @@ class TestModelEndpoints:
         assert data["model_type"] == "full_model"
         assert data["full_model_eligible"] is True
 
+    def test_profile_model_reports_full_model_pth(self, client_current, app_current):
+        profile_id = "00000000-0000-0000-0000-000000000225"
+        profile = _create_profile(app_current, profile_id=profile_id, clean_vocal_seconds=1900.0)
+        full_model_path = Path(app_current.voice_cloner.store.trained_models_dir) / f"{profile_id}_full_model.pth"
+        full_model_path.write_bytes(b"full-model-pth")
+
+        response = client_current.get(f"/api/v1/voice/profiles/{profile_id}/model")
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["model_type"] == "full_model"
+        assert data["model_path"] == str(full_model_path)
+        assert data["profile_id"] == profile["profile_id"]
+
     def test_profile_model_reports_adapter_metadata(self, client_current, app_current):
         profile_id = "00000000-0000-0000-0000-000000000222"
         _create_profile(app_current, profile_id=profile_id, has_trained_model=True, clean_vocal_seconds=600.0)
@@ -361,6 +375,20 @@ class TestModelEndpoints:
         assert data["model_type"] == "adapter"
         assert data["adapter_info"]["rank"] == 8
         assert data["embedding_shape"] == [256]
+
+    def test_profile_model_reports_tensorrt_engine(self, client_current, app_current):
+        profile_id = "00000000-0000-0000-0000-000000000226"
+        _create_profile(app_current, profile_id=profile_id, clean_vocal_seconds=400.0)
+        engine_path = Path(app_current.voice_cloner.store.trained_models_dir) / f"{profile_id}_nvfp4.engine"
+        engine_path.write_bytes(b"engine")
+
+        response = client_current.get(f"/api/v1/voice/profiles/{profile_id}/model")
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["model_type"] == "tensorrt"
+        assert data["model_path"] == str(engine_path)
+        assert data["tensorrt_engine_path"] == str(engine_path)
 
     def test_select_adapter_updates_profile(self, client_current, app_current):
         profile_id = "00000000-0000-0000-0000-000000000223"
