@@ -159,6 +159,20 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
+def _coerce_existing_file_path(path_value: Any) -> Optional[str]:
+    """Return a normalized existing file path or None."""
+    if isinstance(path_value, Path):
+        candidate = path_value
+    elif isinstance(path_value, str):
+        candidate = Path(path_value)
+    elif isinstance(path_value, os.PathLike):
+        candidate = Path(os.fspath(path_value))
+    else:
+        return None
+
+    return str(candidate) if candidate.exists() else None
+
+
 def _get_state_store():
     state_store = getattr(current_app, 'state_store', None)
     if state_store is None:
@@ -409,7 +423,10 @@ def convert_song():
         return validation_error_response('No song file provided')
 
     song_file = request.files.get('song') or request.files.get('audio')
-    if song_file.filename == '':
+    if song_file is None:
+        return validation_error_response('No song file provided')
+
+    if not getattr(song_file, 'filename', ''):
         return validation_error_response('No selected file')
 
     if not allowed_file(song_file.filename):
@@ -493,10 +510,13 @@ def convert_song():
         None, type_hint='bool'
     )
 
-    output_quality = get_param(
-        settings_data, 'output_quality', 'output_quality', 'balanced',
-        lambda v: preset_map.get(v, None) is not None, type_hint='str'
-    )
+    try:
+        output_quality = get_param(
+            settings_data, 'output_quality', 'output_quality', 'balanced',
+            lambda v: preset_map.get(v, None) is not None, type_hint='str'
+        )
+    except ValueError as e:
+        return validation_error_response(str(e))
     preset = preset_map.get(output_quality, 'balanced')
     logger.info(f'Selected preset: {preset} for quality: {output_quality}')
 
@@ -554,10 +574,13 @@ def convert_song():
     # - realtime: Low-latency for live karaoke (<100ms)
     # - quality: CoMoSVC with 30-step diffusion (24kHz)
     # - quality_seedvc: DiT-CFM with 5-10 step flow matching (44kHz SOTA)
-    pipeline_type = get_param(
-        settings_data, 'pipeline_type', 'pipeline_type', 'quality',
-        lambda v: v in ['realtime', 'quality', 'quality_seedvc'], type_hint='str'
-    )
+    try:
+        pipeline_type = get_param(
+            settings_data, 'pipeline_type', 'pipeline_type', 'quality',
+            lambda v: v in ['realtime', 'quality', 'quality_seedvc'], type_hint='str'
+        )
+    except ValueError as e:
+        return validation_error_response(str(e))
     logger.info(f'Using pipeline type: {pipeline_type}')
 
     # Sample rate from config
@@ -937,8 +960,8 @@ def download_converted_audio(job_id):
             'variant must be one of: mix, vocals, instrumental'
         )
 
-    result_path = job_manager.get_job_asset_path(job_id, variant)
-    if not result_path or not os.path.exists(result_path):
+    result_path = _coerce_existing_file_path(job_manager.get_job_asset_path(job_id, variant))
+    if not result_path:
         logger.info(
             "Download request for unavailable result: %s (variant=%s)",
             job_id,
@@ -971,8 +994,8 @@ def reassemble_converted_audio(job_id):
     if not job_manager:
         return service_unavailable_response('Job management service unavailable')
 
-    vocals_path = job_manager.get_job_asset_path(job_id, 'vocals')
-    instrumental_path = job_manager.get_job_asset_path(job_id, 'instrumental')
+    vocals_path = _coerce_existing_file_path(job_manager.get_job_asset_path(job_id, 'vocals'))
+    instrumental_path = _coerce_existing_file_path(job_manager.get_job_asset_path(job_id, 'instrumental'))
     if not vocals_path or not instrumental_path:
         return not_found_response(
             'Stem assets are not available for this conversion. '

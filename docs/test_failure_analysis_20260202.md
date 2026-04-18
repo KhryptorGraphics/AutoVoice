@@ -1,4 +1,7 @@
 # AutoVoice Test Suite Failure Analysis
+
+> Historical report: archived failure-analysis snapshot from 2026-02-02. Do not treat this as current MVP status. Use [README.md](../README.md) and [docs/README.md](./README.md) for current project truth.
+
 **Date:** 2026-02-02
 **Beads Issue:** AV-d9k
 **Test Run Duration:** 26 minutes 27 seconds

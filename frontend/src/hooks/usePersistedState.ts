@@ -73,12 +73,32 @@ export function usePersistedState<T>(
 export const STORAGE_KEYS = {
   UI_CONFIG: 'autovoice_ui_config',
   NOTIFICATIONS: 'autovoice_notifications',
+  PIPELINE_PREFERENCE: 'autovoice_preferred_pipeline',
   CONVERSION_SETTINGS: 'autovoice_conversion_settings',
   TRAINING_SETTINGS: 'autovoice_training_settings',
   AUDIO_SETTINGS: 'autovoice_audio_settings',
   RECENT_PROFILES: 'autovoice_recent_profiles',
   VIEW_PREFERENCES: 'autovoice_view_preferences',
   DEBUG_SETTINGS: 'autovoice_debug_settings',
+} as const
+
+/**
+ * Explicit boundary for client-side persistence.
+ *
+ * These keys are local-only browser preferences. Product state such as
+ * profiles, training jobs, conversion history, checkpoints, stems, and audio
+ * routing live on the server and must be fetched through the API.
+ */
+export const STORAGE_BOUNDARIES = {
+  UI_CONFIG: 'local-only UI presentation preferences',
+  NOTIFICATIONS: 'local-only browser notification and webhook preferences',
+  PIPELINE_PREFERENCE: 'local-only preferred default conversion pipeline',
+  CONVERSION_SETTINGS: 'local-only last-used conversion form selections',
+  TRAINING_SETTINGS: 'reserved local-only training form defaults',
+  AUDIO_SETTINGS: 'reserved local-only client audio preferences',
+  RECENT_PROFILES: 'local-only quick-access profile history',
+  VIEW_PREFERENCES: 'local-only layout and browsing preferences',
+  DEBUG_SETTINGS: 'local-only diagnostics presentation preferences',
 } as const
 
 /**

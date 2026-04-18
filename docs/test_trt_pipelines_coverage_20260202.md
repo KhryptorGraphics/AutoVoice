@@ -1,5 +1,7 @@
 # TensorRT Pipeline Testing Coverage Report
 
+> Historical report: archived TensorRT coverage snapshot from 2026-02-02. Do not treat this as current MVP status. Use [README.md](../README.md) and [docs/README.md](./README.md) for current project truth.
+
 **Date:** 2026-02-02  
 **Agent:** Testing Orchestrator (TDD Focus)  
 **Modules:** `trt_pipeline.py`, `trt_streaming_pipeline.py`

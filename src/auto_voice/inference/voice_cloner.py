@@ -72,6 +72,7 @@ class VoiceCloner:
         profiles_dir: str = 'data/voice_profiles',
         samples_dir: str = 'data/samples',
         auto_separate_vocals: bool = True,
+        speaker_encoder_backend: str = 'mel_stats',
     ):
         """Initialize voice cloner with storage and processing settings.
 
@@ -86,6 +87,31 @@ class VoiceCloner:
         self._sample_rate = 16000
         self._min_duration = 3.0  # seconds
         self._auto_separate_vocals = auto_separate_vocals
+        self._speaker_encoder_backend = speaker_encoder_backend
+        self._speaker_encoder = None
+
+    def _extract_mel_stat_embedding(self, audio_path: str) -> np.ndarray:
+        """Extract the default portable mel-statistics embedding."""
+        import librosa
+
+        audio, sr = librosa.load(audio_path, sr=self._sample_rate, mono=True)
+        duration = len(audio) / sr
+        if duration < self._min_duration:
+            raise InvalidAudioError(
+                f"Audio too short ({duration:.1f}s). Minimum {self._min_duration}s required."
+            )
+
+        mel = librosa.feature.melspectrogram(
+            y=audio, sr=sr, n_fft=2048, hop_length=512, n_mels=128
+        )
+        mel_db = librosa.power_to_db(mel, ref=np.max)
+        mean = mel_db.mean(axis=1)
+        std = mel_db.std(axis=1)
+        embedding = np.concatenate([mean, std]).astype(np.float32)
+        norm = np.linalg.norm(embedding)
+        if norm == 0:
+            raise InvalidAudioError("Silent audio - cannot extract embedding")
+        return (embedding / norm).astype(np.float32)
 
     def _extract_embedding(self, audio_path: str) -> np.ndarray:
         """Extract speaker embedding from mel-spectrogram statistics.
@@ -116,18 +142,22 @@ class VoiceCloner:
                 f"Audio too short ({duration:.1f}s). Minimum {self._min_duration}s required."
             )
 
-        # Mel-statistics embedding (deterministic, discriminative)
-        mel = librosa.feature.melspectrogram(
-            y=audio, sr=sr, n_fft=2048, hop_length=512, n_mels=128
-        )
-        mel_db = librosa.power_to_db(mel, ref=np.max)
-        mean = mel_db.mean(axis=1)   # [128] average spectral shape = timbre
-        std = mel_db.std(axis=1)     # [128] spectral variability
-        embedding = np.concatenate([mean, std])  # [256]
-        norm = np.linalg.norm(embedding)
-        if norm == 0:
-            raise InvalidAudioError("Silent audio - cannot extract embedding")
-        return (embedding / norm).astype(np.float32)
+        if self._speaker_encoder_backend == 'ecapa2':
+            try:
+                if self._speaker_encoder is None:
+                    from ..models.ecapa2_encoder import ECAPA2SpeakerEncoder
+
+                    self._speaker_encoder = ECAPA2SpeakerEncoder(device=str(self.device))
+                result = self._speaker_encoder.extract_embedding(audio, sr)
+                logger.info("Using speaker encoder backend: %s", result.backend)
+                return result.embedding.astype(np.float32)
+            except Exception as exc:
+                logger.warning(
+                    "ECAPA2 speaker encoder unavailable, falling back to mel-statistics embedding: %s",
+                    exc,
+                )
+
+        return self._extract_mel_stat_embedding(audio_path)
 
     def create_speaker_embedding(self, audio_paths: List[str]) -> np.ndarray:
         """Create averaged speaker embedding from multiple singing recordings.

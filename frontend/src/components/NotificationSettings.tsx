@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useToastContext } from '../contexts/ToastContext'
+import { STORAGE_KEYS, usePersistedState } from '../hooks/usePersistedState'
 
 interface WebhookConfig {
   id: string
@@ -40,7 +41,7 @@ const NOTIFICATION_EVENTS: { key: NotificationEvent; label: string; description:
   { key: 'model_loaded', label: 'Model Loaded', description: 'When a model is loaded/unloaded' },
 ]
 
-const STORAGE_KEY = 'autovoice_notifications'
+const STORAGE_KEY = STORAGE_KEYS.NOTIFICATIONS
 
 const DEFAULT_CONFIG: NotificationConfig = {
   browserNotifications: false,
@@ -52,14 +53,10 @@ const DEFAULT_CONFIG: NotificationConfig = {
 
 export function NotificationSettings() {
   const toast = useToastContext()
-  const [config, setConfig] = useState<NotificationConfig>(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY)
-      return stored ? { ...DEFAULT_CONFIG, ...JSON.parse(stored) } : DEFAULT_CONFIG
-    } catch {
-      return DEFAULT_CONFIG
-    }
-  })
+  const [config, setConfig] = usePersistedState<NotificationConfig>(
+    STORAGE_KEY,
+    DEFAULT_CONFIG
+  )
 
   const [showAddWebhook, setShowAddWebhook] = useState(false)
   const [newWebhook, setNewWebhook] = useState({ url: '', name: '' })
@@ -78,7 +75,6 @@ export function NotificationSettings() {
   const updateConfig = (updates: Partial<NotificationConfig>) => {
     const newConfig = { ...config, ...updates }
     setConfig(newConfig)
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newConfig))
   }
 
   // Request browser notification permission

@@ -9,12 +9,23 @@ from typing import Optional, Dict, Any, Tuple
 
 from flask import Flask, request, g
 from flask_socketio import SocketIO
+from werkzeug.exceptions import HTTPException
 
 from auto_voice.config.secrets import SecretsManager
 from auto_voice.web.persistence import AppStateStore
 from auto_voice.storage.paths import resolve_profiles_dir, resolve_samples_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _release_tracked_request(app: Flask) -> None:
+    """Decrement active request count exactly once for a tracked request."""
+    if not getattr(g, '_request_tracked', False):
+        return
+
+    with app._request_lock:
+        app._active_requests = max(0, app._active_requests - 1)
+    g._request_tracked = False
 
 
 def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] = None) -> Tuple[Flask, SocketIO]:
@@ -99,18 +110,30 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
     @app.after_request
     def track_request_end(response):
         """Decrement active request counter."""
-        if getattr(g, '_request_tracked', False):
-            with app._request_lock:
-                app._active_requests = max(0, app._active_requests - 1)
+        _release_tracked_request(app)
         return response
+
+    @app.errorhandler(HTTPException)
+    def handle_http_exception(error: HTTPException):
+        """Return JSON for uncaught HTTP errors while preserving status codes."""
+        _release_tracked_request(app)
+        payload = {
+            'error': error.name,
+            'message': error.description,
+            'status_code': error.code,
+        }
+        return payload, error.code
 
     @app.errorhandler(Exception)
     def handle_exception(error):
-        """Ensure request tracking is decremented on errors."""
-        if getattr(g, '_request_tracked', False):
-            with app._request_lock:
-                app._active_requests = max(0, app._active_requests - 1)
-        raise error
+        """Ensure request tracking is decremented and surface JSON 500s."""
+        _release_tracked_request(app)
+        logger.exception("Unhandled application error")
+        return {
+            'error': 'Internal Server Error',
+            'message': 'An unexpected error occurred',
+            'status_code': 500,
+        }, 500
 
     def wait_for_requests(timeout=30.0):
         """Wait for active requests to complete during shutdown.
@@ -224,6 +247,9 @@ def _init_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
                 device=device,
                 profiles_dir=str(resolve_profiles_dir(data_dir=app.config['DATA_DIR'])),
                 samples_dir=str(resolve_samples_dir(data_dir=app.config['DATA_DIR'])),
+                speaker_encoder_backend=(
+                    (config or {}).get('speaker_encoder_backend', 'mel_stats')
+                ),
             )
             app.voice_cloner = voice_cloner
             logger.info(f"Voice cloner initialized on {device}")

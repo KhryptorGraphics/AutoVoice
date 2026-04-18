@@ -1,5 +1,7 @@
 # Audio Augmentation Test Coverage Summary
 
+> Historical report: archived test-coverage snapshot from 2026-02-02. Do not treat this as current MVP status. Use [README.md](../README.md) and [docs/README.md](./README.md) for current project truth.
+
 **Module:** `src/auto_voice/audio/augmentation.py`
 **Test File:** `tests/audio/test_augmentation_comprehensive.py`
 **Date:** 2026-02-02

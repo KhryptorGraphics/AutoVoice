@@ -1,5 +1,7 @@
 # Continuous Learning Architecture Design
 
+> Historical design note: this document captures an earlier architecture track. It is useful for implementation context, but it is not the canonical current-product spec. Start with [../README.md](../README.md), [user-guide-voice-profiles.md](./user-guide-voice-profiles.md), and [frontend-persistence-boundaries.md](./frontend-persistence-boundaries.md) for current behavior.
+
 **Track:** voice-profile-training_20260124
 **Task:** 2.5
 **Date:** 2026-01-24

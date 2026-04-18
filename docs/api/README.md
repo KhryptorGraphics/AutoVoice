@@ -2,6 +2,15 @@
 
 Comprehensive API documentation for the AutoVoice singing voice conversion system.
 
+## Current Profile Model
+
+The current MVP uses two profile roles:
+
+- `source_artist`: extracted from uploaded songs after vocal separation and diarization
+- `target_user`: user-owned singing profiles used for LoRA or full-model training
+
+Only `target_user` profiles are trainable. Full-model training unlocks after `30 minutes` of clean user vocals on that target profile.
+
 ## Quick Start
 
 ### Access Swagger UI

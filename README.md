@@ -10,6 +10,16 @@ AutoVoice is a local-first singing voice conversion and karaoke stack. The curre
 - Persistent local product state under `DATA_DIR`
 - React frontend for the supported MVP flows
 
+## Canonical Docs
+
+Start here when onboarding or validating current behavior:
+
+- [Docs Index](docs/README.md)
+- [Voice Profiles User Guide](docs/user-guide-voice-profiles.md)
+- [Frontend Persistence Boundaries](docs/frontend-persistence-boundaries.md)
+- [API Documentation](docs/api/README.md)
+- [Troubleshooting](docs/troubleshooting.md)
+
 ## Canonical Runtime
 
 Backend:
@@ -28,6 +38,11 @@ npm run dev
 ```
 
 By default the frontend proxies `/api` and `/socket.io` to `http://localhost:5000`. Override with `VITE_BACKEND_URL` if needed.
+
+Supported local CUDA targets:
+
+- `x86_64` Linux with CUDA-capable NVIDIA GPUs
+- `aarch64` Linux with CUDA-capable NVIDIA GPUs, including NVIDIA Thor / `sm_110`
 
 ## Data and Config
 
@@ -74,6 +89,8 @@ Canonical for the MVP:
 - Socket.IO over `/socket.io`
 - `/karaoke` namespace for live audio sessions
 - JSON-backed local state in `data/app_state/`
+- Source-artist profiles extracted from uploaded songs
+- Target-user profiles trained with LoRA first and promoted to full-model training after 30 minutes of clean user vocals
 
 Still experimental or research-heavy:
 

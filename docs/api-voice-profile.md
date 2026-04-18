@@ -1,5 +1,7 @@
 # Voice Profile API Reference
 
+> Historical note: this file is a narrow API reference and may omit newer role-based behavior. For the current MVP flow, start with [docs/api/README.md](./api/README.md) and [user-guide-voice-profiles.md](./user-guide-voice-profiles.md).
+
 API documentation for voice profile management, training samples, and continuous learning.
 
 **Base URL:** `/api/v1`

@@ -56,6 +56,9 @@ class SingingConversionPipeline:
         self._voice_cloner = voice_cloner
         self._sample_rate = 22050
         self._model_manager = None
+        self._nsf_enhancer = None
+        self._pupu_vocoder = None
+        self._hq_enhancer = None
 
         logger.info(f"SingingConversionPipeline initialized on {self.device}")
 
@@ -229,6 +232,81 @@ class SingingConversionPipeline:
             logger.warning(f"Technique detection failed: {e}")
             return None
 
+    def _resample_audio(self, audio: np.ndarray, from_sr: int, to_sr: int) -> np.ndarray:
+        if from_sr == to_sr:
+            return np.asarray(audio, dtype=np.float32)
+
+        import librosa
+
+        return librosa.resample(
+            np.asarray(audio, dtype=np.float32),
+            orig_sr=from_sr,
+            target_sr=to_sr,
+        ).astype(np.float32)
+
+    def _apply_quality_post_processing(
+        self,
+        converted_vocals: np.ndarray,
+        instrumental: np.ndarray,
+        sample_rate: int,
+        f0_contour: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, int, Dict[str, Any]]:
+        """Apply optional quality upgrade stages in a portable order."""
+        metadata: Dict[str, Any] = {'post_processing': []}
+        vocals = np.asarray(converted_vocals, dtype=np.float32)
+        backing = np.asarray(instrumental, dtype=np.float32)
+        output_sr = sample_rate
+
+        if self.config.get('enable_nsf_harmonic_enhancement'):
+            if self._nsf_enhancer is None:
+                from ..models.nsf_module import NSFHarmonicEnhancer
+
+                self._nsf_enhancer = NSFHarmonicEnhancer(
+                    harmonic_strength=self.config.get('nsf_harmonic_strength', 0.12),
+                    max_harmonics=self.config.get('nsf_max_harmonics', 6),
+                    blend=self.config.get('nsf_blend', 0.2),
+                )
+            vocals = self._nsf_enhancer.enhance(vocals, f0_contour, sample_rate)
+            metadata['post_processing'].append('nsf_harmonic_enhancement')
+
+        if self.config.get('enable_pupu_vocoder_refinement'):
+            if self._pupu_vocoder is None:
+                from ..models.pupu_vocoder import PupuVocoderEnhancer
+
+                self._pupu_vocoder = PupuVocoderEnhancer(
+                    brightness=self.config.get('pupu_brightness', 0.08),
+                    transient_boost=self.config.get('pupu_transient_boost', 0.1),
+                )
+            vocals = self._pupu_vocoder.refine(vocals, sample_rate)
+            metadata['post_processing'].append('pupu_vocoder_refinement')
+
+        if self.config.get('enable_hq_super_resolution'):
+            try:
+                import torch
+
+                if self._hq_enhancer is None:
+                    from .hq_svc_wrapper import HQSVCWrapper
+
+                    self._hq_enhancer = HQSVCWrapper(
+                        device=self.device,
+                        require_gpu=self.config.get('hq_require_gpu', False),
+                    )
+
+                super_res = self._hq_enhancer.super_resolve(
+                    torch.tensor(vocals, dtype=torch.float32),
+                    sample_rate=sample_rate,
+                )
+                vocals = np.asarray(super_res['audio'], dtype=np.float32)
+                output_sr = int(super_res['sample_rate'])
+                if output_sr != sample_rate:
+                    backing = self._resample_audio(backing, sample_rate, output_sr)
+                metadata['post_processing'].append('hq_super_resolution')
+            except Exception as exc:
+                logger.warning("HQ-SVC enhancement unavailable, skipping: %s", exc)
+                metadata['hq_super_resolution_skipped'] = str(exc)
+
+        return vocals, backing, output_sr, metadata
+
     def convert_song(self, song_path: str, target_profile_id: str,
                      vocal_volume: float = 1.0, instrumental_volume: float = 0.9,
                      pitch_shift: float = 0.0, return_stems: bool = False,
@@ -328,6 +406,15 @@ class SingingConversionPipeline:
         # Extract converted pitch
         f0_contour = self._extract_pitch(converted_vocals, sr)
 
+        converted_vocals, instrumental, sr, quality_metadata = self._apply_quality_post_processing(
+            converted_vocals,
+            instrumental,
+            sr,
+            f0_contour,
+        )
+        if quality_metadata.get('post_processing'):
+            f0_contour = self._extract_pitch(converted_vocals, sr)
+
         # Mix with volume adjustments
         converted_vocals = converted_vocals * vocal_volume
         instrumental = instrumental * instrumental_volume
@@ -357,10 +444,14 @@ class SingingConversionPipeline:
                 'target_profile_id': target_profile_id,
                 'active_model_type': model_type,
                 'speaker_id': speaker_id,
+                'quality_post_processing': quality_metadata.get('post_processing', []),
             },
             'f0_contour': f0_contour,
             'f0_original': f0_original,
         }
+
+        if quality_metadata.get('hq_super_resolution_skipped'):
+            result['metadata']['hq_super_resolution_skipped'] = quality_metadata['hq_super_resolution_skipped']
 
         if return_stems:
             result['stems'] = {

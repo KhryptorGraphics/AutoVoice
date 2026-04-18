@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { Zap, Sparkles, HelpCircle, Crown, Radio, Rocket, BarChart3, X } from 'lucide-react'
 import clsx from 'clsx'
+import { STORAGE_KEYS } from '../hooks/usePersistedState'
 
 export type PipelineType = 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
 
 // LocalStorage key for persisting user's preferred pipeline
-const PIPELINE_PREFERENCE_KEY = 'autovoice_preferred_pipeline'
+const PIPELINE_PREFERENCE_KEY = STORAGE_KEYS.PIPELINE_PREFERENCE
 
 /**
  * Get the user's preferred pipeline from localStorage

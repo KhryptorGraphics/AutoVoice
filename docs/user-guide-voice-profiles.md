@@ -1,248 +1,147 @@
-# Voice Profile User Guide
+# Voice Profiles User Guide
 
-Learn how to create, manage, and improve your voice profiles in AutoVoice.
+AutoVoice uses two profile roles:
 
----
+- `source_artist`: extracted from an uploaded song after separation and diarization
+- `target_user`: built from the user singing and trained for conversion
 
-## What is a Voice Profile?
+The product workflow is: upload a song, split stems, detect singers, create source profiles, collect user vocals into a target profile, train a LoRA, unlock a full model after 30 minutes of clean user vocals, then use that target voice for offline conversion or live karaoke.
 
-A voice profile captures the unique characteristics of your singing voice. Once created, AutoVoice uses this profile to convert any song into your voice while preserving the original pitch, timing, and singing techniques.
+## Profile Roles
 
-**Key benefits:**
-- Your voice profile improves over time as you sing more songs
-- Advanced techniques like vibrato and melisma are preserved
-- Multiple profiles can be created for different voice styles
+### Source Artist Profiles
 
----
+Source artist profiles represent the singers detected in the uploaded song.
 
-## Creating Your First Profile
+They are created from:
 
-### Step 1: Prepare Reference Audio
+- vocal stem separation
+- diarization over the vocal stem
+- singer grouping and per-singer segment extraction
 
-For best results, use a recording that:
-- Is **10-30 seconds** of clear singing
-- Has **minimal background noise**
-- Shows your **natural vocal range**
-- Is in a common format (WAV, MP3, FLAC)
+Use source profiles to preserve the original artist performance. They are not trainable target voices.
 
-### Step 2: Upload to AutoVoice
+### Target User Profiles
 
-1. Navigate to **Profiles** in the sidebar
-2. Click **Create New Profile**
-3. Upload your reference audio file
-4. Enter a name for your profile
-5. Click **Create Profile**
+Target user profiles represent the voice you want the system to sing with.
 
-The system will analyze your voice and create an initial profile in about 10-20 seconds.
+They are built from:
 
-### Step 3: Verify Your Profile
+- direct uploads of your own clean singing
+- captured karaoke training phrases
+- additional assigned samples you explicitly add to the target profile
 
-After creation, you'll see:
-- **Vocal Range:** Your detected low and high notes
-- **Sample Count:** Currently 1 (your reference audio)
-- **Model Version:** v1 (initial version)
+Only target user profiles can be trained.
 
----
+## End-to-End Workflow
 
-## Improving Your Profile
+### 1. Upload a Song
 
-Your voice profile gets better with more training data. There are two ways to add samples:
+Start from a local song upload or the supported download flow.
 
-### Automatic Collection (Recommended)
+The backend will:
 
-During karaoke sessions:
-1. Go to **Karaoke** page
-2. Select your profile from the dropdown
-3. Enable **"Capture training samples"**
-4. Sing along with songs
+- split the song into `vocals` and `instrumental`
+- diarize the vocal stem
+- group segments by singer
+- create one `source_artist` profile per detected singer
 
-The system automatically captures high-quality phrases from your performance and adds them to your profile.
+After diarization, review the detected singers. Rename, merge, or discard them before proceeding.
 
-### Manual Upload
+### 2. Create or Open a Target User Profile
 
-1. Navigate to **Profiles** → Select your profile
-2. Click **Upload Sample**
-3. Select audio files with your singing
-4. Click **Upload**
+Create a target profile for your own singing voice or open an existing one.
 
-Each sample should be a clean singing phrase (5-15 seconds).
+For best results, upload:
 
----
+- clean solo singing
+- minimal background bleed
+- multiple phrases across your normal range
 
-## Training Your Model
+Target profiles accumulate duration over time. The system tracks clean vocal seconds, sample count, and current model state.
 
-After accumulating new samples, you can train your model to improve quality.
+### 3. Train a LoRA
 
-### Automatic Training
+LoRA is the default training path for a target user profile.
 
-When enabled, training triggers automatically after collecting a threshold of new samples (default: 10 samples).
+Use it when you want:
 
-To enable:
-1. Go to **Profiles** → Settings
-2. Enable **"Auto-train after new samples"**
-3. Set threshold (recommended: 10-20 samples)
+- faster turnaround
+- smaller artifacts
+- a stable first-pass target voice for conversion and karaoke
 
-### Manual Training
+Source artist profiles cannot be trained. If you try to train a source profile, the API rejects it.
 
-1. Navigate to **Profiles** → Select your profile
-2. Click **Train Model**
-3. Review training configuration:
-   - **LoRA Rank:** Higher = more capacity (default: 8)
-   - **Epochs:** More = longer training (default: 10)
-   - **Learning Rate:** Lower = more stable (default: 0.0001)
-4. Click **Start Training**
+### 4. Unlock Full-Model Training
 
-Training progress is shown in real-time. A typical training job takes 5-15 minutes depending on sample count.
+When a target user profile reaches `30 minutes` of clean user vocals, the UI unlocks full-model training.
 
----
+This promotion path is intended for:
 
-## Training Configuration
+- higher-accuracy timbre transfer
+- better singing conversion stability
+- better live-mode performance once the dedicated model is active
 
-### Understanding the Settings
+Until that threshold is reached, the profile remains LoRA-only.
 
-| Setting | What it does | Recommended |
-|---------|--------------|-------------|
-| **LoRA Rank** | Model adaptation capacity | 8 for most users, 16 for complex voices |
-| **LoRA Alpha** | Scaling factor | Keep at 2x rank (default: 16) |
-| **Learning Rate** | Training speed | 0.0001 (lower if unstable) |
-| **Epochs** | Training iterations | 10-20 for best results |
-| **EWC** | Prevents forgetting old voice | Keep enabled |
+### 5. Convert a Song
 
-### Tips for Better Training
+For offline conversion:
 
-- **Quality over quantity:** 20 clean samples beats 100 noisy ones
-- **Variety matters:** Include different songs and vocal ranges
-- **Consistent style:** Train on your natural singing style
-- **Regular updates:** Retrain every 15-25 new samples
+1. choose the uploaded song or vocal stem
+2. choose the target user profile
+3. select the pipeline
+4. run conversion
 
----
+The output keeps the source artist performance characteristics while replacing the singer identity with the target user voice.
 
-## Managing Profiles
+When a target profile has an active full model, offline conversion uses that model directly. Otherwise it uses the trained LoRA path.
 
-### Viewing Profile Details
+### 6. Reassemble With the Instrumental
 
-Click on any profile to see:
-- Sample count and duration
-- Training history with quality metrics
-- Model versions (checkpoints)
+After a conversion completes, the UI exposes:
 
-### Switching Profiles
+- converted vocals
+- instrumental stem
+- a reassembly action
 
-In the Karaoke page, use the profile dropdown to switch between voices. Each profile maintains its own training history.
+Use reassembly to create a fresh mixed output from the converted vocal track and the separated instrumental.
 
-### Deleting Profiles
+### 7. Use the Same Target Voice in Live Karaoke
 
-1. Go to **Profiles** → Select profile
-2. Click **Delete Profile**
-3. Confirm deletion
+Live mode uses the same target-user model lifecycle:
 
-**Warning:** This permanently removes the profile and all its samples.
+- LoRA-backed target profile until full-model promotion
+- full model preferred automatically once active
 
----
-
-## Model Versions & Rollback
-
-AutoVoice keeps multiple versions of your trained model.
-
-### Why Versions Matter
-
-Sometimes a training run might not improve quality (bad samples, wrong settings). Version history lets you revert to a previous state.
-
-### Viewing Versions
-
-1. Go to **Profiles** → Select profile
-2. Click **Checkpoints** tab
-3. See all saved model versions with their metrics
-
-### Rolling Back
-
-1. Find the version you want to restore
-2. Click **Rollback to this version**
-3. Confirm the rollback
-
-Your profile will use the selected version for all conversions.
-
----
-
-## Audio Device Configuration
-
-### Setting Up Input/Output
-
-For karaoke sessions, configure your audio devices:
-
-1. Go to **Settings** → **Audio Devices**
-2. Select your **microphone** for input
-3. Select **speakers** for audience output
-4. Select **headphones** for your monitoring
-
-### Karaoke Audio Routing
-
-| Output | What you hear |
-|--------|---------------|
-| **Speakers (Audience)** | Instrumental + your converted voice |
-| **Headphones (You)** | Original song with artist vocals |
-
-This setup lets you hear the original as a guide while the audience hears your voice.
-
----
-
-## Troubleshooting
-
-### Profile Creation Failed
-
-**"Insufficient quality"** error:
-- Use cleaner audio with less background noise
-- Record in a quiet environment
-- Ensure your voice is clearly audible
-
-**"Inconsistent samples"** error:
-- Use audio with only your voice
-- Avoid recordings with multiple singers
-
-### Training Not Improving
-
-If quality doesn't improve after training:
-- Check sample quality (remove noisy samples)
-- Try lower learning rate (0.00005)
-- Add more varied samples
-- Rollback and try different settings
-
-### Conversion Sounds Wrong
-
-- Verify correct profile is selected
-- Check that recent training completed successfully
-- Try rolling back to a previous version
-
----
+This keeps offline and live behavior aligned.
 
 ## Best Practices
 
-1. **Start with a good reference:** Your first audio sets the baseline
-2. **Sing naturally:** Don't force techniques you don't normally use
-3. **Review samples:** Remove low-quality captures before training
-4. **Monitor metrics:** Watch loss curves during training
-5. **A/B test versions:** Compare new versions before committing
-6. **Backup profiles:** Export important profiles regularly
+- Keep source artist profiles separate from target user profiles.
+- Upload clean user vocals rather than noisy full-song mixes.
+- Use LoRA first; promote to full-model training only after enough clean duration accumulates.
+- Review diarization results before relying on source artist profiles for conversion.
+- Use the reassembly step when you want a full mixed deliverable instead of a dry converted vocal track.
 
----
+## Troubleshooting
 
-## FAQ
+### I do not see a train button on a profile
 
-**Q: How many samples do I need?**
-A: Minimum 5-10 for basic quality, 50+ for best results.
+Check the profile role. `source_artist` profiles are extracted from songs and are not trainable. Use a `target_user` profile instead.
 
-**Q: How long should samples be?**
-A: 5-15 seconds of continuous singing each.
+### Full-model training is still locked
 
-**Q: Can I use speaking voice?**
-A: The system is optimized for singing. Speaking samples may not work well.
+The target profile has not yet accumulated `30 minutes` of clean user vocals. Keep uploading clean singing or capture more karaoke samples.
 
-**Q: Why does training take so long?**
-A: Training runs entirely on GPU for quality. Duration depends on sample count and settings.
+### Conversion is using the wrong voice
 
-**Q: What formats are supported?**
-A: WAV, MP3, FLAC, OGG, M4A for audio files.
+Confirm that:
 
----
+- you selected the correct target user profile
+- the profile has a trained model
+- the active model type is what you expect
 
-*For technical details, see [API Reference](./api-voice-profile.md)*
+### I only have the converted vocal stem
+
+Use the conversion result view or conversion history page and select `Reassemble With Instrumental` to rebuild the mixed output.

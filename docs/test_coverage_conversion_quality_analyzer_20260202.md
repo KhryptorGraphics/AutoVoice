@@ -1,5 +1,7 @@
 # Conversion Quality Analyzer Test Coverage Report
 
+> Historical report: archived test-coverage snapshot from 2026-02-02. Do not treat this as current MVP status. Use [README.md](../README.md) and [docs/README.md](./README.md) for current project truth.
+
 **Date:** 2026-02-02
 **Module:** `src/auto_voice/evaluation/conversion_quality_analyzer.py`
 **Agent:** Test Automation Engineer

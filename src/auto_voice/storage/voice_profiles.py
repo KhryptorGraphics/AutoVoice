@@ -64,10 +64,24 @@ class VoiceProfileStore:
         self,
         profiles_dir: Optional[str] = DEFAULT_PROFILES_DIR,
         samples_dir: Optional[str] = DEFAULT_SAMPLES_DIR,
+        trained_models_dir: Optional[str] = None,
     ):
-        self.profiles_dir = str(resolve_profiles_dir(profiles_dir))
-        self.samples_dir = str(resolve_samples_dir(samples_dir))
-        self.trained_models_dir = str(resolve_trained_models_dir())
+        profiles_path = resolve_profiles_dir(profiles_dir)
+        samples_path = resolve_samples_dir(samples_dir)
+        inferred_data_dir = None
+        if profiles_dir:
+            inferred_data_dir = str(profiles_path.parent)
+        elif samples_dir:
+            inferred_data_dir = str(samples_path.parent)
+
+        self.profiles_dir = str(profiles_path)
+        self.samples_dir = str(samples_path)
+        self.trained_models_dir = str(
+            resolve_trained_models_dir(
+                trained_models_dir,
+                data_dir=inferred_data_dir,
+            )
+        )
         os.makedirs(self.profiles_dir, exist_ok=True)
         os.makedirs(self.samples_dir, exist_ok=True)
         os.makedirs(self.trained_models_dir, exist_ok=True)

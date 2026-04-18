@@ -10,6 +10,9 @@ from .svc_decoder import CoMoSVCDecoder, BiDilConv, FiLMConditioning
 from .smoothsinger_decoder import (
     SmoothSingerDecoder, MultiResolutionBlock, DualBranchFusion,
 )
+from .nsf_module import NSFHarmonicEnhancer
+from .pupu_vocoder import PupuVocoderEnhancer
+from .ecapa2_encoder import ECAPA2SpeakerEncoder, ECAPA2EmbeddingResult
 
 __all__ = [
     'ContentEncoder',
@@ -31,4 +34,8 @@ __all__ = [
     'SmoothSingerDecoder',
     'MultiResolutionBlock',
     'DualBranchFusion',
+    'NSFHarmonicEnhancer',
+    'PupuVocoderEnhancer',
+    'ECAPA2SpeakerEncoder',
+    'ECAPA2EmbeddingResult',
 ]

@@ -18,6 +18,7 @@ import {
   DEFAULT_AUDIO_ROUTER_CONFIG,
 } from '../services/api'
 import clsx from 'clsx'
+import { STORAGE_KEYS, usePersistedState } from '../hooks/usePersistedState'
 
 interface SystemConfigPanelProps {
   onConfigChange?: () => void
@@ -48,9 +49,6 @@ const DEFAULT_UI_CONFIG: UIConfig = {
   defaultQualityPreset: 'balanced',
 }
 
-// Local storage key for UI config
-const UI_CONFIG_KEY = 'autovoice_ui_config'
-
 export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['ui']))
   const [hasChanges, setHasChanges] = useState(false)
@@ -58,14 +56,10 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
   const queryClient = useQueryClient()
 
   // Load UI config from localStorage
-  const [uiConfig, setUIConfig] = useState<UIConfig>(() => {
-    try {
-      const stored = localStorage.getItem(UI_CONFIG_KEY)
-      return stored ? { ...DEFAULT_UI_CONFIG, ...JSON.parse(stored) } : DEFAULT_UI_CONFIG
-    } catch {
-      return DEFAULT_UI_CONFIG
-    }
-  })
+  const [uiConfig, setUIConfig] = usePersistedState<UIConfig>(
+    STORAGE_KEYS.UI_CONFIG,
+    DEFAULT_UI_CONFIG
+  )
 
   // Fetch backend configs
   const { data: separationConfig, isLoading: loadingSeparation } = useQuery({
@@ -127,7 +121,6 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
   const saveUIConfig = (updates: Partial<UIConfig>) => {
     const newConfig = { ...uiConfig, ...updates }
     setUIConfig(newConfig)
-    localStorage.setItem(UI_CONFIG_KEY, JSON.stringify(newConfig))
     setHasChanges(true)
     onConfigChange?.()
   }

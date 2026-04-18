@@ -13,25 +13,61 @@ Tests focus on:
 import json
 import io
 import base64
+from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 import pytest
-from flask import Flask
+import numpy as np
+import torch
 
 
 @pytest.fixture
 def app():
     """Create Flask app for testing."""
-    app = Flask(__name__)
-    app.config['TESTING'] = True
+    pytest.importorskip('flask_swagger_ui', reason="flask_swagger_ui not installed")
+    from auto_voice.web.app import create_app
+
+    app, socketio = create_app(config={
+        'TESTING': True,
+        'singing_conversion_enabled': True,
+        'voice_cloning_enabled': True,
+    })
+    app.socketio = socketio
     return app
 
 
 @pytest.fixture
 def client(app):
     """Create test client."""
-    from auto_voice.web.api import api_bp
-    app.register_blueprint(api_bp)
     return app.test_client()
+
+
+def _create_target_profile(app, profile_id: str, *, full_model: bool = False) -> None:
+    store = app.voice_cloner.store
+    store.save({
+        'profile_id': profile_id,
+        'name': f'Test {profile_id[-4:]}',
+        'embedding': np.zeros(256, dtype=np.float32).tolist(),
+        'profile_role': 'target_user',
+        'has_trained_model': True,
+        'has_adapter_model': not full_model,
+        'has_full_model': full_model,
+        'active_model_type': 'full_model' if full_model else 'adapter',
+        'clean_vocal_seconds': 3600.0 if full_model else 60.0,
+    })
+
+    if not full_model:
+        adapter_path = Path(store.trained_models_dir) / f'{profile_id}_adapter.pt'
+        torch.save(
+            {
+                'module.lora_A.weight': torch.zeros((8, 8)),
+                'module.lora_B.weight': torch.zeros((8, 8)),
+            },
+            adapter_path,
+        )
+
+    if full_model:
+        full_model_path = Path(store.trained_models_dir) / f'{profile_id}_full_model.pt'
+        full_model_path.write_bytes(b'full-model')
 
 
 class TestGetParamUtility:
@@ -162,9 +198,10 @@ class TestMissingDependencies:
         assert response.status_code == 503
         assert b'numpy required' in response.data
 
-    def test_convert_song_no_pipeline(self, client):
+    def test_convert_song_no_pipeline(self, app, client):
         """convert_song returns 503 when pipeline not initialized."""
-        # No singing_conversion_pipeline attached to app
+        app.singing_conversion_pipeline = None
+
         response = client.post('/api/v1/convert/song')
 
         assert response.status_code == 503
@@ -199,7 +236,7 @@ class TestFileUploadValidation:
         assert response.status_code == 400
         data = json.loads(response.data)
         assert 'error' in data
-        assert 'No selected file' in data['error']
+        assert data['error'] in {'No selected file', 'No song file provided'}
 
     def test_invalid_file_extension(self, app, client):
         """convert_song returns 400 for invalid file type."""
@@ -240,35 +277,30 @@ class TestParameterValidation:
 
     def test_profile_id_from_form(self, app, client):
         """convert_song extracts profile_id from form."""
-        app.singing_conversion_pipeline = MagicMock()
-        app.singing_conversion_pipeline.convert_song.return_value = {
-            'audio': base64.b64encode(b'fake_audio').decode(),
-            'format': 'wav',
-            'sample_rate': 22050,
-        }
+        profile_id = '00000000-0000-0000-0000-000000000301'
+        _create_target_profile(app, profile_id)
+        app.job_manager = MagicMock()
+        app.job_manager.create_job.return_value = 'job-form'
 
         with patch('auto_voice.web.api.allowed_file', return_value=True):
             response = client.post(
                 '/api/v1/convert/song',
                 data={
                     'song': (io.BytesIO(b'fake_audio'), 'test.wav'),
-                    'profile_id': 'test-profile-123',
+                    'profile_id': profile_id,
                 }
             )
 
-        # Should accept the request
-        assert response.status_code in [200, 202]  # Could be async or sync mode
+        assert response.status_code == 202
 
     def test_profile_id_from_settings_json(self, app, client):
         """convert_song extracts profile_id from settings JSON."""
-        app.singing_conversion_pipeline = MagicMock()
-        app.singing_conversion_pipeline.convert_song.return_value = {
-            'audio': base64.b64encode(b'fake_audio').decode(),
-            'format': 'wav',
-            'sample_rate': 22050,
-        }
+        profile_id = '00000000-0000-0000-0000-000000000302'
+        _create_target_profile(app, profile_id)
+        app.job_manager = MagicMock()
+        app.job_manager.create_job.return_value = 'job-json'
 
-        settings = json.dumps({'target_profile_id': 'json-profile-456'})
+        settings = json.dumps({'target_profile_id': profile_id})
 
         with patch('auto_voice.web.api.allowed_file', return_value=True):
             response = client.post(
@@ -279,7 +311,7 @@ class TestParameterValidation:
                 }
             )
 
-        assert response.status_code in [200, 202]
+        assert response.status_code == 202
 
     def test_invalid_settings_json(self, app, client):
         """convert_song handles invalid JSON gracefully."""
@@ -351,21 +383,22 @@ class TestContentTypeHandling:
 
     def test_multipart_form_data_accepted(self, app, client):
         """convert_song accepts multipart/form-data."""
-        app.singing_conversion_pipeline = MagicMock()
-        app.singing_conversion_pipeline.convert_song.return_value = {
-            'audio': base64.b64encode(b'fake').decode(),
-            'format': 'wav',
-            'sample_rate': 22050,
-        }
+        profile_id = '00000000-0000-0000-0000-000000000303'
+        _create_target_profile(app, profile_id)
+        app.job_manager = MagicMock()
+        app.job_manager.create_job.return_value = 'job-multipart'
 
         with patch('auto_voice.web.api.allowed_file', return_value=True):
             response = client.post(
                 '/api/v1/convert/song',
-                data={'song': (io.BytesIO(b'audio'), 'test.wav')},
+                data={
+                    'song': (io.BytesIO(b'audio'), 'test.wav'),
+                    'profile_id': profile_id,
+                },
                 content_type='multipart/form-data'
             )
 
-        assert response.status_code in [200, 202]
+        assert response.status_code == 202
 
 
 class TestAsyncVsSyncMode:
@@ -375,25 +408,30 @@ class TestAsyncVsSyncMode:
         """Returns 200 with inline audio when JobManager unavailable."""
         app.singing_conversion_pipeline = MagicMock()
         app.singing_conversion_pipeline.convert_song.return_value = {
-            'audio': base64.b64encode(b'fake_audio_data').decode(),
+            'mixed_audio': np.zeros(22050, dtype=np.float32),
             'format': 'wav',
             'sample_rate': 22050,
+            'duration': 1.0,
             'metadata': {},
         }
+        profile_id = '00000000-0000-0000-0000-000000000303'
+        _create_target_profile(app, profile_id, full_model=True)
 
-        # No job_manager attached
-        assert not hasattr(app, 'job_manager')
+        app.job_manager = None
 
         with patch('auto_voice.web.api.allowed_file', return_value=True):
             response = client.post(
                 '/api/v1/convert/song',
-                data={'song': (io.BytesIO(b'audio'), 'test.wav')}
+                data={
+                    'song': (io.BytesIO(b'audio'), 'test.wav'),
+                    'profile_id': profile_id,
+                }
             )
 
         # Should be sync mode (200)
-        if response.status_code == 200:
-            data = json.loads(response.data)
-            assert 'audio' in data or 'status' in data
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert 'audio' in data or 'status' in data
 
 
 class TestVolumeParameters:
@@ -401,17 +439,26 @@ class TestVolumeParameters:
 
     def test_vocal_volume_default(self, app, client):
         """vocal_volume defaults to 1.0 if not specified."""
+        profile_id = '00000000-0000-0000-0000-000000000304'
+        _create_target_profile(app, profile_id, full_model=True)
         app.singing_conversion_pipeline = MagicMock()
         app.singing_conversion_pipeline.convert_song.return_value = {
-            'audio': base64.b64encode(b'fake').decode(),
-            'format': 'wav',
+            'mixed_audio': np.zeros(22050, dtype=np.float32),
             'sample_rate': 22050,
+            'duration': 1.0,
+            'metadata': {'active_model_type': 'full_model'},
+            'f0_contour': np.array([], dtype=np.float32),
+            'f0_original': np.array([], dtype=np.float32),
         }
+        app.job_manager = None
 
         with patch('auto_voice.web.api.allowed_file', return_value=True):
             client.post(
                 '/api/v1/convert/song',
-                data={'song': (io.BytesIO(b'audio'), 'test.wav')}
+                data={
+                    'song': (io.BytesIO(b'audio'), 'test.wav'),
+                    'profile_id': profile_id,
+                }
             )
 
         # Check that convert_song was called
@@ -419,23 +466,30 @@ class TestVolumeParameters:
 
     def test_instrumental_volume_custom(self, app, client):
         """instrumental_volume can be customized."""
+        profile_id = '00000000-0000-0000-0000-000000000305'
+        _create_target_profile(app, profile_id, full_model=True)
         app.singing_conversion_pipeline = MagicMock()
         app.singing_conversion_pipeline.convert_song.return_value = {
-            'audio': base64.b64encode(b'fake').decode(),
-            'format': 'wav',
+            'mixed_audio': np.zeros(22050, dtype=np.float32),
             'sample_rate': 22050,
+            'duration': 1.0,
+            'metadata': {'active_model_type': 'full_model'},
+            'f0_contour': np.array([], dtype=np.float32),
+            'f0_original': np.array([], dtype=np.float32),
         }
+        app.job_manager = None
 
         with patch('auto_voice.web.api.allowed_file', return_value=True):
             response = client.post(
                 '/api/v1/convert/song',
                 data={
                     'song': (io.BytesIO(b'audio'), 'test.wav'),
+                    'profile_id': profile_id,
                     'instrumental_volume': '0.5',
                 }
             )
 
-        assert response.status_code in [200, 202]
+        assert response.status_code == 200
 
 
 class TestPitchShift:
@@ -443,12 +497,18 @@ class TestPitchShift:
 
     def test_pitch_shift_in_range(self, app, client):
         """pitch_shift within [-12, 12] is accepted."""
+        profile_id = '00000000-0000-0000-0000-000000000306'
+        _create_target_profile(app, profile_id, full_model=True)
         app.singing_conversion_pipeline = MagicMock()
         app.singing_conversion_pipeline.convert_song.return_value = {
-            'audio': base64.b64encode(b'fake').decode(),
-            'format': 'wav',
+            'mixed_audio': np.zeros(22050, dtype=np.float32),
             'sample_rate': 22050,
+            'duration': 1.0,
+            'metadata': {'active_model_type': 'full_model'},
+            'f0_contour': np.array([], dtype=np.float32),
+            'f0_original': np.array([], dtype=np.float32),
         }
+        app.job_manager = None
 
         with patch('auto_voice.web.api.allowed_file', return_value=True):
             for pitch in [-12, -6, 0, 6, 12]:
@@ -456,10 +516,11 @@ class TestPitchShift:
                     '/api/v1/convert/song',
                     data={
                         'song': (io.BytesIO(b'audio'), 'test.wav'),
+                        'profile_id': profile_id,
                         'pitch_shift': str(pitch),
                     }
                 )
-                assert response.status_code in [200, 202], f"Failed for pitch_shift={pitch}"
+                assert response.status_code == 200, f"Failed for pitch_shift={pitch}"
 
 
 @pytest.mark.smoke

@@ -1,5 +1,7 @@
 # Test Coverage Improvement - Inference Modules
 
+> Historical report: archived test-coverage snapshot from 2026-02-02. Do not treat this as current MVP status. Use [README.md](../README.md) and [docs/README.md](./README.md) for current project truth.
+
 **Date:** 2026-02-02
 **Agent:** testing-agent_20260202
 **Objective:** Improve inference module coverage from 68% to 85% target
