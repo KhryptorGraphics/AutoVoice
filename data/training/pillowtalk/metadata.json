@@ -1,13 +1,123 @@
 {
   "dataset_name": "pillowtalk",
-  "version": 1,
-  "generated_at": "2026-04-18T15:43:43.011793+00:00",
+  "version": 2,
+  "generated_at": "2026-04-18T16:32:38.489638+00:00",
   "sample_rate": 24000,
   "defaults": {
     "sample_rate": 24000,
     "evaluation_mode": "offline_quality"
   },
+  "profiles": {
+    "william_singe": {
+      "profile_id": "7da05140-1303-40c6-95d9-5b6e2c3624df",
+      "display_name": "William Singe"
+    },
+    "conor_maynard": {
+      "profile_id": "9679a6ec-e6e2-43c4-b64e-1f004fed34f9",
+      "display_name": "Conor Maynard"
+    }
+  },
+  "tracks": {
+    "william_singe": {
+      "profile_id": "7da05140-1303-40c6-95d9-5b6e2c3624df",
+      "display_name": "William Singe",
+      "raw_audio": "raw/william_singe/pillowtalk.wav",
+      "vocals_audio": "vocals/william_singe/pillowtalk.wav",
+      "instrumental_audio": "instrumentals/william_singe/pillowtalk.wav",
+      "speaker_embedding": "speakers/william_singe.npy",
+      "training_sample_id": "sample_001",
+      "training_sample_vocals": "/home/kp/thordrive/autovoice/data/samples/7da05140-1303-40c6-95d9-5b6e2c3624df/sample_001/vocals.wav",
+      "training_sample_instrumental": "/home/kp/thordrive/autovoice/data/samples/7da05140-1303-40c6-95d9-5b6e2c3624df/sample_001/instrumental.wav",
+      "provenance": "tests/quality_samples fixtures + data/separated cache",
+      "audio_info": {
+        "sample_rate": 44100,
+        "channels": 1,
+        "frames": 8622080,
+        "duration_seconds": 195.512,
+        "format": "WAV",
+        "subtype": "PCM_16"
+      }
+    },
+    "conor_maynard": {
+      "profile_id": "9679a6ec-e6e2-43c4-b64e-1f004fed34f9",
+      "display_name": "Conor Maynard",
+      "raw_audio": "raw/conor_maynard/pillowtalk.wav",
+      "vocals_audio": "vocals/conor_maynard/pillowtalk.wav",
+      "instrumental_audio": "instrumentals/conor_maynard/pillowtalk.wav",
+      "speaker_embedding": "speakers/conor_maynard.npy",
+      "training_sample_id": "sample_001",
+      "training_sample_vocals": "/home/kp/thordrive/autovoice/data/samples/9679a6ec-e6e2-43c4-b64e-1f004fed34f9/sample_001/vocals.wav",
+      "training_sample_instrumental": "/home/kp/thordrive/autovoice/data/samples/9679a6ec-e6e2-43c4-b64e-1f004fed34f9/sample_001/instrumental.wav",
+      "provenance": "tests/quality_samples fixtures + data/separated cache",
+      "audio_info": {
+        "sample_rate": 44100,
+        "channels": 1,
+        "frames": 9145344,
+        "duration_seconds": 207.3774,
+        "format": "WAV",
+        "subtype": "PCM_16"
+      }
+    }
+  },
+  "alignments": {
+    "william_to_conor": {
+      "source_audio": "aligned/william_to_conor/source.wav",
+      "reference_audio": "aligned/william_to_conor/reference.wav",
+      "instrumental_audio": "aligned/william_to_conor/instrumental.wav",
+      "alignment_metadata": "aligned/william_to_conor/alignment.json",
+      "stats": {
+        "pair_id": "william_to_conor",
+        "method": "librosa_dtw",
+        "source_duration_seconds": 195.512,
+        "target_duration_seconds": 207.3774,
+        "aligned_duration_seconds": 207.3774,
+        "sample_rate": 44100
+      }
+    },
+    "conor_to_william": {
+      "source_audio": "aligned/conor_to_william/source.wav",
+      "reference_audio": "aligned/conor_to_william/reference.wav",
+      "instrumental_audio": "aligned/conor_to_william/instrumental.wav",
+      "alignment_metadata": "aligned/conor_to_william/alignment.json",
+      "stats": {
+        "pair_id": "conor_to_william",
+        "method": "librosa_dtw",
+        "source_duration_seconds": 207.3774,
+        "target_duration_seconds": 195.512,
+        "aligned_duration_seconds": 195.512,
+        "sample_rate": 44100
+      }
+    }
+  },
   "samples": [
+    {
+      "sample_id": "william_to_conor_train",
+      "split": "train",
+      "source_audio": "aligned/william_to_conor/source.wav",
+      "reference_audio": "aligned/william_to_conor/reference.wav",
+      "instrumental_audio": "aligned/william_to_conor/instrumental.wav",
+      "target_speaker_embedding": "speakers/conor_maynard.npy",
+      "metadata": {
+        "source_artist": "william_singe",
+        "target_artist": "conor_maynard",
+        "song": "Pillowtalk",
+        "provenance": "DTW-aligned separated vocals"
+      }
+    },
+    {
+      "sample_id": "conor_to_william_train",
+      "split": "train",
+      "source_audio": "aligned/conor_to_william/source.wav",
+      "reference_audio": "aligned/conor_to_william/reference.wav",
+      "instrumental_audio": "aligned/conor_to_william/instrumental.wav",
+      "target_speaker_embedding": "speakers/william_singe.npy",
+      "metadata": {
+        "source_artist": "conor_maynard",
+        "target_artist": "william_singe",
+        "song": "Pillowtalk",
+        "provenance": "DTW-aligned separated vocals"
+      }
+    },
     {
       "sample_id": "william_to_conor_holdout",
       "split": "holdout",
@@ -36,7 +146,7 @@
     }
   ],
   "speaker_backends": {
-    "william_singe": "mel-statistics-fallback",
-    "conor_maynard": "mel-statistics-fallback"
+    "william_singe": "speechbrain-ecapa",
+    "conor_maynard": "speechbrain-ecapa"
   }
 }

@@ -1,0 +1,22 @@
+{
+  "artist_key": "william_singe",
+  "display_name": "William Singe",
+  "canonical_profile_id": "7da05140-1303-40c6-95d9-5b6e2c3624df",
+  "checkpoint_profile_id": "7da05140-1303-40c6-95d9-5b6e2c3624df",
+  "checkpoint_path": "/home/kp/thordrive/autovoice/data/checkpoints/hq/7da05140-1303-40c6-95d9-5b6e2c3624df_hq_lora.pt",
+  "onnx_path": "/home/kp/thordrive/autovoice/models/william_singe/artifacts/tensorrt/hq_voice_lora.onnx",
+  "engine_path": "/home/kp/thordrive/autovoice/models/william_singe/artifacts/tensorrt/hq_voice_lora.engine",
+  "precision": "fp16",
+  "checkpoint_epoch": 2999,
+  "checkpoint_global_step": 51000,
+  "checkpoint_loss": 0.12463568019516327,
+  "config": {
+    "input_dim": 768,
+    "hidden_dim": 1024,
+    "output_dim": 768,
+    "num_layers": 6,
+    "lora_rank": 128,
+    "lora_alpha": 256.0,
+    "dropout": 0.05
+  }
+}

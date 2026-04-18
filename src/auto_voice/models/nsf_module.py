@@ -6,17 +6,36 @@ import numpy as np
 
 
 class NSFHarmonicEnhancer:
-    """Inject a harmonic residual guided by an F0 contour."""
+    """Inject a harmonic residual guided by an F0 contour.
+
+    This stays intentionally lightweight so it can run in the offline quality
+    pipeline and in real-time-ish post-processing paths without introducing a
+    heavyweight neural vocoder dependency.
+    """
 
     def __init__(
         self,
         harmonic_strength: float = 0.12,
         max_harmonics: int = 6,
         blend: float = 0.2,
+        noise_blend: float = 0.05,
+        voice_characteristic: str = "neutral",
     ):
-        self.harmonic_strength = float(max(harmonic_strength, 0.0))
-        self.max_harmonics = int(max(max_harmonics, 1))
+        strength_scale, harmonic_bonus = self._voice_characteristic_adjustment(voice_characteristic)
+        self.harmonic_strength = float(max(harmonic_strength, 0.0) * strength_scale)
+        self.max_harmonics = int(max(max_harmonics + harmonic_bonus, 1))
         self.blend = float(min(max(blend, 0.0), 1.0))
+        self.noise_blend = float(min(max(noise_blend, 0.0), 1.0))
+        self.voice_characteristic = voice_characteristic
+
+    @staticmethod
+    def _voice_characteristic_adjustment(voice_characteristic: str) -> tuple[float, int]:
+        normalized = (voice_characteristic or "neutral").strip().lower()
+        if normalized in {"male", "baritone", "tenor"}:
+            return 1.15, -1
+        if normalized in {"female", "alto", "soprano"}:
+            return 0.95, 1
+        return 1.0, 0
 
     def enhance(
         self,
@@ -44,7 +63,18 @@ class NSFHarmonicEnhancer:
             amplitude = self.harmonic_strength / harmonic_index
             harmonic += amplitude * np.sin(phase * harmonic_index).astype(np.float32)
 
-        enhanced = (1.0 - self.blend) * audio_np + self.blend * harmonic
+        noise_residual = np.zeros_like(audio_np, dtype=np.float32)
+        if self.noise_blend > 0.0 and audio_np.size > 2:
+            # Preserve some broadband texture by mixing a simple differentiator
+            # residual back in. This is stable and cheap while still sounding
+            # less synthetic than pure sinusoids.
+            noise_residual[1:] = audio_np[1:] - audio_np[:-1]
+
+        enhanced = (
+            (1.0 - self.blend) * audio_np
+            + self.blend * harmonic
+            + self.noise_blend * noise_residual
+        )
         peak = float(np.max(np.abs(enhanced))) if enhanced.size else 0.0
         if peak > 0.98:
             enhanced *= 0.98 / peak

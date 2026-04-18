@@ -1,0 +1,22 @@
+{
+  "profile_id": "9679a6ec-e6e2-43c4-b64e-1f004fed34f9",
+  "name": "Conor Maynard",
+  "audio_duration": 207.3774,
+  "vocals_extracted": true,
+  "created_from": "prepare_pillowtalk_dataset.py",
+  "profile_role": "source_artist",
+  "training_sample_count": 1,
+  "sample_count": 1,
+  "total_training_duration": 207.3774,
+  "clean_vocal_seconds": 207.3774,
+  "full_model_unlock_seconds": 1800.0,
+  "full_model_remaining_seconds": 1592.6226,
+  "full_model_eligible": false,
+  "has_adapter_model": true,
+  "has_full_model": false,
+  "has_trained_model": true,
+  "active_model_type": "adapter",
+  "selected_adapter": "unified",
+  "created_at": "2026-04-18T16:13:30.693621+00:00",
+  "artist_name": "Conor Maynard"
+}

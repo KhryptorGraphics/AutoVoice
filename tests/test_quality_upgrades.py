@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import sys
+import types
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -53,9 +56,64 @@ def test_ecapa2_encoder_fallback_returns_normalized_embedding():
 
     result = encoder.extract_embedding(audio, 16000)
 
-    assert result.embedding.shape == (256,)
+    assert result.embedding.shape in {(192,), (256,)}
     assert np.isclose(np.linalg.norm(result.embedding), 1.0, atol=1e-3)
     assert result.backend in {"mel-statistics-fallback", "speechbrain-ecapa"}
+
+
+def test_ecapa2_encoder_shims_torchaudio_backend_api_for_speechbrain():
+    import torch
+    import torchaudio
+
+    from auto_voice.models.ecapa2_encoder import ECAPA2SpeakerEncoder
+
+    classifier_calls = []
+
+    class DummyClassifier:
+        @classmethod
+        def from_hparams(cls, source, savedir, run_opts):
+            classifier_calls.append(
+                {
+                    "source": source,
+                    "savedir": savedir,
+                    "run_opts": run_opts,
+                }
+            )
+            return cls()
+
+        def encode_batch(self, waveform):
+            return torch.ones((1, 192), dtype=torch.float32, device=waveform.device)
+
+    speaker_module = types.ModuleType("speechbrain.inference.speaker")
+    speaker_module.EncoderClassifier = DummyClassifier
+    inference_module = types.ModuleType("speechbrain.inference")
+    inference_module.speaker = speaker_module
+    speechbrain_module = types.ModuleType("speechbrain")
+    speechbrain_module.inference = inference_module
+
+    with patch.object(torchaudio, "list_audio_backends", new=None, create=True), patch.object(
+        torchaudio, "get_audio_backend", new=None, create=True
+    ), patch.object(torchaudio, "set_audio_backend", new=None, create=True), patch.dict(
+        sys.modules,
+        {
+            "speechbrain": speechbrain_module,
+            "speechbrain.inference": inference_module,
+            "speechbrain.inference.speaker": speaker_module,
+        },
+    ):
+        delattr(torchaudio, "list_audio_backends")
+        delattr(torchaudio, "get_audio_backend")
+        delattr(torchaudio, "set_audio_backend")
+
+        encoder = ECAPA2SpeakerEncoder(device="cpu")
+        result = encoder.extract_embedding(np.ones(16000, dtype=np.float32), 16000)
+        assert callable(getattr(torchaudio, "list_audio_backends"))
+        assert callable(getattr(torchaudio, "get_audio_backend"))
+        assert callable(getattr(torchaudio, "set_audio_backend"))
+
+    assert classifier_calls
+    assert result.backend == "speechbrain-ecapa"
+    assert result.embedding.shape == (192,)
 
 
 def test_voice_cloner_supports_ecapa2_backend_fallback(tmp_path):
@@ -76,7 +134,7 @@ def test_voice_cloner_supports_ecapa2_backend_fallback(tmp_path):
 
     embedding = cloner._extract_embedding(str(audio_path))
 
-    assert embedding.shape == (256,)
+    assert embedding.shape in {(192,), (256,)}
     assert np.isclose(np.linalg.norm(embedding), 1.0, atol=1e-3)
 
 

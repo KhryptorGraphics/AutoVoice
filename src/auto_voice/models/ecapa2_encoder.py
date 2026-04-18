@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -25,13 +28,38 @@ class ECAPA2SpeakerEncoder:
     def backend(self) -> str:
         return self._backend or "mel-statistics-fallback"
 
+    def _ensure_torchaudio_backend_compatibility(self) -> None:
+        """Shim removed torchaudio backend helpers for SpeechBrain.
+
+        Recent torchaudio releases removed the old global backend API that some
+        SpeechBrain versions still import during module initialization.
+        """
+        try:
+            import torchaudio
+        except Exception:
+            return
+
+        if not hasattr(torchaudio, "list_audio_backends"):
+            torchaudio.list_audio_backends = lambda: ["ffmpeg", "soundfile"]
+
+        if not hasattr(torchaudio, "get_audio_backend"):
+            torchaudio.get_audio_backend = lambda: "soundfile"
+
+        if not hasattr(torchaudio, "set_audio_backend"):
+            torchaudio.set_audio_backend = lambda backend: None
+
     def _load_classifier(self):
         if self._classifier is not None:
             return self._classifier
 
         try:
+            self._ensure_torchaudio_backend_compatibility()
             from speechbrain.inference.speaker import EncoderClassifier
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "SpeechBrain ECAPA speaker encoder unavailable; using fallback embedding: %s",
+                exc,
+            )
             self._backend = "mel-statistics-fallback"
             self._classifier = None
             return None

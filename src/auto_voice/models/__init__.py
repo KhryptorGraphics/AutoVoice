@@ -9,6 +9,7 @@ from .consistency import (
 from .svc_decoder import CoMoSVCDecoder, BiDilConv, FiLMConditioning
 from .smoothsinger_decoder import (
     SmoothSingerDecoder, MultiResolutionBlock, DualBranchFusion,
+    SmoothSingerPostProcessor,
 )
 from .nsf_module import NSFHarmonicEnhancer
 from .pupu_vocoder import PupuVocoderEnhancer
@@ -34,6 +35,7 @@ __all__ = [
     'SmoothSingerDecoder',
     'MultiResolutionBlock',
     'DualBranchFusion',
+    'SmoothSingerPostProcessor',
     'NSFHarmonicEnhancer',
     'PupuVocoderEnhancer',
     'ECAPA2SpeakerEncoder',

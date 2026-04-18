@@ -19,7 +19,7 @@ import time
 import logging
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, Tuple, Callable
+from typing import Optional, Tuple, Callable, Any
 
 # Add paths for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
@@ -54,6 +54,21 @@ class QualityConfig:
     device: str = "cuda"
     fp16: bool = True
     max_context_window: int = 30  # seconds
+    enable_hq_super_resolution: bool = False
+    hq_require_gpu: bool = False
+    enable_nsf_harmonic_enhancement: bool = False
+    nsf_harmonic_strength: float = 0.12
+    nsf_max_harmonics: int = 6
+    nsf_blend: float = 0.2
+    nsf_noise_blend: float = 0.05
+    nsf_voice_characteristic: str = "neutral"
+    enable_smoothsinger_smoothing: bool = False
+    smoothness_strength: float = 0.35
+    pitch_smoothing_kernel: int = 9
+    preserve_vibrato: bool = True
+    vibrato_mix: float = 0.25
+    transfer_reference_dynamics: bool = False
+    dynamics_mix: float = 0.35
 
 
 class QualityVoiceConverter:
@@ -84,6 +99,10 @@ class QualityVoiceConverter:
         self._campplus = None
         self._mel_fn = None
         self._mel_fn_args = None
+        self._nsf_enhancer = None
+        self._smoothsinger_post_processor = None
+        self._hq_wrapper = None
+        self.last_run_metadata: dict[str, Any] = {}
 
         logger.info(f"QualityVoiceConverter initialized")
         logger.info(f"  Device: {self.device}")
@@ -250,6 +269,95 @@ class QualityVoiceConverter:
 
         return style
 
+    def _get_nsf_enhancer(self):
+        if self._nsf_enhancer is None:
+            from auto_voice.models.nsf import NSFHarmonicEnhancer
+
+            self._nsf_enhancer = NSFHarmonicEnhancer(
+                harmonic_strength=self.config.nsf_harmonic_strength,
+                max_harmonics=self.config.nsf_max_harmonics,
+                blend=self.config.nsf_blend,
+                noise_blend=self.config.nsf_noise_blend,
+                voice_characteristic=self.config.nsf_voice_characteristic,
+            )
+        return self._nsf_enhancer
+
+    def _get_smoothsinger_post_processor(self):
+        if self._smoothsinger_post_processor is None:
+            from auto_voice.models.smoothsinger_decoder import SmoothSingerPostProcessor
+
+            self._smoothsinger_post_processor = SmoothSingerPostProcessor(
+                smoothness_strength=self.config.smoothness_strength,
+                smoothing_kernel=self.config.pitch_smoothing_kernel,
+                preserve_vibrato=self.config.preserve_vibrato,
+                vibrato_mix=self.config.vibrato_mix,
+                dynamics_mix=self.config.dynamics_mix,
+            )
+        return self._smoothsinger_post_processor
+
+    def _get_hq_wrapper(self):
+        if self._hq_wrapper is None:
+            from auto_voice.inference.hq_svc_wrapper import HQSVCWrapper
+
+            self._hq_wrapper = HQSVCWrapper(
+                device=self.device,
+                require_gpu=self.config.hq_require_gpu,
+            )
+        return self._hq_wrapper
+
+    def _apply_quality_post_processing(
+        self,
+        converted_audio: np.ndarray,
+        output_sample_rate: int,
+        f0_contour: Optional[np.ndarray],
+        reference_audio: np.ndarray,
+        reference_sr: int,
+    ) -> Tuple[np.ndarray, int]:
+        metadata: dict[str, Any] = {
+            "post_processing": list(self.last_run_metadata.get("post_processing", [])),
+            "smooth_pitch_applied": self.last_run_metadata.get("smooth_pitch_applied", False),
+            "f0_conditioned": self.last_run_metadata.get("f0_conditioned", False),
+        }
+        processed_audio = np.asarray(converted_audio, dtype=np.float32)
+        current_sr = int(output_sample_rate)
+        resampled_reference = np.asarray(reference_audio, dtype=np.float32)
+
+        if reference_sr != current_sr:
+            resampled_reference = librosa.resample(
+                resampled_reference,
+                orig_sr=reference_sr,
+                target_sr=current_sr,
+            ).astype(np.float32)
+
+        if self.config.transfer_reference_dynamics:
+            processor = self._get_smoothsinger_post_processor()
+            processed_audio = processor.transfer_dynamics(processed_audio, resampled_reference)
+            metadata["post_processing"].append("smoothsinger_dynamics_transfer")
+
+        if self.config.enable_nsf_harmonic_enhancement:
+            processed_audio = self._get_nsf_enhancer().enhance(
+                processed_audio,
+                f0_contour,
+                current_sr,
+            )
+            metadata["post_processing"].append("nsf_harmonic_enhancement")
+
+        if self.config.enable_hq_super_resolution:
+            try:
+                super_resolved = self._get_hq_wrapper().super_resolve(
+                    torch.tensor(processed_audio, dtype=torch.float32),
+                    sample_rate=current_sr,
+                )
+                processed_audio = np.asarray(super_resolved["audio"], dtype=np.float32)
+                current_sr = int(super_resolved["sample_rate"])
+                metadata["post_processing"].append("hq_super_resolution")
+            except Exception as exc:
+                logger.warning("HQ-SVC enhancement unavailable, continuing without it: %s", exc)
+                metadata["hq_super_resolution_skipped"] = str(exc)
+
+        self.last_run_metadata = metadata
+        return processed_audio, current_sr
+
     def convert(
         self,
         source_audio: np.ndarray,
@@ -273,6 +381,11 @@ class QualityVoiceConverter:
             (converted_audio, output_sample_rate)
         """
         self._load_models()
+        self.last_run_metadata = {
+            "post_processing": [],
+            "smooth_pitch_applied": False,
+            "f0_conditioned": bool(self.config.f0_condition),
+        }
 
         if progress_callback:
             progress_callback(0.1, "Loading audio...")
@@ -392,6 +505,15 @@ class QualityVoiceConverter:
             if pitch_shift != 0:
                 factor = 2 ** (pitch_shift / 12)
                 shifted_f0_alt[F0_alt > 1] = shifted_f0_alt[F0_alt > 1] * factor
+
+            if self.config.enable_smoothsinger_smoothing:
+                processor = self._get_smoothsinger_post_processor()
+                smoothed_f0 = processor.smooth_f0_contour(
+                    shifted_f0_alt.squeeze(0).detach().cpu().numpy()
+                )
+                shifted_f0_alt = torch.from_numpy(smoothed_f0).to(self.device)[None]
+                self.last_run_metadata["smooth_pitch_applied"] = True
+                self.last_run_metadata["post_processing"].append("smoothsinger_pitch_smoothing")
         else:
             F0_ori = None
             shifted_f0_alt = None
@@ -470,6 +592,17 @@ class QualityVoiceConverter:
                 progress_callback(prog, f"Converting... {processed_frames}/{total_frames} frames")
 
         converted = np.concatenate(generated_wave_chunks)
+        converted, sr = self._apply_quality_post_processing(
+            converted_audio=converted,
+            output_sample_rate=sr,
+            f0_contour=(
+                shifted_f0_alt.squeeze(0).detach().cpu().numpy()
+                if shifted_f0_alt is not None
+                else None
+            ),
+            reference_audio=reference_audio,
+            reference_sr=reference_sr,
+        )
 
         if progress_callback:
             progress_callback(1.0, "Complete!")
@@ -494,6 +627,9 @@ class QualityVoiceConverter:
         self._vocoder = None
         self._campplus = None
         self._whisper_model = None
+        self._nsf_enhancer = None
+        self._smoothsinger_post_processor = None
+        self._hq_wrapper = None
         torch.cuda.empty_cache()
         logger.info("Models unloaded")
 
@@ -550,15 +686,36 @@ def write_quality_report(
     reference_audio: np.ndarray,
     output_sample_rate: int,
     elapsed_seconds: float,
+    report_max_seconds: Optional[float] = 30.0,
+    run_metadata: Optional[dict[str, Any]] = None,
 ):
     from auto_voice.evaluation import BenchmarkRunner, QualityMetrics
 
     if output_sample_rate <= 0:
         raise ValueError("output_sample_rate must be positive")
 
+    if report_max_seconds is not None and report_max_seconds > 0:
+        max_frames = int(report_max_seconds * output_sample_rate)
+    else:
+        max_frames = min(
+            len(source_audio),
+            len(converted_audio),
+            len(reference_audio),
+        )
+
+    common_frames = min(
+        len(source_audio),
+        len(converted_audio),
+        len(reference_audio),
+        max_frames,
+    )
+    source_window = source_audio[:common_frames]
+    converted_window = converted_audio[:common_frames]
+    reference_window = reference_audio[:common_frames]
+
     metrics = QualityMetrics().compute_all(
-        reference_audio=torch.tensor(reference_audio),
-        converted_audio=torch.tensor(converted_audio),
+        reference_audio=torch.tensor(reference_window),
+        converted_audio=torch.tensor(converted_window),
         sample_rate=output_sample_rate,
     )
     runner = BenchmarkRunner(metrics=QualityMetrics())
@@ -566,9 +723,9 @@ def write_quality_report(
         results=[
             {
                 "sample_id": source_path.stem,
-                "source_audio": torch.tensor(source_audio),
-                "reference_audio": torch.tensor(reference_audio),
-                "converted_audio": torch.tensor(converted_audio),
+                "source_audio": torch.tensor(source_window),
+                "reference_audio": torch.tensor(reference_window),
+                "converted_audio": torch.tensor(converted_window),
                 "metrics": metrics,
                 "latency_ms": elapsed_seconds * 1000,
                 "sample_rate": output_sample_rate,
@@ -576,6 +733,8 @@ def write_quality_report(
                     "source_path": str(source_path),
                     "reference_path": str(reference_path),
                     "output_path": str(output_path),
+                    "evaluation_window_seconds": common_frames / output_sample_rate,
+                    "pipeline": run_metadata or {},
                 },
             }
         ],
@@ -604,6 +763,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--report-dir",
         help="Optional benchmark report directory. Emits summary.json, metrics.csv, report.md, figures/, tensorboard/.",
     )
+    parser.add_argument(
+        "--report-max-seconds",
+        type=float,
+        default=30.0,
+        help="Maximum audio duration to score when generating the benchmark report bundle.",
+    )
     parser.add_argument("--pitch-shift", type=int, default=0, help="Pitch shift in semitones.")
     parser.add_argument("--diffusion-steps", type=int, default=30, help="Seed-VC diffusion steps.")
     parser.add_argument("--device", default="cuda", help="Inference device.")
@@ -622,6 +787,49 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable automatic median F0 matching against the reference.",
     )
+    parser.add_argument(
+        "--hq-super-resolution",
+        action="store_true",
+        help="Run HQ-SVC enhancement after Seed-VC conversion.",
+    )
+    parser.add_argument(
+        "--hq-require-gpu",
+        action="store_true",
+        help="Require CUDA for HQ-SVC enhancement instead of skipping when unavailable.",
+    )
+    parser.add_argument(
+        "--enable-nsf-harmonic-enhancement",
+        action="store_true",
+        help="Apply lightweight NSF harmonic enhancement after conversion.",
+    )
+    parser.add_argument("--nsf-harmonic-strength", type=float, default=0.12)
+    parser.add_argument("--nsf-max-harmonics", type=int, default=6)
+    parser.add_argument("--nsf-blend", type=float, default=0.2)
+    parser.add_argument("--nsf-noise-blend", type=float, default=0.05)
+    parser.add_argument(
+        "--nsf-voice-characteristic",
+        default="neutral",
+        choices=["neutral", "male", "female", "baritone", "tenor", "alto", "soprano"],
+    )
+    parser.add_argument(
+        "--enable-smoothsinger-smoothing",
+        action="store_true",
+        help="Apply SmoothSinger-inspired F0 smoothing before conversion.",
+    )
+    parser.add_argument("--smoothness-strength", type=float, default=0.35)
+    parser.add_argument("--pitch-smoothing-kernel", type=int, default=9)
+    parser.add_argument(
+        "--disable-vibrato-preservation",
+        action="store_true",
+        help="Disable vibrato-preserving residual blending during pitch smoothing.",
+    )
+    parser.add_argument("--vibrato-mix", type=float, default=0.25)
+    parser.add_argument(
+        "--transfer-reference-dynamics",
+        action="store_true",
+        help="Match the converted vocal envelope to the reference performance.",
+    )
+    parser.add_argument("--dynamics-mix", type=float, default=0.35)
     return parser
 
 
@@ -646,6 +854,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         auto_f0_adjust=not args.disable_auto_f0_adjust,
         fp16=not args.fp32,
         device=args.device,
+        enable_hq_super_resolution=args.hq_super_resolution,
+        hq_require_gpu=args.hq_require_gpu,
+        enable_nsf_harmonic_enhancement=args.enable_nsf_harmonic_enhancement,
+        nsf_harmonic_strength=args.nsf_harmonic_strength,
+        nsf_max_harmonics=args.nsf_max_harmonics,
+        nsf_blend=args.nsf_blend,
+        nsf_noise_blend=args.nsf_noise_blend,
+        nsf_voice_characteristic=args.nsf_voice_characteristic,
+        enable_smoothsinger_smoothing=args.enable_smoothsinger_smoothing,
+        smoothness_strength=args.smoothness_strength,
+        pitch_smoothing_kernel=args.pitch_smoothing_kernel,
+        preserve_vibrato=not args.disable_vibrato_preservation,
+        vibrato_mix=args.vibrato_mix,
+        transfer_reference_dynamics=args.transfer_reference_dynamics,
+        dynamics_mix=args.dynamics_mix,
     )
     converter = QualityVoiceConverter(config)
     try:
@@ -695,6 +918,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 reference_audio=reference_report_audio,
                 output_sample_rate=output_sample_rate,
                 elapsed_seconds=elapsed_seconds,
+                report_max_seconds=args.report_max_seconds,
+                run_metadata=converter.last_run_metadata,
             )
             print(f"Saved benchmark report bundle: {report_dir}")
 

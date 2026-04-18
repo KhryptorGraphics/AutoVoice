@@ -9,6 +9,7 @@ Validates the SmoothSinger-inspired decoder with:
 Reference: SmoothSinger (Jun 2025), HQ-SVC (AAAI 2026)
 """
 import pytest
+import numpy as np
 import torch
 
 
@@ -258,6 +259,34 @@ class TestDiffusionSampling:
         # Both should be valid
         assert output_1.shape == output_4.shape
         assert torch.isfinite(output_4).all()
+
+
+class TestSmoothSingerPostProcessor:
+    """Tests for the lightweight offline SmoothSinger controls."""
+
+    def test_smooth_f0_contour_preserves_shape(self):
+        from auto_voice.models.smoothsinger_decoder import SmoothSingerPostProcessor
+
+        processor = SmoothSingerPostProcessor(smoothness_strength=0.5, smoothing_kernel=7)
+        base = np.full(128, 220.0, dtype=np.float32)
+        base[::8] += 15.0
+
+        smoothed = processor.smooth_f0_contour(base)
+
+        assert smoothed.shape == base.shape
+        assert np.isfinite(smoothed).all()
+
+    def test_transfer_dynamics_preserves_bounds(self):
+        from auto_voice.models.smoothsinger_decoder import SmoothSingerPostProcessor
+
+        processor = SmoothSingerPostProcessor(dynamics_mix=0.5)
+        audio = np.linspace(-0.2, 0.2, 32000, dtype=np.float32)
+        reference = np.sin(np.linspace(0, np.pi * 8, 32000, dtype=np.float32)).astype(np.float32) * 0.6
+
+        transferred = processor.transfer_dynamics(audio, reference)
+
+        assert transferred.shape == audio.shape
+        assert np.max(np.abs(transferred)) <= 0.98
 
     def test_cfg_rate_parameter(self):
         """Should support classifier-free guidance rate."""

@@ -18,6 +18,7 @@ Reference: SmoothSinger, HQ-SVC, Seed-VC
 import logging
 from typing import Dict, Optional, Literal
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -610,3 +611,97 @@ class SmoothSingerDecoder(nn.Module):
                     module.adapter.lora_B.data.copy_(state_dict[lora_b_key])
 
         logger.info(f"Loaded LoRA state: {len(state_dict)} params")
+
+
+class SmoothSingerPostProcessor:
+    """Lightweight SmoothSinger-inspired post-processing controls.
+
+    The full decoder above is useful for training and experimentation, but the
+    offline quality pipeline also needs portable controls that can run after a
+    conversion pass. This class provides the parts that matter most there:
+    temporal F0 smoothing and reference-guided dynamics transfer.
+    """
+
+    def __init__(
+        self,
+        smoothness_strength: float = 0.35,
+        smoothing_kernel: int = 9,
+        preserve_vibrato: bool = True,
+        vibrato_mix: float = 0.25,
+        dynamics_mix: float = 0.35,
+    ):
+        self.smoothness_strength = float(min(max(smoothness_strength, 0.0), 1.0))
+        kernel = int(max(smoothing_kernel, 1))
+        self.smoothing_kernel = kernel if kernel % 2 == 1 else kernel + 1
+        self.preserve_vibrato = bool(preserve_vibrato)
+        self.vibrato_mix = float(min(max(vibrato_mix, 0.0), 1.0))
+        self.dynamics_mix = float(min(max(dynamics_mix, 0.0), 1.0))
+
+    def smooth_f0_contour(self, f0_contour: np.ndarray | None) -> np.ndarray | None:
+        if f0_contour is None:
+            return None
+
+        contour = np.asarray(f0_contour, dtype=np.float32).copy()
+        if contour.size == 0:
+            return contour
+
+        mask = contour > 1.0
+        if not np.any(mask):
+            return contour
+
+        kernel = np.ones(self.smoothing_kernel, dtype=np.float32) / self.smoothing_kernel
+        filled = contour.copy()
+        valid_indices = np.flatnonzero(mask)
+        filled[~mask] = np.interp(
+            np.flatnonzero(~mask),
+            valid_indices,
+            contour[mask],
+        ).astype(np.float32)
+
+        smoothed = np.convolve(filled, kernel, mode="same").astype(np.float32)
+        blended = (
+            (1.0 - self.smoothness_strength) * contour
+            + self.smoothness_strength * smoothed
+        )
+
+        if self.preserve_vibrato:
+            residual = contour - smoothed
+            blended += self.vibrato_mix * residual
+
+        blended[~mask] = 0.0
+        return blended.astype(np.float32)
+
+    def transfer_dynamics(
+        self,
+        audio: np.ndarray,
+        reference_audio: np.ndarray,
+    ) -> np.ndarray:
+        audio_np = np.asarray(audio, dtype=np.float32)
+        reference_np = np.asarray(reference_audio, dtype=np.float32)
+        if audio_np.size == 0 or reference_np.size == 0:
+            return audio_np
+
+        target_indices = np.linspace(
+            0,
+            reference_np.shape[0] - 1,
+            num=audio_np.shape[0],
+            dtype=np.float32,
+        )
+        ref_resampled = np.interp(
+            target_indices,
+            np.arange(reference_np.shape[0], dtype=np.float32),
+            reference_np,
+        ).astype(np.float32)
+
+        envelope = np.abs(audio_np)
+        ref_envelope = np.abs(ref_resampled)
+        gain = ref_envelope / np.maximum(envelope, 1e-4)
+        gain = np.clip(gain, 0.5, 2.0)
+
+        adjusted = audio_np * (
+            (1.0 - self.dynamics_mix) + self.dynamics_mix * gain
+        )
+        peak = float(np.max(np.abs(adjusted))) if adjusted.size else 0.0
+        if peak > 0.98:
+            adjusted *= 0.98 / peak
+        return adjusted.astype(np.float32)

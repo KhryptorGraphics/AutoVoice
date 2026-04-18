@@ -1,0 +1,22 @@
+{
+  "artist_key": "conor_maynard",
+  "display_name": "Conor Maynard",
+  "canonical_profile_id": "9679a6ec-e6e2-43c4-b64e-1f004fed34f9",
+  "checkpoint_profile_id": "c572d02c-c687-4bed-8676-6ad253cf1c91",
+  "checkpoint_path": "/home/kp/thordrive/autovoice/data/checkpoints/hq/c572d02c-c687-4bed-8676-6ad253cf1c91_hq_lora.pt",
+  "onnx_path": "/home/kp/thordrive/autovoice/models/conor_maynard/artifacts/tensorrt/hq_voice_lora.onnx",
+  "engine_path": "/home/kp/thordrive/autovoice/models/conor_maynard/artifacts/tensorrt/hq_voice_lora.engine",
+  "precision": "fp16",
+  "checkpoint_epoch": 6359,
+  "checkpoint_global_step": 197160,
+  "checkpoint_loss": 0.20352341523093562,
+  "config": {
+    "input_dim": 768,
+    "hidden_dim": 1024,
+    "output_dim": 768,
+    "num_layers": 6,
+    "lora_rank": 128,
+    "lora_alpha": 256.0,
+    "dropout": 0.05
+  }
+}
