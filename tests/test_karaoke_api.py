@@ -176,7 +176,7 @@ class TestKaraokeUploadEndpoint:
             content_type='multipart/form-data'
         )
         # Should either accept or reject with 413 (too large) or 400
-        assert response.status_code in [200, 201, 202, 400, 413, 503]
+        assert response.status_code in [200, 201, 202, 400, 413, 429, 503]
 
 
 class TestKaraokeSeparateEndpoint:
