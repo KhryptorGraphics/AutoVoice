@@ -449,6 +449,13 @@ def convert_song():
     if not profile_id:
         return validation_error_response('profile_id required')
 
+    # Validate adapter selection before profile lookup so malformed requests
+    # consistently return 400 even if the target profile is missing.
+    adapter_type = get_param(
+        settings_data, 'adapter_type', 'adapter_type', None,
+        lambda v: v in ['hq', 'nvfp4', 'unified', None], type_hint='str'
+    )
+
     # Decoupled profile validation: returns 404 independently of pipeline exceptions
     voice_cloner = getattr(current_app, 'voice_cloner', None)
     if not voice_cloner:
@@ -519,12 +526,6 @@ def convert_song():
         return validation_error_response(str(e))
     preset = preset_map.get(output_quality, 'balanced')
     logger.info(f'Selected preset: {preset} for quality: {output_quality}')
-
-    # Adapter type selection (legacy hq/nvfp4 labels plus canonical unified adapter)
-    adapter_type = get_param(
-        settings_data, 'adapter_type', 'adapter_type', None,
-        lambda v: v in ['hq', 'nvfp4', 'unified', None], type_hint='str'
-    )
 
     adapter_manager = _get_adapter_manager()
     has_adapter_model = adapter_manager.has_adapter(profile_id)
@@ -2219,6 +2220,177 @@ def _save_training_job(job: dict) -> dict:
     return sanitized
 
 
+def _queue_lora_training_job(
+    profile_id: str,
+    *,
+    epochs: int = 100,
+    learning_rate: float = 1e-4,
+    batch_size: int = 4,
+):
+    """Queue a LoRA training job using the canonical training backend."""
+    from ..training.job_manager import TrainingConfig
+
+    store = _get_profile_store()
+    profile = _ensure_profile_in_store(profile_id)
+
+    if profile.get('profile_role', 'target_user') != 'target_user':
+        raise ValueError(
+            'Only target user profiles can be trained. '
+            'Source artist profiles are reference voices extracted from songs.'
+        )
+
+    samples = store.list_training_samples(profile_id)
+    sample_ids = [sample.sample_id for sample in samples]
+    if not sample_ids:
+        raise ValueError('No training samples found for this profile')
+
+    job_manager = _get_training_job_manager()
+    job = job_manager.create_job(
+        profile_id=profile_id,
+        sample_ids=sample_ids,
+        config=TrainingConfig(
+            training_mode='lora',
+            epochs=epochs,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+        ),
+    )
+    job_manager.execute_job(job.job_id)
+    return job
+
+
+def _parse_legacy_segment_key(segment_key: Optional[str]) -> tuple[Optional[str], Optional[int]]:
+    """Parse legacy `<diarization_id>_<segment_index>` keys.
+
+    Older clients used a single segment_key instead of sending diarization_id
+    separately. Preserve that contract for existing E2E flows.
+    """
+    if not segment_key:
+        return None, None
+
+    try:
+        diarization_id, segment_index = segment_key.rsplit('_', 1)
+        return diarization_id, int(segment_index)
+    except (ValueError, AttributeError):
+        return None, None
+
+
+def _build_diarization_speaker_summary(segments: list[dict]) -> list[dict]:
+    """Build a compact per-speaker summary for diarization responses."""
+    speaker_map: dict[str, dict[str, Any]] = {}
+    for segment in segments:
+        speaker_id = segment['speaker_id']
+        entry = speaker_map.setdefault(
+            speaker_id,
+            {
+                'speaker_id': speaker_id,
+                'duration': 0.0,
+                'segment_count': 0,
+                'confidence': [],
+            },
+        )
+        entry['duration'] += float(segment.get('duration', 0.0))
+        entry['segment_count'] += 1
+        if 'confidence' in segment and segment['confidence'] is not None:
+            entry['confidence'].append(float(segment['confidence']))
+
+    summary = []
+    for speaker_id in sorted(speaker_map):
+        entry = speaker_map[speaker_id]
+        confidences = entry.pop('confidence')
+        entry['avg_confidence'] = (
+            float(sum(confidences) / len(confidences)) if confidences else None
+        )
+        summary.append(entry)
+    return summary
+
+
+def _create_profile_from_diarized_speaker(
+    *,
+    diarization_data: dict,
+    speaker_id: str,
+    name: str,
+    user_id: str = 'system',
+    profile_role: str = 'source_artist',
+    extract_segments: bool = True,
+    request_metadata: Optional[dict] = None,
+):
+    """Create a profile from one speaker within a stored diarization result."""
+    from auto_voice.audio.speaker_diarization import SpeakerDiarizer, DiarizationResult, SpeakerSegment
+
+    segments = diarization_data.get('segments', [])
+    speaker_segments = [s for s in segments if s['speaker_id'] == speaker_id]
+    if not speaker_segments:
+        raise ValueError(f'No segments found for speaker {speaker_id}')
+
+    audio_path = diarization_data.get('audio_path')
+    if not audio_path or not os.path.exists(audio_path):
+        raise FileNotFoundError('Original audio not found')
+
+    diarizer = SpeakerDiarizer()
+    longest_segment = max(speaker_segments, key=lambda s: s['end'] - s['start'])
+    embedding = diarizer.extract_speaker_embedding(
+        audio_path=audio_path,
+        start=longest_segment['start'],
+        end=longest_segment['end'],
+    )
+
+    speaker_duration = sum(s['end'] - s['start'] for s in speaker_segments)
+    profile_metadata = {
+        'source_audio_path': audio_path,
+        'source_diarization_id': diarization_data.get('diarization_id'),
+        'source_speaker_id': speaker_id,
+        'source_speaker_duration': speaker_duration,
+    }
+    profile_metadata.update(diarization_data.get('metadata') or {})
+    profile_metadata.update(request_metadata or {})
+
+    audio_segments = []
+    if extract_segments:
+        seg_objects = [
+            SpeakerSegment(
+                start=s['start'],
+                end=s['end'],
+                speaker_id=s['speaker_id'],
+                confidence=s.get('confidence', 1.0),
+            )
+            for s in speaker_segments
+        ]
+        temp_result = DiarizationResult(
+            segments=seg_objects,
+            audio_duration=diarization_data.get('audio_duration', 0),
+            num_speakers=diarization_data.get('num_speakers', 1),
+        )
+        extracted_path = diarizer.extract_speaker_audio(
+            audio_path=audio_path,
+            diarization=temp_result,
+            speaker_id=speaker_id,
+        )
+        if extracted_path:
+            audio_segments.append(str(extracted_path))
+
+    store = _get_profile_store()
+    profile_id = store.create_profile_from_diarization(
+        name=name,
+        speaker_embedding=embedding,
+        user_id=user_id,
+        audio_segments=audio_segments,
+        profile_role=profile_role,
+        metadata=profile_metadata,
+    )
+
+    return {
+        'profile_id': profile_id,
+        'name': name,
+        'speaker_id': speaker_id,
+        'profile_role': profile_role,
+        'num_segments': len(speaker_segments),
+        'total_duration': speaker_duration,
+        'embedding_dim': len(embedding),
+        'metadata': profile_metadata,
+    }
+
+
 @api_bp.route('/training/jobs', methods=['GET'])
 def list_training_jobs():
     """List all training jobs, optionally filtered by profile."""
@@ -2236,7 +2408,7 @@ def list_training_jobs():
 def create_training_job():
     """Create and start a new training job."""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
         if not data:
             return validation_error_response('No JSON data provided')
 
@@ -2388,11 +2560,12 @@ def _find_training_sample(profile_id: str, sample_id: str):
 @api_bp.route('/profiles/<profile_id>/samples', methods=['GET'])
 def list_samples(profile_id: str):
     """List all samples for a profile."""
-    try:
-        profile = _load_runtime_profile(profile_id)
-        if profile is None:
-            return not_found_response('Profile not found')
+    profile = _load_runtime_profile(profile_id)
+    if profile is None:
+        from auto_voice.profiles.api import list_samples as legacy_list_samples
+        return legacy_list_samples(profile_id)
 
+    try:
         store = _get_profile_store()
         training_samples = store.list_training_samples(profile_id)
         samples = [_serialize_training_sample(profile_id, sample) for sample in training_samples]
@@ -2409,7 +2582,13 @@ def list_samples(profile_id: str):
 def upload_sample(profile_id: str):
     """Upload a new training sample for a profile."""
     try:
-        _ensure_profile_in_store(profile_id)
+        from ..storage.voice_profiles import ProfileNotFoundError
+
+        try:
+            _ensure_profile_in_store(profile_id)
+        except ProfileNotFoundError:
+            from auto_voice.profiles.api import upload_sample as legacy_upload_sample
+            return legacy_upload_sample(profile_id)
 
         # Accept both 'file' and 'audio' field names for flexibility
         file = None
@@ -2744,6 +2923,10 @@ def get_separation_status(job_id: str):
 @api_bp.route('/profiles/<profile_id>/samples/<sample_id>', methods=['GET'])
 def get_sample(profile_id: str, sample_id: str):
     """Get details of a specific sample."""
+    if _load_runtime_profile(profile_id) is None:
+        from auto_voice.profiles.api import get_sample as legacy_get_sample
+        return legacy_get_sample(profile_id, sample_id)
+
     sample = _find_training_sample(profile_id, sample_id)
     if sample is not None:
         return jsonify(_serialize_training_sample(profile_id, sample))
@@ -2758,6 +2941,10 @@ def get_sample(profile_id: str, sample_id: str):
 @api_bp.route('/profiles/<profile_id>/samples/<sample_id>', methods=['DELETE'])
 def delete_sample(profile_id: str, sample_id: str):
     """Delete a sample."""
+    if _load_runtime_profile(profile_id) is None:
+        from auto_voice.profiles.api import delete_sample as legacy_delete_sample
+        return legacy_delete_sample(profile_id, sample_id)
+
     store = _get_profile_store()
     if store.delete_training_sample(profile_id, sample_id):
         logger.info(f"Deleted sample {sample_id} from profile {profile_id}")
@@ -2792,11 +2979,13 @@ def diarize_audio():
     try:
         from auto_voice.audio.speaker_diarization import SpeakerDiarizer
 
-        # Handle file upload or path
-        if 'file' in request.files:
-            file = request.files['file']
+        # Handle file upload or path. Older clients used `audio` instead of `file`.
+        if 'file' in request.files or 'audio' in request.files:
+            file = request.files.get('file') or request.files.get('audio')
             if not file.filename:
                 return validation_error_response('No file selected')
+            if not allowed_file(file.filename):
+                return validation_error_response('Invalid file type')
 
             # Save uploaded file temporarily
             import tempfile
@@ -2841,18 +3030,23 @@ def diarize_audio():
             'audio_duration': result.audio_duration,
             'num_speakers': result.num_speakers,
             'segments': segments,
+            'speakers': _build_diarization_speaker_summary(segments),
             'speaker_durations': {
                 speaker_id: result.get_speaker_total_duration(speaker_id)
                 for speaker_id in result.get_all_speaker_ids()
             },
         }
+        if segments:
+            response['segment_key'] = f'{diarization_id}_0'
 
         # Store for later reference (e.g., by assign/auto-create endpoints)
         _diarization_results[diarization_id] = {
+            'diarization_id': diarization_id,
             'audio_path': audio_path,
             'audio_duration': result.audio_duration,
             'num_speakers': result.num_speakers,
             'segments': segments,
+            'speakers': response['speakers'],
             'created_at': time.time(),
         }
 
@@ -3027,7 +3221,14 @@ def assign_diarization_segment():
 
         diarization_id = data.get('diarization_id')
         segment_index = data.get('segment_index')
+        legacy_segment_key = data.get('segment_key')
         profile_id = data.get('profile_id')
+
+        if (diarization_id is None or segment_index is None) and legacy_segment_key:
+            parsed_diarization_id, parsed_segment_index = _parse_legacy_segment_key(legacy_segment_key)
+            diarization_id = diarization_id or parsed_diarization_id
+            if segment_index is None:
+                segment_index = parsed_segment_index
 
         if not all([diarization_id, segment_index is not None, profile_id]):
             return validation_error_response('Required: diarization_id, segment_index, profile_id')
@@ -3178,112 +3379,84 @@ def auto_create_profile_from_diarization():
         - extract_segments: (optional) Add all segments as training samples (default: true)
     """
     try:
-        from auto_voice.audio.speaker_diarization import SpeakerDiarizer, DiarizationResult, SpeakerSegment
-
         data = request.get_json()
         if not data:
             return validation_error_response('No JSON data provided')
 
         diarization_id = data.get('diarization_id')
+        legacy_segment_key = data.get('segment_key')
         speaker_id = data.get('speaker_id')
         name = data.get('name')
 
-        if not all([diarization_id, speaker_id, name]):
-            return validation_error_response('Required: diarization_id, speaker_id, name')
+        if not diarization_id and legacy_segment_key:
+            diarization_id, _ = _parse_legacy_segment_key(legacy_segment_key)
+
+        if not diarization_id:
+            return validation_error_response('Required: diarization_id')
 
         # Get diarization result
         diarization_data = _diarization_results.get(diarization_id)
         if not diarization_data:
             return not_found_response('Diarization result not found or expired')
 
-        # Find segments for this speaker
-        segments = diarization_data.get('segments', [])
-        speaker_segments = [s for s in segments if s['speaker_id'] == speaker_id]
-
-        if not speaker_segments:
-            return validation_error_response(f'No segments found for speaker {speaker_id}')
-
-        audio_path = diarization_data.get('audio_path')
-        if not audio_path or not os.path.exists(audio_path):
-            return validation_error_response('Original audio not found')
-
-        # Extract speaker embedding from segments
-        diarizer = SpeakerDiarizer()
-
-        # Use the longest segment for embedding extraction
-        longest_segment = max(speaker_segments, key=lambda s: s['end'] - s['start'])
-        embedding = diarizer.extract_speaker_embedding(
-            audio_path=audio_path,
-            start=longest_segment['start'],
-            end=longest_segment['end'],
-        )
-
-        # Create profile
-        store = _get_profile_store()
         user_id = data.get('user_id', 'system')
         profile_role = data.get('profile_role', 'source_artist')
         request_metadata = data.get('metadata') or {}
-        speaker_duration = sum(s['end'] - s['start'] for s in speaker_segments)
-        profile_metadata = {
-            'source_audio_path': audio_path,
-            'source_diarization_id': diarization_id,
-            'source_speaker_id': speaker_id,
-            'source_speaker_duration': speaker_duration,
-        }
-        profile_metadata.update(diarization_data.get('metadata') or {})
-        profile_metadata.update(request_metadata)
-
-        # Extract all segments as audio files if requested
-        audio_segments = []
         extract_segments = data.get('extract_segments', True)
 
-        if extract_segments:
-            # Create DiarizationResult for extraction
-            seg_objects = [
-                SpeakerSegment(
-                    start=s['start'],
-                    end=s['end'],
-                    speaker_id=s['speaker_id'],
-                    confidence=s.get('confidence', 1.0),
+        # Legacy bulk auto-create contract:
+        #   {segment_key, artist_names:[...]}
+        artist_names = data.get('artist_names')
+        if artist_names:
+            segments = diarization_data.get('segments', [])
+            speaker_ids = sorted({segment['speaker_id'] for segment in segments})
+            profiles = []
+            for speaker_name, current_speaker_id in zip(artist_names, speaker_ids):
+                profile_data = _create_profile_from_diarized_speaker(
+                    diarization_data=diarization_data,
+                    speaker_id=current_speaker_id,
+                    name=speaker_name,
+                    user_id=user_id,
+                    profile_role=profile_role,
+                    extract_segments=extract_segments,
+                    request_metadata=request_metadata,
                 )
-                for s in speaker_segments
-            ]
-            temp_result = DiarizationResult(
-                segments=seg_objects,
-                audio_duration=diarization_data.get('audio_duration', 0),
-                num_speakers=diarization_data.get('num_speakers', 1),
-            )
+                profiles.append(profile_data)
 
-            extracted_path = diarizer.extract_speaker_audio(
-                audio_path=audio_path,
-                diarization=temp_result,
-                speaker_id=speaker_id,
-            )
-            if extracted_path:
-                audio_segments.append(str(extracted_path))
+            if not profiles:
+                return validation_error_response('No artist profiles could be created from diarization')
 
-        profile_id = store.create_profile_from_diarization(
+            logger.info(
+                "Auto-created %s profiles from diarization %s",
+                len(profiles),
+                diarization_id,
+            )
+            return jsonify({
+                'status': 'success',
+                'profiles': profiles,
+                'diarization_id': diarization_id,
+            }), 201
+
+        if not all([speaker_id, name]):
+            return validation_error_response('Required: diarization_id, speaker_id, name')
+
+        profile_data = _create_profile_from_diarized_speaker(
+            diarization_data=diarization_data,
+            speaker_id=speaker_id,
             name=name,
-            speaker_embedding=embedding,
             user_id=user_id,
-            audio_segments=audio_segments,
             profile_role=profile_role,
-            metadata=profile_metadata,
+            extract_segments=extract_segments,
+            request_metadata=request_metadata,
         )
 
-        # Calculate total duration
-        total_duration = speaker_duration
-
-        logger.info(f"Auto-created profile '{name}' ({profile_id}) from diarization")
+        logger.info(
+            "Auto-created profile '%s' (%s) from diarization",
+            name,
+            profile_data['profile_id'],
+        )
         return jsonify({
-            'profile_id': profile_id,
-            'name': name,
-            'speaker_id': speaker_id,
-            'profile_role': profile_role,
-            'num_segments': len(speaker_segments),
-            'total_duration': total_duration,
-            'embedding_dim': len(embedding),
-            'metadata': profile_metadata,
+            **profile_data,
             'status': 'success',
         }), 201
 
@@ -4225,15 +4398,11 @@ def check_retrain(profile_id):
         # Optionally trigger training
         if trigger and needs_retrain:
             try:
-                from ..training.job_manager import get_job_manager
-                job_manager = get_job_manager()
-
-                job = job_manager.create_job(
+                job = _queue_lora_training_job(
                     profile_id=profile_id,
                     epochs=100,
                     batch_size=4,
                     learning_rate=1e-4,
-                    priority=1,
                 )
 
                 result['training_queued'] = True
@@ -4377,22 +4546,15 @@ def retrain_lora(profile_id):
         profile_id: Profile being trained
     """
     try:
-        from ..training.job_manager import get_job_manager
-
         data = request.json or {}
         epochs = data.get('epochs', 100)
         learning_rate = data.get('learning_rate', 1e-4)
         batch_size = data.get('batch_size', 4)
-        priority = data.get('priority', 1)
-
-        job_manager = get_job_manager()
-
-        job = job_manager.create_job(
+        job = _queue_lora_training_job(
             profile_id=profile_id,
             epochs=epochs,
             batch_size=batch_size,
             learning_rate=learning_rate,
-            priority=priority,
         )
 
         return jsonify({
@@ -4697,15 +4859,12 @@ def check_profile_degradation(profile_id: str):
 
         if result['degradation_detected'] and auto_retrain:
             try:
-                from ..training.job_manager import TrainingJobManager
-                job_manager = TrainingJobManager(
-                    storage_path='data/training_jobs',
-                    require_gpu=False,
-                )
-                job = job_manager.auto_queue_training(profile_id)
+                job = _get_training_job_manager().auto_queue_training(profile_id)
                 if job:
                     result['retrain_job_id'] = job.job_id
                     result['retrain_queued'] = True
+                else:
+                    result['retrain_queued'] = False
             except Exception as e:
                 logger.warning(f"Failed to queue retrain: {e}")
                 result['retrain_queued'] = False

@@ -383,7 +383,7 @@ class SpeakerDiarizer:
         waveform: torch.Tensor,
         sample_rate: int,
         segments: List[Tuple[float, float]],
-        batch_size: int = 10,
+        batch_size: Optional[int] = None,
     ) -> List[np.ndarray]:
         """Extract embeddings for multiple segments with memory-safe batching.
 
@@ -398,14 +398,43 @@ class SpeakerDiarizer:
         """
         self._load_model()
 
-        embeddings = []
+        if batch_size is None:
+            batch_size = 32 if self.device.startswith("cuda") else 10
+
+        embeddings: List[Optional[np.ndarray]] = []
         waveform_np = waveform.numpy()
         total_segments = len(segments)
+        pending_waveforms: List[np.ndarray] = []
+        pending_indices: List[int] = []
+
+        def flush_pending() -> None:
+            if not pending_waveforms:
+                return
+
+            inputs = self._feature_extractor(
+                pending_waveforms,
+                sampling_rate=sample_rate,
+                return_tensors="pt",
+                padding=True,
+            )
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+            with torch.inference_mode():
+                outputs = self._model(**inputs)
+                batch_embeddings = outputs.embeddings.cpu().numpy()
+
+            for idx, embedding in zip(pending_indices, batch_embeddings):
+                normalized = embedding / (np.linalg.norm(embedding) + 1e-8)
+                embeddings[idx] = normalized
+
+            pending_waveforms.clear()
+            pending_indices.clear()
+            del inputs, outputs, batch_embeddings
+            self._cleanup_memory()
 
         for i, (start, end) in enumerate(segments):
-            # Memory check and cleanup every batch_size segments
             if i > 0 and i % batch_size == 0:
-                self._cleanup_memory()
+                flush_pending()
                 if not self._check_memory():
                     logger.warning(
                         f"Memory pressure at segment {i}/{total_segments}, "
@@ -421,28 +450,14 @@ class SpeakerDiarizer:
                 embeddings.append(None)
                 continue
 
-            # Process through feature extractor
-            inputs = self._feature_extractor(
-                segment_waveform,
-                sampling_rate=sample_rate,
-                return_tensors="pt",
-                padding=True,
-            )
+            embeddings.append(None)
+            pending_waveforms.append(segment_waveform)
+            pending_indices.append(len(embeddings) - 1)
 
-            # Move to device
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            if len(pending_waveforms) >= batch_size:
+                flush_pending()
 
-            # Extract embedding
-            with torch.no_grad():
-                outputs = self._model(**inputs)
-                embedding = outputs.embeddings.cpu().numpy().squeeze()
-
-            # L2 normalize
-            embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
-            embeddings.append(embedding)
-
-            # Clear intermediate tensors
-            del inputs, outputs
+        flush_pending()
 
         # Final cleanup
         self._cleanup_memory()
@@ -578,6 +593,12 @@ class SpeakerDiarizer:
             )
 
         if use_chunked_processing:
+            if self.device.startswith("cuda") and audio_duration >= 180.0:
+                # Long GPU jobs do not need as much overlap to preserve speaker
+                # identity. Reducing window count cuts end-to-end latency
+                # without changing the external API contract.
+                segment_duration = max(segment_duration, 2.0)
+                overlap = min(overlap, 0.25)
             logger.info(f"Using chunked processing for {audio_duration:.1f}s audio")
             return self._diarize_chunked(
                 waveform, sample_rate, audio_duration, audio_path,

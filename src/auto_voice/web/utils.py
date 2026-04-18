@@ -15,11 +15,12 @@ def allowed_file(filename: str) -> bool:
     return ext in ALLOWED_AUDIO_EXTENSIONS
 
 
-def validation_error_response(error: str) -> Tuple[Any, int]:
+def validation_error_response(error: str, **kwargs) -> Tuple[Any, int]:
     """Return a validation error response (400 Bad Request).
 
     Args:
         error: Error message describing the validation failure
+        **kwargs: Optional additional JSON fields (e.g. error_code, details)
 
     Returns:
         Tuple of (JSON response, status code 400)
@@ -28,7 +29,9 @@ def validation_error_response(error: str) -> Tuple[Any, int]:
         return validation_error_response("user_id is required")
         # Returns: ({'error': 'user_id is required'}, 400)
     """
-    return jsonify({'error': error}), 400
+    response = {'error': error}
+    response.update({key: value for key, value in kwargs.items() if value is not None})
+    return jsonify(response), 400
 
 
 def not_found_response(error: str) -> Tuple[Any, int]:
