@@ -10,10 +10,13 @@ Tests for:
 - Database context manager and transactions
 """
 
-import pytest
-import numpy as np
+import os
 import tempfile
 from pathlib import Path
+
+import numpy as np
+import pytest
+from sqlalchemy import text
 
 from auto_voice.db.schema import (
     init_database,
@@ -54,24 +57,26 @@ from auto_voice.db.operations import (
 @pytest.fixture
 def temp_db():
     """Create a temporary database for testing."""
-    import os
     from auto_voice.db import schema
 
     # Force SQLite for testing
     old_db_type = os.environ.get('AUTOVOICE_DB_TYPE')
+    old_db_path = schema.DATABASE_PATH
     os.environ['AUTOVOICE_DB_TYPE'] = 'sqlite'
-
-    # Reset engine to pick up new env var
-    schema._engine = None
-    schema._SessionFactory = None
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
+        schema.DATABASE_PATH = db_path
+        # Reset engine/session factory so the temp path is used for this test.
+        schema.close_database()
+        schema._engine = None
+        schema._SessionFactory = None
         init_database(db_type='sqlite')
         yield db_path
 
         # Cleanup
         schema.close_database()
+        schema.DATABASE_PATH = old_db_path
         schema._engine = None
         schema._SessionFactory = None
 
@@ -127,7 +132,7 @@ class TestSchemaCreation:
 
         # Check if foreign keys are enabled (SQLite-specific)
         if 'sqlite' in str(session.bind.url):
-            result = session.execute("PRAGMA foreign_keys").fetchone()
+            result = session.execute(text("PRAGMA foreign_keys")).fetchone()
             assert result[0] == 1
 
         session.close()
@@ -262,7 +267,7 @@ class TestFeaturedArtistOperations:
 
         # Delete track
         with get_db_context(temp_db) as conn:
-            conn.execute("DELETE FROM tracks WHERE id = ?", ("yt123",))
+            conn.execute(text("DELETE FROM tracks WHERE id = :track_id"), {"track_id": "yt123"})
 
         artists = get_featured_artists_for_track("yt123", db_path=temp_db)
         assert len(artists) == 0
@@ -436,9 +441,7 @@ class TestDatabaseContext:
     def test_context_commits_on_success(self, temp_db):
         """Context manager commits on successful completion."""
         with get_db_context(temp_db) as conn:
-            conn.execute("""
-                INSERT INTO tracks (id, title) VALUES ('test1', 'Test')
-            """)
+            conn.execute(text("INSERT INTO tracks (id, title) VALUES ('test1', 'Test')"))
 
         # Data should be persisted
         track = get_track("test1", db_path=temp_db)
@@ -448,9 +451,7 @@ class TestDatabaseContext:
         """Context manager rolls back on exception."""
         try:
             with get_db_context(temp_db) as conn:
-                conn.execute("""
-                    INSERT INTO tracks (id, title) VALUES ('test1', 'Test')
-                """)
+                conn.execute(text("INSERT INTO tracks (id, title) VALUES ('test1', 'Test')"))
                 raise ValueError("Simulated error")
         except ValueError:
             pass

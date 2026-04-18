@@ -325,7 +325,7 @@ def test_convert_voice_success(mock_manager_class, sample_audio):
     mock_manager_class.return_value = mock_manager
 
     pipeline = SingingConversionPipeline(config={})
-    result = pipeline._convert_voice(audio, target_embedding, sr)
+    result = pipeline._convert_voice(audio, target_embedding, sr, speaker_id='default')
 
     assert len(result) == len(audio)
     mock_manager.infer.assert_called_once_with(audio, 'default', target_embedding, sr)
@@ -333,7 +333,7 @@ def test_convert_voice_success(mock_manager_class, sample_audio):
 
 @patch('auto_voice.inference.model_manager.ModelManager')
 def test_convert_voice_uses_speaker_id_from_config(mock_manager_class, sample_audio):
-    """Test _convert_voice uses speaker_id from config."""
+    """Test _convert_voice forwards the explicit speaker_id argument."""
     audio, sr = sample_audio
     target_embedding = np.random.randn(256).astype(np.float32)
 
@@ -341,9 +341,8 @@ def test_convert_voice_uses_speaker_id_from_config(mock_manager_class, sample_au
     mock_manager.infer.return_value = audio * 0.8
     mock_manager_class.return_value = mock_manager
 
-    config = {'speaker_id': 'alice'}
-    pipeline = SingingConversionPipeline(config=config)
-    pipeline._convert_voice(audio, target_embedding, sr)
+    pipeline = SingingConversionPipeline(config={'speaker_id': 'ignored'})
+    pipeline._convert_voice(audio, target_embedding, sr, speaker_id='alice')
 
     call_args = mock_manager.infer.call_args[0]
     assert call_args[1] == 'alice'  # speaker_id
@@ -362,7 +361,7 @@ def test_convert_voice_raises_on_runtime_error(mock_manager_class, sample_audio)
     pipeline = SingingConversionPipeline(config={})
 
     with pytest.raises(ConversionError, match="Voice conversion failed.*CUDA OOM"):
-        pipeline._convert_voice(audio, target_embedding, sr)
+        pipeline._convert_voice(audio, target_embedding, sr, speaker_id='default')
 
 
 # ============================================================================

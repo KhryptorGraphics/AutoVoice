@@ -19,7 +19,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import (
     create_engine, Column, String, Integer, Float, Boolean,
-    Text, LargeBinary, DateTime, ForeignKey, Index, UniqueConstraint
+    Text, LargeBinary, DateTime, ForeignKey, Index, UniqueConstraint, event
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.sql import func
@@ -81,6 +81,12 @@ def get_engine(db_type: Optional[str] = None):
         # Engine options
         if 'sqlite' in url:
             _engine = create_engine(url, echo=False)
+
+            @event.listens_for(_engine, "connect")
+            def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
         else:
             _engine = create_engine(
                 url,
