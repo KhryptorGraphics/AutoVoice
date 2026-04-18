@@ -3387,12 +3387,16 @@ def auto_create_profile_from_diarization():
         legacy_segment_key = data.get('segment_key')
         speaker_id = data.get('speaker_id')
         name = data.get('name')
+        artist_names = data.get('artist_names')
 
         if not diarization_id and legacy_segment_key:
             diarization_id, _ = _parse_legacy_segment_key(legacy_segment_key)
 
         if not diarization_id:
             return validation_error_response('Required: diarization_id')
+
+        if not artist_names and not all([speaker_id, name]):
+            return validation_error_response('Required: diarization_id, speaker_id, name')
 
         # Get diarization result
         diarization_data = _diarization_results.get(diarization_id)
@@ -3406,7 +3410,6 @@ def auto_create_profile_from_diarization():
 
         # Legacy bulk auto-create contract:
         #   {segment_key, artist_names:[...]}
-        artist_names = data.get('artist_names')
         if artist_names:
             segments = diarization_data.get('segments', [])
             speaker_ids = sorted({segment['speaker_id'] for segment in segments})
@@ -3437,9 +3440,6 @@ def auto_create_profile_from_diarization():
                 'diarization_id': diarization_id,
             }), 201
 
-        if not all([speaker_id, name]):
-            return validation_error_response('Required: diarization_id, speaker_id, name')
-
         profile_data = _create_profile_from_diarized_speaker(
             diarization_data=diarization_data,
             speaker_id=speaker_id,
@@ -3460,6 +3460,12 @@ def auto_create_profile_from_diarization():
             'status': 'success',
         }), 201
 
+    except ValueError as e:
+        logger.error(f"Error auto-creating profile: {e}", exc_info=True)
+        return validation_error_response(str(e))
+    except FileNotFoundError as e:
+        logger.error(f"Error auto-creating profile: {e}", exc_info=True)
+        return not_found_response(str(e))
     except Exception as e:
         logger.error(f"Error auto-creating profile: {e}", exc_info=True)
         return error_response(str(e))

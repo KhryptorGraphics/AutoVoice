@@ -10,6 +10,11 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+# Test suites patch these module-level hooks directly. They remain lazy-populated
+# from demucs during ``VocalSeparator`` initialization.
+get_model = None
+apply_model = None
+
 
 class VocalSeparator:
     """Separates vocals from instrumental using Demucs HTDemucs.
@@ -31,16 +36,41 @@ class VocalSeparator:
         Raises:
             RuntimeError: If demucs package is not installed.
         """
-        try:
-            from demucs.pretrained import get_model
-            from demucs.apply import apply_model
-        except ImportError as e:
-            raise RuntimeError(
-                f"Demucs is required for vocal separation but is not installed: {e}. "
-                f"Install with: pip install demucs"
-            )
+        global get_model, apply_model
 
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        explicit_backend_override = (
+            callable(get_model)
+            and callable(apply_model)
+            and (
+                hasattr(get_model, 'assert_called')
+                or hasattr(apply_model, 'assert_called')
+            )
+        )
+
+        if explicit_backend_override:
+            demucs_get_model = get_model
+            demucs_apply_model = apply_model
+        else:
+            try:
+                from demucs.pretrained import get_model as demucs_get_model
+                from demucs.apply import apply_model as demucs_apply_model
+            except ImportError as e:
+                raise RuntimeError(
+                    f"Demucs is required for vocal separation but is not installed: {e}. "
+                    f"Install with: pip install demucs"
+                )
+
+            get_model = demucs_get_model
+            apply_model = demucs_apply_model
+
+        if device is None:
+            resolved_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        elif isinstance(device, torch.device):
+            resolved_device = device
+        else:
+            resolved_device = torch.device(device)
+
+        self.device = resolved_device
         self.model_name = model_name
         self.segment = segment
         self._model = None

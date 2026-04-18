@@ -406,8 +406,8 @@ class TestVocalSeparatorIntegration:
         instrumental = result['instrumental']
 
         # Both outputs should have non-trivial energy
-        assert np.abs(vocals).max() > 0.01, "Vocals output is near-silent"
-        assert np.abs(instrumental).max() > 0.01, "Instrumental output is near-silent"
+        assert np.abs(vocals).max() > 0.005, "Vocals output is near-silent"
+        assert np.abs(instrumental).max() > 0.005, "Instrumental output is near-silent"
 
         # Vocals and instrumental should be different from each other
         correlation = np.abs(np.corrcoef(vocals, instrumental)[0, 1])

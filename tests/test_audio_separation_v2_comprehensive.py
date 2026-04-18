@@ -11,6 +11,8 @@ Tests VocalSeparator class with full coverage of:
 import pytest
 import numpy as np
 import torch
+import importlib
+import sys
 from unittest.mock import Mock, MagicMock, patch, PropertyMock
 from pathlib import Path
 
@@ -21,16 +23,23 @@ class TestVocalSeparatorInitialization:
 
     def test_init_missing_demucs_raises_error(self):
         """Test that missing demucs package raises RuntimeError with clear message."""
-        with patch.dict('sys.modules', {'demucs': None}):
+        with patch.dict('sys.modules', {
+            'demucs': None,
+            'demucs.pretrained': None,
+            'demucs.apply': None,
+        }):
             with pytest.raises(RuntimeError, match="Demucs is required"):
-                from auto_voice.audio.separation import VocalSeparator
+                separation = importlib.import_module('auto_voice.audio.separation')
+                separation.get_model = None
+                separation.apply_model = None
+                VocalSeparator = separation.VocalSeparator
                 VocalSeparator()
 
     def test_init_demucs_import_error_includes_install_hint(self):
         """Test error message includes installation instructions."""
         # Mock the demucs import to fail
-        import sys
-        original_import = __builtins__.__import__
+        import builtins
+        original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
             if 'demucs' in name:
@@ -101,86 +110,84 @@ class TestVocalSeparatorInitialization:
 class TestVocalSeparatorModelLoading:
     """Test model loading behavior and error handling."""
 
-    @patch('demucs.pretrained.get_model')
-    @patch('demucs.apply.apply_model')
-    def test_load_model_success(self, mock_apply, mock_get_model):
+    def test_load_model_success(self):
         """Test successful model loading."""
-        # Setup mock model
-        mock_model = MagicMock()
-        mock_model.sources = ['vocals', 'drums', 'bass', 'other']
-        mock_model.samplerate = 44100
-        mock_get_model.return_value = mock_model
+        with patch('auto_voice.audio.separation.get_model') as mock_get_model, \
+             patch('auto_voice.audio.separation.apply_model'):
+            mock_model = MagicMock()
+            mock_model.sources = ['vocals', 'drums', 'bass', 'other']
+            mock_model.samplerate = 44100
+            mock_get_model.return_value = mock_model
 
-        from auto_voice.audio.separation import VocalSeparator
-        separator = VocalSeparator()
-        separator._load_model()
-
-        mock_get_model.assert_called_once_with('htdemucs')
-        mock_model.to.assert_called_once()
-        mock_model.eval.assert_called_once()
-        assert separator._model == mock_model
-
-    @patch('demucs.pretrained.get_model')
-    @patch('demucs.apply.apply_model')
-    def test_load_model_only_once(self, mock_apply, mock_get_model):
-        """Test model is loaded only once (caching)."""
-        mock_model = MagicMock()
-        mock_model.sources = ['vocals', 'drums', 'bass', 'other']
-        mock_model.samplerate = 44100
-        mock_get_model.return_value = mock_model
-
-        from auto_voice.audio.separation import VocalSeparator
-        separator = VocalSeparator()
-        separator._load_model()
-        separator._load_model()
-        separator._load_model()
-
-        # Should be called only once despite multiple _load_model calls
-        assert mock_get_model.call_count == 1
-
-    @patch('demucs.pretrained.get_model')
-    @patch('demucs.apply.apply_model')
-    def test_load_model_failure_raises_runtime_error(self, mock_apply, mock_get_model):
-        """Test that model loading failure raises RuntimeError."""
-        mock_get_model.side_effect = Exception("Model download failed")
-
-        from auto_voice.audio.separation import VocalSeparator
-        separator = VocalSeparator()
-
-        with pytest.raises(RuntimeError, match="Failed to load Demucs model"):
+            from auto_voice.audio.separation import VocalSeparator
+            separator = VocalSeparator()
             separator._load_model()
 
-    @patch('demucs.pretrained.get_model')
-    @patch('demucs.apply.apply_model')
-    def test_model_sample_rate_property(self, mock_apply, mock_get_model):
+            mock_get_model.assert_called_once_with('htdemucs')
+            mock_model.to.assert_called_once()
+            mock_model.eval.assert_called_once()
+            assert separator._model == mock_model
+
+    def test_load_model_only_once(self):
+        """Test model is loaded only once (caching)."""
+        with patch('auto_voice.audio.separation.get_model') as mock_get_model, \
+             patch('auto_voice.audio.separation.apply_model'):
+            mock_model = MagicMock()
+            mock_model.sources = ['vocals', 'drums', 'bass', 'other']
+            mock_model.samplerate = 44100
+            mock_get_model.return_value = mock_model
+
+            from auto_voice.audio.separation import VocalSeparator
+            separator = VocalSeparator()
+            separator._load_model()
+            separator._load_model()
+            separator._load_model()
+
+            assert mock_get_model.call_count == 1
+
+    def test_load_model_failure_raises_runtime_error(self):
+        """Test that model loading failure raises RuntimeError."""
+        with patch('auto_voice.audio.separation.get_model') as mock_get_model, \
+             patch('auto_voice.audio.separation.apply_model'):
+            mock_get_model.side_effect = Exception("Model download failed")
+
+            from auto_voice.audio.separation import VocalSeparator
+            separator = VocalSeparator()
+
+            with pytest.raises(RuntimeError, match="Failed to load Demucs model"):
+                separator._load_model()
+
+    def test_model_sample_rate_property(self):
         """Test model_sample_rate property triggers lazy loading."""
-        mock_model = MagicMock()
-        mock_model.sources = ['vocals', 'drums', 'bass', 'other']
-        mock_model.samplerate = 44100
-        mock_get_model.return_value = mock_model
+        with patch('auto_voice.audio.separation.get_model') as mock_get_model, \
+             patch('auto_voice.audio.separation.apply_model'):
+            mock_model = MagicMock()
+            mock_model.sources = ['vocals', 'drums', 'bass', 'other']
+            mock_model.samplerate = 44100
+            mock_get_model.return_value = mock_model
 
-        from auto_voice.audio.separation import VocalSeparator
-        separator = VocalSeparator()
-        sr = separator.model_sample_rate
+            from auto_voice.audio.separation import VocalSeparator
+            separator = VocalSeparator()
+            sr = separator.model_sample_rate
 
-        assert sr == 44100
-        mock_get_model.assert_called_once()
+            assert sr == 44100
+            mock_get_model.assert_called_once()
 
-    @patch('demucs.pretrained.get_model')
-    @patch('demucs.apply.apply_model')
-    def test_sources_property(self, mock_apply, mock_get_model):
+    def test_sources_property(self):
         """Test sources property returns list of source names."""
-        mock_model = MagicMock()
-        mock_model.sources = ['vocals', 'drums', 'bass', 'other']
-        mock_model.samplerate = 44100
-        mock_get_model.return_value = mock_model
+        with patch('auto_voice.audio.separation.get_model') as mock_get_model, \
+             patch('auto_voice.audio.separation.apply_model'):
+            mock_model = MagicMock()
+            mock_model.sources = ['vocals', 'drums', 'bass', 'other']
+            mock_model.samplerate = 44100
+            mock_get_model.return_value = mock_model
 
-        from auto_voice.audio.separation import VocalSeparator
-        separator = VocalSeparator()
-        sources = separator.sources
+            from auto_voice.audio.separation import VocalSeparator
+            separator = VocalSeparator()
+            sources = separator.sources
 
-        assert sources == ['vocals', 'drums', 'bass', 'other']
-        mock_get_model.assert_called_once()
+            assert sources == ['vocals', 'drums', 'bass', 'other']
+            mock_get_model.assert_called_once()
 
 
 class TestVocalSeparatorSeparation:
@@ -269,7 +276,7 @@ class TestVocalSeparatorSeparation:
         """Test separation with different input/model sample rates."""
         with patch('auto_voice.audio.separation.get_model') as mock_get_model, \
              patch('auto_voice.audio.separation.apply_model') as mock_apply, \
-             patch('auto_voice.audio.separation.torchaudio.transforms.Resample') as mock_resample:
+             patch('torchaudio.transforms.Resample') as mock_resample:
 
             # Setup mock model with different sample rate
             mock_model = MagicMock()
@@ -280,6 +287,7 @@ class TestVocalSeparatorSeparation:
             # Setup resampler mock
             mock_resampler = MagicMock()
             mock_resampler.return_value = torch.randn(1, 2, 44100)  # Resampled audio
+            mock_resampler.to.return_value = mock_resampler
             mock_resample.return_value = mock_resampler
 
             # Setup separation output
@@ -363,7 +371,7 @@ class TestVocalSeparatorOutputFormatting:
         """Create separator that requires resampling."""
         with patch('auto_voice.audio.separation.get_model') as mock_get_model, \
              patch('auto_voice.audio.separation.apply_model') as mock_apply, \
-             patch('auto_voice.audio.separation.librosa.resample') as mock_resample:
+             patch('librosa.resample') as mock_resample:
 
             mock_model = MagicMock()
             mock_model.sources = ['vocals', 'drums', 'bass', 'other']

@@ -33,7 +33,7 @@ def store(temp_profile_dir):
 def app():
     """Create Flask app for testing."""
     from auto_voice.web.app import create_app
-    app, socketio = create_app()
+    app, socketio = create_app(testing=True)
     app.config['TESTING'] = True
     return app
 

@@ -60,11 +60,16 @@ class TestVocalSeparator:
 
     def test_initialization_without_demucs_raises_error(self):
         """Test that missing demucs raises RuntimeError."""
-        with patch.dict('sys.modules', {'demucs': None}):
+        with patch.dict('sys.modules', {
+            'demucs': None,
+            'demucs.pretrained': None,
+            'demucs.apply': None,
+        }):
             with pytest.raises(RuntimeError, match="Demucs is required"):
-                # This should try to import demucs and fail
-                separator = VocalSeparator()
-                separator._load_model()
+                import auto_voice.audio.separation as separation
+                separation.get_model = None
+                separation.apply_model = None
+                VocalSeparator()
 
     def test_lazy_model_loading(self):
         """Test that model is lazy-loaded on first use."""
