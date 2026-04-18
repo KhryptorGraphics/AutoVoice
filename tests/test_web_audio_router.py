@@ -2,6 +2,9 @@
 
 Tests for AudioOutputRouter and audio device management.
 """
+import sys
+from types import SimpleNamespace
+
 import pytest
 import torch
 import numpy as np
@@ -294,22 +297,24 @@ class TestGetConfig:
 class TestListAudioDevices:
     """Test list_audio_devices function."""
 
-    @patch('sounddevice.query_devices')
-    @patch('sounddevice.default', Mock(device=[0, 1]))
-    def test_list_audio_devices_basic(self, mock_query):
+    def test_list_audio_devices_basic(self):
         """Test listing audio devices."""
         from auto_voice.web.audio_router import list_audio_devices
 
-        mock_query.return_value = [
-            {
-                'name': 'Built-in Audio',
-                'max_input_channels': 2,
-                'max_output_channels': 2,
-                'default_samplerate': 48000.0,
-            },
-        ]
+        fake_sd = SimpleNamespace(
+            query_devices=lambda: [
+                {
+                    'name': 'Built-in Audio',
+                    'max_input_channels': 2,
+                    'max_output_channels': 2,
+                    'default_samplerate': 48000.0,
+                },
+            ],
+            default=SimpleNamespace(device=[0, 0]),
+        )
 
-        devices = list_audio_devices()
+        with patch.dict(sys.modules, {'sounddevice': fake_sd}):
+            devices = list_audio_devices()
 
         # Should return devices with expected structure
         assert isinstance(devices, list)
@@ -318,56 +323,60 @@ class TestListAudioDevices:
             assert 'name' in device
             assert 'type' in device
 
-    @patch('sounddevice.query_devices')
-    @patch('sounddevice.default', Mock(device=[0, 1]))
-    def test_list_audio_devices_filter_output(self, mock_query):
+    def test_list_audio_devices_filter_output(self):
         """Test filtering for output devices only."""
         from auto_voice.web.audio_router import list_audio_devices
 
-        mock_query.return_value = [
-            {
-                'name': 'Input Device',
-                'max_input_channels': 2,
-                'max_output_channels': 0,
-                'default_samplerate': 48000.0,
-            },
-            {
-                'name': 'Output Device',
-                'max_input_channels': 0,
-                'max_output_channels': 2,
-                'default_samplerate': 48000.0,
-            },
-        ]
+        fake_sd = SimpleNamespace(
+            query_devices=lambda: [
+                {
+                    'name': 'Input Device',
+                    'max_input_channels': 2,
+                    'max_output_channels': 0,
+                    'default_samplerate': 48000.0,
+                },
+                {
+                    'name': 'Output Device',
+                    'max_input_channels': 0,
+                    'max_output_channels': 2,
+                    'default_samplerate': 48000.0,
+                },
+            ],
+            default=SimpleNamespace(device=[0, 1]),
+        )
 
-        devices = list_audio_devices(device_type='output')
+        with patch.dict(sys.modules, {'sounddevice': fake_sd}):
+            devices = list_audio_devices(device_type='output')
 
         # Should only return output device
         output_devices = [d for d in devices if d['type'] == 'output']
         assert len(output_devices) == 1
         assert output_devices[0]['name'] == 'Output Device'
 
-    @patch('sounddevice.query_devices')
-    @patch('sounddevice.default', Mock(device=[0, 1]))
-    def test_list_audio_devices_filter_input(self, mock_query):
+    def test_list_audio_devices_filter_input(self):
         """Test filtering for input devices only."""
         from auto_voice.web.audio_router import list_audio_devices
 
-        mock_query.return_value = [
-            {
-                'name': 'Input Device',
-                'max_input_channels': 2,
-                'max_output_channels': 0,
-                'default_samplerate': 48000.0,
-            },
-            {
-                'name': 'Output Device',
-                'max_input_channels': 0,
-                'max_output_channels': 2,
-                'default_samplerate': 48000.0,
-            },
-        ]
+        fake_sd = SimpleNamespace(
+            query_devices=lambda: [
+                {
+                    'name': 'Input Device',
+                    'max_input_channels': 2,
+                    'max_output_channels': 0,
+                    'default_samplerate': 48000.0,
+                },
+                {
+                    'name': 'Output Device',
+                    'max_input_channels': 0,
+                    'max_output_channels': 2,
+                    'default_samplerate': 48000.0,
+                },
+            ],
+            default=SimpleNamespace(device=[0, 1]),
+        )
 
-        devices = list_audio_devices(device_type='input')
+        with patch.dict(sys.modules, {'sounddevice': fake_sd}):
+            devices = list_audio_devices(device_type='input')
 
         # Should only return input device
         input_devices = [d for d in devices if d['type'] == 'input']
@@ -384,12 +393,17 @@ class TestListAudioDevices:
                 devices = list_audio_devices()
                 assert devices == []
 
-    @patch('sounddevice.query_devices', side_effect=Exception("Device error"))
-    def test_list_audio_devices_error(self, mock_query):
+    def test_list_audio_devices_error(self):
         """Test handling device query error."""
         from auto_voice.web.audio_router import list_audio_devices
 
-        devices = list_audio_devices()
+        fake_sd = SimpleNamespace(
+            query_devices=Mock(side_effect=Exception("Device error")),
+            default=SimpleNamespace(device=[0, 1]),
+        )
+
+        with patch.dict(sys.modules, {'sounddevice': fake_sd}):
+            devices = list_audio_devices()
 
         # Should return empty list on error
         assert devices == []
@@ -398,12 +412,14 @@ class TestListAudioDevices:
 class TestGetDefaultDevice:
     """Test get_default_device function."""
 
-    @patch('sounddevice.default', Mock(device=[0, 1]))
     def test_get_default_device(self):
         """Test getting default output device."""
         from auto_voice.web.audio_router import get_default_device
 
-        device_idx = get_default_device()
+        fake_sd = SimpleNamespace(default=SimpleNamespace(device=[0, 1]))
+
+        with patch.dict(sys.modules, {'sounddevice': fake_sd}):
+            device_idx = get_default_device()
 
         # Should return output device index (index 1 in the tuple)
         assert device_idx == 1
