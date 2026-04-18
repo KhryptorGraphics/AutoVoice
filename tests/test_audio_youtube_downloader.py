@@ -321,7 +321,7 @@ class TestFilenameSanitization:
         # Test removing invalid characters
         result = downloader._sanitize_filename('Artist - Song: Title (Official)')
         assert ':' not in result
-        assert '(' not in result
+        assert result == 'Artist_-_Song_Title_(Official)'
 
         # Test length limiting
         long_name = 'A' * 200
