@@ -113,13 +113,13 @@ class TestSpeakerMatcher:
         emb1 = np.random.randn(512).astype(np.float32)
         emb1 = emb1 / np.linalg.norm(emb1)
 
-        emb2 = emb1 + np.random.randn(512).astype(np.float32) * 0.1
+        emb2 = emb1 + np.random.randn(512).astype(np.float32) * 0.02
         emb2 = emb2 / np.linalg.norm(emb2)
 
         sim = matcher.cosine_similarity(emb1, emb2)
 
         # Similar embeddings should have high similarity
-        assert 0.8 < sim < 1.0
+        assert 0.9 < sim < 1.0
 
     @patch('auto_voice.audio.speaker_matcher.SpeakerMatcher._get_encoder')
     def test_extract_embedding_from_audio(self, mock_get_encoder, matcher, sample_audio_file):
@@ -155,22 +155,35 @@ class TestSpeakerMatcher:
         assert embedding.shape == (512,)
         assert np.allclose(np.linalg.norm(embedding), 1.0, atol=1e-6)
 
-    def test_cluster_speakers_with_mock_data(self, matcher, mock_embeddings):
+    def test_cluster_speakers_with_mock_data(self, matcher):
         """Test speaker clustering with mock embedding data."""
-        # Create mock database embeddings
+        speaker1_a = np.zeros(512, dtype=np.float32)
+        speaker1_a[0] = 1.0
+        speaker1_b = np.zeros(512, dtype=np.float32)
+        speaker1_b[0] = 0.98
+        speaker1_b[1] = 0.02
+        speaker1_b = speaker1_b / np.linalg.norm(speaker1_b)
+
+        speaker2_a = np.zeros(512, dtype=np.float32)
+        speaker2_a[1] = 1.0
+        speaker2_b = np.zeros(512, dtype=np.float32)
+        speaker2_b[1] = 0.98
+        speaker2_b[0] = 0.02
+        speaker2_b = speaker2_b / np.linalg.norm(speaker2_b)
+
         embeddings = [
-            {'id': 1, 'embedding': mock_embeddings['speaker1_a'], 'duration_sec': 10.0},
-            {'id': 2, 'embedding': mock_embeddings['speaker1_b'], 'duration_sec': 12.0},
-            {'id': 3, 'embedding': mock_embeddings['speaker2_a'], 'duration_sec': 15.0},
-            {'id': 4, 'embedding': mock_embeddings['speaker2_b'], 'duration_sec': 13.0},
+            {'id': 1, 'embedding': speaker1_a, 'duration_sec': 35.0},
+            {'id': 2, 'embedding': speaker1_b, 'duration_sec': 36.0},
+            {'id': 3, 'embedding': speaker2_a, 'duration_sec': 34.0},
+            {'id': 4, 'embedding': speaker2_b, 'duration_sec': 33.0},
         ]
 
-        with patch('auto_voice.audio.speaker_matcher.find_unclustered_embeddings') as mock_find, \
-             patch('auto_voice.audio.speaker_matcher.create_cluster') as mock_create, \
-             patch('auto_voice.audio.speaker_matcher.add_to_cluster') as mock_add:
+        with patch('auto_voice.db.operations.find_unclustered_embeddings') as mock_find, \
+             patch('auto_voice.db.operations.create_cluster') as mock_create, \
+             patch('auto_voice.db.operations.add_to_cluster') as mock_add:
 
             mock_find.return_value = embeddings
-            mock_create.side_effect = ['cluster_1', 'cluster_2']
+            mock_create.side_effect = [f'cluster_{i}' for i in range(10)]
 
             clusters = matcher.cluster_speakers(threshold=0.85)
 
@@ -188,14 +201,14 @@ class TestSpeakerMatcher:
         emb3 = np.array([0.0, 1.0] + [0.0] * 510)
 
         embeddings = [
-            {'id': 1, 'embedding': emb1, 'duration_sec': 10.0},
-            {'id': 2, 'embedding': emb2, 'duration_sec': 10.0},
-            {'id': 3, 'embedding': emb3, 'duration_sec': 10.0},
+            {'id': 1, 'embedding': emb1, 'duration_sec': 35.0},
+            {'id': 2, 'embedding': emb2, 'duration_sec': 35.0},
+            {'id': 3, 'embedding': emb3, 'duration_sec': 35.0},
         ]
 
-        with patch('auto_voice.audio.speaker_matcher.find_unclustered_embeddings') as mock_find, \
-             patch('auto_voice.audio.speaker_matcher.create_cluster') as mock_create, \
-             patch('auto_voice.audio.speaker_matcher.add_to_cluster'):
+        with patch('auto_voice.db.operations.find_unclustered_embeddings') as mock_find, \
+             patch('auto_voice.db.operations.create_cluster') as mock_create, \
+             patch('auto_voice.db.operations.add_to_cluster'):
 
             # High threshold: should create more clusters
             mock_find.return_value = embeddings
@@ -228,9 +241,9 @@ class TestSpeakerMatcher:
             {'id': 2, 'embedding': emb2, 'duration_sec': 10.0},  # Too short
         ]
 
-        with patch('auto_voice.audio.speaker_matcher.find_unclustered_embeddings') as mock_find, \
-             patch('auto_voice.audio.speaker_matcher.create_cluster') as mock_create, \
-             patch('auto_voice.audio.speaker_matcher.add_to_cluster'):
+        with patch('auto_voice.db.operations.find_unclustered_embeddings') as mock_find, \
+             patch('auto_voice.db.operations.create_cluster') as mock_create, \
+             patch('auto_voice.db.operations.add_to_cluster'):
 
             mock_find.return_value = embeddings
             mock_create.return_value = 'cluster_1'
@@ -243,7 +256,7 @@ class TestSpeakerMatcher:
 
     def test_cluster_speakers_empty_embeddings(self, matcher):
         """Test clustering with no embeddings."""
-        with patch('auto_voice.audio.speaker_matcher.find_unclustered_embeddings') as mock_find:
+        with patch('auto_voice.db.operations.find_unclustered_embeddings') as mock_find:
             mock_find.return_value = []
 
             clusters = matcher.cluster_speakers()
@@ -259,9 +272,9 @@ class TestSpeakerMatcher:
             {'id': 1, 'embedding': emb1, 'duration_sec': 35.0},
         ]
 
-        with patch('auto_voice.audio.speaker_matcher.find_unclustered_embeddings') as mock_find, \
-             patch('auto_voice.audio.speaker_matcher.create_cluster') as mock_create, \
-             patch('auto_voice.audio.speaker_matcher.add_to_cluster') as mock_add:
+        with patch('auto_voice.db.operations.find_unclustered_embeddings') as mock_find, \
+             patch('auto_voice.db.operations.create_cluster') as mock_create, \
+             patch('auto_voice.db.operations.add_to_cluster') as mock_add:
 
             mock_find.return_value = embeddings
             mock_create.return_value = 'cluster_1'
@@ -292,10 +305,10 @@ class TestSpeakerMatcher:
             {'name': 'Featured Artist A'},
         ]
 
-        with patch('auto_voice.audio.speaker_matcher.get_all_clusters') as mock_get_clusters, \
-             patch('auto_voice.audio.speaker_matcher.get_cluster_members') as mock_get_members, \
-             patch('auto_voice.audio.speaker_matcher.get_featured_artists_for_track') as mock_get_featured, \
-             patch('auto_voice.audio.speaker_matcher.update_cluster_name') as mock_update:
+        with patch('auto_voice.db.operations.get_all_clusters') as mock_get_clusters, \
+             patch('auto_voice.db.operations.get_cluster_members') as mock_get_members, \
+             patch('auto_voice.db.operations.get_featured_artists_for_track') as mock_get_featured, \
+             patch('auto_voice.db.operations.update_cluster_name') as mock_update:
 
             mock_get_clusters.return_value = clusters
             mock_get_members.side_effect = [members_cluster_1, members_cluster_2]
@@ -322,10 +335,10 @@ class TestSpeakerMatcher:
         featured_artists_single = [{'name': 'Featured Artist'}]
         featured_artists_none = []
 
-        with patch('auto_voice.audio.speaker_matcher.get_all_clusters') as mock_get_clusters, \
-             patch('auto_voice.audio.speaker_matcher.get_cluster_members') as mock_get_members, \
-             patch('auto_voice.audio.speaker_matcher.get_featured_artists_for_track') as mock_get_featured, \
-             patch('auto_voice.audio.speaker_matcher.update_cluster_name') as mock_update:
+        with patch('auto_voice.db.operations.get_all_clusters') as mock_get_clusters, \
+             patch('auto_voice.db.operations.get_cluster_members') as mock_get_members, \
+             patch('auto_voice.db.operations.get_featured_artists_for_track') as mock_get_featured, \
+             patch('auto_voice.db.operations.update_cluster_name') as mock_update:
 
             mock_get_clusters.return_value = clusters
             mock_get_members.return_value = members
@@ -344,8 +357,8 @@ class TestSpeakerMatcher:
             {'id': 'cluster_1', 'name': 'Verified Artist', 'is_verified': True},
         ]
 
-        with patch('auto_voice.audio.speaker_matcher.get_all_clusters') as mock_get_clusters, \
-             patch('auto_voice.audio.speaker_matcher.get_cluster_members') as mock_get_members:
+        with patch('auto_voice.db.operations.get_all_clusters') as mock_get_clusters, \
+             patch('auto_voice.db.operations.get_cluster_members') as mock_get_members:
 
             mock_get_clusters.return_value = clusters
 
@@ -385,13 +398,13 @@ def test_similarity_threshold_tuning(threshold, expected_clusters, mock_embeddin
     matcher = SpeakerMatcher(similarity_threshold=threshold, device='cpu')
 
     embeddings = [
-        {'id': i, 'embedding': emb, 'duration_sec': 10.0}
+        {'id': i, 'embedding': emb, 'duration_sec': 35.0}
         for i, emb in enumerate(mock_embeddings.values())
     ]
 
-    with patch('auto_voice.audio.speaker_matcher.find_unclustered_embeddings') as mock_find, \
-         patch('auto_voice.audio.speaker_matcher.create_cluster') as mock_create, \
-         patch('auto_voice.audio.speaker_matcher.add_to_cluster'):
+    with patch('auto_voice.db.operations.find_unclustered_embeddings') as mock_find, \
+         patch('auto_voice.db.operations.create_cluster') as mock_create, \
+         patch('auto_voice.db.operations.add_to_cluster'):
 
         mock_find.return_value = embeddings
         mock_create.side_effect = [f'cluster_{i}' for i in range(10)]
@@ -409,17 +422,17 @@ def test_speaker_assignment_correctness(mock_embeddings):
 
     # speaker1_a and speaker1_b should cluster together
     embeddings = [
-        {'id': 1, 'embedding': mock_embeddings['speaker1_a'], 'duration_sec': 10.0},
-        {'id': 2, 'embedding': mock_embeddings['speaker1_b'], 'duration_sec': 10.0},
-        {'id': 3, 'embedding': mock_embeddings['speaker2_a'], 'duration_sec': 10.0},
+        {'id': 1, 'embedding': mock_embeddings['speaker1_a'], 'duration_sec': 35.0},
+        {'id': 2, 'embedding': mock_embeddings['speaker1_b'], 'duration_sec': 35.0},
+        {'id': 3, 'embedding': mock_embeddings['speaker2_a'], 'duration_sec': 35.0},
     ]
 
-    with patch('auto_voice.audio.speaker_matcher.find_unclustered_embeddings') as mock_find, \
-         patch('auto_voice.audio.speaker_matcher.create_cluster') as mock_create, \
-         patch('auto_voice.audio.speaker_matcher.add_to_cluster') as mock_add:
+    with patch('auto_voice.db.operations.find_unclustered_embeddings') as mock_find, \
+         patch('auto_voice.db.operations.create_cluster') as mock_create, \
+         patch('auto_voice.db.operations.add_to_cluster') as mock_add:
 
         mock_find.return_value = embeddings
-        mock_create.side_effect = ['cluster_1', 'cluster_2']
+        mock_create.side_effect = [f'cluster_{i}' for i in range(10)]
 
         clusters = matcher.cluster_speakers()
 

@@ -13,12 +13,29 @@ Usage:
 import json
 import logging
 import os
+import re
 import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+
+_ISOLATED_TRACK_RE = re.compile(r"^(?P<track_id>.+)_(?P<speaker_id>SPEAKER_[A-Za-z0-9]+)$")
+
+
+def _parse_isolated_track_filename(wav_file: Path) -> Optional[tuple[str, str]]:
+    """Parse `{track_id}_{speaker_id}_isolated.wav` safely.
+
+    Speaker IDs contain an underscore (`SPEAKER_00`), so splitting on the final
+    underscore is ambiguous for tracks whose IDs also contain underscores.
+    """
+    stem = wav_file.stem.replace('_isolated', '')
+    match = _ISOLATED_TRACK_RE.match(stem)
+    if match is None:
+        return None
+    return match.group('track_id'), match.group('speaker_id')
 
 
 class FileOrganizer:
@@ -37,6 +54,8 @@ class FileOrganizer:
         """
         self.training_vocals_dir = training_vocals_dir or Path('data/training_vocals')
         self.voice_profiles_dir = voice_profiles_dir or Path('data/voice_profiles')
+        self.training_vocals_dir.mkdir(parents=True, exist_ok=True)
+        self.voice_profiles_dir.mkdir(parents=True, exist_ok=True)
         self.featured_dir = self.training_vocals_dir / 'featured'
 
     def get_cluster_assignments(self) -> Dict[str, Dict[str, Any]]:
@@ -119,6 +138,7 @@ class FileOrganizer:
         name = name.replace('<', '')
         name = name.replace('>', '')
         name = name.replace('|', '_')
+        name = re.sub(r'_+', '_', name)
 
         # Remove leading/trailing underscores
         name = name.strip('_')
@@ -265,12 +285,11 @@ class FileOrganizer:
         # Scan files in artist directory
         profiles = {}
         for wav_file in artist_dir.glob('*_isolated.wav'):
-            # Parse filename: {track_id}_{speaker_id}_isolated.wav
-            parts = wav_file.stem.replace('_isolated', '').rsplit('_', 1)
-            if len(parts) != 2:
+            parsed = _parse_isolated_track_filename(wav_file)
+            if parsed is None:
                 continue
 
-            track_id, speaker_id = parts
+            track_id, speaker_id = parsed
             key = (track_id, speaker_id)
 
             if key in track_speaker_to_cluster:
@@ -350,15 +369,16 @@ class FileOrganizer:
                     # Build simple profile based on files present
                     profiles = {}
                     for wav_file in full_path.glob('*_isolated.wav'):
-                        parts = wav_file.stem.replace('_isolated', '').rsplit('_', 1)
-                        if len(parts) == 2:
-                            track_id, speaker_id = parts
-                            profiles[wav_file.name] = {
-                                'track_id': track_id,
-                                'speaker_id': speaker_id,
-                                'artist_name': featured_dir.name,
-                                'is_primary': False,
-                            }
+                        parsed = _parse_isolated_track_filename(wav_file)
+                        if parsed is None:
+                            continue
+                        track_id, speaker_id = parsed
+                        profiles[wav_file.name] = {
+                            'track_id': track_id,
+                            'speaker_id': speaker_id,
+                            'artist_name': featured_dir.name,
+                            'is_primary': False,
+                        }
 
                     profile_path = full_path / 'speaker_profiles.json'
 

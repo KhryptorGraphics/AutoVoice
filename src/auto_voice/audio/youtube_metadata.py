@@ -92,8 +92,12 @@ def _clean_artist_name(name: str) -> str:
 
 def _split_multiple_artists(artist_str: str) -> List[str]:
     """Split a string containing multiple artists separated by , & and."""
-    # Split by comma, ampersand, or "and"
-    artists = re.split(r'\s*[,&]\s*|\s+and\s+', artist_str, flags=re.IGNORECASE)
+    # Split by comma, ampersand, conjunctions, or repeated feature markers.
+    artists = re.split(
+        r'\s*[,&]\s*|\s+and\s+|\s+ft\.?\s+|\s+feat\.?\s+|\s+featuring\s+',
+        artist_str,
+        flags=re.IGNORECASE,
+    )
     return [_clean_artist_name(a) for a in artists if a.strip()]
 
 
@@ -283,6 +287,12 @@ def parse_youtube_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
             song_title = re.sub(r'\s*\(feat\.?\s+[^)]+\)', '', song_title, flags=re.IGNORECASE)
             song_title = re.sub(r'\s*ft\.?\s+.*$', '', song_title, flags=re.IGNORECASE)
             song_title = re.sub(r'\s*feat\.?\s+.*$', '', song_title, flags=re.IGNORECASE)
+            song_title = re.sub(
+                r'\s*[\[\(\{][^\]\)\}]*\b(?:official|lyric|lyrics|audio|video|hd|4k|mv)\b[^\]\)\}]*[\]\)\}]',
+                '',
+                song_title,
+                flags=re.IGNORECASE,
+            )
             song_title = _clean_artist_name(song_title)
 
     return {
@@ -395,10 +405,10 @@ class YouTubeMetadataFetcher:
         if re.match(r'^[a-zA-Z0-9_-]{11}$', stem):
             return stem
 
-        # Try to extract from longer strings
-        match = re.search(r'([a-zA-Z0-9_-]{11})', stem)
-        if match:
-            return match.group(1)
+        # Fall back to separator-delimited tokens to avoid arbitrary 11-char slices
+        for token in re.split(r'[_-]+', stem):
+            if re.match(r'^[a-zA-Z0-9_-]{11}$', token):
+                return token
 
         return None
 

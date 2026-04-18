@@ -145,8 +145,8 @@ class TestProfileFinding:
 class TestClusterAssignments:
     """Test cluster assignment retrieval."""
 
-    @patch('auto_voice.audio.file_organizer.get_all_clusters')
-    @patch('auto_voice.audio.file_organizer.get_cluster_members')
+    @patch('auto_voice.db.operations.get_all_clusters')
+    @patch('auto_voice.db.operations.get_cluster_members')
     def test_get_cluster_assignments(self, mock_members, mock_clusters, file_organizer):
         """Test retrieving cluster assignments."""
         mock_clusters.return_value = [
@@ -226,8 +226,8 @@ class TestFileOrganization:
 class TestSpeakerProfilesJSON:
     """Test speaker_profiles.json generation."""
 
-    @patch('auto_voice.audio.file_organizer.get_all_clusters')
-    @patch('auto_voice.audio.file_organizer.get_cluster_members')
+    @patch('auto_voice.db.operations.get_all_clusters')
+    @patch('auto_voice.db.operations.get_cluster_members')
     def test_create_speaker_profiles_json(self, mock_members, mock_clusters,
                                           file_organizer, tmp_path):
         """Test creating speaker_profiles.json."""
@@ -266,8 +266,8 @@ class TestSpeakerProfilesJSON:
         test_file = artist_dir / 'track_1_SPEAKER_00_isolated.wav'
         test_file.touch()
 
-        with patch('auto_voice.audio.file_organizer.get_all_clusters') as mock_clusters:
-            with patch('auto_voice.audio.file_organizer.get_cluster_members') as mock_members:
+        with patch('auto_voice.db.operations.get_all_clusters') as mock_clusters:
+            with patch('auto_voice.db.operations.get_cluster_members') as mock_members:
                 mock_clusters.return_value = []
                 mock_members.return_value = []
 
@@ -278,7 +278,8 @@ class TestSpeakerProfilesJSON:
 
                 profile_path = artist_dir / 'speaker_profiles.json'
                 # Should NOT create file in dry run
-                # (unless profiles dict is not empty)
+                assert profiles
+                assert not profile_path.exists()
 
 
 class TestGenerateAllProfiles:
@@ -320,7 +321,7 @@ class TestGenerateAllProfiles:
 class TestFileOrganizerIntegration:
     """Integration tests for file organization."""
 
-    @patch('auto_voice.audio.file_organizer.run_speaker_matching')
+    @patch('auto_voice.audio.speaker_matcher.run_speaker_matching')
     def test_full_organization_pipeline(self, mock_matching, tmp_path):
         """Test complete organization pipeline."""
         mock_matching.return_value = {

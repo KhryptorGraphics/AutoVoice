@@ -91,7 +91,7 @@ class TestAPIAutoTraining:
         """Task 5.3: POST /api/v1/profiles endpoint should exist."""
         from auto_voice.web.app import create_app
 
-        app, socketio = create_app()
+        app, socketio = create_app(testing=True)
         client = app.test_client()
 
         # Check endpoint exists (may return error without data, but shouldn't 404)
@@ -102,7 +102,7 @@ class TestAPIAutoTraining:
         """Task 5.4-5.6: Profile creation should return training_status."""
         from auto_voice.web.app import create_app
 
-        app, socketio = create_app()
+        app, socketio = create_app(testing=True)
         client = app.test_client()
 
         # Check that the profiles list endpoint returns profiles with status

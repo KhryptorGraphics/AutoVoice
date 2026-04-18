@@ -49,12 +49,12 @@ def test_same_speaker_high_similarity(matcher):
     base = base / np.linalg.norm(base)
 
     # Add small noise
-    noisy = base + 0.05 * np.random.randn(512)
+    noisy = base + 0.02 * np.random.randn(512)
     noisy = noisy / np.linalg.norm(noisy)
 
     similarity = matcher.cosine_similarity(base, noisy)
 
-    assert similarity > 0.8
+    assert similarity > 0.9
 
 
 def test_different_speakers_low_similarity(matcher):

@@ -13,6 +13,7 @@ from unittest.mock import patch, MagicMock
 
 from auto_voice.audio.file_organizer import (
     FileOrganizer,
+    _parse_isolated_track_filename,
     organize_by_identified_artist,
 )
 
@@ -216,8 +217,8 @@ class TestFileOrganizer:
 
         organizer.training_vocals_dir = tmp_path / "training_vocals"
 
-        with patch('auto_voice.audio.file_organizer.get_all_clusters', return_value=[]), \
-             patch('auto_voice.audio.file_organizer.get_cluster_members', return_value=[]):
+        with patch('auto_voice.db.operations.get_all_clusters', return_value=[]), \
+             patch('auto_voice.db.operations.get_cluster_members', return_value=[]):
 
             profiles = organizer.create_speaker_profiles_json(
                 artist_name='test_artist',
@@ -236,8 +237,8 @@ class TestFileOrganizer:
 
         organizer.training_vocals_dir = tmp_path / "training_vocals"
 
-        with patch('auto_voice.audio.file_organizer.get_all_clusters', return_value=[]), \
-             patch('auto_voice.audio.file_organizer.get_cluster_members', return_value=[]):
+        with patch('auto_voice.db.operations.get_all_clusters', return_value=[]), \
+             patch('auto_voice.db.operations.get_cluster_members', return_value=[]):
 
             profiles = organizer.create_speaker_profiles_json(
                 artist_name='test_artist',
@@ -255,7 +256,7 @@ class TestFileOrganizer:
     def test_generate_all_profiles(self, organizer, tmp_path):
         """Test generating profiles for all artist directories."""
         training_dir = tmp_path / "training_vocals"
-        training_dir.mkdir()
+        training_dir.mkdir(exist_ok=True)
 
         # Create artist directories
         (training_dir / "artist1").mkdir()
@@ -266,8 +267,8 @@ class TestFileOrganizer:
 
         organizer.training_vocals_dir = training_dir
 
-        with patch('auto_voice.audio.file_organizer.get_all_clusters', return_value=[]), \
-             patch('auto_voice.audio.file_organizer.get_cluster_members', return_value=[]):
+        with patch('auto_voice.db.operations.get_all_clusters', return_value=[]), \
+             patch('auto_voice.db.operations.get_cluster_members', return_value=[]):
 
             stats = organizer.generate_all_profiles(dry_run=False)
 
@@ -277,7 +278,7 @@ class TestFileOrganizer:
     def test_generate_all_profiles_skips_special_dirs(self, organizer, tmp_path):
         """Test that special directories (featured, by_profile) are skipped."""
         training_dir = tmp_path / "training_vocals"
-        training_dir.mkdir()
+        training_dir.mkdir(exist_ok=True)
 
         # Create special directories
         (training_dir / "featured").mkdir()
@@ -288,8 +289,8 @@ class TestFileOrganizer:
 
         organizer.training_vocals_dir = training_dir
 
-        with patch('auto_voice.audio.file_organizer.get_all_clusters', return_value=[]), \
-             patch('auto_voice.audio.file_organizer.get_cluster_members', return_value=[]):
+        with patch('auto_voice.db.operations.get_all_clusters', return_value=[]), \
+             patch('auto_voice.db.operations.get_cluster_members', return_value=[]):
 
             stats = organizer.generate_all_profiles(dry_run=False)
 
@@ -305,11 +306,7 @@ class TestFileNamingConventions:
         # Expected format: {track_id}_{speaker_id}_isolated.wav
         filename = "track123_SPEAKER_00_isolated.wav"
 
-        # Parse filename
-        parts = filename.replace('_isolated.wav', '').rsplit('_', 1)
-        assert len(parts) == 2
-        track_id, speaker_id = parts
-
+        track_id, speaker_id = _parse_isolated_track_filename(Path(filename))
         assert track_id == "track123"
         assert speaker_id == "SPEAKER_00"
 
@@ -398,7 +395,7 @@ class TestFileCleanup:
 
 def test_organize_by_identified_artist_full_pipeline():
     """Test full organization pipeline."""
-    with patch('auto_voice.audio.file_organizer.run_speaker_matching') as mock_matching, \
+    with patch('auto_voice.audio.speaker_matcher.run_speaker_matching') as mock_matching, \
          patch('auto_voice.audio.file_organizer.FileOrganizer') as mock_organizer_class:
 
         mock_matching.return_value = {
