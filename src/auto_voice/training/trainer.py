@@ -18,6 +18,10 @@ from torch.utils.data import Dataset, DataLoader
 logger = logging.getLogger(__name__)
 
 
+class TrainingCancelledError(RuntimeError):
+    """Raised when an in-flight training run is cancelled."""
+
+
 class VoiceDataset(Dataset):
     """Dataset for voice conversion training."""
 
@@ -101,6 +105,10 @@ class Trainer:
         self.current_epoch = 0
         self.best_loss = float('inf')
         self.train_losses: List[float] = []
+        self.resume_event = None
+        self.cancel_event = None
+        self.on_batch_end = None
+        self.checkpoint_interval_steps = int(self.config.get('checkpoint_interval_steps', 0))
 
         # Shared encoders for feature extraction (frozen during training)
         # Use ContentVec backend with 768-dim output for best quality
@@ -177,7 +185,16 @@ class Trainer:
         total_loss = 0.0
         n_batches = 0
 
-        for batch in loader:
+        total_batches = len(loader)
+        for batch_idx, batch in enumerate(loader, start=1):
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise TrainingCancelledError("Training cancelled by user")
+
+            if self.resume_event is not None:
+                self.resume_event.wait()
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    raise TrainingCancelledError("Training cancelled by user")
+
             audio = batch['audio'].to(self.device)   # [B, segment_length]
             mel = batch['mel'].to(self.device)        # [B, 80, T_mel]
             f0 = batch['f0'].to(self.device)          # [B, T_f0]
@@ -234,6 +251,23 @@ class Trainer:
             total_loss += loss.item()
             n_batches += 1
             self.global_step += 1
+
+            if self.checkpoint_interval_steps > 0 and self.global_step % self.checkpoint_interval_steps == 0:
+                self.save_checkpoint(self.checkpoint_dir / f'checkpoint_step_{self.global_step}.pth')
+
+            if callable(self.on_batch_end):
+                try:
+                    self.on_batch_end({
+                        'epoch': epoch + 1,
+                        'total_epochs': self.epochs,
+                        'step': batch_idx,
+                        'total_steps': total_batches,
+                        'global_step': self.global_step,
+                        'loss': float(loss.item()),
+                        'learning_rate': float(self.optimizer.param_groups[0]['lr']),
+                    })
+                except Exception as exc:
+                    logger.debug("on_batch_end callback failed: %s", exc)
 
             if self.global_step % self.log_every == 0:
                 logger.info(f"Step {self.global_step}: loss={loss.item():.4f}, "

@@ -303,6 +303,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
+            data-testid={`profile-tab-${tab}`}
             className={clsx(
               'flex-1 px-4 py-2 text-sm font-medium rounded transition-colors capitalize',
               activeTab === tab
@@ -485,6 +486,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
               <button
                 onClick={handleStartTraining}
                 disabled={startingTraining || samples.length === 0}
+                data-testid="start-training-button"
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed rounded"
               >
                 {startingTraining ? (
@@ -627,6 +629,7 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
         <input
           id="profile-name"
           type="text"
+          data-testid="profile-name-input"
           value={name}
           onChange={e => setName(e.target.value)}
           placeholder="My Voice"
@@ -666,6 +669,7 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
               <input
                 type="file"
                 accept="audio/*"
+                data-testid="profile-audio-input"
                 onChange={e => setFile(e.target.files?.[0] || null)}
                 className="hidden"
                 id="profile-audio"
@@ -781,6 +785,7 @@ export function VoiceProfilePage() {
           </button>
           <button
             onClick={() => setShowCreateForm(!showCreateForm)}
+            data-testid="create-profile-btn"
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded"
           >
             <Plus size={16} />
@@ -901,6 +906,7 @@ export function VoiceProfilePage() {
             <button
               key={profile.profile_id}
               onClick={() => setSelectedProfile(profile)}
+              data-testid="profile-card"
               className="w-full flex items-center justify-between p-4 bg-gray-800 hover:bg-gray-750 rounded-lg text-left transition-colors"
             >
               <div className="flex items-center gap-4">

@@ -23,6 +23,7 @@ function ConvertPage() {
   const [pipeline, setPipeline] = useState<PipelineType>(() => {
     return getPreferredPipeline() || 'quality'
   })
+  const [pipelineStatus, setPipelineStatus] = useState<Record<string, { loaded: boolean; memory_gb?: number; latency_target_ms?: number }>>({})
   const [file, setFile] = useState<File | null>(null)
   const [isConverting, setIsConverting] = useState(false)
   const [conversionStatus, setConversionStatus] = useState<ConversionRecord | null>(null)
@@ -36,6 +37,42 @@ function ConvertPage() {
 
   useEffect(() => {
     apiService.listProfiles().then(setProfiles).catch(console.error)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadPipelinePreferences = async () => {
+      try {
+        const [settings, status] = await Promise.all([
+          apiService.getAppSettings(),
+          apiService.getPipelineStatus(),
+        ])
+        if (cancelled) {
+          return
+        }
+        if (settings.preferred_pipeline === 'realtime' || settings.preferred_pipeline === 'quality') {
+          setPipeline(settings.preferred_pipeline)
+        }
+        setPipelineStatus(status.pipelines || {})
+      } catch (error) {
+        console.error('Failed to load pipeline preferences:', error)
+      }
+    }
+
+    void loadPipelinePreferences()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handlePipelineChange = useCallback((nextPipeline: PipelineType) => {
+    setPipeline(nextPipeline)
+    if (nextPipeline === 'realtime' || nextPipeline === 'quality') {
+      void apiService.updateAppSettings({ preferred_pipeline: nextPipeline }).catch((error) => {
+        console.error('Failed to persist pipeline preference:', error)
+      })
+    }
   }, [])
 
   useEffect(() => {
@@ -198,6 +235,7 @@ function ConvertPage() {
                   accept="audio/*"
                   className="hidden"
                   id="audio-upload"
+                  data-testid="conversion-audio-input"
                   onChange={handleFileSelect}
                 />
                 <label
@@ -221,6 +259,7 @@ function ConvertPage() {
                 setSelectedProfile(e.target.value || null)
                 setSelectedAdapter(null) // Reset adapter when profile changes
               }}
+              data-testid="voice-profile-selector"
               className="w-full p-3 bg-gray-700 rounded-lg"
             >
               <option value="">Choose a profile...</option>
@@ -274,8 +313,9 @@ function ConvertPage() {
             <h2 className="text-lg font-semibold mb-4">4. Select Pipeline</h2>
             <PipelineSelector
               value={pipeline}
-              onChange={setPipeline}
+              onChange={handlePipelineChange}
               showDescription={true}
+              statusByPipeline={pipelineStatus}
             />
           </div>
         </div>
@@ -356,6 +396,7 @@ function ConvertPage() {
         <button
           onClick={handleConvert}
           disabled={!file || !selectedProfile || isConverting}
+          data-testid="start-conversion-button"
           className={clsx(
             'w-full flex items-center justify-center gap-3 px-6 py-4 rounded-lg text-lg font-semibold transition',
             !file || !selectedProfile || isConverting

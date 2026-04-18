@@ -30,6 +30,7 @@ class AppStateStore:
             "conversion_history": self.base_dir / "conversion_history.json",
             "profile_checkpoints": self.base_dir / "profile_checkpoints.json",
             "youtube_history": self.base_dir / "youtube_history.json",
+            "app_settings": self.base_dir / "app_settings.json",
         }
 
     def _read(self, name: str, default: Any) -> Any:
@@ -165,3 +166,16 @@ class AppStateStore:
 
     def clear_youtube_history(self) -> None:
         self._write("youtube_history", [])
+
+    def get_app_settings(self) -> Dict[str, Any]:
+        default_settings = {
+            "preferred_pipeline": "quality",
+            "last_updated": None,
+        }
+        return self._read("app_settings", default_settings)
+
+    def update_app_settings(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        settings = self.get_app_settings()
+        settings.update(deepcopy(updates))
+        self._write("app_settings", settings)
+        return settings

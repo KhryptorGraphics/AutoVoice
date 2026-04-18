@@ -47,17 +47,19 @@ export function KaraokePage() {
   const [pipeline, setPipeline] = useState<PipelineType>(() => {
     const preferred = getPreferredPipeline();
     // For karaoke, prefer realtime pipelines but allow quality if that's what user saved
-    if (preferred === 'realtime' || preferred === 'realtime_meanvc') {
+    if (preferred === 'realtime' || preferred === 'quality') {
       return preferred;
     }
     return 'realtime';
   });
+  const [pipelineStatus, setPipelineStatus] = useState<Record<string, { loaded: boolean; memory_gb?: number; latency_target_ms?: number }>>({});
 
   // Song state
   const [uploadedSong, setUploadedSong] = useState<UploadedSong | null>(null);
   const [separationJob, setSeparationJob] = useState<SeparationJob | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
   // Device state
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -102,6 +104,33 @@ export function KaraokePage() {
     loadDevices();
     loadVoiceModels();
     loadVoiceProfiles();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPipelinePreferences = async () => {
+      try {
+        const [settings, status] = await Promise.all([
+          apiService.getAppSettings(),
+          apiService.getPipelineStatus(),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        if (settings.preferred_pipeline === 'realtime' || settings.preferred_pipeline === 'quality') {
+          setPipeline(settings.preferred_pipeline);
+        }
+        setPipelineStatus(status.pipelines || {});
+      } catch (error) {
+        console.error('Failed to load pipeline preferences:', error);
+      }
+    };
+
+    void loadPipelinePreferences();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -225,6 +254,7 @@ export function KaraokePage() {
     async (file: File) => {
       setIsUploading(true);
       setUploadError(null);
+      setSessionError(null);
 
       try {
         // Upload song
@@ -255,10 +285,20 @@ export function KaraokePage() {
     [handleFileSelect]
   );
 
+  const handlePipelineChange = useCallback((nextPipeline: PipelineType) => {
+    setPipeline(nextPipeline);
+    if (nextPipeline === 'realtime' || nextPipeline === 'quality') {
+      void apiService.updateAppSettings({ preferred_pipeline: nextPipeline }).catch((error) => {
+        console.error('Failed to persist pipeline preference:', error);
+      });
+    }
+  }, []);
+
   const handleExtractVoice = async () => {
     if (!uploadedSong) return;
 
     setIsExtracting(true);
+    setSessionError(null);
     try {
       const result = await extractVoiceModel(
         uploadedSong.song_id,
@@ -267,7 +307,9 @@ export function KaraokePage() {
       await loadVoiceModels();
       setSelectedModel(result.model_id);
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to extract voice'
       console.error('Failed to extract voice:', error);
+      setSessionError(message);
     } finally {
       setIsExtracting(false);
     }
@@ -275,6 +317,7 @@ export function KaraokePage() {
 
   const handleDeviceChange = async (type: 'speaker' | 'headphone', index: number) => {
     try {
+      setSessionError(null);
       if (type === 'speaker') {
         await setDeviceConfig({ speaker_device: index });
         setSpeakerDevice(index);
@@ -284,6 +327,7 @@ export function KaraokePage() {
       }
     } catch (error) {
       console.error('Failed to set device:', error);
+      setSessionError(error instanceof Error ? error.message : 'Failed to update audio device');
     }
   };
 
@@ -291,6 +335,7 @@ export function KaraokePage() {
     if (!uploadedSong || !selectedModel) return;
 
     try {
+      setSessionError(null);
       const client = getAudioStreamingClient();
       await client.connect();
       // Pass pipeline type and optional profile/adapter for trained voice conversion
@@ -305,6 +350,7 @@ export function KaraokePage() {
       setStage('performing');
     } catch (error) {
       console.error('Failed to start performance:', error);
+      setSessionError(error instanceof Error ? error.message : 'Failed to start performance');
     }
   };
 
@@ -315,6 +361,7 @@ export function KaraokePage() {
       setStage('ready');
     } catch (error) {
       console.error('Failed to stop performance:', error);
+      setSessionError(error instanceof Error ? error.message : 'Failed to stop performance');
     }
   };
 
@@ -325,6 +372,7 @@ export function KaraokePage() {
     setUploadedSong(null);
     setSeparationJob(null);
     setUploadError(null);
+    setSessionError(null);
   };
 
   return (
@@ -354,6 +402,7 @@ export function KaraokePage() {
             <div
               onDrop={handleDrop}
               onDragOver={(e) => e.preventDefault()}
+              data-testid="karaoke-upload-dropzone"
               className={clsx(
                 'border-2 border-dashed rounded-lg p-12 text-center transition',
                 isUploading
@@ -371,6 +420,7 @@ export function KaraokePage() {
                 type="file"
                 accept="audio/*"
                 className="hidden"
+                data-testid="karaoke-upload-input"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) handleFileSelect(file);
@@ -380,6 +430,7 @@ export function KaraokePage() {
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isUploading}
+                data-testid="karaoke-select-file-button"
                 className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-lg font-medium"
               >
                 {isUploading ? 'Uploading...' : 'Select File'}
@@ -389,7 +440,10 @@ export function KaraokePage() {
               </p>
             </div>
             {uploadError && (
-              <div className="mt-4 p-3 bg-red-500/20 border border-red-500 rounded text-red-400">
+              <div
+                className="mt-4 p-3 bg-red-500/20 border border-red-500 rounded text-red-400"
+                data-testid="karaoke-upload-error"
+              >
                 {uploadError}
               </div>
             )}
@@ -399,7 +453,7 @@ export function KaraokePage() {
 
       {/* Stage: Separating */}
       {stage === 'separating' && separationJob && (
-        <div className="bg-gray-800 rounded-lg p-8">
+        <div className="bg-gray-800 rounded-lg p-8" data-testid="karaoke-separation-stage">
           <div className="text-center">
             <Music className="mx-auto h-16 w-16 text-blue-500 mb-4 animate-pulse" />
             <h2 className="text-xl font-semibold mb-2">Processing Your Song</h2>
@@ -414,6 +468,7 @@ export function KaraokePage() {
               <div className="h-3 bg-gray-700 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-blue-500 transition-all duration-500"
+                  data-testid="karaoke-separation-progress"
                   style={{ width: `${separationJob.progress}%` }}
                 />
               </div>
@@ -434,10 +489,11 @@ export function KaraokePage() {
           <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
             <PipelineSelector
               value={pipeline}
-              onChange={setPipeline}
+              onChange={handlePipelineChange}
               disabled={stage === 'performing'}
               showDescription={true}
               size="md"
+              statusByPipeline={pipelineStatus}
             />
           </div>
 
@@ -456,6 +512,7 @@ export function KaraokePage() {
                 value={selectedModel || ''}
                 onChange={(e) => setSelectedModel(e.target.value)}
                 disabled={stage === 'performing'}
+                data-testid="karaoke-voice-model-select"
                 className="w-full p-3 bg-gray-700 rounded-lg"
               >
                 {voiceModels.map((model) => (
@@ -488,6 +545,7 @@ export function KaraokePage() {
                   value={selectedProfileId || ''}
                   onChange={(e) => setSelectedProfileId(e.target.value || null)}
                   disabled={stage === 'performing'}
+                  data-testid="karaoke-profile-select"
                   className="w-full p-3 bg-gray-700 rounded-lg"
                 >
                   <option value="">No profile (use voice model only)</option>
@@ -574,6 +632,7 @@ export function KaraokePage() {
                   value={speakerDevice ?? ''}
                   onChange={(e) => handleDeviceChange('speaker', parseInt(e.target.value))}
                   disabled={stage === 'performing'}
+                  data-testid="karaoke-speaker-device-select"
                   className="w-full p-2 bg-gray-700 rounded"
                 >
                   {devices.map((d) => (
@@ -592,6 +651,7 @@ export function KaraokePage() {
                   value={headphoneDevice ?? ''}
                   onChange={(e) => handleDeviceChange('headphone', parseInt(e.target.value))}
                   disabled={stage === 'performing'}
+                  data-testid="karaoke-headphone-device-select"
                   className="w-full p-2 bg-gray-700 rounded"
                 >
                   {devices.map((d) => (
@@ -653,6 +713,15 @@ export function KaraokePage() {
             isStreaming={streamingStats.isStreaming}
             chunksProcessed={streamingStats.chunksProcessed}
           />
+
+          {sessionError && (
+            <div
+              className="rounded-lg border border-red-500 bg-red-500/10 p-4 text-sm text-red-300 lg:col-span-2"
+              data-testid="karaoke-session-error"
+            >
+              {sessionError}
+            </div>
+          )}
         </div>
       )}
 
@@ -664,6 +733,7 @@ export function KaraokePage() {
               <button
                 onClick={startPerformance}
                 disabled={!selectedModel}
+                data-testid="karaoke-start-button"
                 className="flex items-center gap-3 px-8 py-4 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded-xl text-xl font-semibold"
               >
                 <Play size={28} />
@@ -673,12 +743,16 @@ export function KaraokePage() {
               <>
                 <button
                   onClick={stopPerformance}
+                  data-testid="karaoke-stop-button"
                   className="flex items-center gap-3 px-8 py-4 bg-red-600 hover:bg-red-700 rounded-xl text-xl font-semibold"
                 >
                   <Square size={28} />
                   Stop
                 </button>
-                <div className="flex items-center gap-2 px-6 py-4 bg-green-600/20 border border-green-500 rounded-xl">
+                <div
+                  className="flex items-center gap-2 px-6 py-4 bg-green-600/20 border border-green-500 rounded-xl"
+                  data-testid="karaoke-live-indicator"
+                >
                   {streamingStats.isStreaming ? (
                     <>
                       <Mic size={24} className="text-green-400 animate-pulse" />

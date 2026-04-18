@@ -48,6 +48,34 @@ def test_pupu_vocoder_enhancer_preserves_shape_and_bounds():
     assert np.max(np.abs(refined)) <= 0.98
 
 
+def test_pupu_vocoder_enhancer_reduces_alias_heavy_high_frequency_energy():
+    from auto_voice.models.pupu_vocoder import PupuVocoderEnhancer
+
+    sample_rate = 16000
+    duration = 1.0
+    t = np.linspace(0.0, duration, int(sample_rate * duration), endpoint=False, dtype=np.float32)
+    base = 0.25 * np.sin(2 * np.pi * 440.0 * t)
+    alias_heavy = 0.14 * np.sin(2 * np.pi * 7300.0 * t)
+    audio = (base + alias_heavy).astype(np.float32)
+
+    enhancer = PupuVocoderEnhancer(
+        brightness=0.02,
+        transient_boost=0.04,
+        anti_alias_strength=0.65,
+        speaker_guard_blend=0.04,
+    )
+    refined = enhancer.refine(audio, sample_rate)
+
+    freqs = np.fft.rfftfreq(audio.size, d=1.0 / sample_rate)
+    original_spectrum = np.abs(np.fft.rfft(audio))
+    refined_spectrum = np.abs(np.fft.rfft(refined))
+    alias_band = freqs >= 6000.0
+
+    assert refined.shape == audio.shape
+    assert refined_spectrum[alias_band].sum() < original_spectrum[alias_band].sum()
+    assert np.corrcoef(audio, refined)[0, 1] > 0.9
+
+
 def test_ecapa2_encoder_fallback_returns_normalized_embedding():
     from auto_voice.models.ecapa2_encoder import ECAPA2SpeakerEncoder
 

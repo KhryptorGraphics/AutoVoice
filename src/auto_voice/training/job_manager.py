@@ -12,6 +12,7 @@ Task 4.2: Implement TrainingJobManager with job queue (GPU-only execution)
 
 import json
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -132,6 +133,7 @@ class TrainingJob:
     results: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     gpu_device: Optional[int] = None
+    is_paused: bool = False
 
     def __post_init__(self):
         """Set defaults after initialization."""
@@ -147,6 +149,7 @@ class TrainingJob:
     def start(self, gpu_device: Optional[int] = None) -> None:
         self.status = JobStatus.RUNNING.value
         self.started_at = datetime.now()
+        self.is_paused = False
         if gpu_device is not None:
             self.gpu_device = gpu_device
 
@@ -161,6 +164,14 @@ class TrainingJob:
         self.status = JobStatus.FAILED.value
         self.completed_at = datetime.now()
         self.error = error
+        self.is_paused = False
+
+    def cancel(self, error: Optional[str] = None) -> None:
+        self.status = JobStatus.CANCELLED.value
+        self.completed_at = datetime.now()
+        if error is not None:
+            self.error = error
+        self.is_paused = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict for persistence."""
@@ -177,6 +188,7 @@ class TrainingJob:
             "results": self.results,
             "error": self.error,
             "gpu_device": self.gpu_device,
+            "is_paused": self.is_paused,
         }
 
     @classmethod
@@ -213,6 +225,7 @@ class TrainingJob:
             results=data.get("results"),
             error=data.get("error"),
             gpu_device=data.get("gpu_device"),
+            is_paused=data.get("is_paused", False),
         )
 
 
@@ -266,6 +279,9 @@ class TrainingJobManager:
         else:
             self._data_dir = self.storage_path
         self._jobs: Dict[str, TrainingJob] = {}
+        self._job_resume_events: Dict[str, threading.Event] = {}
+        self._job_cancel_events: Dict[str, threading.Event] = {}
+        self._job_runtime_metrics: Dict[str, Dict[str, Any]] = {}
         self._is_initialized = False
 
         # Check GPU availability
@@ -448,19 +464,68 @@ class TrainingJobManager:
         if not job:
             return False
 
-        # Check if job can be cancelled
         current_status = JobStatus(job.status)
+        if current_status == JobStatus.RUNNING:
+            cancel_event = self._job_cancel_events.get(job_id)
+            resume_event = self._job_resume_events.get(job_id)
+            if cancel_event is None or resume_event is None:
+                logger.warning("Cannot cancel running job %s without runtime events", job_id)
+                return False
+            cancel_event.set()
+            resume_event.set()
+            job.error = "Cancellation requested"
+            self._save_jobs()
+            logger.info("Requested cancellation for running job %s", job_id)
+            return True
+
         if JobStatus.CANCELLED not in VALID_TRANSITIONS.get(current_status, []):
             logger.warning(
                 f"Cannot cancel job {job_id} in status {job.status}"
             )
             return False
 
-        job.status = JobStatus.CANCELLED.value
+        job.cancel()
         self._save_jobs()
+        self._emit_cancelled_event(job)
 
         logger.info(f"Cancelled job {job_id}")
         return True
+
+    def pause_job(self, job_id: str) -> bool:
+        """Pause an active training job."""
+        job = self._jobs.get(job_id)
+        if job is None or job.status != JobStatus.RUNNING.value or job.is_paused:
+            return False
+
+        resume_event = self._job_resume_events.get(job_id)
+        if resume_event is None:
+            return False
+
+        resume_event.clear()
+        job.is_paused = True
+        self._save_jobs()
+        self._emit_paused_event(job)
+        return True
+
+    def resume_job(self, job_id: str) -> bool:
+        """Resume a paused training job."""
+        job = self._jobs.get(job_id)
+        if job is None or job.status != JobStatus.RUNNING.value or not job.is_paused:
+            return False
+
+        resume_event = self._job_resume_events.get(job_id)
+        if resume_event is None:
+            return False
+
+        resume_event.set()
+        job.is_paused = False
+        self._save_jobs()
+        self._emit_resumed_event(job)
+        return True
+
+    def get_job_runtime_metrics(self, job_id: str) -> Dict[str, Any]:
+        """Return the latest runtime metrics for a job."""
+        return dict(self._job_runtime_metrics.get(job_id, {}))
 
     def _set_job_status(self, job_id: str, status: str) -> None:
         """Internal method to set job status (for testing)."""
@@ -595,6 +660,64 @@ class TrainingJobManager:
         self._emit_event('training.failed', payload)
         self._emit_event('training_error', payload)
 
+    def _emit_paused_event(self, job: TrainingJob) -> None:
+        payload = {
+            'job_id': job.job_id,
+            'profile_id': job.profile_id,
+            'paused_at': datetime.now().isoformat(),
+        }
+        self._emit_event('training.paused', payload)
+        self._emit_event('training_paused', payload)
+
+    def _emit_resumed_event(self, job: TrainingJob) -> None:
+        payload = {
+            'job_id': job.job_id,
+            'profile_id': job.profile_id,
+            'resumed_at': datetime.now().isoformat(),
+        }
+        self._emit_event('training.resumed', payload)
+        self._emit_event('training_resumed', payload)
+
+    def _emit_cancelled_event(self, job: TrainingJob) -> None:
+        payload = {
+            'job_id': job.job_id,
+            'profile_id': job.profile_id,
+            'cancelled_at': job.completed_at.isoformat() if job.completed_at else datetime.now().isoformat(),
+            'error': job.error or 'Training cancelled by user',
+        }
+        self._emit_event('training.cancelled', payload)
+        self._emit_event('training_cancelled', payload)
+
+    def _get_gpu_metrics(self, device: torch.device) -> Dict[str, Any]:
+        if device.type != 'cuda' or not torch.cuda.is_available():
+            return {
+                'available': False,
+                'memory_used_gb': 0.0,
+                'memory_reserved_gb': 0.0,
+                'memory_total_gb': 0.0,
+                'utilization_percent': 0.0,
+            }
+
+        device_idx = device.index or 0
+        props = torch.cuda.get_device_properties(device_idx)
+        total = float(props.total_memory)
+        allocated = float(torch.cuda.memory_allocated(device_idx))
+        reserved = float(torch.cuda.memory_reserved(device_idx))
+        return {
+            'available': True,
+            'memory_used_gb': round(allocated / (1024 ** 3), 3),
+            'memory_reserved_gb': round(reserved / (1024 ** 3), 3),
+            'memory_total_gb': round(total / (1024 ** 3), 3),
+            'utilization_percent': round((allocated / total) * 100.0, 2) if total else 0.0,
+        }
+
+    def _estimate_quality_metrics(self, loss: float) -> Dict[str, float]:
+        bounded_loss = max(0.0, min(float(loss), 2.0))
+        return {
+            'mos_proxy': round(max(1.0, min(5.0, 5.0 - bounded_loss * 1.5)), 3),
+            'speaker_similarity_proxy': round(max(0.0, min(0.995, 1.0 - bounded_loss * 0.25)), 4),
+        }
+
     def emit_training_progress(
         self,
         job_id: str,
@@ -604,6 +727,10 @@ class TrainingJobManager:
         total_steps: int,
         loss: float,
         learning_rate: float,
+        *,
+        gpu_metrics: Optional[Dict[str, Any]] = None,
+        quality_metrics: Optional[Dict[str, Any]] = None,
+        checkpoint_path: Optional[str] = None,
     ) -> None:
         """Emit training.progress event with current training metrics.
 
@@ -624,6 +751,20 @@ class TrainingJobManager:
         epoch_progress = step / total_steps if total_steps > 0 else 0
         overall_progress = ((epoch - 1) + epoch_progress) / total_epochs * 100
 
+        runtime_metrics = {
+            'epoch': epoch,
+            'total_epochs': total_epochs,
+            'step': step,
+            'total_steps': total_steps,
+            'loss': float(loss),
+            'learning_rate': float(learning_rate),
+            'progress_percent': round(overall_progress, 1),
+            'gpu_metrics': gpu_metrics or {},
+            'quality_metrics': quality_metrics or {},
+            'checkpoint_path': checkpoint_path,
+        }
+        self._job_runtime_metrics[job_id] = runtime_metrics
+
         self._emit_event('training.progress', {
             'job_id': job_id,
             'profile_id': job.profile_id,
@@ -634,6 +775,10 @@ class TrainingJobManager:
             'loss': loss,
             'learning_rate': learning_rate,
             'progress_percent': round(overall_progress, 1),
+            'gpu_metrics': gpu_metrics or {},
+            'quality_metrics': quality_metrics or {},
+            'checkpoint_path': checkpoint_path,
+            'is_paused': job.is_paused,
         })
         self._emit_event('training_progress', {
             'job_id': job_id,
@@ -644,6 +789,10 @@ class TrainingJobManager:
             'total_steps': total_steps,
             'loss': loss,
             'learning_rate': learning_rate,
+            'gpu_metrics': gpu_metrics or {},
+            'quality_metrics': quality_metrics or {},
+            'checkpoint_path': checkpoint_path,
+            'is_paused': job.is_paused,
         })
 
         # Also update job progress
@@ -681,6 +830,11 @@ class TrainingJobManager:
         # Mark job as running
         gpu_device = device.index if device.type == "cuda" else None
         job.start(gpu_device=gpu_device)
+        resume_event = threading.Event()
+        resume_event.set()
+        cancel_event = threading.Event()
+        self._job_resume_events[job_id] = resume_event
+        self._job_cancel_events[job_id] = cancel_event
         self._save_jobs()
         self._emit_started_event(job)
         logger.info(f"Starting training job {job_id}")
@@ -688,7 +842,6 @@ class TrainingJobManager:
         try:
             import shutil
             import tempfile
-            import threading
 
             # Get sample audio paths
             store = self._get_profile_store()
@@ -718,7 +871,7 @@ class TrainingJobManager:
             def run_training():
                 try:
                     from auto_voice.models.svc_decoder import CoMoSVCDecoder
-                    from auto_voice.training.trainer import Trainer
+                    from auto_voice.training.trainer import Trainer, TrainingCancelledError
 
                     training_mode = job.config.training_mode if job.config else "lora"
                     if training_mode not in {"lora", "full"}:
@@ -735,6 +888,7 @@ class TrainingJobManager:
                         'learning_rate': learning_rate,
                         'batch_size': batch_size,
                         'checkpoint_dir': str(self._resolve_checkpoints_dir(job.profile_id)),
+                        'checkpoint_interval_steps': 1000,
                     }
 
                     model = CoMoSVCDecoder(
@@ -754,6 +908,8 @@ class TrainingJobManager:
                         model.inject_lora(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
 
                     trainer = Trainer(model=model, config=config, device=device)
+                    trainer.resume_event = resume_event
+                    trainer.cancel_event = cancel_event
                     logger.info(
                         "Training job %s on %s in %s mode",
                         job_id,
@@ -761,29 +917,47 @@ class TrainingJobManager:
                         training_mode,
                     )
 
-                    # Monkey-patch to emit progress events
-                    original_train_epoch = trainer._train_epoch
-                    def patched_train_epoch(loader, epoch):
-                        loss = original_train_epoch(loader, epoch)
-                        progress = int(100 * (epoch + 1) / max(config['epochs'], 1))
-                        job.update_progress(progress)
+                    def on_batch_end(batch_metrics: Dict[str, Any]) -> None:
+                        job.update_progress(
+                            int(batch_metrics.get('progress_percent') or (
+                                ((batch_metrics['epoch'] - 1) + (
+                                    batch_metrics['step'] / max(batch_metrics['total_steps'], 1)
+                                )) / max(batch_metrics['total_epochs'], 1) * 100
+                            ))
+                        )
+                        checkpoint_path = None
+                        if trainer.global_step > 0 and trainer.global_step % 1000 == 0:
+                            checkpoint_path = str(
+                                trainer.checkpoint_dir / f'checkpoint_step_{trainer.global_step}.pth'
+                            )
+                        gpu_metrics = self._get_gpu_metrics(device)
+                        quality_metrics = self._estimate_quality_metrics(batch_metrics['loss'])
                         job.results = job.results or {}
-                        job.results['current_loss'] = loss
-                        job.results['current_epoch'] = epoch + 1
-                        job.results['job_type'] = training_mode
+                        job.results.update({
+                            'current_loss': batch_metrics['loss'],
+                            'current_epoch': batch_metrics['epoch'],
+                            'current_step': batch_metrics['global_step'],
+                            'job_type': training_mode,
+                            'quality_metrics': quality_metrics,
+                            'gpu_metrics': gpu_metrics,
+                        })
+                        if checkpoint_path:
+                            job.results['latest_checkpoint'] = checkpoint_path
                         self._save_jobs()
                         self.emit_training_progress(
                             job_id=job_id,
-                            epoch=epoch + 1,
-                            total_epochs=config['epochs'],
-                            step=epoch + 1,
-                            total_steps=config['epochs'],
-                            loss=loss,
-                            learning_rate=config['learning_rate'],
+                            epoch=batch_metrics['epoch'],
+                            total_epochs=batch_metrics['total_epochs'],
+                            step=batch_metrics['step'],
+                            total_steps=batch_metrics['total_steps'],
+                            loss=batch_metrics['loss'],
+                            learning_rate=batch_metrics['learning_rate'],
+                            gpu_metrics=gpu_metrics,
+                            quality_metrics=quality_metrics,
+                            checkpoint_path=checkpoint_path,
                         )
-                        return loss
 
-                    trainer._train_epoch = patched_train_epoch
+                    trainer.on_batch_end = on_batch_end
 
                     # Set speaker embedding before training
                     trainer.set_speaker_embedding(str(train_dir))
@@ -827,6 +1001,11 @@ class TrainingJobManager:
                     # Cleanup temp directory
                     shutil.rmtree(train_dir, ignore_errors=True)
 
+                except TrainingCancelledError as e:
+                    logger.info("Training job %s cancelled: %s", job_id, e)
+                    job.cancel(str(e))
+                    self._save_jobs()
+                    self._emit_cancelled_event(job)
                 except Exception as e:
                     logger.error(f"Training job {job_id} failed: {e}", exc_info=True)
                     job.fail(str(e))
@@ -834,6 +1013,8 @@ class TrainingJobManager:
                     self._save_jobs()
                     self._emit_failed_event(job)
                 finally:
+                    self._job_resume_events.pop(job_id, None)
+                    self._job_cancel_events.pop(job_id, None)
                     shutil.rmtree(train_dir, ignore_errors=True)
 
             # Start training in background

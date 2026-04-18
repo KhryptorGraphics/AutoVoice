@@ -5,6 +5,14 @@ import { STORAGE_KEYS } from '../hooks/usePersistedState'
 
 export type PipelineType = 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
 
+interface PipelineRuntimeStatus {
+  loaded?: boolean
+  memory_gb?: number
+  latency_target_ms?: number
+  sample_rate?: number
+  description?: string
+}
+
 // LocalStorage key for persisting user's preferred pipeline
 const PIPELINE_PREFERENCE_KEY = STORAGE_KEYS.PIPELINE_PREFERENCE
 
@@ -14,7 +22,7 @@ const PIPELINE_PREFERENCE_KEY = STORAGE_KEYS.PIPELINE_PREFERENCE
 export function getPreferredPipeline(): PipelineType | null {
   try {
     const saved = localStorage.getItem(PIPELINE_PREFERENCE_KEY)
-    if (saved && isValidPipelineType(saved)) {
+    if (saved && isUserSelectablePipeline(saved)) {
       return saved as PipelineType
     }
   } catch (e) {
@@ -34,8 +42,8 @@ export function savePreferredPipeline(pipeline: PipelineType): void {
   }
 }
 
-function isValidPipelineType(value: string): value is PipelineType {
-  return ['realtime', 'quality', 'quality_seedvc', 'realtime_meanvc', 'quality_shortcut'].includes(value)
+function isUserSelectablePipeline(value: string): value is PipelineType {
+  return value === 'realtime' || value === 'quality'
 }
 
 interface PipelineSelectorProps {
@@ -44,6 +52,8 @@ interface PipelineSelectorProps {
   disabled?: boolean
   showDescription?: boolean
   size?: 'sm' | 'md' | 'lg'
+  statusByPipeline?: Partial<Record<PipelineType, PipelineRuntimeStatus>>
+  showCompareButton?: boolean
 }
 
 interface PipelineInfo {
@@ -128,6 +138,10 @@ const pipelines: PipelineInfo[] = [
   },
 ]
 
+const selectablePipelines = pipelines.filter(
+  (pipeline) => pipeline.id === 'realtime' || pipeline.id === 'quality'
+)
+
 /**
  * Get pipeline info by ID
  */
@@ -141,6 +155,8 @@ export function PipelineSelector({
   disabled = false,
   showDescription = true,
   size = 'md',
+  statusByPipeline,
+  showCompareButton = true,
 }: PipelineSelectorProps) {
   const [showTooltip, setShowTooltip] = useState<PipelineType | null>(null)
   const [showBenchmarkModal, setShowBenchmarkModal] = useState(false)
@@ -196,40 +212,64 @@ export function PipelineSelector({
             </div>
           )}
         </div>
-        <button
-          onClick={() => setShowBenchmarkModal(true)}
-          className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1"
-        >
-          <BarChart3 className="w-3 h-3" />
-          Compare
-        </button>
+        {showCompareButton && (
+          <button
+            onClick={() => setShowBenchmarkModal(true)}
+            className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1"
+          >
+            <BarChart3 className="w-3 h-3" />
+            Compare
+          </button>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {pipelines.map((pipeline) => (
-          <button
-            key={pipeline.id}
-            onClick={() => handleChange(pipeline.id)}
-            disabled={disabled}
-            className={clsx(
-              'flex items-center gap-2 rounded-lg border transition-all',
-              sizeClasses[size],
-              value === pipeline.id
-                ? 'bg-violet-600 border-violet-500 text-white'
-                : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600',
-              disabled && 'opacity-50 cursor-not-allowed'
-            )}
-          >
-            {pipeline.icon}
-            <span className="font-medium">{pipeline.name}</span>
-          </button>
-        ))}
+        {selectablePipelines.map((pipeline) => {
+          const runtimeStatus = statusByPipeline?.[pipeline.id]
+          return (
+            <button
+              key={pipeline.id}
+              onClick={() => handleChange(pipeline.id)}
+              disabled={disabled}
+              data-testid={`pipeline-option-${pipeline.id}`}
+              className={clsx(
+                'flex items-center gap-2 rounded-lg border transition-all',
+                sizeClasses[size],
+                value === pipeline.id
+                  ? 'bg-violet-600 border-violet-500 text-white'
+                  : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600',
+                disabled && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              {pipeline.icon}
+              <span className="font-medium">{pipeline.name}</span>
+              {runtimeStatus?.loaded !== undefined && (
+                <span
+                  className={clsx(
+                    'h-2 w-2 rounded-full',
+                    runtimeStatus.loaded ? 'bg-emerald-400' : 'bg-gray-500'
+                  )}
+                  aria-label={runtimeStatus.loaded ? 'Pipeline loaded' : 'Pipeline not loaded'}
+                />
+              )}
+            </button>
+          )
+        })}
       </div>
 
       {showDescription && (
-        <p className="text-xs text-gray-500">
-          {pipelines.find(p => p.id === value)?.bestFor}
-        </p>
+        <div className="space-y-1" data-testid="pipeline-status-summary">
+          <p className="text-xs text-gray-500">
+            {pipelines.find(p => p.id === value)?.bestFor}
+          </p>
+          {statusByPipeline?.[value] && (
+            <p className="text-xs text-gray-400">
+              {statusByPipeline[value]?.loaded ? 'Loaded' : 'Standby'}
+              {statusByPipeline[value]?.memory_gb != null && ` · ${statusByPipeline[value]?.memory_gb?.toFixed(1)} GB`}
+              {statusByPipeline[value]?.latency_target_ms != null && ` · ${statusByPipeline[value]?.latency_target_ms} ms target`}
+            </p>
+          )}
+        </div>
       )}
 
       {/* Benchmark Comparison Modal */}
@@ -281,7 +321,7 @@ function PipelineBenchmarkModal({ currentPipeline, onSelect, onClose }: Benchmar
               </tr>
             </thead>
             <tbody>
-              {pipelines.map((pipeline) => (
+              {selectablePipelines.map((pipeline) => (
                 <tr
                   key={pipeline.id}
                   onClick={() => onSelect(pipeline.id)}
@@ -376,7 +416,7 @@ export function PipelineDropdown({ value, onChange, disabled }: PipelineDropdown
         disabled && 'opacity-50 cursor-not-allowed'
       )}
     >
-      {pipelines.map((pipeline) => (
+      {selectablePipelines.map((pipeline) => (
         <option key={pipeline.id} value={pipeline.id}>
           {pipeline.name} ({pipeline.latency})
         </option>

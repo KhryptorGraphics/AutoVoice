@@ -10,6 +10,9 @@ export type WSEventType =
   | 'training_progress'
   | 'training_complete'
   | 'training_error'
+  | 'training_paused'
+  | 'training_resumed'
+  | 'training_cancelled'
   | 'gpu_metrics'
   | 'model_loaded'
   | 'model_unloaded'
@@ -29,12 +32,27 @@ export interface ConversionProgressEvent {
 
 export interface TrainingProgressEvent {
   job_id: string
+  profile_id?: string
   epoch: number
   total_epochs: number
   step: number
   total_steps: number
   loss: number
   learning_rate: number
+  progress_percent?: number
+  gpu_metrics?: {
+    available?: boolean
+    memory_used_gb?: number
+    memory_reserved_gb?: number
+    memory_total_gb?: number
+    utilization_percent?: number
+  }
+  quality_metrics?: {
+    mos_proxy?: number
+    speaker_similarity_proxy?: number
+  }
+  checkpoint_path?: string | null
+  is_paused?: boolean
 }
 
 export type WSEventHandler<T = unknown> = (event: WSEvent<T>) => void
@@ -188,13 +206,66 @@ export interface TrainingJob {
   progress: number
   sample_ids: string[]
   error?: string
+  is_paused?: boolean
   results?: {
     initial_loss?: number
     final_loss?: number
     loss_curve?: number[]
     artifact_type?: 'adapter' | 'full_model'
     job_type?: 'lora' | 'full_model'
+    current_loss?: number
+    current_epoch?: number
+    current_step?: number
+    latest_checkpoint?: string
+    quality_metrics?: {
+      mos_proxy?: number
+      speaker_similarity_proxy?: number
+    }
+    gpu_metrics?: {
+      available?: boolean
+      memory_used_gb?: number
+      memory_reserved_gb?: number
+      memory_total_gb?: number
+      utilization_percent?: number
+    }
   }
+}
+
+export interface AppSettings {
+  preferred_pipeline: 'realtime' | 'quality'
+  last_updated?: string | null
+}
+
+export interface PipelineStatusInfo {
+  loaded: boolean
+  memory_gb?: number
+  latency_target_ms?: number
+  sample_rate?: number
+  description?: string
+}
+
+export interface PipelineStatusResponse {
+  status: string
+  timestamp: string
+  pipelines: Record<string, PipelineStatusInfo>
+}
+
+export interface TrainingTelemetryResponse {
+  job: TrainingJob
+  runtime_metrics: {
+    epoch?: number
+    total_epochs?: number
+    step?: number
+    total_steps?: number
+    loss?: number
+    learning_rate?: number
+    progress_percent?: number
+    gpu_metrics?: TrainingProgressEvent['gpu_metrics']
+    quality_metrics?: TrainingProgressEvent['quality_metrics']
+    checkpoint_path?: string | null
+  }
+  preview_available: boolean
+  preview_sample_id?: string | null
 }
 
 // Full training configuration with all LoRA/EWC parameters
@@ -638,6 +709,21 @@ class ApiService {
     return this.request('/gpu/metrics')
   }
 
+  async getPipelineStatus(): Promise<PipelineStatusResponse> {
+    return this.request('/pipelines/status')
+  }
+
+  async getAppSettings(): Promise<AppSettings> {
+    return this.request('/settings/app')
+  }
+
+  async updateAppSettings(settings: Partial<AppSettings>): Promise<AppSettings> {
+    return this.request('/settings/app', {
+      method: 'PATCH',
+      body: JSON.stringify(settings),
+    })
+  }
+
   async getKernelMetrics(): Promise<KernelMetric[]> {
     const response = await this.request<{ kernels?: KernelMetric[]; note?: string }>('/kernels/metrics')
     return response.kernels ?? []
@@ -723,6 +809,41 @@ class ApiService {
 
   async cancelTrainingJob(jobId: string): Promise<void> {
     await this.request(`/training/jobs/${jobId}/cancel`, { method: 'POST' })
+  }
+
+  async pauseTrainingJob(jobId: string): Promise<TrainingJob> {
+    return this.request(`/training/jobs/${jobId}/pause`, { method: 'POST' })
+  }
+
+  async resumeTrainingJob(jobId: string): Promise<TrainingJob> {
+    return this.request(`/training/jobs/${jobId}/resume`, { method: 'POST' })
+  }
+
+  async getTrainingTelemetry(jobId: string): Promise<TrainingTelemetryResponse> {
+    return this.request(`/training/jobs/${jobId}/telemetry`)
+  }
+
+  async getTrainingPreview(
+    jobId: string,
+    payload?: { profile_id?: string; sample_id?: string; duration_seconds?: number; offset_seconds?: number }
+  ): Promise<Blob> {
+    const response = await fetch(`${API_BASE}/training/preview/${jobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload ?? {}),
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: response.statusText }))
+      throw new ApiError(
+        error.error || `HTTP ${response.status}`,
+        response.status,
+        error.code,
+        error.details
+      )
+    }
+
+    return response.blob()
   }
 
   // Audio Devices
@@ -1357,6 +1478,9 @@ class WebSocketManager {
       'training_progress',
       'training_complete',
       'training_error',
+      'training_paused',
+      'training_resumed',
+      'training_cancelled',
       'gpu_metrics',
       'model_loaded',
       'model_unloaded',

@@ -16,7 +16,16 @@ const statusConfig: Record<TrainingJob['status'], { icon: typeof Clock; color: s
   cancelled: { icon: XCircle, color: 'text-gray-400', bg: 'bg-gray-500', label: 'Cancelled' },
 }
 
-function JobStatusBadge({ status }: { status: TrainingJob['status'] }) {
+function JobStatusBadge({ status, isPaused }: { status: TrainingJob['status']; isPaused?: boolean }) {
+  if (status === 'running' && isPaused) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded text-amber-300 bg-amber-500/20">
+        <Clock size={12} />
+        Paused
+      </span>
+    )
+  }
+
   const config = statusConfig[status]
   const Icon = config.icon
 
@@ -65,6 +74,7 @@ function JobCard({ job, onCancel, onSelect }: { job: TrainingJob; onCancel: (id:
   return (
     <div
       onClick={() => onSelect?.(job)}
+      data-testid="training-job-card"
       className={clsx(
         'bg-gray-750 rounded-lg p-4 space-y-3 border border-gray-700',
         onSelect && 'cursor-pointer hover:border-gray-600 transition-colors'
@@ -78,7 +88,7 @@ function JobCard({ job, onCancel, onSelect }: { job: TrainingJob; onCancel: (id:
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <JobStatusBadge status={job.status} />
+          <JobStatusBadge status={job.status} isPaused={job.is_paused} />
           {canCancel && (
             <button
               onClick={handleCancel}
@@ -105,6 +115,12 @@ function JobCard({ job, onCancel, onSelect }: { job: TrainingJob; onCancel: (id:
             <span className="text-gray-300">
               {new Date(job.started_at).toLocaleTimeString()}
             </span>
+          </div>
+        )}
+        {job.is_paused && (
+          <div>
+            <span className="text-gray-500">State:</span>{' '}
+            <span className="text-amber-300">Paused</span>
           </div>
         )}
         {job.completed_at && (
@@ -162,11 +178,23 @@ export function TrainingJobQueue({ profileId, onJobSelect }: TrainingJobQueuePro
     const unsubError = wsManager.subscribe('training_error', () => {
       fetchJobs()
     })
+    const unsubPaused = wsManager.subscribe('training_paused', () => {
+      fetchJobs()
+    })
+    const unsubResumed = wsManager.subscribe('training_resumed', () => {
+      fetchJobs()
+    })
+    const unsubCancelled = wsManager.subscribe('training_cancelled', () => {
+      fetchJobs()
+    })
 
     return () => {
       unsubProgress()
       unsubComplete()
       unsubError()
+      unsubPaused()
+      unsubResumed()
+      unsubCancelled()
     }
   }, [fetchJobs])
 

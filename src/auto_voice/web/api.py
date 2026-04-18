@@ -1758,6 +1758,47 @@ def pipelines_status():
         }), 503
 
 
+@api_bp.route('/settings/app', methods=['GET'])
+def get_app_settings():
+    """Return durable app-level settings used by the frontend."""
+    try:
+        settings = _get_state_store().get_app_settings()
+        settings.setdefault('preferred_pipeline', 'quality')
+        settings.setdefault('last_updated', None)
+        return jsonify(settings)
+    except Exception as e:
+        logger.error(f"Error reading app settings: {e}", exc_info=True)
+        return error_response(str(e))
+
+
+@api_bp.route('/settings/app', methods=['PATCH'])
+def update_app_settings():
+    """Persist durable app-level settings."""
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return validation_error_response('No JSON object provided')
+
+        updates: Dict[str, Any] = {}
+        if 'preferred_pipeline' in data:
+            preferred_pipeline = str(data['preferred_pipeline']).strip().lower()
+            if preferred_pipeline not in {'realtime', 'quality'}:
+                return validation_error_response(
+                    'preferred_pipeline must be one of: realtime, quality'
+                )
+            updates['preferred_pipeline'] = preferred_pipeline
+
+        if not updates:
+            return validation_error_response('No supported app settings were provided')
+
+        updates['last_updated'] = _utcnow_iso()
+        settings = _get_state_store().update_app_settings(updates)
+        return jsonify(settings)
+    except Exception as e:
+        logger.error(f"Error updating app settings: {e}", exc_info=True)
+        return error_response(str(e))
+
+
 @api_bp.route('/ready', methods=['GET'])
 def readiness_check():
     """Readiness check endpoint for Kubernetes/orchestration probes.
@@ -2231,14 +2272,17 @@ _training_jobs: Dict[str, Dict[str, Any]] = {}
 def _sanitize_job(job: dict) -> dict:
     """Sanitize job dict to ensure valid JSON (no Infinity/NaN)."""
     import math
-    sanitized = dict(job)
-    if sanitized.get('results'):
-        results = dict(sanitized['results'])
-        for key, val in results.items():
-            if isinstance(val, float) and (math.isinf(val) or math.isnan(val)):
-                results[key] = None
-        sanitized['results'] = results
-    return sanitized
+
+    def sanitize_value(value: Any) -> Any:
+        if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
+            return None
+        if isinstance(value, dict):
+            return {key: sanitize_value(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [sanitize_value(item) for item in value]
+        return value
+
+    return sanitize_value(dict(job))
 
 
 def _save_training_job(job: dict) -> dict:

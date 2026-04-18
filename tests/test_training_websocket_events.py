@@ -9,6 +9,7 @@ Tests verify:
 """
 
 import pytest
+import threading
 from unittest.mock import MagicMock, patch, call
 from datetime import datetime
 
@@ -218,7 +219,42 @@ class TestTrainingCompletedEvent:
         event_data = completed_calls[0][0][1]
         assert event_data['job_id'] == job.job_id
         assert event_data['profile_id'] == 'test-profile'
-        assert event_data['results']['final_loss'] == 0.15
+
+
+class TestTrainingControlEvents:
+    """Tests for pause/resume/cancel control event emission."""
+
+    def test_pause_resume_events_are_emitted_for_running_jobs(self, manager_with_socketio, mock_socketio):
+        job = manager_with_socketio.create_job(
+            profile_id="test-profile",
+            sample_ids=["sample1"],
+        )
+        manager_with_socketio._job_resume_events[job.job_id] = manager_with_socketio._job_resume_events.get(job.job_id) or threading.Event()
+        manager_with_socketio._job_resume_events[job.job_id].set()
+        manager_with_socketio._job_cancel_events[job.job_id] = threading.Event()
+        manager_with_socketio.update_job_status(job.job_id, JobStatus.RUNNING.value)
+
+        mock_socketio.emit.reset_mock()
+
+        assert manager_with_socketio.pause_job(job.job_id) is True
+        assert manager_with_socketio.resume_job(job.job_id) is True
+
+        event_names = [call_args[0][0] for call_args in mock_socketio.emit.call_args_list]
+        assert 'training.paused' in event_names
+        assert 'training.resumed' in event_names
+
+    def test_cancel_emits_cancelled_event_for_pending_jobs(self, manager_with_socketio, mock_socketio):
+        job = manager_with_socketio.create_job(
+            profile_id="test-profile",
+            sample_ids=["sample1"],
+        )
+
+        mock_socketio.emit.reset_mock()
+
+        assert manager_with_socketio.cancel_job(job.job_id) is True
+
+        event_names = [call_args[0][0] for call_args in mock_socketio.emit.call_args_list]
+        assert 'training.cancelled' in event_names
 
     def test_completed_event_includes_results(self, manager_with_socketio, mock_socketio):
         """Completed event should include training results."""

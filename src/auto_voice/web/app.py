@@ -173,11 +173,13 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
     from .api import api_bp, health_check as api_health_check, readiness_check as api_readiness_check
     from .karaoke_api import karaoke_bp
     from .speaker_api import speaker_bp
+    from .training_ui import training_ui_bp
     from auto_voice.profiles.api import profiles_bp
     from .api_docs import docs_bp, swagger_ui_blueprint
     app.register_blueprint(api_bp)
     app.register_blueprint(karaoke_bp)
     app.register_blueprint(speaker_bp)
+    app.register_blueprint(training_ui_bp)
     app.register_blueprint(profiles_bp)
     app.register_blueprint(docs_bp, url_prefix='/api/v1')
     app.register_blueprint(swagger_ui_blueprint)

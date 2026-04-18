@@ -6,11 +6,11 @@ After=docker.service nvidia-persistenced.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/home/kp/repo2/autovoice
-ExecStartPre=/usr/bin/docker-compose pull --quiet
-ExecStart=/usr/bin/docker-compose up -d
-ExecStop=/usr/bin/docker-compose down
-ExecReload=/usr/bin/docker-compose restart
+WorkingDirectory=%h/thordrive/autovoice
+ExecStartPre=/usr/bin/docker compose -f %h/thordrive/autovoice/docker-compose.yaml pull --quiet backend frontend
+ExecStart=/usr/bin/docker compose -f %h/thordrive/autovoice/docker-compose.yaml up -d backend frontend
+ExecStop=/usr/bin/docker compose -f %h/thordrive/autovoice/docker-compose.yaml down
+ExecReload=/usr/bin/docker compose -f %h/thordrive/autovoice/docker-compose.yaml restart backend frontend
 Restart=on-failure
 RestartSec=10s
 User=kp

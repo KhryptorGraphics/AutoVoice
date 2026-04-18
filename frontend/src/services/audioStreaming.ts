@@ -12,6 +12,33 @@ export interface StreamingStats {
 
 export type StreamingEventCallback = (event: string, data: unknown) => void;
 
+type TestStreamingHook = {
+  connect?: () => Promise<void> | void;
+  disconnect?: () => void;
+  startSession?: (payload: {
+    songId: string;
+    voiceModelId: string;
+    pipelineType: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut';
+    options?: {
+      profileId?: string;
+      adapterType?: 'hq' | 'nvfp4';
+      collectSamples?: boolean;
+      vocalsPath?: string;
+      instrumentalPath?: string;
+    };
+  }) => Promise<{ session_id: string }> | { session_id: string };
+  endSession?: () => Promise<void> | void;
+  startStreaming?: () => Promise<void> | void;
+  stopStreaming?: () => void;
+};
+
+function getTestStreamingHook(): TestStreamingHook | null {
+  const maybeHook = (globalThis as typeof globalThis & {
+    __AUTOVOICE_TEST_STREAMING__?: TestStreamingHook;
+  }).__AUTOVOICE_TEST_STREAMING__;
+  return maybeHook ?? null;
+}
+
 export class AudioStreamingClient {
   private socket: Socket | null = null;
   private audioContext: AudioContext | null = null;
@@ -36,10 +63,21 @@ export class AudioStreamingClient {
     }
   }
 
+  emitTestEvent(event: string, data: unknown): void {
+    this.emitEvent(event, data);
+  }
+
   /**
    * Connect to the WebSocket server.
    */
   async connect(): Promise<void> {
+    const testHook = getTestStreamingHook();
+    if (testHook) {
+      await testHook.connect?.();
+      this.emitEvent('connected', null);
+      return;
+    }
+
     if (this.socket?.connected) {
       return;
     }
@@ -103,6 +141,13 @@ export class AudioStreamingClient {
    */
   disconnect(): void {
     this.stopStreaming();
+    const testHook = getTestStreamingHook();
+    if (testHook) {
+      testHook.disconnect?.();
+      this.emitEvent('disconnected', null);
+      return;
+    }
+
     if (this.socket) {
       this.socket.disconnect();
       this.socket = null;
@@ -129,6 +174,23 @@ export class AudioStreamingClient {
       instrumentalPath?: string;
     }
   ): Promise<{ session_id: string }> {
+    const testHook = getTestStreamingHook();
+    if (testHook) {
+      const result = await testHook.startSession?.({
+        songId,
+        voiceModelId,
+        pipelineType,
+        options,
+      }) ?? {
+        session_id:
+          globalThis.crypto?.randomUUID?.() ??
+          `karaoke-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      };
+      this.sessionId = result.session_id;
+      this.emitEvent('session_started', result);
+      return result;
+    }
+
     if (!this.socket?.connected) {
       throw new Error('Not connected to server');
     }
@@ -179,6 +241,18 @@ export class AudioStreamingClient {
    * End the current session.
    */
   async endSession(): Promise<void> {
+    const testHook = getTestStreamingHook();
+    if (testHook) {
+      if (!this.sessionId) {
+        return;
+      }
+      this.stopStreaming();
+      await testHook.endSession?.();
+      this.sessionId = null;
+      this.emitEvent('session_ended', null);
+      return;
+    }
+
     if (!this.socket?.connected || !this.sessionId) {
       return;
     }
@@ -193,6 +267,22 @@ export class AudioStreamingClient {
    * Start capturing and streaming microphone audio.
    */
   async startStreaming(): Promise<void> {
+    const testHook = getTestStreamingHook();
+    if (testHook) {
+      if (this.isStreaming) {
+        return;
+      }
+      if (!this.sessionId) {
+        throw new Error('No active session');
+      }
+      await testHook.startStreaming?.();
+      this.isStreaming = true;
+      this.emitEvent('streaming_started', null);
+      this.emitEvent('audio_sent', { samples: this.chunkSize });
+      this.emitEvent('audio_received', { latencyMs: 48 });
+      return;
+    }
+
     if (this.isStreaming) {
       return;
     }
@@ -254,6 +344,17 @@ export class AudioStreamingClient {
    * Stop streaming audio.
    */
   stopStreaming(): void {
+    const testHook = getTestStreamingHook();
+    if (testHook) {
+      if (!this.isStreaming) {
+        return;
+      }
+      this.isStreaming = false;
+      testHook.stopStreaming?.();
+      this.emitEvent('streaming_stopped', null);
+      return;
+    }
+
     this.isStreaming = false;
 
     if (this.scriptProcessor) {
