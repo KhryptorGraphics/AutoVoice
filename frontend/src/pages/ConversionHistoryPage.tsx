@@ -367,6 +367,38 @@ export function ConversionHistoryPage() {
                   </div>
                 </div>
 
+                {(item.stem_urls?.vocals || item.stem_urls?.instrumental || item.reassemble_url) && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {item.stem_urls?.vocals && (
+                      <a
+                        href={item.stem_urls.vocals}
+                        download
+                        className="text-xs px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                      >
+                        Download Vocals
+                      </a>
+                    )}
+                    {item.stem_urls?.instrumental && (
+                      <a
+                        href={item.stem_urls.instrumental}
+                        download
+                        className="text-xs px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+                      >
+                        Download Instrumental
+                      </a>
+                    )}
+                    {item.reassemble_url && (
+                      <a
+                        href={item.reassemble_url}
+                        download
+                        className="text-xs px-3 py-1.5 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
+                      >
+                        Reassemble Mix
+                      </a>
+                    )}
+                  </div>
+                )}
+
                 {/* Notes Section */}
                 {editingNotes === item.id ? (
                   <div className="mt-3 p-3 bg-white border border-blue-200 rounded-lg">

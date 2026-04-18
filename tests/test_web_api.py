@@ -2,6 +2,7 @@
 import json
 import io
 import os
+import wave
 import pytest
 import numpy as np
 
@@ -21,6 +22,16 @@ def _save_test_profile(client_full, profile_id: str, *, role: str, has_full_mode
         with open(full_model_path, 'wb') as handle:
             handle.write(b'full-model')
     return store.load(profile_id)
+
+
+def _write_wav(path: str, audio: np.ndarray, sample_rate: int = 22050) -> None:
+    audio_int16 = np.clip(audio, -1.0, 1.0)
+    audio_int16 = (audio_int16 * 32767).astype(np.int16)
+    with wave.open(path, 'wb') as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(audio_int16.tobytes())
 
 
 class TestHealthEndpoint:
@@ -235,6 +246,43 @@ class TestConvertDownloadEndpoint:
     def test_download_unknown_job_returns_404(self, client_full):
         resp = client_full.get('/api/v1/convert/download/nonexistent-job')
         assert resp.status_code == 404
+
+    def test_download_vocal_stem_variant_returns_file(self, client_full, tmp_path, monkeypatch):
+        vocals_path = tmp_path / 'vocals.wav'
+        _write_wav(str(vocals_path), np.zeros(22050, dtype=np.float32))
+
+        monkeypatch.setattr(
+            client_full.application.job_manager,
+            'get_job_asset_path',
+            lambda job_id, asset='mix': str(vocals_path) if asset == 'vocals' else None,
+        )
+
+        resp = client_full.get('/api/v1/convert/download/job-123?variant=vocals')
+        assert resp.status_code == 200
+        assert resp.mimetype == 'audio/wav'
+
+    def test_reassemble_endpoint_returns_mixed_audio(self, client_full, tmp_path, monkeypatch):
+        vocals_path = tmp_path / 'vocals.wav'
+        instrumental_path = tmp_path / 'instrumental.wav'
+        _write_wav(str(vocals_path), np.full(22050, 0.1, dtype=np.float32))
+        _write_wav(str(instrumental_path), np.full(22050, 0.05, dtype=np.float32))
+
+        def _get_job_asset_path(job_id, asset='mix'):
+            if asset == 'vocals':
+                return str(vocals_path)
+            if asset == 'instrumental':
+                return str(instrumental_path)
+            return None
+
+        monkeypatch.setattr(
+            client_full.application.job_manager,
+            'get_job_asset_path',
+            _get_job_asset_path,
+        )
+
+        resp = client_full.get('/api/v1/convert/reassemble/job-123')
+        assert resp.status_code == 200
+        assert resp.mimetype == 'audio/wav'
 
 
 class TestConvertCancelEndpoint:

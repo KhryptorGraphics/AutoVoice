@@ -234,6 +234,55 @@ class TestJobStatusTracking:
         # Check file exists (temporarily)
         # Note: cleanup might delete it, so don't assert existence
 
+    def test_get_job_status_includes_stem_and_reassemble_urls(self, job_manager, sample_audio_file):
+        """Completed jobs with saved stems should expose download/reassemble URLs."""
+        with patch.object(job_manager._executor, 'submit'):
+            job_id = job_manager.create_job(
+                file_path=sample_audio_file,
+                profile_id="test-profile",
+                settings={'return_stems': True},
+            )
+
+        with job_manager._lock:
+            job = job_manager._jobs[job_id]
+            job['status'] = 'completed'
+            job['result_path'] = '/tmp/mix.wav'
+            job['stem_paths'] = {
+                'vocals': '/tmp/vocals.wav',
+                'instrumental': '/tmp/instrumental.wav',
+            }
+
+        status = job_manager.get_job_status(job_id)
+        assert status is not None
+        assert status['output_url'].endswith(f'/api/v1/convert/download/{job_id}')
+        assert status['stem_urls']['vocals'].endswith(
+            f'/api/v1/convert/download/{job_id}?variant=vocals'
+        )
+        assert status['stem_urls']['instrumental'].endswith(
+            f'/api/v1/convert/download/{job_id}?variant=instrumental'
+        )
+        assert status['reassemble_url'].endswith(
+            f'/api/v1/convert/reassemble/{job_id}'
+        )
+
+    def test_get_job_asset_path_returns_stem_path(self, job_manager, sample_audio_file):
+        """Stem paths should be addressable separately from the mixed result."""
+        with patch.object(job_manager._executor, 'submit'):
+            job_id = job_manager.create_job(
+                file_path=sample_audio_file,
+                profile_id="test-profile",
+                settings={'return_stems': True},
+            )
+
+        with job_manager._lock:
+            job = job_manager._jobs[job_id]
+            job['status'] = 'completed'
+            job['result_path'] = '/tmp/mix.wav'
+            job['stem_paths'] = {'vocals': '/tmp/vocals.wav'}
+
+        assert job_manager.get_job_result_path(job_id) == '/tmp/mix.wav'
+        assert job_manager.get_job_asset_path(job_id, 'vocals') == '/tmp/vocals.wav'
+
     def test_get_job_metrics_returns_none_for_pending(self, job_manager, sample_audio_file):
         """Metrics should be None for non-completed jobs."""
         job_id = job_manager.create_job(

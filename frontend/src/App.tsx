@@ -84,6 +84,7 @@ function ConvertPage() {
           selectedProfileRecord?.active_model_type === 'full_model'
             ? undefined
             : (selectedAdapter || undefined),
+        return_stems: true,
       })
 
       // Poll for status
@@ -113,18 +114,48 @@ function ConvertPage() {
     }
   }
 
+  const triggerDownload = useCallback((blob: Blob, downloadName: string) => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = downloadName
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [])
+
   const handleDownload = async () => {
     if (!conversionStatus) return
     try {
       const blob = await apiService.downloadResult(conversionStatus.id)
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `converted_${file?.name || 'audio.wav'}`
-      a.click()
-      URL.revokeObjectURL(url)
+      triggerDownload(blob, `converted_${file?.name || 'audio.wav'}`)
     } catch (err) {
       const errorMsg = 'Download failed'
+      setError(errorMsg)
+      toast.error(errorMsg)
+    }
+  }
+
+  const handleDownloadStem = async (variant: 'vocals' | 'instrumental') => {
+    if (!conversionStatus) return
+    try {
+      const blob = await apiService.downloadConversionAsset(conversionStatus.id, variant)
+      const baseName = file?.name?.replace(/\.[^/.]+$/, '') || 'audio'
+      triggerDownload(blob, `${baseName}_${variant}.wav`)
+    } catch {
+      const errorMsg = `Failed to download ${variant} stem`
+      setError(errorMsg)
+      toast.error(errorMsg)
+    }
+  }
+
+  const handleReassemble = async () => {
+    if (!conversionStatus) return
+    try {
+      const blob = await apiService.reassembleConversion(conversionStatus.id)
+      const baseName = file?.name?.replace(/\.[^/.]+$/, '') || 'audio'
+      triggerDownload(blob, `${baseName}_reassembled.wav`)
+    } catch {
+      const errorMsg = 'Failed to reassemble converted vocals with instrumental'
       setError(errorMsg)
       toast.error(errorMsg)
     }
@@ -269,13 +300,45 @@ function ConvertPage() {
                   <PipelineBadge pipeline={conversionStatus.pipeline_type as PipelineType} />
                 )}
               </div>
-              <button
-                onClick={handleDownload}
-                className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded"
-              >
-                Download
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {conversionStatus.stem_urls?.vocals && (
+                  <button
+                    onClick={() => void handleDownloadStem('vocals')}
+                    className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                  >
+                    Download Vocals
+                  </button>
+                )}
+                {conversionStatus.stem_urls?.instrumental && (
+                  <button
+                    onClick={() => void handleDownloadStem('instrumental')}
+                    className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                  >
+                    Download Instrumental
+                  </button>
+                )}
+                {conversionStatus.reassemble_url && (
+                  <button
+                    onClick={() => void handleReassemble()}
+                    className="px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm"
+                  >
+                    Reassemble With Instrumental
+                  </button>
+                )}
+                <button
+                  onClick={handleDownload}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded"
+                >
+                  Download Mix
+                </button>
+              </div>
             </div>
+            {(conversionStatus.stem_urls?.vocals || conversionStatus.stem_urls?.instrumental) && (
+              <p className="mt-3 text-sm text-gray-300">
+                This conversion kept separate stems, so you can download the converted voice track,
+                keep the instrumental, or reassemble them into a fresh mixed output.
+              </p>
+            )}
             {/* Show processing metrics if available */}
             {(conversionStatus.processing_time_seconds || conversionStatus.rtf) && (
               <div className="mt-2 flex gap-4 text-sm text-gray-400">

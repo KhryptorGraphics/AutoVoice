@@ -61,6 +61,8 @@ export interface ConversionRecord {
   // Output URLs
   output_url?: string
   download_url?: string
+  stem_urls?: Partial<Record<'vocals' | 'instrumental', string>>
+  reassemble_url?: string
   // Additional fields used by ConversionHistoryPage
   timestamp?: Date
   isFavorite?: boolean
@@ -460,6 +462,8 @@ export interface ConversionJobResponse {
   message?: string
   active_model_type?: ActiveModelType
   adapter_type?: 'hq' | 'nvfp4' | 'unified'
+  stem_urls?: Partial<Record<'vocals' | 'instrumental', string>>
+  reassemble_url?: string
   // When sync processing is used, result may be inline
   output_url?: string
   download_url?: string
@@ -747,6 +751,7 @@ class ApiService {
       pitch_shift?: number
       pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
       adapter_type?: 'hq' | 'nvfp4' | 'unified'
+      return_stems?: boolean
     }
   ): Promise<ConversionJobResponse> {
     const formData = new FormData()
@@ -758,6 +763,7 @@ class ApiService {
     if (settings?.pitch_shift != null) formData.append('pitch_shift', String(settings.pitch_shift))
     if (settings?.pipeline_type) formData.append('pipeline_type', settings.pipeline_type)
     if (settings?.adapter_type) formData.append('adapter_type', settings.adapter_type)
+    if (settings?.return_stems != null) formData.append('return_stems', String(settings.return_stems))
 
     const response = await fetch(`${API_BASE}/convert/song`, {
       method: 'POST',
@@ -783,6 +789,21 @@ class ApiService {
   async downloadResult(jobId: string): Promise<Blob> {
     const response = await fetch(`${API_BASE}/convert/download/${jobId}`)
     if (!response.ok) throw new Error(`Download failed: ${response.status}`)
+    return response.blob()
+  }
+
+  async downloadConversionAsset(
+    jobId: string,
+    variant: 'mix' | 'vocals' | 'instrumental'
+  ): Promise<Blob> {
+    const response = await fetch(`${API_BASE}/convert/download/${jobId}?variant=${variant}`)
+    if (!response.ok) throw new Error(`Download failed: ${response.status}`)
+    return response.blob()
+  }
+
+  async reassembleConversion(jobId: string): Promise<Blob> {
+    const response = await fetch(`${API_BASE}/convert/reassemble/${jobId}`)
+    if (!response.ok) throw new Error(`Reassembly failed: ${response.status}`)
     return response.blob()
   }
 

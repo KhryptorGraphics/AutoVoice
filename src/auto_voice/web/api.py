@@ -922,27 +922,100 @@ def get_conversion_status(job_id):
 
 @api_bp.route('/convert/download/<job_id>', methods=['GET'])
 def download_converted_audio(job_id):
-    """Download converted audio file"""
+    """Download a completed conversion asset.
+
+    Query params:
+        variant: mix (default), vocals, instrumental
+    """
     job_manager = getattr(current_app, 'job_manager', None)
     if not job_manager:
         return service_unavailable_response('Job management service unavailable')
-    
-    result_path = job_manager.get_job_result_path(job_id)
+
+    variant = request.args.get('variant', 'mix').strip().lower() or 'mix'
+    if variant not in {'mix', 'vocals', 'instrumental'}:
+        return validation_error_response(
+            'variant must be one of: mix, vocals, instrumental'
+        )
+
+    result_path = job_manager.get_job_asset_path(job_id, variant)
     if not result_path or not os.path.exists(result_path):
-        logger.info(f"Download request for unavailable result: {job_id}")
-        return not_found_response('Result not available')
-    
+        logger.info(
+            "Download request for unavailable result: %s (variant=%s)",
+            job_id,
+            variant,
+        )
+        return not_found_response(f'{variant} result not available')
+
     try:
-        logger.info(f"Downloading result for job {job_id}: {result_path}")
+        logger.info(
+            "Downloading result for job %s (%s): %s",
+            job_id,
+            variant,
+            result_path,
+        )
         return send_file(
             result_path,
             mimetype='audio/wav',
             as_attachment=True,
-            download_name=f'converted_{job_id}.wav'
+            download_name=f'converted_{job_id}_{variant}.wav'
         )
     except Exception as e:
         logger.error(f"Download error for job {job_id}: {e}")
         return error_response('Download failed')
+
+
+@api_bp.route('/convert/reassemble/<job_id>', methods=['GET'])
+def reassemble_converted_audio(job_id):
+    """Reassemble saved converted vocals with the saved instrumental stem."""
+    job_manager = getattr(current_app, 'job_manager', None)
+    if not job_manager:
+        return service_unavailable_response('Job management service unavailable')
+
+    vocals_path = job_manager.get_job_asset_path(job_id, 'vocals')
+    instrumental_path = job_manager.get_job_asset_path(job_id, 'instrumental')
+    if not vocals_path or not instrumental_path:
+        return not_found_response(
+            'Stem assets are not available for this conversion. '
+            'Run conversion with stems enabled first.'
+        )
+
+    if not SOUNDFILE_AVAILABLE:
+        return service_unavailable_response('soundfile is required to reassemble stems')
+
+    try:
+        vocals, vocals_sr = soundfile.read(vocals_path, dtype='float32')
+        instrumental, instrumental_sr = soundfile.read(instrumental_path, dtype='float32')
+        if vocals_sr != instrumental_sr:
+            return service_unavailable_response(
+                'Stem sample-rate mismatch prevents reassembly'
+            )
+
+        vocals_np = np.asarray(vocals, dtype=np.float32)
+        instrumental_np = np.asarray(instrumental, dtype=np.float32)
+
+        min_len = min(vocals_np.shape[0], instrumental_np.shape[0])
+        if min_len <= 0:
+            return validation_error_response('Cannot reassemble empty stems')
+
+        mixed = vocals_np[:min_len] + instrumental_np[:min_len]
+        peak = float(np.abs(mixed).max()) if mixed.size else 0.0
+        if peak > 0.95:
+            mixed = mixed * (0.95 / peak)
+
+        buffer = io.BytesIO()
+        soundfile.write(buffer, mixed, vocals_sr, format='WAV')
+        buffer.seek(0)
+
+        logger.info("Reassembled converted vocals with instrumental for job %s", job_id)
+        return send_file(
+            buffer,
+            mimetype='audio/wav',
+            as_attachment=True,
+            download_name=f'converted_{job_id}_reassembled.wav',
+        )
+    except Exception as exc:
+        logger.error("Reassembly error for job %s: %s", job_id, exc, exc_info=True)
+        return error_response('Failed to reassemble converted vocals with instrumental')
 
 
 @api_bp.route('/convert/cancel/<job_id>', methods=['POST'])

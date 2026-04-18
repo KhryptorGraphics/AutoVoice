@@ -56,6 +56,7 @@ class JobManager:
                 'started_at': None,
                 'completed_at': None,
                 'result_path': None,
+                'stem_paths': {},
                 'error': None,
                 'metrics': None,
                 'duration': None,
@@ -95,12 +96,18 @@ class JobManager:
 
             self._emit_progress(job_id, 80, 'Encoding output...', 'mixing')
 
-            # Save result to temp file
-            import soundfile as sf
-            result_path = tempfile.NamedTemporaryFile(
-                suffix='.wav', delete=False, prefix=f'av_job_{job_id}_'
-            ).name
-            sf.write(result_path, result['mixed_audio'], result['sample_rate'])
+            # Save result and optional stems to temp files
+            result_path = self._write_audio_output(
+                job_id,
+                'mix',
+                result['mixed_audio'],
+                result['sample_rate'],
+            )
+            stem_paths = self._write_stem_outputs(
+                job_id,
+                result.get('stems', {}),
+                result['sample_rate'],
+            )
 
             # Calculate quality metrics
             metrics = self._calculate_metrics(result)
@@ -111,6 +118,7 @@ class JobManager:
                 job['status'] = 'completed'
                 job['completed_at'] = time.time()
                 job['result_path'] = result_path
+                job['stem_paths'] = stem_paths
                 job['metrics'] = metrics
                 job['duration'] = result['duration']
                 job['sample_rate'] = result['sample_rate']
@@ -123,6 +131,14 @@ class JobManager:
                 'download_url': f'/api/v1/convert/download/{job_id}',
                 'duration': result['duration'],
             }
+            if stem_paths:
+                completion_payload['stem_urls'] = {
+                    stem_name: f'/api/v1/convert/download/{job_id}?variant={stem_name}'
+                    for stem_name in stem_paths
+                }
+                completion_payload['reassemble_url'] = (
+                    f'/api/v1/convert/reassemble/{job_id}'
+                )
             self._emit_conversion_history(job_id)
 
             self._emit_socket_events('job_completed', 'conversion_complete', completion_payload, room=job_id)
@@ -258,14 +274,29 @@ class JobManager:
             if job.get('result_path'):
                 status['output_url'] = f'/api/v1/convert/download/{job_id}'
                 status['download_url'] = status['output_url']
+            stem_paths = job.get('stem_paths') or {}
+            if stem_paths:
+                status['stem_urls'] = {
+                    stem_name: f'/api/v1/convert/download/{job_id}?variant={stem_name}'
+                    for stem_name, stem_path in stem_paths.items()
+                    if stem_path
+                }
+                if status['stem_urls'].get('vocals') and status['stem_urls'].get('instrumental'):
+                    status['reassemble_url'] = f'/api/v1/convert/reassemble/{job_id}'
             return status
 
     def get_job_result_path(self, job_id: str) -> Optional[str]:
         """Get path to job result file."""
+        return self.get_job_asset_path(job_id, 'mix')
+
+    def get_job_asset_path(self, job_id: str, asset: str = 'mix') -> Optional[str]:
+        """Get the stored path for a completed job asset."""
         with self._lock:
             job = self._jobs.get(job_id)
             if job and job['status'] == 'completed':
-                return job.get('result_path')
+                if asset == 'mix':
+                    return job.get('result_path')
+                return (job.get('stem_paths') or {}).get(asset)
         return None
 
     def cancel_job(self, job_id: str) -> bool:
@@ -344,6 +375,13 @@ class JobManager:
                     os.unlink(job['result_path'])
             except OSError:
                 pass
+        if job:
+            for stem_path in (job.get('stem_paths') or {}).values():
+                try:
+                    if stem_path and os.path.exists(stem_path):
+                        os.unlink(stem_path)
+                except OSError:
+                    pass
 
         logger.debug(f"Cleaned up expired job {job_id}")
 
@@ -408,6 +446,7 @@ class JobManager:
                 'duration': job.get('duration'),
                 'sample_rate': job.get('sample_rate'),
                 'result_path': job.get('result_path'),
+                'stem_paths': job.get('stem_paths') or {},
             },
         })
 
@@ -429,6 +468,7 @@ class JobManager:
                 rtf = None
 
         output_url = f'/api/v1/convert/download/{job_id}' if job.get('result_path') else None
+        stem_paths = job.get('stem_paths') or {}
         record = {
             'id': job_id,
             'status': self._public_status(job.get('status', 'queued')),
@@ -453,9 +493,57 @@ class JobManager:
             'output_url': output_url,
             'download_url': output_url,
             'resultUrl': output_url,
+            'stem_urls': {
+                stem_name: f'/api/v1/convert/download/{job_id}?variant={stem_name}'
+                for stem_name, stem_path in stem_paths.items()
+                if stem_path
+            } if stem_paths else None,
+            'reassemble_url': (
+                f'/api/v1/convert/reassemble/{job_id}'
+                if stem_paths.get('vocals') and stem_paths.get('instrumental')
+                else None
+            ),
         }
         existing = self.state_store.get_conversion_record(job_id) or {}
         record['notes'] = existing.get('notes')
         record['isFavorite'] = existing.get('isFavorite', False)
         record['tags'] = existing.get('tags', [])
         self.state_store.save_conversion_record(record)
+
+    def _write_audio_output(
+        self,
+        job_id: str,
+        suffix: str,
+        audio_data: np.ndarray,
+        sample_rate: int,
+    ) -> str:
+        """Write one WAV output for a conversion job and return its path."""
+        import soundfile as sf
+
+        output_path = tempfile.NamedTemporaryFile(
+            suffix='.wav',
+            delete=False,
+            prefix=f'av_job_{job_id}_{suffix}_',
+        ).name
+        sf.write(output_path, np.asarray(audio_data, dtype=np.float32), sample_rate)
+        return output_path
+
+    def _write_stem_outputs(
+        self,
+        job_id: str,
+        stems: Dict[str, Any],
+        sample_rate: int,
+    ) -> Dict[str, str]:
+        """Persist optional conversion stems for later download/reassembly."""
+        saved_paths: Dict[str, str] = {}
+        for stem_name in ('vocals', 'instrumental'):
+            stem_audio = stems.get(stem_name)
+            if not isinstance(stem_audio, np.ndarray) or stem_audio.size == 0:
+                continue
+            saved_paths[stem_name] = self._write_audio_output(
+                job_id,
+                stem_name,
+                stem_audio,
+                sample_rate,
+            )
+        return saved_paths
