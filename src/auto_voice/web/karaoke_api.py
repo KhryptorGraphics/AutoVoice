@@ -873,27 +873,57 @@ def set_output_device_config():
 
     # Get available devices for validation
     devices = get_devices()
-    device_indices = {d['index'] for d in devices}
+
+    def _normalize_device_index(value):
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError("boolean is not a valid device index")
+        return int(value)
+
+    device_indices = set()
+    for device in devices:
+        raw_index = device.get('index', device.get('device_id'))
+        if raw_index is None:
+            continue
+        try:
+            device_indices.add(_normalize_device_index(raw_index))
+        except (TypeError, ValueError):
+            logger.debug("Skipping device with invalid index payload: %s", device)
 
     # Validate and set speaker device
     if 'speaker_device' in data:
-        speaker_idx = data['speaker_device']
+        try:
+            speaker_idx = _normalize_device_index(data['speaker_device'])
+        except (TypeError, ValueError):
+            return error_response(
+                f"Invalid speaker device index: {data['speaker_device']}",
+                status_code=400,
+                available_devices=sorted(device_indices),
+            )
         if speaker_idx is not None and speaker_idx not in device_indices:
             return error_response(
                 f'Invalid speaker device index: {speaker_idx}',
                 status_code=400,
-                available_devices=list(device_indices)
+                available_devices=sorted(device_indices)
             )
         _device_config['speaker_device'] = speaker_idx
 
     # Validate and set headphone device
     if 'headphone_device' in data:
-        headphone_idx = data['headphone_device']
+        try:
+            headphone_idx = _normalize_device_index(data['headphone_device'])
+        except (TypeError, ValueError):
+            return error_response(
+                f"Invalid headphone device index: {data['headphone_device']}",
+                status_code=400,
+                available_devices=sorted(device_indices),
+            )
         if headphone_idx is not None and headphone_idx not in device_indices:
             return error_response(
                 f'Invalid headphone device index: {headphone_idx}',
                 status_code=400,
-                available_devices=list(device_indices)
+                available_devices=sorted(device_indices)
             )
         _device_config['headphone_device'] = headphone_idx
 
@@ -911,6 +941,17 @@ def set_output_device_config():
 
 # Voice model registry (singleton for the blueprint)
 _voice_model_registry = None
+
+
+def reset_test_state() -> None:
+    """Reset in-memory karaoke API state for isolated test app instances."""
+    global _voice_model_registry
+
+    _uploaded_songs.clear()
+    _separation_jobs.clear()
+    _active_sessions.clear()
+    _rate_limit_store.clear()
+    _voice_model_registry = None
 
 
 def _get_voice_model_registry():

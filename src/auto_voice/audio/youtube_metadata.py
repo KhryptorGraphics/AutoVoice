@@ -101,6 +101,16 @@ def _split_multiple_artists(artist_str: str) -> List[str]:
     return [_clean_artist_name(a) for a in artists if a.strip()]
 
 
+def _clean_description_artist_credit(text: str) -> str:
+    """Normalize description-derived artist credits before splitting."""
+    return re.sub(
+        r'^(?:vocals?\s+by\s+|voice\s+by\s+|performed\s+by\s+)',
+        '',
+        text.strip(),
+        flags=re.IGNORECASE,
+    )
+
+
 def _is_producer_credit(text: str) -> bool:
     """Check if text is a producer credit rather than a featured artist."""
     for pattern in EXCLUDE_PATTERNS:
@@ -168,7 +178,7 @@ def parse_featured_artists(title: str, description: Optional[str] = None) -> Lis
             matches = re.findall(pattern, description, re.IGNORECASE)
             for match in matches:
                 # Clean and validate
-                artists = _split_multiple_artists(match)
+                artists = _split_multiple_artists(_clean_description_artist_credit(match))
                 for artist in artists:
                     artist_lower = artist.lower()
                     if artist_lower not in seen and artist and len(artist) > 1:

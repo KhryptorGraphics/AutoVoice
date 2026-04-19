@@ -15,6 +15,24 @@ from unittest.mock import Mock, patch, MagicMock
 from auto_voice.audio.speaker_matcher import SpeakerMatcher
 
 
+def _make_noisy_embedding(
+    base: np.ndarray,
+    *,
+    noise_scale: float = 0.01,
+    seed: int = 0,
+) -> np.ndarray:
+    """Create a deterministic normalized embedding near a base vector."""
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(size=base.shape)
+    projection = float(np.dot(noise, base))
+    noise = noise - projection * base
+    noise_norm = np.linalg.norm(noise)
+    if noise_norm > 0:
+        noise = noise / noise_norm
+    embedding = base + noise_scale * noise
+    return embedding / (np.linalg.norm(embedding) + 1e-8)
+
+
 @pytest.fixture
 def mock_encoder():
     """Create a mock encoder that returns deterministic embeddings."""
@@ -24,7 +42,8 @@ def mock_encoder():
         """Return deterministic embedding based on audio mean."""
         # Different audio → different embeddings
         audio_mean = np.mean(audio)
-        base = np.random.RandomState(int(audio_mean * 1000)).randn(512)
+        seed = int(abs(audio_mean) * 1000) % (2**32 - 1)
+        base = np.random.RandomState(seed).randn(512)
         # Normalize
         return base / (np.linalg.norm(base) + 1e-8)
 
@@ -223,13 +242,12 @@ class TestSpeakerMatching:
     def test_similarity_threshold_matching(self, speaker_matcher):
         """Test that similarity threshold correctly filters matches."""
         # Create embeddings with known similarity
-        np.random.seed(42)  # Fixed seed for reproducibility
-        emb1 = np.random.randn(512)
+        rng = np.random.default_rng(42)
+        emb1 = rng.normal(size=512)
         emb1 = emb1 / np.linalg.norm(emb1)
 
-        # Create similar embedding (high similarity via direct construction)
-        emb2 = 0.95 * emb1 + 0.05 * np.random.randn(512)
-        emb2 = emb2 / np.linalg.norm(emb2)
+        # Create similar embedding with orthogonal low-amplitude noise.
+        emb2 = _make_noisy_embedding(emb1, noise_scale=0.1, seed=43)
 
         similarity = speaker_matcher.cosine_similarity(emb1, emb2)
 
@@ -267,25 +285,19 @@ class TestClusteringAndAssignment:
     def test_simple_clustering_two_speakers(self):
         """Test clustering with two distinct speakers."""
         # Create embeddings for 2 speakers (3 samples each)
-        np.random.seed(42)
+        base_a = np.zeros(512)
+        base_a[0] = 1.0
+        base_b = np.zeros(512)
+        base_b[1] = 1.0
 
-        # Speaker A embeddings (similar to each other)
-        base_a = np.random.randn(512)
-        base_a = base_a / np.linalg.norm(base_a)
         embeddings_a = [
-            base_a + np.random.randn(512) * 0.05
-            for _ in range(3)
+            _make_noisy_embedding(base_a, noise_scale=0.02, seed=100 + i)
+            for i in range(3)
         ]
-        embeddings_a = [e / np.linalg.norm(e) for e in embeddings_a]
-
-        # Speaker B embeddings (similar to each other, different from A)
-        base_b = np.random.randn(512)
-        base_b = base_b / np.linalg.norm(base_b)
         embeddings_b = [
-            base_b + np.random.randn(512) * 0.05
-            for _ in range(3)
+            _make_noisy_embedding(base_b, noise_scale=0.02, seed=200 + i)
+            for i in range(3)
         ]
-        embeddings_b = [e / np.linalg.norm(e) for e in embeddings_b]
 
         all_embeddings = embeddings_a + embeddings_b
 
@@ -433,10 +445,17 @@ class TestSpeakerMatcherIntegration:
         def mock_extract(audio):
             # Alternate between two speakers
             if call_count[0] % 2 == 0:
-                emb = speaker_a_base + np.random.randn(512) * 0.05
+                emb = _make_noisy_embedding(
+                    speaker_a_base,
+                    noise_scale=0.02,
+                    seed=1000 + call_count[0],
+                )
             else:
-                emb = speaker_b_base + np.random.randn(512) * 0.05
-            emb = emb / np.linalg.norm(emb)
+                emb = _make_noisy_embedding(
+                    speaker_b_base,
+                    noise_scale=0.02,
+                    seed=1000 + call_count[0],
+                )
             call_count[0] += 1
             return emb
 
@@ -492,23 +511,25 @@ class TestSpeakerMatcherIntegration:
         mock_encoder = Mock()
 
         speaker_embeddings = {
-            "SPEAKER_00": np.random.RandomState(0).randn(512),
-            "SPEAKER_01": np.random.RandomState(1).randn(512),
+            "SPEAKER_00": np.pad(np.array([1.0], dtype=np.float64), (0, 511)),
+            "SPEAKER_01": np.pad(np.array([0.0, 1.0], dtype=np.float64), (0, 510)),
         }
-        # Normalize
-        for key in speaker_embeddings:
-            speaker_embeddings[key] /= np.linalg.norm(speaker_embeddings[key])
 
         def mock_extract(audio):
-            # Determine which speaker based on audio characteristics
-            mean_freq = np.mean(np.abs(np.fft.fft(audio)))
-            if mean_freq < 250:
-                emb = speaker_embeddings["SPEAKER_00"]
+            # The synthetic fixture uses 2.0s for SPEAKER_00 and 1.5s for SPEAKER_01.
+            if len(audio) > 28000:
+                emb = _make_noisy_embedding(
+                    speaker_embeddings["SPEAKER_00"],
+                    noise_scale=0.02,
+                    seed=len(audio),
+                )
             else:
-                emb = speaker_embeddings["SPEAKER_01"]
-            # Add small noise
-            emb = emb + np.random.randn(512) * 0.05
-            return emb / np.linalg.norm(emb)
+                emb = _make_noisy_embedding(
+                    speaker_embeddings["SPEAKER_01"],
+                    noise_scale=0.02,
+                    seed=len(audio),
+                )
+            return emb
 
         mock_encoder.extract_embedding = mock_extract
         matcher._encoder = mock_encoder

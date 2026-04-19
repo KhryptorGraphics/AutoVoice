@@ -198,6 +198,7 @@ def list_audio_devices(device_type: Optional[str] = None) -> List[Dict[str, Any]
             if device['max_input_channels'] > 0:
                 if device_type is None or device_type == 'input':
                     devices.append({
+                        'index': idx,
                         'device_id': str(idx),
                         'name': device['name'],
                         'type': 'input',
@@ -210,6 +211,7 @@ def list_audio_devices(device_type: Optional[str] = None) -> List[Dict[str, Any]
             if device['max_output_channels'] > 0:
                 if device_type is None or device_type == 'output':
                     devices.append({
+                        'index': idx,
                         'device_id': str(idx),
                         'name': device['name'],
                         'type': 'output',

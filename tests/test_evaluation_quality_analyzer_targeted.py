@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 from unittest.mock import Mock, patch, MagicMock, mock_open
 import sys
+import types
 
 from auto_voice.evaluation.conversion_quality_analyzer import (
     ConversionQualityAnalyzer,
@@ -101,15 +102,17 @@ def test_extract_speaker_embedding_with_resampling():
     mock_output.last_hidden_state = torch.randn(1, 100, 768)
     mock_model.return_value = mock_output
 
+    torchaudio_transforms = types.SimpleNamespace(Resample=mock_resample_class)
+
     with patch.dict(sys.modules, {
         'transformers': MagicMock(
             Wav2Vec2FeatureExtractor=MagicMock(from_pretrained=MagicMock(return_value=mock_processor)),
             WavLMModel=MagicMock(from_pretrained=MagicMock(return_value=mock_model))
         ),
-        'torchaudio.transforms': MagicMock(Resample=mock_resample_class),
+        'torchaudio': types.SimpleNamespace(transforms=torchaudio_transforms),
+        'torchaudio.transforms': torchaudio_transforms,
     }):
-        with patch('torchaudio.transforms.Resample', mock_resample_class):
-            embedding = analyzer._extract_speaker_embedding(audio, sr)
+        embedding = analyzer._extract_speaker_embedding(audio, sr)
 
     # Verify resampling was triggered
     mock_resample_class.assert_called_once_with(sr, 16000)

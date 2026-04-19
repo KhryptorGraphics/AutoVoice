@@ -9,12 +9,37 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable
 
-import torch
-import torchaudio
-import soundfile as sf
 import numpy as np
+import torch
+import soundfile as sf
+import torch.nn.functional as F
+
+try:
+    import torchaudio
+    TORCHAUDIO_AVAILABLE = True
+except (ImportError, OSError):
+    torchaudio = None
+    TORCHAUDIO_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _resample_audio(audio: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tensor:
+    """Resample waveform data without requiring torchaudio at import time."""
+    if orig_sr == target_sr:
+        return audio
+
+    if TORCHAUDIO_AVAILABLE:
+        resampler = torchaudio.transforms.Resample(orig_sr, target_sr)
+        return resampler(audio)
+
+    target_length = max(1, int(round(audio.shape[-1] * target_sr / orig_sr)))
+    return F.interpolate(
+        audio.unsqueeze(0),
+        size=target_length,
+        mode='linear',
+        align_corners=False,
+    ).squeeze(0)
 
 
 def load_audio(path: str) -> tuple[torch.Tensor, int]:
@@ -161,8 +186,7 @@ class KaraokeManager:
             target_sr = 44100
             if sr != target_sr:
                 logger.info(f"Job {job_id}: Resampling {sr}Hz -> {target_sr}Hz")
-                resampler = torchaudio.transforms.Resample(sr, target_sr)
-                audio = resampler(audio)
+                audio = _resample_audio(audio, sr, target_sr)
             self._update_job(job_id, progress=30)
 
             # Convert to mono if stereo for processing

@@ -171,11 +171,15 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
 
     # Register API blueprints
     from .api import api_bp, health_check as api_health_check, readiness_check as api_readiness_check
-    from .karaoke_api import karaoke_bp
+    from .karaoke_api import karaoke_bp, reset_test_state as reset_karaoke_test_state
     from .speaker_api import speaker_bp
     from .training_ui import training_ui_bp
     from auto_voice.profiles.api import profiles_bp
     from .api_docs import docs_bp, swagger_ui_blueprint
+
+    if app.config.get('TESTING', False):
+        reset_karaoke_test_state()
+
     app.register_blueprint(api_bp)
     app.register_blueprint(karaoke_bp)
     app.register_blueprint(speaker_bp)

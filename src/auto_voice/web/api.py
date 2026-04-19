@@ -31,7 +31,7 @@ except ImportError:
 try:
     import torchaudio
     TORCHAUDIO_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     torchaudio = None
     TORCHAUDIO_AVAILABLE = False
 
@@ -1466,7 +1466,11 @@ def select_profile_adapter(profile_id):
             'message': "Must be 'hq', 'nvfp4', or 'unified'"
         }), 400
 
-    profile = _ensure_profile_in_store(profile_id)
+    try:
+        profile = _ensure_profile_in_store(profile_id)
+    except ProfileNotFoundError:
+        return not_found_response('Profile not found')
+
     adapter_artifact = _get_canonical_adapter_artifact(profile_id, profile)
     if adapter_artifact is None:
         return jsonify({

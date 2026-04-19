@@ -13,6 +13,7 @@ Target Coverage: 70%+
 """
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
@@ -254,9 +255,17 @@ def test_extract_speaker_embedding_error_handling(analyzer):
     sr = 16000
     audio = np.random.randn(int(sr * 2)).astype(np.float32)
 
-    with patch("transformers.WavLMModel") as mock_model_class:
-        mock_model_class.from_pretrained.side_effect = Exception("Model load failed")
+    mock_processor_class = MagicMock()
+    mock_processor_class.from_pretrained.return_value = MagicMock()
+    mock_model_class = MagicMock()
+    mock_model_class.from_pretrained.side_effect = Exception("Model load failed")
 
+    with patch.dict(sys.modules, {
+        "transformers": MagicMock(
+            Wav2Vec2FeatureExtractor=mock_processor_class,
+            WavLMModel=mock_model_class,
+        ),
+    }):
         embedding = analyzer._extract_speaker_embedding(audio, sr)
 
     # Should return zeros on failure

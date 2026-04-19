@@ -100,7 +100,10 @@ def _load_config(args: argparse.Namespace) -> Dict[str, Any]:
 
     config = loader.load_with_merge(defaults, yaml_config=yaml_config)
 
-    config["DEBUG"] = bool(args.debug or config.get("debug", False))
+    server_config = config.get("server", {})
+    config["DEBUG"] = bool(
+        args.debug or config.get("debug", server_config.get("debug", False))
+    )
     config["TESTING"] = bool(config.get("TESTING", config.get("testing", False)))
 
     data_dir = args.data_dir or config.get("DATA_DIR") or os.environ.get("DATA_DIR")

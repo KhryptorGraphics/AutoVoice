@@ -12,7 +12,14 @@ from typing import Optional, List, Tuple
 
 import numpy as np
 import torch
-import torchaudio
+import torch.nn.functional as F
+
+try:
+    import torchaudio
+    TORCHAUDIO_AVAILABLE = True
+except (ImportError, OSError):
+    torchaudio = None
+    TORCHAUDIO_AVAILABLE = False
 
 from auto_voice.web.karaoke_manager import load_audio
 
@@ -22,6 +29,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_TRT_ENGINE_DIR = os.path.join(
     os.path.dirname(__file__), '..', '..', '..', 'models', 'trt_engines'
 )
+
+
+def _resample_audio(audio: torch.Tensor, orig_sr: int, target_sr: int) -> torch.Tensor:
+    """Resample waveform data without requiring torchaudio at import time."""
+    if orig_sr == target_sr:
+        return audio
+
+    if TORCHAUDIO_AVAILABLE:
+        resampler = torchaudio.transforms.Resample(orig_sr, target_sr)
+        return resampler(audio)
+
+    target_length = max(1, int(round(audio.shape[-1] * target_sr / orig_sr)))
+    return F.interpolate(
+        audio.unsqueeze(0),
+        size=target_length,
+        mode='linear',
+        align_corners=False,
+    ).squeeze(0)
 
 
 class AudioMixer:
@@ -52,8 +77,7 @@ class AudioMixer:
         try:
             audio, sr = load_audio(path)
             if sr != self.sample_rate:
-                resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
-                audio = resampler(audio)
+                audio = _resample_audio(audio, sr, self.sample_rate)
             # Convert to mono if stereo
             if audio.shape[0] > 1:
                 audio = audio.mean(dim=0, keepdim=True)
@@ -399,6 +423,22 @@ class KaraokeSession:
 
         logger.info(f"Session {self.session_id} started")
 
+    def _should_bypass_pipeline(self) -> bool:
+        """Return whether conversion should fall back to passthrough mode.
+
+        This keeps synthetic smoke and stress sessions from forcing heavyweight
+        model inference when they only provide an ad-hoc embedding and do not
+        have real separated assets available yet.
+        """
+        return (
+            self._pipeline_type == 'pytorch'
+            and self.voice_model_id is None
+            and self._target_profile_id is None
+            and self._target_model_type is None
+            and not os.path.exists(self.vocals_path)
+            and not os.path.exists(self.instrumental_path)
+        )
+
     def stop(self):
         """Stop the session."""
         if not self.is_active:
@@ -444,24 +484,28 @@ class KaraokeSession:
             audio_chunk = torch.from_numpy(audio_chunk).float()
         audio_chunk = audio_chunk.to(self.device)
 
-        # Process through streaming pipeline
-        try:
-            pipeline = self._get_pipeline()
-            if self._target_model_type == 'full_model' and hasattr(pipeline, 'process_chunk') and hasattr(pipeline, 'set_target_voice'):
-                pipeline.set_target_voice(
-                    self._speaker_embedding.squeeze(0).detach().cpu().numpy()
-                )
-                output_np = pipeline.process_chunk(audio_chunk.detach().cpu().numpy())
-                output = (
-                    torch.from_numpy(np.asarray(output_np, dtype=np.float32)).to(self.device)
-                    if output_np is not None
-                    else audio_chunk
-                )
-            else:
-                output = pipeline.process_chunk(audio_chunk, self._speaker_embedding.squeeze(0))
-        except RuntimeError:
-            # Fallback for testing: return input unchanged
+        if self._should_bypass_pipeline():
             output = audio_chunk
+
+        else:
+            # Process through streaming pipeline
+            try:
+                pipeline = self._get_pipeline()
+                if self._target_model_type == 'full_model' and hasattr(pipeline, 'process_chunk') and hasattr(pipeline, 'set_target_voice'):
+                    pipeline.set_target_voice(
+                        self._speaker_embedding.squeeze(0).detach().cpu().numpy()
+                    )
+                    output_np = pipeline.process_chunk(audio_chunk.detach().cpu().numpy())
+                    output = (
+                        torch.from_numpy(np.asarray(output_np, dtype=np.float32)).to(self.device)
+                        if output_np is not None
+                        else audio_chunk
+                    )
+                else:
+                    output = pipeline.process_chunk(audio_chunk, self._speaker_embedding.squeeze(0))
+            except RuntimeError:
+                # Fallback for testing: return input unchanged
+                output = audio_chunk
 
         # Track latency
         latency_ms = (time.time() - start_time) * 1000

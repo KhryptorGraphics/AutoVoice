@@ -15,6 +15,7 @@ from auto_voice.storage.paths import resolve_profiles_dir, resolve_trained_model
 
 logger = logging.getLogger(__name__)
 ARTIFACT_PRIORITY = ("tensorrt", "full_model", "adapter")
+SUPPORTED_SPEAKER_EMBEDDING_DIMS = (192, 256)
 
 
 @dataclass
@@ -419,7 +420,11 @@ class AdapterManager:
         as_tensor: bool = False,
         normalize: bool = True,
     ) -> Any:
-        """Load a profile speaker embedding from the voice profile store."""
+        """Load a profile speaker embedding from the voice profile store.
+
+        Stored embeddings are currently mixed-width across shipped artifacts, so
+        the runtime accepts both 192-d and 256-d normalized vectors.
+        """
         import numpy as np
 
         embedding_path = self.get_embedding_path(profile_id)
@@ -429,9 +434,10 @@ class AdapterManager:
             )
 
         embedding = np.asarray(np.load(embedding_path), dtype=np.float32)
-        if embedding.shape != (256,):
+        if embedding.ndim != 1 or embedding.shape[0] not in SUPPORTED_SPEAKER_EMBEDDING_DIMS:
             raise ValueError(
-                f"Invalid embedding shape: {embedding.shape}, expected (256,)"
+                "Invalid embedding shape: "
+                f"{embedding.shape}, expected 1D shape in {SUPPORTED_SPEAKER_EMBEDDING_DIMS}"
             )
 
         if normalize:

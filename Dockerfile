@@ -1,8 +1,13 @@
 # Multi-stage build for AutoVoice on Jetson Thor
-# Platform: aarch64, CUDA 13.0, SM 11.0
+# Platform: aarch64, CUDA-capable NVIDIA runtime, SM 11.0
+#
+# NVIDIA's current Thor Docker docs use the generic PyTorch NGC container
+# rather than the older l4t-pytorch tags. Keep this overridable for future
+# JetPack/container revisions and local testing.
+ARG AUTOVOICE_BASE_IMAGE=nvcr.io/nvidia/pytorch:25.08-py3
 
-# Base stage: CUDA 13.0 runtime for Jetson Thor
-FROM nvcr.io/nvidia/l4t-pytorch:r38.4.0-pth2.11-py3 AS base
+# Base stage: CUDA-enabled PyTorch runtime for Jetson Thor
+FROM ${AUTOVOICE_BASE_IMAGE} AS base
 
 LABEL maintainer="AutoVoice Team"
 LABEL version="0.1.0"
@@ -21,13 +26,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python dependencies (cached layer)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Keep the NVIDIA base image's bundled torch/torchaudio pair intact. Upgrading
+# just one side of that pair breaks binary compatibility on startup. Some
+# transitive packages still pull in a stock torchaudio wheel, so remove it and
+# rely on the app's soundfile/librosa fallbacks inside the container.
+RUN grep -Ev '^(torch|torchaudio)([<>=!~].*)?$' requirements.txt > /tmp/requirements.docker.txt && \
+    pip install --no-cache-dir -r /tmp/requirements.docker.txt && \
+    pip uninstall -y torchaudio || true
 
 # Frontend build stage
 FROM node:20-slim AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci --only=production
+RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
@@ -43,8 +54,9 @@ COPY config/ config/
 COPY main.py .
 COPY setup.py .
 
-# Install package (editable for development flexibility)
-RUN pip install --no-cache-dir -e .
+# Install package (editable for development flexibility) without re-resolving
+# dependencies; the image already installed the curated dependency set above.
+RUN pip install --no-cache-dir --no-deps -e .
 
 # Create necessary directories
 RUN mkdir -p /app/models/pretrained \
@@ -53,8 +65,10 @@ RUN mkdir -p /app/models/pretrained \
     /app/data/outputs \
     /app/logs
 
-# Non-root user for security
-RUN useradd -m -u 1000 autovoice && \
+# Non-root user for security. Use a system account so we do not collide with
+# pre-existing UIDs in NVIDIA's base image.
+RUN if ! getent group autovoice >/dev/null; then groupadd --system autovoice; fi && \
+    if ! id -u autovoice >/dev/null 2>&1; then useradd --system --create-home --gid autovoice autovoice; fi && \
     chown -R autovoice:autovoice /app
 USER autovoice
 

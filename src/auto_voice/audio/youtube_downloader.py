@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
-from .youtube_metadata import parse_youtube_metadata, parse_featured_artists
+from . import youtube_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ class YouTubeDownloader:
                 )
 
             # Parse artist information
-            parsed = parse_youtube_metadata(metadata)
+            parsed = youtube_metadata.parse_youtube_metadata(metadata)
 
             # Generate output filename
             video_id = metadata.get('id', str(uuid.uuid4())[:8])
@@ -163,7 +163,7 @@ class YouTubeDownloader:
                     error="Failed to fetch video metadata"
                 )
 
-            parsed = parse_youtube_metadata(metadata)
+            parsed = youtube_metadata.parse_youtube_metadata(metadata)
 
             return YouTubeDownloadResult(
                 success=True,

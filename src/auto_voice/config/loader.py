@@ -3,6 +3,7 @@
 Task 3.4: Support config from YAML or env vars
 """
 
+import copy
 import os
 import logging
 from pathlib import Path
@@ -27,8 +28,10 @@ class ConfigLoader:
 
     Environment variable format:
     - AUTOVOICE_SERVER_PORT=8080 -> config["server"]["port"]
+    - AUTOVOICE_VOICE_CONVERSION_SINGING_CONVERSION_ENABLED=true
+      -> config["voice_conversion"]["singing_conversion_enabled"]
     - AUTOVOICE_DEBUG=true -> config["debug"]
-    - Nested keys use double underscore: AUTOVOICE_GPU__DEVICE=cuda:1
+    - Nested keys can also use double underscore: AUTOVOICE_GPU__DEVICE=cuda:1
     """
 
     def __init__(self, env_prefix: str = ENV_PREFIX):
@@ -44,7 +47,7 @@ class ConfigLoader:
         Returns:
             Merged configuration dictionary
         """
-        config = defaults or {}
+        config = copy.deepcopy(defaults or {})
 
         # Load from environment variables (highest priority for overrides)
         env_config = self._load_from_env()
@@ -89,7 +92,7 @@ class ConfigLoader:
         Returns:
             Merged configuration with priority: defaults < yaml < env
         """
-        config = defaults.copy()
+        config = copy.deepcopy(defaults)
 
         # Merge YAML config (overrides defaults)
         if yaml_config:
@@ -119,18 +122,42 @@ class ConfigLoader:
 
             # Remove prefix and convert to lowercase
             config_key = key[len(self.env_prefix):].lower()
+            value = self._convert_type(value)
 
             # Handle nested keys (double underscore separator)
             if "__" in config_key:
                 parts = config_key.split("__")
-                self._set_nested_value(config, parts, self._convert_type(value))
+                self._set_nested_value(config, parts, value)
+                continue
+
+            section_key = self._match_section_key(config_key)
+            if section_key is not None:
+                nested_key = config_key[len(section_key) + 1:]
+                self._set_nested_value(config, [section_key, nested_key], value)
             else:
-                config[config_key] = self._convert_type(value)
+                config[config_key] = value
 
         if config:
             logger.debug(f"Loaded {len(config)} values from environment variables")
 
         return config
+
+    def _match_section_key(self, config_key: str) -> Optional[str]:
+        """Match a flattened env-var key to a known top-level config section.
+
+        Supports keys like ``server_port`` and
+        ``voice_conversion_singing_conversion_enabled`` while preserving
+        top-level flags such as ``debug``.
+        """
+        section_names = sorted(
+            self.validator.SCHEMA.keys(),
+            key=lambda value: (-len(value.split("_")), -len(value)),
+        )
+        for section_name in section_names:
+            prefix = f"{section_name}_"
+            if config_key.startswith(prefix):
+                return section_name
+        return None
 
     def _set_nested_value(self, config: Dict, keys: list, value: Any) -> None:
         """Set a value in nested dictionary structure.
@@ -187,7 +214,7 @@ class ConfigLoader:
         Returns:
             Merged configuration
         """
-        return self._deep_merge(base.copy(), override)
+        return self._deep_merge(copy.deepcopy(base), override)
 
     def _deep_merge(self, base: Dict, override: Dict) -> Dict[str, Any]:
         """Deep merge two dictionaries.

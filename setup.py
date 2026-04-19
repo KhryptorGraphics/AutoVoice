@@ -60,7 +60,11 @@ setup(
         'soundfile>=0.12',
         'flask>=3.0',
         'flask-socketio>=5.3',
+        'flask-swagger-ui>=4.11',
         'pyyaml>=6.0',
+        'apispec>=6.0',
+        'apispec-webframeworks>=1.0',
+        'marshmallow>=3.0',
         'prometheus_client>=0.19',
     ],
     extras_require={

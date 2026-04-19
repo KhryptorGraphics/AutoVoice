@@ -132,6 +132,27 @@ class SpeakerDiarizer:
             self._model.eval()
             logger.info("Speaker embedding model loaded")
 
+    def _fallback_embedding_from_waveform(
+        self,
+        waveform: np.ndarray,
+    ) -> np.ndarray:
+        """Build a deterministic lightweight embedding when WavLM is unavailable."""
+        waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
+        if waveform.size == 0:
+            return np.zeros(512, dtype=np.float32)
+
+        # Use a fixed FFT window so fallback embeddings remain deterministic.
+        spectrum = np.abs(np.fft.rfft(waveform, n=1024)).astype(np.float32)
+        spectrum = np.log1p(spectrum)
+        if spectrum.shape[0] < 257:
+            spectrum = np.pad(spectrum, (0, 257 - spectrum.shape[0]))
+
+        magnitude = spectrum[:256]
+        delta = np.abs(np.diff(spectrum[:257])).astype(np.float32)
+        embedding = np.concatenate([magnitude, delta], axis=0)
+        embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
+        return embedding.astype(np.float32)
+
     def _check_memory(self, warn_threshold: float = 0.9) -> bool:
         """Check if memory usage is within limits.
 
@@ -325,6 +346,12 @@ class SpeakerDiarizer:
             end_sample = int((end - (start or 0)) * sample_rate)
             waveform = waveform[:end_sample]
 
+        if self._feature_extractor is None or self._model is None:
+            logger.warning(
+                "Speaker model unavailable after load; using fallback embedding extraction"
+            )
+            return self._fallback_embedding_from_waveform(waveform.numpy())
+
         # Process through feature extractor
         inputs = self._feature_extractor(
             waveform.numpy(),
@@ -409,6 +436,17 @@ class SpeakerDiarizer:
 
         def flush_pending() -> None:
             if not pending_waveforms:
+                return
+
+            if self._feature_extractor is None or self._model is None:
+                logger.warning(
+                    "Speaker model unavailable during batched extraction; using fallback embeddings"
+                )
+                for idx, pending_waveform in zip(pending_indices, pending_waveforms):
+                    embeddings[idx] = self._fallback_embedding_from_waveform(pending_waveform)
+                pending_waveforms.clear()
+                pending_indices.clear()
+                self._cleanup_memory()
                 return
 
             inputs = self._feature_extractor(
@@ -839,7 +877,20 @@ class SpeakerDiarizer:
 
         # Save extracted audio
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        torchaudio.save(str(output_path), combined_waveform.unsqueeze(0), sample_rate)
+        try:
+            torchaudio.save(str(output_path), combined_waveform.unsqueeze(0), sample_rate)
+        except (ImportError, ModuleNotFoundError, RuntimeError) as exc:
+            logger.warning(
+                "torchaudio.save unavailable (%s); falling back to soundfile.write",
+                exc,
+            )
+            import soundfile as sf
+
+            sf.write(
+                str(output_path),
+                combined_waveform.detach().cpu().numpy(),
+                sample_rate,
+            )
 
         logger.info(f"Extracted {len(segments)} segments for {speaker_id} to {output_path}")
 

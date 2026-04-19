@@ -12,6 +12,7 @@ Missing Lines to Cover: 171-178, 182-184, 190-198, 216-230, 250-269, 295-296, 34
 """
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock, call
@@ -68,35 +69,32 @@ def test_extract_speaker_embedding_model_loading():
     duration = 2.0
     audio = np.random.randn(int(sr * duration)).astype(np.float32)
 
-    # Mock the transformers imports and model
-    with patch("transformers.Wav2Vec2FeatureExtractor") as MockProcessor, \
-         patch("transformers.WavLMModel") as MockModel:
+    mock_processor = MagicMock()
+    mock_processor_class = MagicMock(return_value=None)
+    mock_processor_class.from_pretrained = MagicMock(return_value=mock_processor)
+    mock_input_values = torch.randn(1, int(sr * duration))
+    mock_processor.return_value = MagicMock(input_values=mock_input_values)
 
-        # Setup processor mock
-        mock_processor = MagicMock()
-        MockProcessor.from_pretrained.return_value = mock_processor
-        mock_input_values = torch.randn(1, int(sr * duration))
-        mock_processor.return_value = MagicMock(input_values=mock_input_values)
+    mock_model = MagicMock()
+    mock_model_class = MagicMock(return_value=None)
+    mock_model_class.from_pretrained = MagicMock(return_value=mock_model)
+    mock_param = torch.tensor([0.0])
+    mock_model.parameters = MagicMock(return_value=iter([mock_param]))
+    mock_output = MagicMock()
+    mock_output.last_hidden_state = torch.randn(1, 100, 768)
+    mock_model.return_value = mock_output
 
-        # Setup model mock
-        mock_model = MagicMock()
-        MockModel.from_pretrained.return_value = mock_model
-
-        # Mock parameters() to return proper iterator
-        mock_param = torch.tensor([0.0])
-        mock_model.parameters = MagicMock(return_value=iter([mock_param]))
-
-        # Mock model output
-        mock_output = MagicMock()
-        mock_output.last_hidden_state = torch.randn(1, 100, 768)
-        mock_model.return_value = mock_output
-
-        # Extract embedding
+    with patch.dict(sys.modules, {
+        "transformers": MagicMock(
+            Wav2Vec2FeatureExtractor=mock_processor_class,
+            WavLMModel=mock_model_class,
+        ),
+    }):
         embedding = analyzer._extract_speaker_embedding(audio, sr)
 
         # Verify model was loaded
-        MockProcessor.from_pretrained.assert_called_once_with("microsoft/wavlm-base-plus")
-        MockModel.from_pretrained.assert_called_once_with("microsoft/wavlm-base-plus")
+        mock_processor_class.from_pretrained.assert_called_once_with("microsoft/wavlm-base-plus")
+        mock_model_class.from_pretrained.assert_called_once_with("microsoft/wavlm-base-plus")
 
         assert isinstance(embedding, np.ndarray)
         assert embedding.shape[0] == 768
@@ -111,30 +109,34 @@ def test_extract_speaker_embedding_cuda_device():
     sr = 16000
     audio = np.random.randn(int(sr * 2)).astype(np.float32)
 
-    with patch("transformers.Wav2Vec2FeatureExtractor") as MockProcessor, \
-         patch("transformers.WavLMModel") as MockModel, \
-         patch("torch.cuda.is_available", return_value=True):
+    mock_processor = MagicMock()
+    mock_processor_class = MagicMock(return_value=None)
+    mock_processor_class.from_pretrained = MagicMock(return_value=mock_processor)
+    mock_input_values = torch.randn(1, int(sr * 2))
+    mock_processor.return_value = MagicMock(input_values=mock_input_values)
 
-        mock_processor = MagicMock()
-        MockProcessor.from_pretrained.return_value = mock_processor
-        mock_input_values = torch.randn(1, int(sr * 2))
-        mock_processor.return_value = MagicMock(input_values=mock_input_values)
+    mock_model = MagicMock()
+    mock_model_class = MagicMock(return_value=None)
+    mock_model_class.from_pretrained = MagicMock(return_value=mock_model)
+    mock_param = torch.tensor([0.0])
+    mock_model.parameters = MagicMock(return_value=iter([mock_param]))
+    mock_model.cuda = MagicMock(return_value=mock_model)
 
-        mock_model = MagicMock()
-        MockModel.from_pretrained.return_value = mock_model
-        mock_param = torch.tensor([0.0])
-        mock_model.parameters = MagicMock(return_value=iter([mock_param]))
-        mock_model.cuda = MagicMock(return_value=mock_model)
+    mock_output = MagicMock()
+    mock_output.last_hidden_state = torch.randn(1, 100, 768)
+    mock_model.return_value = mock_output
 
-        mock_output = MagicMock()
-        mock_output.last_hidden_state = torch.randn(1, 100, 768)
-        mock_model.return_value = mock_output
-
+    with patch.dict(sys.modules, {
+        "transformers": MagicMock(
+            Wav2Vec2FeatureExtractor=mock_processor_class,
+            WavLMModel=mock_model_class,
+        ),
+    }), patch("torch.cuda.is_available", return_value=True):
         embedding = analyzer._extract_speaker_embedding(audio, sr)
 
-        # Verify CUDA was called
-        mock_model.cuda.assert_called_once()
-        assert isinstance(embedding, np.ndarray)
+    # Verify CUDA was called
+    mock_model.cuda.assert_called_once()
+    assert isinstance(embedding, np.ndarray)
 
 
 def test_extract_speaker_embedding_resampling_path():

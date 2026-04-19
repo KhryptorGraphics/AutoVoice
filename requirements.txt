@@ -9,6 +9,7 @@ soundfile>=0.12
 # Web
 flask>=3.0
 flask-socketio>=5.3
+flask-swagger-ui>=4.11
 werkzeug>=3.0
 eventlet>=0.35
 gunicorn>=21.0
@@ -27,6 +28,9 @@ psutil>=5.9
 
 # Config
 pyyaml>=6.0
+apispec>=6.0
+apispec-webframeworks>=1.0
+marshmallow>=3.0
 
 # Database
 sqlalchemy>=2.0

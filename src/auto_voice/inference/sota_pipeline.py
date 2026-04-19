@@ -25,7 +25,11 @@ from ..models.encoder import ContentVecEncoder
 from ..models.pitch import RMVPEPitchExtractor
 from ..models.svc_decoder import CoMoSVCDecoder
 from ..models.vocoder import BigVGANVocoder
-from ..models.adapter_manager import AdapterManager, AdapterManagerConfig
+from ..models.adapter_manager import (
+    AdapterManager,
+    AdapterManagerConfig,
+    SUPPORTED_SPEAKER_EMBEDDING_DIMS,
+)
 from ..models.hq_adapter_bridge import HQLoRAAdapterBridge, AdapterBridgeConfig
 
 if TYPE_CHECKING:
@@ -151,7 +155,7 @@ class SOTAConversionPipeline:
 
         This method allows changing the target voice after pipeline initialization
         without recreating the entire pipeline. Loads both the LoRA adapter weights
-        and the 256-dim speaker embedding from the profile.
+        and the stored speaker embedding from the profile.
 
         Prefers HQ adapters (standalone MLP) over layer-injection adapters when available.
         HQ adapters transform content features before decoding, while standard adapters
@@ -166,7 +170,7 @@ class SOTAConversionPipeline:
 
         Raises:
             FileNotFoundError: If no adapter or embedding exists for the profile
-            ValueError: If embedding has invalid shape (not [256])
+            ValueError: If embedding has an unsupported shape
             RuntimeError: If adapter loading or application fails
         """
         if profile_id == self._current_speaker_id:
@@ -234,14 +238,57 @@ class SOTAConversionPipeline:
     def get_speaker_embedding(self) -> Optional[torch.Tensor]:
         """Get the currently loaded speaker embedding.
 
-        Returns the mel-statistics based speaker embedding (mean + std of 128 mel
-        bands, L2-normalized to unit length). This embedding is used by the decoder
-        to condition the voice conversion.
+        Returns the stored profile speaker embedding as loaded from disk. Shipped
+        profiles currently use mixed-width embeddings, so callers should not assume
+        a fixed dimension.
 
         Returns:
-            [256] L2-normalized speaker embedding tensor on device, or None if no speaker loaded
+            L2-normalized speaker embedding tensor on device, or None if no speaker loaded
         """
         return self._speaker_embedding
+
+    def _prepare_decoder_speaker_embedding(
+        self,
+        speaker_embedding: torch.Tensor,
+    ) -> torch.Tensor:
+        """Adapt a stored speaker embedding to the decoder's expected width."""
+        if speaker_embedding.dim() != 1:
+            raise RuntimeError(
+                f"Speaker embedding must be 1D, got {speaker_embedding.shape}"
+            )
+
+        source_dim = speaker_embedding.shape[0]
+        if source_dim not in SUPPORTED_SPEAKER_EMBEDDING_DIMS:
+            raise RuntimeError(
+                "Speaker embedding must have a supported width "
+                f"{SUPPORTED_SPEAKER_EMBEDDING_DIMS}, got {speaker_embedding.shape}"
+            )
+
+        target_dim = int(getattr(self.decoder, "speaker_dim", source_dim))
+        speaker = speaker_embedding.to(self.device)
+
+        if source_dim == target_dim:
+            return speaker.unsqueeze(0)
+
+        if source_dim < target_dim:
+            logger.warning(
+                "Padding speaker embedding from %s to %s for decoder conditioning",
+                source_dim,
+                target_dim,
+            )
+            padding = torch.zeros(
+                target_dim - source_dim,
+                dtype=speaker.dtype,
+                device=speaker.device,
+            )
+            return torch.cat([speaker, padding], dim=0).unsqueeze(0)
+
+        logger.warning(
+            "Truncating speaker embedding from %s to %s for decoder conditioning",
+            source_dim,
+            target_dim,
+        )
+        return speaker[:target_dim].unsqueeze(0)
 
     def clear_speaker(self) -> None:
         """Clear the current speaker adapter, reverting to base model.
@@ -382,7 +429,7 @@ class SOTAConversionPipeline:
         Args:
             audio: [T] or [C, T] input audio tensor (any sample rate)
             sample_rate: Input sample rate in Hz
-            speaker_embedding: [256] target speaker embedding (mel-statistics, L2-normalized)
+            speaker_embedding: 1D target speaker embedding (192-d or 256-d today)
             on_progress: Optional callback(stage_name, progress_fraction) for tracking
 
         Returns:
@@ -413,12 +460,7 @@ class SOTAConversionPipeline:
             )
 
         # Validate speaker embedding
-        if speaker_embedding.dim() != 1 or speaker_embedding.shape[0] != 256:
-            raise RuntimeError(
-                f"Speaker embedding must be [256], got {speaker_embedding.shape}"
-            )
-
-        speaker = speaker_embedding.unsqueeze(0).to(self.device)  # [1, 256]
+        speaker = self._prepare_decoder_speaker_embedding(speaker_embedding)
 
         def report(stage: str, progress: float):
             self._current_stage = stage
