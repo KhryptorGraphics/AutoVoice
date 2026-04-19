@@ -36,6 +36,10 @@ from auto_voice.storage.voice_profiles import (
 logger = logging.getLogger(__name__)
 
 
+class _FallbackTrainingCancelledError(RuntimeError):
+    """Local fallback when a patched trainer module omits the cancel exception."""
+
+
 # ============================================================================
 # Job Status Enum
 # ============================================================================
@@ -468,14 +472,23 @@ class TrainingJobManager:
         if current_status == JobStatus.RUNNING:
             cancel_event = self._job_cancel_events.get(job_id)
             resume_event = self._job_resume_events.get(job_id)
-            if cancel_event is None or resume_event is None:
-                logger.warning("Cannot cancel running job %s without runtime events", job_id)
-                return False
-            cancel_event.set()
-            resume_event.set()
-            job.error = "Cancellation requested"
+            if cancel_event is not None:
+                cancel_event.set()
+            if resume_event is not None:
+                resume_event.set()
+
+            if cancel_event is not None or resume_event is not None:
+                job.error = "Cancellation requested"
+                self._save_jobs()
+                logger.info("Requested cancellation for running job %s", job_id)
+                return True
+
+            # Preserve legacy behavior for callers/tests that mark a job running
+            # without creating runtime coordination events.
+            logger.warning("Cancelling running job %s without runtime events", job_id)
+            job.cancel("Cancellation requested")
             self._save_jobs()
-            logger.info("Requested cancellation for running job %s", job_id)
+            self._emit_cancelled_event(job)
             return True
 
         if JobStatus.CANCELLED not in VALID_TRANSITIONS.get(current_status, []):
@@ -869,9 +882,19 @@ class TrainingJobManager:
 
             # Run training in background thread to not block
             def run_training():
+                training_cancelled_error = _FallbackTrainingCancelledError
                 try:
+                    import importlib
+
                     from auto_voice.models.svc_decoder import CoMoSVCDecoder
-                    from auto_voice.training.trainer import Trainer, TrainingCancelledError
+
+                    trainer_module = importlib.import_module("auto_voice.training.trainer")
+                    Trainer = trainer_module.Trainer
+                    training_cancelled_error = getattr(
+                        trainer_module,
+                        "TrainingCancelledError",
+                        _FallbackTrainingCancelledError,
+                    )
 
                     training_mode = job.config.training_mode if job.config else "lora"
                     if training_mode not in {"lora", "full"}:
@@ -1001,7 +1024,7 @@ class TrainingJobManager:
                     # Cleanup temp directory
                     shutil.rmtree(train_dir, ignore_errors=True)
 
-                except TrainingCancelledError as e:
+                except training_cancelled_error as e:
                     logger.info("Training job %s cancelled: %s", job_id, e)
                     job.cancel(str(e))
                     self._save_jobs()

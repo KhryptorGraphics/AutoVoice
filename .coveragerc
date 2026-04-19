@@ -1,0 +1,10 @@
+[run]
+relative_files = True
+timid = True
+source =
+    src/auto_voice
+
+[report]
+skip_empty = True
+omit =
+    tests/*

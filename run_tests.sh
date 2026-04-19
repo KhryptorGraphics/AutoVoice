@@ -1,7 +1,7 @@
 #!/bin/bash
 # AutoVoice test runner
 # Usage: ./run_tests.sh [mode]
-# Modes: smoke, fast, all, coverage, cuda
+# Modes: smoke, fast, all, coverage, coverage_remaining, cuda
 
 set -e
 
@@ -34,15 +34,22 @@ case "$MODE" in
         ;;
     coverage)
         echo "Running tests with coverage..."
-        python -m pytest tests/ --cov=auto_voice --cov-report=html --cov-report=term -v
+        python -m coverage erase
+        python -m coverage run -m pytest -p no:cov tests/ -v
+        python -m coverage report -m
+        python -m coverage html
         echo "Coverage report: htmlcov/index.html"
+        ;;
+    coverage_remaining)
+        echo "Running remaining-module coverage gate..."
+        python scripts/run_remaining_module_coverage.py
         ;;
     cuda)
         echo "Running CUDA tests..."
         python -m pytest tests/ -m cuda -v --tb=short
         ;;
     *)
-        echo "Usage: $0 {smoke|fast|all|coverage|cuda}"
+        echo "Usage: $0 {smoke|fast|all|coverage|coverage_remaining|cuda}"
         exit 1
         ;;
 esac
