@@ -69,3 +69,5 @@ checkpoints/
 .worktrees/
 .security-key
 logs/security/
+.gitnexus
+frontend/test-results/
