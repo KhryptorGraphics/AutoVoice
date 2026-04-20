@@ -151,7 +151,7 @@ class TestTrainThenInfer:
 class TestSingingPipelineWithModel:
     """SingingConversionPipeline with model-based conversion."""
 
-        @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_pipeline_converts_audio(self, singing_pipeline, voice_cloner, sample_audio_file):
         """Pipeline produces converted audio that differs from input."""
         profile = voice_cloner.create_voice_profile(audio=sample_audio_file)
@@ -167,7 +167,7 @@ class TestSingingPipelineWithModel:
         assert result['duration'] > 0
         assert not np.any(np.isnan(result['mixed_audio']))
 
-        @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_pipeline_correct_sample_rate(self, singing_pipeline, voice_cloner, sample_audio_file):
         profile = voice_cloner.create_voice_profile(audio=sample_audio_file)
         result = singing_pipeline.convert_song(
