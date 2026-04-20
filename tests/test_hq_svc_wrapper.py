@@ -374,7 +374,7 @@ class TestHQSVCIntegration:
         return HQSVCWrapper(device=torch.device('cuda'))
 
     @pytest.mark.skipif(
-        not os.path.exists('/home/kp/repo2/autovoice/test_audio'),
+        not os.path.exists('/home/kp/thordrive/autovoice/test_audio'),
         reason="Test audio directory not found"
     )
     def test_real_audio_super_resolution(self, wrapper):
@@ -382,7 +382,7 @@ class TestHQSVCIntegration:
         import torchaudio
 
         # Find a test audio file
-        test_dir = '/home/kp/repo2/autovoice/test_audio'
+        test_dir = '/home/kp/thordrive/autovoice/test_audio'
         audio_files = [f for f in os.listdir(test_dir) if f.endswith('.wav')]
 
         if not audio_files:
@@ -398,14 +398,14 @@ class TestHQSVCIntegration:
         assert len(result['audio']) > 0
 
     @pytest.mark.skipif(
-        not os.path.exists('/home/kp/repo2/autovoice/test_audio'),
+        not os.path.exists('/home/kp/thordrive/autovoice/test_audio'),
         reason="Test audio directory not found"
     )
     def test_real_audio_voice_conversion(self, wrapper):
         """Voice conversion works on real audio files."""
         import torchaudio
 
-        test_dir = '/home/kp/repo2/autovoice/test_audio'
+        test_dir = '/home/kp/thordrive/autovoice/test_audio'
         audio_files = [f for f in os.listdir(test_dir) if f.endswith('.wav')]
 
         if len(audio_files) < 2:

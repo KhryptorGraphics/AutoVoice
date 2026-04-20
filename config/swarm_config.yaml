@@ -9,7 +9,7 @@ global:
   parallel_limit: 10
   gpu_aware: true
   tdd_mode: strict
-  project_root: /home/kp/repo2/autovoice
+  project_root: /home/kp/thordrive/autovoice
 
   # Neural-aware configuration (1500 patterns trained)
   neural:
