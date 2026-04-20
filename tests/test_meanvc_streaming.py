@@ -10,6 +10,11 @@ Validates:
 """
 
 import pytest
+try:
+    import torchaudio.sox_effects
+    HAS_SOX_EFFECTS = True
+except ImportError:
+    HAS_SOX_EFFECTS = False
 import torch
 import numpy as np
 import sys
@@ -99,6 +104,7 @@ def test_chunk_size_calculation():
     not Path(__file__).parent.parent.joinpath("models/meanvc/src/ckpt").exists(),
     reason="MeanVC models not downloaded"
 )
+@pytest.mark.skipif(not HAS_SOX_EFFECTS, reason="torchaudio.sox_effects not available")
 def test_reference_audio_setting(reference_audio):
     """Test setting reference audio."""
     pipeline = MeanVCPipeline(device=torch.device('cpu'), steps=2)
@@ -123,6 +129,7 @@ def test_reference_audio_setting(reference_audio):
     not Path(__file__).parent.parent.joinpath("models/meanvc/src/ckpt").exists(),
     reason="MeanVC models not downloaded"
 )
+@pytest.mark.skipif(not HAS_SOX_EFFECTS, reason="torchaudio.sox_effects not available")
 def test_chunk_processing_latency(reference_audio, sample_audio):
     """Test chunk processing latency (<100ms target)."""
     import time
@@ -160,6 +167,7 @@ def test_chunk_processing_latency(reference_audio, sample_audio):
     not Path(__file__).parent.parent.joinpath("models/meanvc/src/ckpt").exists(),
     reason="MeanVC models not downloaded"
 )
+@pytest.mark.skipif(not HAS_SOX_EFFECTS, reason="torchaudio.sox_effects not available")
 def test_full_audio_conversion(reference_audio, sample_audio):
     """Test full audio conversion (non-streaming)."""
     pipeline = MeanVCPipeline(device=torch.device('cpu'), steps=2)
@@ -195,6 +203,7 @@ def test_full_audio_conversion(reference_audio, sample_audio):
     not Path(__file__).parent.parent.joinpath("models/meanvc/src/ckpt").exists(),
     reason="MeanVC models not downloaded"
 )
+@pytest.mark.skipif(not HAS_SOX_EFFECTS, reason="torchaudio.sox_effects not available")
 def test_streaming_session_reset(reference_audio):
     """Test streaming session can be reset."""
     pipeline = MeanVCPipeline(device=torch.device('cpu'), steps=2)
