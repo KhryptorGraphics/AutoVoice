@@ -287,9 +287,13 @@ class SpeakerDiarizer:
 
         energies = np.array(energies)
 
+        # Handle empty audio (no frames)
+        if len(energies) == 0 or energies.size == 0:
+            return []
+
         # Normalize energies
-        if energies.max() > 0:
-            energies = energies / energies.max()
+        if np.max(energies) > 0:
+            energies = energies / np.max(energies)
 
         # Find speech regions
         is_speech = energies > energy_threshold

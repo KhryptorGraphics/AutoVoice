@@ -158,7 +158,7 @@ class VoiceIdentifier:
             self._wavlm_model = WavLMModel.from_pretrained(
                 "microsoft/wavlm-base-plus"
             ).to(self.device)
-            self._wavlm_model.set_output_hidden_states(False)  # Disable to save memory
+            # Disable output hidden states to save memory (method removed in newer transformers)
             logger.info("WavLM model loaded")
         except Exception as e:
             logger.error(f"Failed to load WavLM: {e}")

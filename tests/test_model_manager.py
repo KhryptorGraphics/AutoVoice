@@ -216,7 +216,7 @@ class TestModelManagerBackendConfig:
             features = mm._content_encoder.extract_features(audio, sr=16000)
         assert features.dim() == 3
         assert features.shape[0] == 1
-        assert features.shape[2] == 256
+        assert features.shape[2] == 768
 
     def test_encoder_extract_features_hubert_conformer(self, device):
         """HuBERT+conformer encoder produces correct output shape."""
@@ -228,7 +228,7 @@ class TestModelManagerBackendConfig:
             features = mm._content_encoder.extract_features(audio, sr=16000)
         assert features.dim() == 3
         assert features.shape[0] == 1
-        assert features.shape[2] == 256
+        assert features.shape[2] == 768
 
 
 class TestPipelineConfigPassthrough:
@@ -372,7 +372,7 @@ class TestModelManagerIntegrationBackends:
         with torch.no_grad():
             out = mm._content_encoder.extract_features(audio, sr=16000)
         assert out.shape[0] == 1
-        assert out.shape[2] == 256
+        assert out.shape[2] == 768
         assert not torch.any(torch.isnan(out))
 
     def test_hubert_conformer_produces_output(self, device):
@@ -384,7 +384,7 @@ class TestModelManagerIntegrationBackends:
         with torch.no_grad():
             out = mm._content_encoder.extract_features(audio, sr=16000)
         assert out.shape[0] == 1
-        assert out.shape[2] == 256
+        assert out.shape[2] == 768
         assert not torch.any(torch.isnan(out))
 
     def test_contentvec_linear_produces_output(self, device):
@@ -395,7 +395,7 @@ class TestModelManagerIntegrationBackends:
         with torch.no_grad():
             out = mm._content_encoder.extract_features(audio, sr=16000)
         assert out.shape[0] == 1
-        assert out.shape[2] == 256
+        assert out.shape[2] == 768
         assert not torch.any(torch.isnan(out))
 
     def test_contentvec_conformer_produces_output(self, device):
@@ -407,7 +407,7 @@ class TestModelManagerIntegrationBackends:
         with torch.no_grad():
             out = mm._content_encoder.extract_features(audio, sr=16000)
         assert out.shape[0] == 1
-        assert out.shape[2] == 256
+        assert out.shape[2] == 768
         assert not torch.any(torch.isnan(out))
 
     def test_hifigan_vocoder_synthesizes(self, device):

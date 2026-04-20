@@ -42,11 +42,13 @@ def get_engine(database_url: str | None = None, **kwargs) -> Engine:
     if _engine is None:
         url = database_url or get_database_url()
         default_kwargs = {
-            "pool_size": 5,
-            "max_overflow": 10,
             "pool_pre_ping": True,
             "pool_recycle": 3600,
         }
+        # Connection pool settings only valid for PostgreSQL/MySQL, not SQLite
+        if not url.startswith("sqlite"):
+            default_kwargs["pool_size"] = 5
+            default_kwargs["max_overflow"] = 10
         default_kwargs.update(kwargs)
         _engine = create_engine(url, **default_kwargs)
 

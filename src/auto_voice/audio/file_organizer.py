@@ -138,6 +138,8 @@ class FileOrganizer:
         name = name.replace('<', '')
         name = name.replace('>', '')
         name = name.replace('|', '_')
+        # Strip any remaining non-alphanumeric characters (e.g. $ in A$AP)
+        name = re.sub(r'[^a-z0-9_]', '', name)
         name = re.sub(r'_+', '_', name)
 
         # Remove leading/trailing underscores
