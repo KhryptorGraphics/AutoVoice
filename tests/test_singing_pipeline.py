@@ -54,7 +54,7 @@ class TestSingingConversionPipeline:
             )
 
     @pytest.mark.integration
-    def test_convert_song_full(self, singing_pipeline, voice_cloner, sample_audio_file):
+        def test_convert_song_full(self, singing_pipeline, voice_cloner, sample_audio_file):
         # Create a profile first
         profile = voice_cloner.create_voice_profile(audio=sample_audio_file)
 
@@ -78,7 +78,7 @@ class TestSingingConversionPipeline:
         assert 'f0_contour' in result
 
     @pytest.mark.integration
-    def test_convert_with_stems(self, singing_pipeline, voice_cloner, sample_audio_file):
+        def test_convert_with_stems(self, singing_pipeline, voice_cloner, sample_audio_file):
         profile = voice_cloner.create_voice_profile(audio=sample_audio_file)
 
         result = singing_pipeline.convert_song(
@@ -94,7 +94,7 @@ class TestSingingConversionPipeline:
         assert result['stems']['vocals'].size > 0
 
     @pytest.mark.integration
-    def test_convert_with_pitch_shift(self, singing_pipeline, voice_cloner, sample_audio_file):
+        def test_convert_with_pitch_shift(self, singing_pipeline, voice_cloner, sample_audio_file):
         profile = voice_cloner.create_voice_profile(audio=sample_audio_file)
 
         result = singing_pipeline.convert_song(
@@ -121,7 +121,7 @@ class TestSingingConversionPipeline:
         assert len(f0) > 0
 
     @pytest.mark.integration
-    def test_convert_song_bigvgan_vocoder_config(self, voice_cloner, sample_audio_file):
+        def test_convert_song_bigvgan_vocoder_config(self, voice_cloner, sample_audio_file):
         """convert_song() with vocoder_type='bigvgan' in config."""
         import torch
         from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
