@@ -1,489 +1,260 @@
-# Voice Profile API Reference
+# Voice Profile And Training API
 
-> Historical note: this file is a narrow API reference and may omit newer role-based behavior. For the current MVP flow, start with [docs/api/README.md](./api/README.md) and [user-guide-voice-profiles.md](./user-guide-voice-profiles.md).
+> Secondary reference: for the canonical API index, start with [docs/api/README.md](./api/README.md) and [docs/api/websocket-events.md](./api/websocket-events.md).
 
-API documentation for voice profile management, training samples, and continuous learning.
+This document describes the current single-user MVP contract for voice profiles, training samples, and training jobs.
 
-**Base URL:** `/api/v1`
+## Route Ownership
 
----
+AutoVoice currently has two profile route families:
 
-## Voice Profiles
+- Canonical profile identity and runtime state routes live under `/api/v1/voice/profiles/*`
+- Compatibility and ancillary profile workflows still live under `/api/v1/profiles/*`
 
-### Create Voice Profile (Clone Voice)
+Current ownership split:
 
-Create a new voice profile from reference audio.
+| Surface | Canonical Route Family | Notes |
+| --- | --- | --- |
+| clone a new profile | `/api/v1/voice/clone` | Current create flow |
+| list profiles | `/api/v1/voice/profiles` | Canonical |
+| get profile | `/api/v1/voice/profiles/{profile_id}` | Canonical |
+| delete profile | `/api/v1/voice/profiles/{profile_id}` | Canonical |
+| adapter/model/training status | `/api/v1/voice/profiles/{profile_id}/...` | Canonical |
+| training samples | `/api/v1/profiles/{profile_id}/samples...` | Legacy-but-active |
+| checkpoints and quality history | `/api/v1/profiles/{profile_id}/...` | Legacy-but-active |
+| auto-create from diarization | `/api/v1/profiles/auto-create` | Legacy-but-active |
 
-```
-POST /voice/clone
-Content-Type: multipart/form-data
-```
+There is no separate `/api/v1/voice/profiles/{profile_id}/samples` surface yet. Sample management remains on `/api/v1/profiles/*`.
 
-**Parameters:**
+## Canonical Voice Profile Routes
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `reference_audio` | file | Yes | Audio file (WAV, MP3, FLAC, OGG, M4A) with voice sample |
-| `user_id` | string | No | Optional user identifier to associate with profile |
+### Create Voice Profile
 
-**Response (201 Created):**
+`POST /api/v1/voice/clone`
 
-```json
-{
-  "status": "success",
-  "profile_id": "uuid-string",
-  "user_id": "optional-user-id",
-  "audio_duration": 15.5,
-  "vocal_range": {"low": 120.0, "high": 450.0},
-  "created_at": "2026-01-30T12:00:00Z"
-}
-```
+Create a new voice profile from uploaded reference audio.
 
-**Error Responses:**
+Common form fields:
 
-| Code | Error | Description |
-|------|-------|-------------|
-| 400 | `invalid_reference_audio` | Audio file is corrupt or unsupported format |
-| 400 | `insufficient_quality` | Audio quality too low (SNR, clarity) |
-| 400 | `inconsistent_samples` | Multiple voice characteristics detected |
-| 503 | Service unavailable | Voice cloner not initialized |
-
----
+- `reference_audio`: input audio file
+- `user_id`: optional user identifier
+- other role/source metadata may be accepted by the current backend implementation
 
 ### List Voice Profiles
 
-```
-GET /voice/profiles
-```
+`GET /api/v1/voice/profiles`
 
-**Query Parameters:**
+Optional query parameters:
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `user_id` | string | Filter profiles by user ID |
-
-**Response (200 OK):**
-
-```json
-[
-  {
-    "profile_id": "uuid-1",
-    "user_id": "user-123",
-    "name": "My Voice",
-    "created_at": "2026-01-30T12:00:00Z",
-    "samples_count": 25,
-    "model_version": "v3"
-  }
-]
-```
-
----
+- `user_id`: filter profiles by owner
 
 ### Get Voice Profile
 
-```
-GET /voice/profiles/{profile_id}
-```
+`GET /api/v1/voice/profiles/{profile_id}`
 
-**Response (200 OK):**
-
-```json
-{
-  "profile_id": "uuid-string",
-  "user_id": "user-123",
-  "name": "My Voice",
-  "created_at": "2026-01-30T12:00:00Z",
-  "samples_count": 25,
-  "model_version": "v3",
-  "vocal_range": {"low": 120.0, "high": 450.0},
-  "training_history": [
-    {"version": "v1", "samples": 10, "date": "2026-01-25"},
-    {"version": "v2", "samples": 18, "date": "2026-01-28"},
-    {"version": "v3", "samples": 25, "date": "2026-01-30"}
-  ]
-}
-```
-
-**Error Responses:**
-
-| Code | Error | Description |
-|------|-------|-------------|
-| 404 | Profile not found | No profile with given ID |
-| 503 | Service unavailable | Voice cloner not initialized |
-
----
+Returns the serialized profile plus runtime metadata when available, such as selected adapter and adapter artifact information.
 
 ### Delete Voice Profile
 
-```
-DELETE /voice/profiles/{profile_id}
-```
+`DELETE /api/v1/voice/profiles/{profile_id}`
 
-**Response (200 OK):**
+Deletes the profile and associated stored state.
+
+### Get Profile Adapters
+
+`GET /api/v1/voice/profiles/{profile_id}/adapters`
+
+Lists adapter artifacts available to the runtime and the currently selected adapter.
+
+### Select Active Adapter
+
+`POST /api/v1/voice/profiles/{profile_id}/adapter/select`
+
+JSON body:
 
 ```json
 {
-  "status": "success",
-  "profile_id": "uuid-string"
+  "adapter_type": "unified"
 }
 ```
 
----
+Accepted values today:
 
-## Training Samples
+- `hq`
+- `nvfp4`
+- `unified`
+
+Missing profiles return `404`.
+
+### Get Adapter Metrics
+
+`GET /api/v1/voice/profiles/{profile_id}/adapter/metrics`
+
+Returns training/runtime metadata for available adapters.
+
+### Get Runtime Model Info
+
+`GET /api/v1/voice/profiles/{profile_id}/model`
+
+Returns current runtime-facing model information, including whether a trained artifact exists and any embedding metadata.
+
+### Get Profile Training Status
+
+`GET /api/v1/voice/profiles/{profile_id}/training-status`
+
+Returns summary state such as:
+
+- `has_trained_model`
+- `training_status`
+- `model_version`
+
+## Training Sample Routes
+
+Training sample management is still exposed under `/api/v1/profiles/*`.
 
 ### List Samples
 
-```
-GET /profiles/{profile_id}/samples
-```
-
-**Response (200 OK):**
-
-```json
-[
-  {
-    "sample_id": "uuid-1",
-    "profile_id": "profile-uuid",
-    "filename": "song-phrase.wav",
-    "created_at": "2026-01-30T12:00:00Z",
-    "duration": 8.5,
-    "metadata": {
-      "source": "karaoke_session",
-      "song_title": "Bohemian Rhapsody"
-    }
-  }
-]
-```
-
----
+`GET /api/v1/profiles/{profile_id}/samples`
 
 ### Upload Sample
 
-```
-POST /profiles/{profile_id}/samples
-Content-Type: multipart/form-data
-```
+`POST /api/v1/profiles/{profile_id}/samples`
 
-**Parameters:**
+Accepted file field names:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `file` | file | Yes | Audio file with training sample |
-| `metadata` | JSON string | No | Additional metadata (source, song info) |
+- `file`
+- `audio`
 
-**Response (201 Created):**
+Optional form field:
+
+- `metadata`: JSON-encoded metadata object
+
+### Add Sample From Server Path
+
+`POST /api/v1/profiles/{profile_id}/samples/from-path`
+
+JSON body:
 
 ```json
 {
-  "sample_id": "uuid-string",
-  "profile_id": "profile-uuid",
-  "filename": "sample.wav",
-  "file_path": "/uploads/samples/profile-uuid/uuid_sample.wav",
-  "created_at": "2026-01-30T12:00:00Z",
-  "duration": null,
+  "audio_path": "/absolute/path/on/server.wav",
+  "skip_separation": false,
   "metadata": {}
 }
 ```
 
----
+### Get Or Delete A Sample
 
-### Get Sample
+- `GET /api/v1/profiles/{profile_id}/samples/{sample_id}`
+- `DELETE /api/v1/profiles/{profile_id}/samples/{sample_id}`
 
-```
-GET /profiles/{profile_id}/samples/{sample_id}
-```
+### Filter A Sample
 
-**Response (200 OK):** Same as upload response.
+`POST /api/v1/profiles/{profile_id}/samples/{sample_id}/filter`
 
----
+## Training Job Routes
 
-### Delete Sample
-
-```
-DELETE /profiles/{profile_id}/samples/{sample_id}
-```
-
-**Response (200 OK):**
-
-```json
-{
-  "status": "success",
-  "sample_id": "uuid-string"
-}
-```
-
----
-
-## Training Jobs
+Training jobs use the dedicated `/api/v1/training/jobs/*` REST surface.
 
 ### List Training Jobs
 
-```
-GET /training/jobs
-```
+`GET /api/v1/training/jobs`
 
-**Query Parameters:**
+Optional query parameter:
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `profile_id` | string | Filter jobs by profile ID |
-
-**Response (200 OK):**
-
-```json
-[
-  {
-    "job_id": "uuid-1",
-    "profile_id": "profile-uuid",
-    "status": "completed",
-    "created_at": "2026-01-30T10:00:00Z",
-    "started_at": "2026-01-30T10:01:00Z",
-    "completed_at": "2026-01-30T10:15:00Z",
-    "progress": 100,
-    "sample_ids": ["sample-1", "sample-2"],
-    "config": {
-      "lora_rank": 8,
-      "lora_alpha": 16,
-      "learning_rate": 0.0001,
-      "epochs": 10
-    },
-    "error": null,
-    "results": {
-      "final_loss": 0.023,
-      "model_version": "v4"
-    }
-  }
-]
-```
-
----
+- `profile_id`
 
 ### Create Training Job
 
-```
-POST /training/jobs
-Content-Type: application/json
-```
+`POST /api/v1/training/jobs`
 
-**Request Body:**
+Example body:
 
 ```json
 {
-  "profile_id": "profile-uuid",
-  "sample_ids": ["sample-1", "sample-2", "sample-3"],
+  "profile_id": "profile-id",
+  "sample_ids": ["sample-1", "sample-2"],
   "config": {
-    "lora_rank": 8,
-    "lora_alpha": 16,
-    "lora_dropout": 0.1,
-    "learning_rate": 0.0001,
-    "epochs": 10,
-    "use_ewc": true,
-    "ewc_lambda": 1000.0
+    "training_mode": "lora",
+    "epochs": 100,
+    "batch_size": 8,
+    "learning_rate": 0.0001
   }
 }
 ```
 
-**Training Config Options:**
+Current rules:
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `lora_rank` | int | 8 | LoRA adapter rank (4-64) |
-| `lora_alpha` | int | 16 | LoRA scaling factor |
-| `lora_dropout` | float | 0.1 | Dropout rate for LoRA layers |
-| `learning_rate` | float | 1e-4 | Optimizer learning rate |
-| `epochs` | int | 10 | Training epochs per job |
-| `use_ewc` | bool | true | Enable Elastic Weight Consolidation |
-| `ewc_lambda` | float | 1000.0 | EWC regularization strength |
-| `batch_size` | int | 4 | Training batch size |
-| `gradient_accumulation` | int | 1 | Gradient accumulation steps |
-
-**Response (201 Created):**
-
-```json
-{
-  "job_id": "uuid-string",
-  "profile_id": "profile-uuid",
-  "status": "pending",
-  "created_at": "2026-01-30T12:00:00Z",
-  "progress": 0
-}
-```
-
----
+- `profile_id` is required
+- `config` must be an object when present
+- `training_mode` must be `lora` or `full`
+- only `target_user` profiles can be trained
+- if `sample_ids` is omitted, the backend uses all available training samples for the profile
 
 ### Get Training Job
 
-```
-GET /training/jobs/{job_id}
-```
-
-**Response (200 OK):** Same structure as list response (single job).
-
-**Job Status Values:**
-
-| Status | Description |
-|--------|-------------|
-| `pending` | Job queued, waiting for GPU |
-| `running` | Training in progress |
-| `completed` | Training finished successfully |
-| `failed` | Training failed with error |
-| `cancelled` | Job cancelled by user |
-
----
+`GET /api/v1/training/jobs/{job_id}`
 
 ### Cancel Training Job
 
-```
-POST /training/jobs/{job_id}/cancel
-```
+`POST /api/v1/training/jobs/{job_id}/cancel`
 
-**Response (200 OK):**
+### Pause, Resume, Telemetry, And Preview
 
-```json
-{
-  "job_id": "uuid-string",
-  "status": "cancelled",
-  "completed_at": "2026-01-30T12:05:00Z"
-}
-```
+- `POST /api/v1/training/jobs/{job_id}/pause`
+- `POST /api/v1/training/jobs/{job_id}/resume`
+- `GET /api/v1/training/jobs/{job_id}/telemetry`
+- `POST /api/v1/training/preview/{job_id}`
 
-**Error Responses:**
+These routes are the current live training-control surface documented in OpenAPI and used by the frontend training monitor.
 
-| Code | Error | Description |
-|------|-------|-------------|
-| 400 | Cannot cancel | Job already completed/failed/cancelled |
-| 404 | Job not found | No job with given ID |
+## WebSocket Contract
 
----
+Training and conversion updates share the default Socket.IO namespace: `/`.
 
-## Model Checkpoints
+- conversion uses explicit room subscription via `join_job` and `leave_job`
+- training does not currently have a dedicated room handshake
+- training events should be filtered client-side by `job_id`
 
-### List Checkpoints
+Canonical training events:
 
-```
-GET /profiles/{profile_id}/checkpoints
-```
+- `training.started`
+- `training.progress`
+- `training.completed`
+- `training.failed`
+- `training.paused`
+- `training.resumed`
+- `training.cancelled`
 
-**Response (200 OK):**
+Compatibility aliases still emitted for active UI paths:
 
-```json
-[
-  {
-    "checkpoint_id": "v3",
-    "profile_id": "profile-uuid",
-    "created_at": "2026-01-30T12:00:00Z",
-    "samples_count": 25,
-    "metrics": {
-      "loss": 0.023,
-      "speaker_similarity": 0.92
-    }
-  }
-]
-```
+- `training_progress`
+- `training_complete`
+- `training_error`
+- `training_paused`
+- `training_resumed`
+- `training_cancelled`
 
----
+There is no separate `/training` Socket.IO namespace in the current backend.
 
-### Rollback to Checkpoint
+## App Settings
 
-```
-POST /profiles/{profile_id}/checkpoints/{checkpoint_id}/rollback
-```
+The frontend’s durable default-pipeline settings live at:
 
-**Response (200 OK):**
+- `GET /api/v1/settings/app`
+- `PATCH /api/v1/settings/app`
 
-```json
-{
-  "status": "success",
-  "profile_id": "profile-uuid",
-  "rolled_back_to": "v2",
-  "current_version": "v2"
-}
-```
+Current stable fields:
 
----
+- `preferred_offline_pipeline`
+- `preferred_live_pipeline`
 
-### Delete Checkpoint
+Legacy compatibility input:
 
-```
-DELETE /profiles/{profile_id}/checkpoints/{checkpoint_id}
-```
+- `preferred_pipeline`
 
-**Response (200 OK):**
+## Related References
 
-```json
-{
-  "status": "success",
-  "checkpoint_id": "v2"
-}
-```
-
----
-
-## WebSocket Events
-
-Real-time updates via WebSocket connection at `/socket.io`.
-
-### Training Progress
-
-```json
-{
-  "event": "training_progress",
-  "data": {
-    "job_id": "uuid-string",
-    "profile_id": "profile-uuid",
-    "status": "running",
-    "progress": 45,
-    "current_epoch": 5,
-    "total_epochs": 10,
-    "current_loss": 0.034
-  }
-}
-```
-
-### Training Complete
-
-```json
-{
-  "event": "training_complete",
-  "data": {
-    "job_id": "uuid-string",
-    "profile_id": "profile-uuid",
-    "status": "completed",
-    "model_version": "v4",
-    "metrics": {
-      "final_loss": 0.023,
-      "speaker_similarity": 0.92
-    }
-  }
-}
-```
-
----
-
-## Error Response Format
-
-All errors follow this format:
-
-```json
-{
-  "error": "Human-readable error message",
-  "message": "Technical details (debug mode only)",
-  "error_code": "machine_readable_code",
-  "details": {}
-}
-```
-
----
-
-## Rate Limits
-
-| Endpoint | Limit |
-|----------|-------|
-| `/voice/clone` | 10/minute |
-| `/training/jobs` (POST) | 5/minute |
-| All other endpoints | 60/minute |
-
----
-
-*Generated for AutoVoice v1.0 - Voice Profile & Continuous Training*
+- [docs/api/README.md](./api/README.md)
+- [docs/api/websocket-events.md](./api/websocket-events.md)
+- [docs/current-truth.md](./current-truth.md)

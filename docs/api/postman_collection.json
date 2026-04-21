@@ -25,6 +25,11 @@
       "key": "profile_id",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "sample_id",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -168,17 +173,12 @@
                   "type": "text"
                 },
                 {
-                  "key": "samples",
-                  "type": "file",
-                  "src": []
+                  "key": "user_id",
+                  "value": "local-user",
+                  "type": "text"
                 },
                 {
-                  "key": "samples",
-                  "type": "file",
-                  "src": []
-                },
-                {
-                  "key": "samples",
+                  "key": "reference_audio",
                   "type": "file",
                   "src": []
                 }
@@ -189,7 +189,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "{{api_version}}", "voice", "clone"]
             },
-            "description": "Create voice profile from audio samples (minimum 3 samples)"
+            "description": "Create a voice profile from one reference_audio upload."
           },
           "response": []
         },
@@ -250,6 +250,34 @@
           "response": []
         },
         {
+          "name": "Get Profile Model",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/voice/profiles/{{profile_id}}/model",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "voice", "profiles", "{{profile_id}}", "model"]
+            },
+            "description": "Get runtime model information for a profile"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Profile Training Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/voice/profiles/{{profile_id}}/training-status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "voice", "profiles", "{{profile_id}}", "training-status"]
+            },
+            "description": "Get summarized training readiness and status for a profile"
+          },
+          "response": []
+        },
+        {
           "name": "Select Adapter",
           "request": {
             "method": "POST",
@@ -303,14 +331,14 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"profile_id\": \"{{profile_id}}\",\n  \"epochs\": 100,\n  \"batch_size\": 8,\n  \"learning_rate\": 0.0001,\n  \"adapter_type\": \"unified\"\n}"
+              "raw": "{\n  \"profile_id\": \"{{profile_id}}\",\n  \"config\": {\n    \"training_mode\": \"lora\",\n    \"epochs\": 100,\n    \"batch_size\": 8,\n    \"learning_rate\": 0.0001\n  }\n}"
             },
             "url": {
               "raw": "{{base_url}}/api/{{api_version}}/training/jobs",
               "host": ["{{base_url}}"],
               "path": ["api", "{{api_version}}", "training", "jobs"]
             },
-            "description": "Start training job for voice profile"
+            "description": "Start a training job for a target-user profile. If sample_ids is omitted, all profile samples are used."
           },
           "response": []
         },
@@ -339,6 +367,142 @@
               "path": ["api", "{{api_version}}", "training", "jobs", "{{job_id}}", "cancel"]
             },
             "description": "Cancel a running training job"
+          },
+          "response": []
+        },
+        {
+          "name": "Pause Training Job",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/training/jobs/{{job_id}}/pause",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "training", "jobs", "{{job_id}}", "pause"]
+            },
+            "description": "Pause a running training job"
+          },
+          "response": []
+        },
+        {
+          "name": "Resume Training Job",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/training/jobs/{{job_id}}/resume",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "training", "jobs", "{{job_id}}", "resume"]
+            },
+            "description": "Resume a paused training job"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Training Telemetry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/training/jobs/{{job_id}}/telemetry",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "training", "jobs", "{{job_id}}", "telemetry"]
+            },
+            "description": "Get runtime telemetry and preview availability for a training job"
+          },
+          "response": []
+        },
+        {
+          "name": "Generate Training Preview",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sample_id\": \"{{sample_id}}\",\n  \"duration_seconds\": 4.0,\n  \"offset_seconds\": 0.0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/training/preview/{{job_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "training", "preview", "{{job_id}}"]
+            },
+            "description": "Generate a short WAV preview clip from the training sample set"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Profile Samples",
+      "item": [
+        {
+          "name": "List Samples",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/profiles/{{profile_id}}/samples",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "profiles", "{{profile_id}}", "samples"]
+            },
+            "description": "List training samples for a profile. This remains on the legacy-but-active /profiles surface."
+          },
+          "response": []
+        },
+        {
+          "name": "Upload Sample",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "metadata",
+                  "value": "{\"source\":\"manual_upload\"}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/profiles/{{profile_id}}/samples",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "profiles", "{{profile_id}}", "samples"]
+            },
+            "description": "Upload a training sample using either the file or audio form field."
+          },
+          "response": []
+        },
+        {
+          "name": "Add Sample From Path",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"audio_path\": \"/absolute/path/on/server.wav\",\n  \"skip_separation\": false,\n  \"metadata\": {}\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/profiles/{{profile_id}}/samples/from-path",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "profiles", "{{profile_id}}", "samples", "from-path"]
+            },
+            "description": "Add a sample from a server-side path and optionally run separation."
           },
           "response": []
         }
@@ -495,6 +659,43 @@
               "path": ["api", "{{api_version}}", "system", "info"]
             },
             "description": "Get system information"
+          },
+          "response": []
+        },
+        {
+          "name": "Get App Settings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/settings/app",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "settings", "app"]
+            },
+            "description": "Read durable application defaults including preferred_offline_pipeline and preferred_live_pipeline."
+          },
+          "response": []
+        },
+        {
+          "name": "Update App Settings",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"preferred_offline_pipeline\": \"quality_seedvc\",\n  \"preferred_live_pipeline\": \"realtime\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/settings/app",
+              "host": ["{{base_url}}"],
+              "path": ["api", "{{api_version}}", "settings", "app"]
+            },
+            "description": "Persist durable app defaults. Legacy preferred_pipeline input is compatibility-only."
           },
           "response": []
         }

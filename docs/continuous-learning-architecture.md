@@ -6,6 +6,28 @@
 **Task:** 2.5
 **Date:** 2026-01-24
 
+## Current Contract Notes
+
+This document still describes the broad training architecture, but the live product contract has moved in a few important ways:
+
+- canonical profile identity routes are `/api/v1/voice/profiles/*`
+- training sample management still lives on `/api/v1/profiles/{profile_id}/samples*`
+- training jobs live on `/api/v1/training/jobs*`
+- pause, resume, telemetry, and preview controls are live at:
+  - `POST /api/v1/training/jobs/{job_id}/pause`
+  - `POST /api/v1/training/jobs/{job_id}/resume`
+  - `GET /api/v1/training/jobs/{job_id}/telemetry`
+  - `POST /api/v1/training/preview/{job_id}`
+- realtime job updates use the default Socket.IO namespace `/`
+- conversion has explicit room joins via `join_job` and `leave_job`
+- training currently does not have dedicated room semantics and should be filtered by `job_id` on the client
+
+For the current API surface, prefer:
+
+- [api/README.md](./api/README.md)
+- [api/websocket-events.md](./api/websocket-events.md)
+- [api-voice-profile.md](./api-voice-profile.md)
+
 ## System Overview
 
 ```
