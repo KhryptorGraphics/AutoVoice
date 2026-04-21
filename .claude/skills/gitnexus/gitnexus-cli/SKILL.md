@@ -20,7 +20,7 @@ Run from the project root. This parses all source files, builds the knowledge gr
 | Flag           | Effect                                                           |
 | -------------- | ---------------------------------------------------------------- |
 | `--force`      | Force full re-index even if up to date                           |
-| `--embeddings` | Enable embedding generation for semantic search (off by default) |
+| `--embeddings` | Generate or resume embeddings for semantic search across all graph nodes |
 
 **When to run:** First time in a project, after major code changes, or when `gitnexus://repo/{name}/context` reports the index is stale.
 
@@ -79,4 +79,4 @@ Lists all repositories registered in `~/.gitnexus/registry.json`. The MCP `list_
 
 - **"Not inside a git repository"**: Run from a directory inside a git repo
 - **Index is stale after re-analyzing**: Restart Claude Code to reload the MCP server
-- **Embeddings slow**: Omit `--embeddings` (it's off by default) or set `OPENAI_API_KEY` for faster API-based embedding
+- **Embeddings still missing**: Re-run `npx gitnexus analyze --embeddings`; on an up-to-date repo this resumes embeddings without rebuilding the graph
