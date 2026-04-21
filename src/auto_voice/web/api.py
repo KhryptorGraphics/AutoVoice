@@ -122,7 +122,11 @@ from ..runtime_contract import (
     OFFLINE_PIPELINES,
 )
 from .offline_realtime import run_offline_realtime_conversion
-from .persistence import DEFAULT_AUDIO_ROUTER_CONFIG, DEFAULT_DEVICE_CONFIG
+from .persistence import (
+    DEFAULT_DEVICE_CONFIG,
+    DEFAULT_PITCH_CONFIG,
+    DEFAULT_SEPARATION_CONFIG,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +250,33 @@ def _get_state_store():
     if state_store is None:
         raise RuntimeError('Application state store unavailable')
     return state_store
+
+
+def _default_runtime_device() -> str:
+    return 'cuda' if TORCH_AVAILABLE and torch.cuda.is_available() else 'cpu'
+
+
+def _default_gpu_enabled() -> bool:
+    return bool(TORCH_AVAILABLE and torch.cuda.is_available())
+
+
+def _load_separation_config() -> Dict[str, Any]:
+    config = _get_state_store().get_separation_config()
+    if config.get('device') == DEFAULT_SEPARATION_CONFIG['device'] and _default_runtime_device() == 'cuda':
+        config['device'] = 'cuda'
+    return config
+
+
+def _load_pitch_config() -> Dict[str, Any]:
+    config = _get_state_store().get_pitch_config()
+    if (
+        config.get('device') == DEFAULT_PITCH_CONFIG['device']
+        and config.get('use_gpu') == DEFAULT_PITCH_CONFIG['use_gpu']
+        and _default_gpu_enabled()
+    ):
+        config['use_gpu'] = True
+        config['device'] = 'cuda'
+    return config
 
 
 def _get_data_dir() -> Path:
@@ -3748,14 +3779,10 @@ def delete_preset(preset_id: str):
 # MODEL MANAGEMENT ENDPOINTS
 # =============================================================================
 
-# In-memory storage for loaded models state
-_loaded_models: Dict[str, Dict[str, Any]] = {}
-
-
 @api_bp.route('/models/loaded', methods=['GET'])
 def get_loaded_models():
     """Get list of currently loaded models."""
-    return jsonify({'models': list(_loaded_models.values())})
+    return jsonify({'models': _get_state_store().list_loaded_models()})
 
 
 @api_bp.route('/models/load', methods=['POST'])
@@ -3771,15 +3798,21 @@ def load_model():
             return validation_error_response('model_type is required')
 
         path = data.get('path')
-
-        # TODO: Actually load the model
+        runtime_backend = data.get('runtime_backend', 'pytorch')
+        device = data.get('device', _default_runtime_device())
+        memory_usage = data.get('memory_usage', 0.0)
         model_info = {
             'model_type': model_type,
             'path': path,
+            'name': data.get('name') or model_type,
+            'loaded': True,
             'loaded_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-            'status': 'loaded'
+            'runtime_backend': runtime_backend,
+            'device': device,
+            'memory_usage': memory_usage,
+            'status': 'loaded',
         }
-        _loaded_models[model_type] = model_info
+        _get_state_store().save_loaded_model(model_type, model_info)
         logger.info(f"Loaded model: {model_type}")
         return jsonify(model_info), 201
     except Exception as e:
@@ -3799,8 +3832,7 @@ def unload_model():
         if not model_type:
             return validation_error_response('model_type is required')
 
-        if model_type in _loaded_models:
-            del _loaded_models[model_type]
+        _get_state_store().delete_loaded_model(model_type)
 
         logger.info(f"Unloaded model: {model_type}")
         return '', 204
@@ -3881,33 +3913,10 @@ def build_tensorrt():
 # CONFIGURATION ENDPOINTS
 # =============================================================================
 
-# Default configurations
-_separation_config = {
-    'model': 'htdemucs',
-    'stems': ['vocals'],
-    'overlap': 0.25,
-    'segment_length': None,
-    'shifts': 1,
-    'device': 'cuda' if TORCH_AVAILABLE and torch.cuda.is_available() else 'cpu'
-}
-
-_pitch_config = {
-    'method': 'rmvpe',
-    'hop_length': 160,
-    'f0_min': 50,
-    'f0_max': 1100,
-    'threshold': 0.3,
-    'use_gpu': bool(TORCH_AVAILABLE and torch.cuda.is_available()),
-    'device': 'cuda' if TORCH_AVAILABLE and torch.cuda.is_available() else 'cpu'
-}
-
-_audio_router_config = dict(DEFAULT_AUDIO_ROUTER_CONFIG)
-
-
 @api_bp.route('/config/separation', methods=['GET'])
 def get_separation_config():
     """Get vocal separation configuration."""
-    return jsonify(_separation_config)
+    return jsonify(_load_separation_config())
 
 
 @api_bp.route('/config/separation', methods=['POST', 'PATCH'])
@@ -3918,6 +3927,7 @@ def update_separation_config():
         if not data:
             return validation_error_response('No JSON data provided')
 
+        existing = _load_separation_config()
         key_map = {
             'model': 'model',
             'stems': 'stems',
@@ -3927,12 +3937,14 @@ def update_separation_config():
             'shifts': 'shifts',
             'device': 'device',
         }
+        updates = {}
         for key, mapped_key in key_map.items():
             if key in data:
-                _separation_config[mapped_key] = data[key]
+                updates[mapped_key] = data[key]
 
-        logger.info(f"Updated separation config: {_separation_config}")
-        return jsonify(_separation_config)
+        config = _get_state_store().update_separation_config({**existing, **updates})
+        logger.info(f"Updated separation config: {config}")
+        return jsonify(config)
     except Exception as e:
         logger.error(f"Error updating separation config: {e}", exc_info=True)
         return error_response(str(e))
@@ -3941,7 +3953,7 @@ def update_separation_config():
 @api_bp.route('/config/pitch', methods=['GET'])
 def get_pitch_config():
     """Get pitch extraction configuration."""
-    return jsonify(_pitch_config)
+    return jsonify(_load_pitch_config())
 
 
 @api_bp.route('/config/pitch', methods=['POST', 'PATCH'])
@@ -3952,14 +3964,17 @@ def update_pitch_config():
         if not data:
             return validation_error_response('No JSON data provided')
 
+        existing = _load_pitch_config()
+        updates = {}
         for key in ['method', 'hop_length', 'f0_min', 'f0_max', 'threshold', 'use_gpu', 'device']:
             if key in data:
-                _pitch_config[key] = data[key]
+                updates[key] = data[key]
         if 'use_gpu' in data:
-            _pitch_config['device'] = 'cuda' if data['use_gpu'] else 'cpu'
+            updates['device'] = 'cuda' if data['use_gpu'] else 'cpu'
 
-        logger.info(f"Updated pitch config: {_pitch_config}")
-        return jsonify(_pitch_config)
+        config = _get_state_store().update_pitch_config({**existing, **updates})
+        logger.info(f"Updated pitch config: {config}")
+        return jsonify(config)
     except Exception as e:
         logger.error(f"Error updating pitch config: {e}", exc_info=True)
         return error_response(str(e))
@@ -3969,7 +3984,6 @@ def update_pitch_config():
 def get_audio_router_config():
     """Get audio router configuration."""
     config = _get_state_store().get_audio_router_config()
-    _audio_router_config.update(config)
     return jsonify(config)
 
 
@@ -3989,7 +4003,6 @@ def update_audio_router_config():
                 updates[key] = data[key]
 
         config = _get_state_store().update_audio_router_config(updates)
-        _audio_router_config.update(config)
         logger.info(f"Updated audio router config: {config}")
         return jsonify(config)
     except Exception as e:
@@ -4053,10 +4066,6 @@ def update_conversion_record(record_id: str):
 # CHECKPOINT ENDPOINTS
 # =============================================================================
 
-# In-memory storage for checkpoints (TODO: persist to database)
-_profile_checkpoints: Dict[str, Dict[str, Dict[str, Any]]] = {}
-
-
 @api_bp.route('/profiles/<profile_id>/checkpoints', methods=['GET'])
 def list_checkpoints(profile_id: str):
     """List all checkpoints for a profile."""
@@ -4080,8 +4089,6 @@ def delete_checkpoint(profile_id: str, checkpoint_id: str):
     """Delete a checkpoint."""
     if not _get_state_store().delete_checkpoint(profile_id, checkpoint_id):
         return not_found_response('Checkpoint not found')
-    if profile_id in _profile_checkpoints:
-        _profile_checkpoints[profile_id].pop(checkpoint_id, None)
     logger.info(f"Deleted checkpoint {checkpoint_id} from profile {profile_id}")
     return '', 204
 

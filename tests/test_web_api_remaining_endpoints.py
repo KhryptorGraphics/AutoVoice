@@ -158,24 +158,20 @@ def app_remaining():
     )
     app.socketio = socketio
 
-    web_api._loaded_models.clear()
     web_api._profile_samples.clear()
     web_api._separation_jobs.clear()
     web_api._diarization_results.clear()
     web_api._segment_assignments.clear()
     web_api._presets.clear()
     web_api._conversion_history.clear()
-    web_api._profile_checkpoints.clear()
     web_api._youtube_downloader = None
     yield app
-    web_api._loaded_models.clear()
     web_api._profile_samples.clear()
     web_api._separation_jobs.clear()
     web_api._diarization_results.clear()
     web_api._segment_assignments.clear()
     web_api._presets.clear()
     web_api._conversion_history.clear()
-    web_api._profile_checkpoints.clear()
     web_api._youtube_downloader = None
 
 

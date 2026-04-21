@@ -1,15 +1,20 @@
 version: 1
 name: autovoice-research
 issue_id: AV-jg6
+parallelism: 2
 tasks:
   - id: backlog
     description: Capture the ready backlog snapshot
+    lane: research
+    role: backlog_analyst
     cwd: .
     command: "bd ready > \"$AUTOVOICE_SWARM_RUN_DIR/artifacts/bd-ready.txt\""
     artifacts:
       - artifacts/bd-ready.txt
   - id: gitnexus
     description: Capture GitNexus index status
+    lane: research
+    role: code_context_analyst
     cwd: .
     deps: [backlog]
     command: "npx gitnexus status > \"$AUTOVOICE_SWARM_RUN_DIR/artifacts/gitnexus-status.txt\""

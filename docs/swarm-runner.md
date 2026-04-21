@@ -2,12 +2,14 @@
 
 `autovoice swarm` is the canonical repo-native swarm runner.
 
-It executes explicit YAML manifests, persists run state under `DATA_DIR/swarm_runs/`, and writes:
+It executes explicit YAML manifests as a dependency-aware DAG, persists run state under
+`DATA_DIR/swarm_runs/`, and writes:
 
 - `manifest.snapshot.json`
 - `ledger.json`
 - `completion.json`
 - per-task logs under `tasks/`
+- optional MemKraft channel/task/agent state under `DATA_DIR/swarm_memory/`
 
 ## Commands
 
@@ -21,9 +23,11 @@ autovoice swarm status --run-id rc-dry-run
 
 - backlog context: `bd`
 - code-intelligence context: GitNexus
-- memory fallback: the available `memory` MCP
+- durable swarm memory: MemKraft
+- fallback if MemKraft import is unavailable: file-backed JSON under `DATA_DIR/swarm_memory/fallback/`
 
-A dedicated MemKraft MCP server is not installed in this workspace today, so manifests and ledgers are the durable swarm memory layer.
+Each manifest can optionally declare `parallelism`, `lane`, and `role` metadata. The runner preserves
+backward compatibility with older manifests that omit those fields.
 
 ## Compatibility Wrappers
 

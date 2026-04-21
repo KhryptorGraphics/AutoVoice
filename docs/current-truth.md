@@ -80,12 +80,14 @@ Read these first:
 - `bd` is the canonical task and planning source of truth.
 - GitNexus is the canonical code-intelligence layer for repo exploration and impact analysis.
 - `config/swarm_config.yaml`, `config/agent_contexts.yaml`, `config/swarm_manifests/*.yaml`, and
-  `autovoice swarm ...` define the canonical deterministic swarm runner.
+  `autovoice swarm ...` define the canonical DAG-based swarm runner.
 - `scripts/launch_swarms.sh` and `scripts/swarm_orchestrator.py` are compatibility wrappers around
   the repo-native swarm runner, not separate orchestration systems.
-- A dedicated MemKraft MCP server is not installed in this workspace today. Until that exists, use the
-  active repo state, `bd`, GitNexus, and the available `memory` MCP fallback instead of assuming a
-  separate long-lived swarm-memory service.
+- MemKraft is now the preferred durable swarm memory backend for `autovoice swarm` runs when the
+  Python package is installed. Run ledgers under `DATA_DIR/swarm_runs/` remain the canonical
+  execution record, and `DATA_DIR/swarm_memory/` stores the MemKraft channel/task/agent context.
+- GitNexus remains the required code-context input; do not treat swarm memory as a replacement for
+  fresh code-graph inspection.
 
 ## Historical Artifacts
 
@@ -94,6 +96,7 @@ These are useful for archaeology but are not the current product spec:
 - `conductor/`
 - `ORCHESTRATOR*.md`
 - date-stamped coverage and readiness reports under `docs/`
+- generated runtime reports under `reports/` and `output/reports/`
 - older swarm/claude-flow helper scripts and notes
 
 Use those only after validating against the canonical docs and live code paths.

@@ -97,8 +97,10 @@ Canonical for the MVP:
 Still experimental or research-heavy:
 
 - model benchmarking and alternative pipelines outside the primary UI flows
-- large model assets and generated artifacts stored in-repo
+- large model assets that are still intentionally shipped in-repo for local-first evaluation
 - broader deployment hardening beyond a trusted local single-user setup
+- generated dependency trees and report outputs under `node_modules/`, `reports/`, and `output/reports/`
+  are not canonical source and should remain ignored/untracked
 
 ## Verification
 

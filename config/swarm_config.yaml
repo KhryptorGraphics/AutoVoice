@@ -6,9 +6,10 @@ runner:
   context_sources:
     backlog: bd
     code_intelligence: gitnexus
-    memory: memory
+    memory: memkraft
   notes:
     - This file is the canonical repo-native swarm runner config.
+    - MemKraft is the preferred durable swarm memory backend when the package is installed.
     - Historical claude-flow/hive/cipher settings have been retired.
 manifests:
   all: config/swarm_manifests/full.yaml

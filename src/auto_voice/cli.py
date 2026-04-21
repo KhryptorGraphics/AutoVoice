@@ -40,7 +40,7 @@ def _serve_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
 
 
 def _swarm_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    parser = subparsers.add_parser("swarm", help="Run deterministic swarm manifests")
+    parser = subparsers.add_parser("swarm", help="Run DAG-based swarm manifests")
     parser.add_argument(
         "--data-dir",
         default=str(DEFAULT_DATA_DIR),

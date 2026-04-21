@@ -10,7 +10,6 @@ def app_models(tmp_path):
     pytest.importorskip("flask_swagger_ui", reason="flask_swagger_ui not installed")
 
     from auto_voice.web.app import create_app
-    from auto_voice.web import api as web_api
 
     app, socketio = create_app(
         config={
@@ -20,9 +19,7 @@ def app_models(tmp_path):
         testing=True,
     )
     app.socketio = socketio
-    web_api._loaded_models.clear()
     yield app
-    web_api._loaded_models.clear()
 
 
 @pytest.fixture
@@ -46,7 +43,10 @@ def test_model_load_list_and_unload_round_trip(client_models):
 
     listed = client_models.get("/api/v1/models/loaded")
     assert listed.status_code == 200
-    assert listed.get_json()["models"][0]["model_type"] == "encoder"
+    model = listed.get_json()["models"][0]
+    assert model["model_type"] == "encoder"
+    assert model["loaded"] is True
+    assert model["runtime_backend"] == "pytorch"
 
     unloaded = client_models.post("/api/v1/models/unload", json={"model_type": "encoder"})
     assert unloaded.status_code == 204
@@ -71,6 +71,21 @@ def test_model_load_and_unload_validate_payload(client_models):
     missing_unload_type = client_models.post("/api/v1/models/unload", json={"path": "/tmp/model.pt"})
     assert missing_unload_type.status_code == 400
     assert "model_type is required" in missing_unload_type.get_json()["error"]
+
+
+def test_model_load_is_persisted(app_models, client_models):
+    from auto_voice.web.persistence import AppStateStore
+
+    response = client_models.post(
+        "/api/v1/models/load",
+        json={"model_type": "encoder", "path": "/tmp/encoder.pt", "runtime_backend": "tensorrt", "device": "cuda"},
+    )
+    assert response.status_code == 201
+
+    persisted = AppStateStore(app_models.config["DATA_DIR"]).get_loaded_model("encoder")
+    assert persisted is not None
+    assert persisted["runtime_backend"] == "tensorrt"
+    assert persisted["device"] == "cuda"
 
 
 def test_tensorrt_status_reports_engine_inventory(client_models, monkeypatch):

@@ -35,6 +35,25 @@ DEFAULT_DEVICE_CONFIG: Dict[str, Any] = {
     "sample_rate": 22050,
 }
 
+DEFAULT_SEPARATION_CONFIG: Dict[str, Any] = {
+    "model": "htdemucs",
+    "stems": ["vocals"],
+    "overlap": 0.25,
+    "segment_length": None,
+    "shifts": 1,
+    "device": "cpu",
+}
+
+DEFAULT_PITCH_CONFIG: Dict[str, Any] = {
+    "method": "rmvpe",
+    "hop_length": 160,
+    "f0_min": 50,
+    "f0_max": 1100,
+    "threshold": 0.3,
+    "use_gpu": False,
+    "device": "cpu",
+}
+
 
 def _normalize_app_settings(raw_settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Normalize app settings while preserving one-release legacy compatibility."""
@@ -145,6 +164,72 @@ def _normalize_device_config(raw_config: Optional[Dict[str, Any]]) -> Dict[str, 
     return config
 
 
+def _normalize_separation_config(raw_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    config = deepcopy(DEFAULT_SEPARATION_CONFIG)
+    incoming = deepcopy(raw_config or {})
+
+    if "model" in incoming and incoming["model"]:
+        config["model"] = str(incoming["model"])
+    if "stems" in incoming and isinstance(incoming["stems"], list):
+        config["stems"] = [str(stem) for stem in incoming["stems"] if str(stem).strip()]
+
+    for key in ("overlap",):
+        if key in incoming:
+            config[key] = _coerce_float(incoming.get(key), config[key], minimum=0.0, maximum=1.0)
+
+    if "segment_length" in incoming:
+        value = incoming.get("segment_length")
+        if value in (None, ""):
+            config["segment_length"] = None
+        else:
+            try:
+                segment_length = float(value)
+                config["segment_length"] = segment_length if segment_length > 0 else None
+            except (TypeError, ValueError):
+                config["segment_length"] = DEFAULT_SEPARATION_CONFIG["segment_length"]
+
+    if "shifts" in incoming:
+        try:
+            shifts = int(incoming.get("shifts"))
+            config["shifts"] = shifts if shifts > 0 else DEFAULT_SEPARATION_CONFIG["shifts"]
+        except (TypeError, ValueError):
+            config["shifts"] = DEFAULT_SEPARATION_CONFIG["shifts"]
+
+    if "device" in incoming and incoming["device"] in {"cpu", "cuda"}:
+        config["device"] = incoming["device"]
+
+    return config
+
+
+def _normalize_pitch_config(raw_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    config = deepcopy(DEFAULT_PITCH_CONFIG)
+    incoming = deepcopy(raw_config or {})
+
+    if "method" in incoming and incoming["method"]:
+        config["method"] = str(incoming["method"])
+
+    for key in ("hop_length", "f0_min", "f0_max"):
+        if key in incoming:
+            try:
+                value = int(incoming.get(key))
+                if value > 0:
+                    config[key] = value
+            except (TypeError, ValueError):
+                config[key] = DEFAULT_PITCH_CONFIG[key]
+
+    if "threshold" in incoming:
+        config["threshold"] = _coerce_float(incoming.get("threshold"), config["threshold"], minimum=0.0, maximum=1.0)
+
+    if "use_gpu" in incoming:
+        config["use_gpu"] = _coerce_bool(incoming.get("use_gpu"), config["use_gpu"])
+        config["device"] = "cuda" if config["use_gpu"] else "cpu"
+    elif "device" in incoming and incoming["device"] in {"cpu", "cuda"}:
+        config["device"] = incoming["device"]
+        config["use_gpu"] = incoming["device"] == "cuda"
+
+    return config
+
+
 def _normalize_karaoke_session(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not snapshot:
         return None
@@ -204,6 +289,9 @@ class AppStateStore:
             "profile_checkpoints": self.base_dir / "profile_checkpoints.json",
             "youtube_history": self.base_dir / "youtube_history.json",
             "app_settings": self.base_dir / "app_settings.json",
+            "loaded_models": self.base_dir / "loaded_models.json",
+            "separation_config": self.base_dir / "separation_config.json",
+            "pitch_config": self.base_dir / "pitch_config.json",
             "audio_router_config": self.base_dir / "audio_router_config.json",
             "device_config": self.base_dir / "device_config.json",
             "karaoke_sessions": self.base_dir / "karaoke_sessions.json",
@@ -351,6 +439,51 @@ class AppStateStore:
         settings.update(deepcopy(updates))
         normalized = _normalize_app_settings(settings)
         self._write("app_settings", normalized)
+        return normalized
+
+    def list_loaded_models(self) -> List[Dict[str, Any]]:
+        models = list(self._read("loaded_models", {}).values())
+        models.sort(key=lambda item: (item.get("model_type", ""), item.get("loaded_at", "")))
+        return models
+
+    def get_loaded_model(self, model_type: str) -> Optional[Dict[str, Any]]:
+        return self._read("loaded_models", {}).get(model_type)
+
+    def save_loaded_model(self, model_type: str, model_info: Dict[str, Any]) -> Dict[str, Any]:
+        models = self._read("loaded_models", {})
+        models[str(model_type)] = deepcopy(model_info)
+        self._write("loaded_models", models)
+        return model_info
+
+    def delete_loaded_model(self, model_type: str) -> bool:
+        models = self._read("loaded_models", {})
+        if model_type not in models:
+            return False
+        del models[model_type]
+        self._write("loaded_models", models)
+        return True
+
+    def clear_loaded_models(self) -> None:
+        self._write("loaded_models", {})
+
+    def get_separation_config(self) -> Dict[str, Any]:
+        return _normalize_separation_config(self._read("separation_config", DEFAULT_SEPARATION_CONFIG))
+
+    def update_separation_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        config = self.get_separation_config()
+        config.update(deepcopy(updates))
+        normalized = _normalize_separation_config(config)
+        self._write("separation_config", normalized)
+        return normalized
+
+    def get_pitch_config(self) -> Dict[str, Any]:
+        return _normalize_pitch_config(self._read("pitch_config", DEFAULT_PITCH_CONFIG))
+
+    def update_pitch_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        config = self.get_pitch_config()
+        config.update(deepcopy(updates))
+        normalized = _normalize_pitch_config(config)
+        self._write("pitch_config", normalized)
         return normalized
 
     def get_audio_router_config(self) -> Dict[str, Any]:

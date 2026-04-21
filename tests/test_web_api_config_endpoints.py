@@ -90,6 +90,36 @@ def test_audio_router_config_is_persisted(app_config_api, client_config_api):
     assert persisted["voice_gain"] == 1.1
 
 
+def test_separation_config_is_persisted(app_config_api, client_config_api):
+    from auto_voice.web.persistence import AppStateStore
+
+    response = client_config_api.patch(
+        "/api/v1/config/separation",
+        json={"model": "htdemucs_ft", "segment": 16, "device": "cpu"},
+    )
+
+    assert response.status_code == 200
+    persisted = AppStateStore(app_config_api.config["DATA_DIR"]).get_separation_config()
+    assert persisted["model"] == "htdemucs_ft"
+    assert persisted["segment_length"] == 16
+    assert persisted["device"] == "cpu"
+
+
+def test_pitch_config_is_persisted(app_config_api, client_config_api):
+    from auto_voice.web.persistence import AppStateStore
+
+    response = client_config_api.patch(
+        "/api/v1/config/pitch",
+        json={"hop_length": 256, "threshold": 0.4, "use_gpu": False},
+    )
+
+    assert response.status_code == 200
+    persisted = AppStateStore(app_config_api.config["DATA_DIR"]).get_pitch_config()
+    assert persisted["hop_length"] == 256
+    assert persisted["threshold"] == 0.4
+    assert persisted["device"] == "cpu"
+
+
 def test_device_config_is_persisted(app_config_api, client_config_api, monkeypatch):
     from auto_voice.web.persistence import AppStateStore
 

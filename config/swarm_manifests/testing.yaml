@@ -1,13 +1,18 @@
 version: 1
 name: autovoice-testing
 issue_id: AV-jg6
+parallelism: 2
 tasks:
   - id: platform-scripts
     description: Validate platform bootstrap scripts
+    lane: testing
+    role: platform_tester
     cwd: .
     command: "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_platform_scripts.py -q"
   - id: coverage-slice
     description: Run the critical remaining-module coverage slice
+    lane: testing
+    role: coverage_tester
     cwd: .
     deps: [platform-scripts]
     command: "python scripts/run_remaining_module_coverage.py"

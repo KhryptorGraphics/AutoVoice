@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -14,6 +15,9 @@ from urllib.request import Request, urlopen
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+from auto_voice.utils.repo_boundary_audit import run_repo_boundary_audit
 
 
 def _fetch_json(url: str) -> dict:
@@ -49,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "base_url": args.base_url.rstrip("/"),
         "compose": None,
+        "repo_boundaries": run_repo_boundary_audit(PROJECT_ROOT),
         "checks": [],
     }
 
@@ -72,7 +77,11 @@ def main(argv: list[str] | None = None) -> int:
     report_path = report_dir / "release-candidate-validation.json"
     report_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
-    all_ok = bool(results["compose"]["ok"]) and all(check["ok"] for check in results["checks"])
+    all_ok = (
+        bool(results["compose"]["ok"])
+        and bool(results["repo_boundaries"]["ok"])
+        and all(check["ok"] for check in results["checks"])
+    )
     print(report_path)
     return 0 if all_ok else 1
 

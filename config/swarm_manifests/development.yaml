@@ -1,13 +1,18 @@
 version: 1
 name: autovoice-development
 issue_id: AV-jg6
+parallelism: 2
 tasks:
   - id: compile
     description: Compile backend sources
+    lane: development
+    role: backend_owner
     cwd: .
     command: "python -m compileall src tests"
   - id: contract-smoke
     description: Run a narrow backend contract slice
+    lane: development
+    role: qa_owner
     cwd: .
     deps: [compile]
     command: "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_websocket_contract.py tests/test_api_docs_contract.py -q"

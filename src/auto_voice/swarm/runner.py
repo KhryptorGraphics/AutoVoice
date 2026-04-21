@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import subprocess
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 import yaml
+
+from auto_voice.swarm.memory import SwarmMemoryBackend
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,8 @@ class TaskSpec:
     description: str
     cwd: str
     artifacts: tuple[str, ...]
+    lane: str
+    role: str
 
 
 def load_manifest(path: Path) -> Dict[str, Any]:
@@ -57,6 +62,8 @@ def task_specs(payload: Dict[str, Any]) -> List[TaskSpec]:
                 description=str(raw.get("description") or task_id),
                 cwd=str(raw.get("cwd") or "."),
                 artifacts=tuple(str(item) for item in raw.get("artifacts", []) or []),
+                lane=str(raw.get("lane") or "default").strip() or "default",
+                role=str(raw.get("role") or "").strip(),
             )
         )
     for spec in specs:
@@ -101,6 +108,9 @@ def _run_task(spec: TaskSpec, run_dir: Path, *, dry_run: bool, project_root: Pat
     env = os.environ.copy()
     env["AUTOVOICE_SWARM_RUN_DIR"] = str(run_dir)
     env.setdefault("AUTOVOICE_PROJECT_ROOT", str(project_root))
+    env["AUTOVOICE_SWARM_TASK_ID"] = spec.id
+    env["AUTOVOICE_SWARM_LANE"] = spec.lane
+    env["AUTOVOICE_SWARM_ROLE"] = spec.role
     current_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
         f"{project_root / 'src'}:{current_pythonpath}" if current_pythonpath else str(project_root / "src")
@@ -151,12 +161,22 @@ def _run_task(spec: TaskSpec, run_dir: Path, *, dry_run: bool, project_root: Pat
         "cwd": spec.cwd,
         "command": spec.command,
         "artifacts": list(spec.artifacts),
+        "lane": spec.lane,
+        "role": spec.role,
         "log_path": str(task_log),
         "started_at": started,
         "completed_at": ended,
         "duration_seconds": round(max(0.0, ended - started), 3),
         "error": last_error or None,
     }
+
+
+def _context_sources(project_root: Path) -> Dict[str, Any]:
+    config_path = project_root / "config" / "swarm_config.yaml"
+    if not config_path.exists():
+        return {}
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return dict(payload.get("runner", {}).get("context_sources", {}))
 
 
 def execute_manifest(
@@ -168,45 +188,108 @@ def execute_manifest(
     project_root: Path,
 ) -> int:
     payload = load_manifest(manifest_path)
-    specs = topological_order(task_specs(payload))
+    ordered_specs = topological_order(task_specs(payload))
+    specs = {spec.id: spec for spec in ordered_specs}
+    parallelism = max(1, int(payload.get("parallelism", 1)))
 
     run_dir = run_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     _write_json(run_dir / "manifest.snapshot.json", payload)
+    (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+
+    memory = SwarmMemoryBackend.create(
+        run_id=run_id,
+        run_root=run_root,
+        payload=payload,
+        project_root=project_root,
+    )
 
     ledger: Dict[str, Any] = {
         "run_id": run_id,
         "manifest_path": str(manifest_path),
         "manifest_name": payload.get("name"),
+        "issue_id": payload.get("issue_id"),
         "dry_run": dry_run,
+        "parallelism": parallelism,
+        "context_sources": _context_sources(project_root),
+        "memory": memory.describe(),
         "started_at": time.time(),
         "tasks": {},
+        "waves": [],
     }
+    memory.record_run_started(ledger)
 
     completed: set[str] = set()
     failed: set[str] = set()
+    pending = dict(specs)
 
-    for spec in specs:
-        if any(dep in failed for dep in spec.deps):
-            ledger["tasks"][spec.id] = {
-                "task_id": spec.id,
-                "description": spec.description,
-                "status": "skipped",
-                "deps": list(spec.deps),
-                "error": "dependency_failed",
-                "artifacts": list(spec.artifacts),
-            }
-            failed.add(spec.id)
+    while pending:
+        skipped_this_wave: List[str] = []
+        for task_id, spec in list(pending.items()):
+            if any(dep in failed for dep in spec.deps):
+                ledger["tasks"][task_id] = {
+                    "task_id": task_id,
+                    "description": spec.description,
+                    "status": "skipped",
+                    "deps": list(spec.deps),
+                    "error": "dependency_failed",
+                    "artifacts": list(spec.artifacts),
+                    "lane": spec.lane,
+                    "role": spec.role,
+                }
+                memory.record_task_started(task_id=task_id, description=spec.description, lane=spec.lane, role=spec.role)
+                memory.record_task_status(task_id, "skipped", note="dependency_failed")
+                failed.add(task_id)
+                skipped_this_wave.append(task_id)
+                del pending[task_id]
+        if skipped_this_wave:
+            ledger["waves"].append({"task_ids": skipped_this_wave, "status": "skipped"})
+            _write_json(run_dir / "ledger.json", ledger)
             continue
 
-        task_record = _run_task(spec, run_dir, dry_run=dry_run, project_root=project_root)
-        ledger["tasks"][spec.id] = task_record
-        if task_record["status"] in {"completed", "dry_run"}:
-            completed.add(spec.id)
-        else:
-            failed.add(spec.id)
+        ready = [
+            spec
+            for spec in pending.values()
+            if all(dep in completed for dep in spec.deps)
+        ]
+        ready.sort(key=lambda item: (item.lane, item.id))
+        if not ready:
+            raise ValueError("Swarm manifest execution stalled due to unsatisfied dependencies")
 
-        _write_json(run_dir / "ledger.json", ledger)
+        batch = ready[:parallelism]
+        wave_record = {
+            "task_ids": [spec.id for spec in batch],
+            "lane_counts": dict(sorted(Counter(spec.lane for spec in batch).items())),
+        }
+        ledger["waves"].append(wave_record)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(batch)) as executor:
+            futures: Dict[concurrent.futures.Future[Dict[str, Any]], TaskSpec] = {}
+            for spec in batch:
+                memory.record_task_started(task_id=spec.id, description=spec.description, lane=spec.lane, role=spec.role)
+                memory.record_agent_context(
+                    spec.role or spec.id,
+                    {
+                        "task_id": spec.id,
+                        "lane": spec.lane,
+                        "description": spec.description,
+                        "artifacts": list(spec.artifacts),
+                    },
+                )
+                futures[executor.submit(_run_task, spec, run_dir, dry_run=dry_run, project_root=project_root)] = spec
+
+            for future in concurrent.futures.as_completed(futures):
+                spec = futures[future]
+                task_record = future.result()
+                ledger["tasks"][spec.id] = task_record
+                if task_record["status"] in {"completed", "dry_run"}:
+                    completed.add(spec.id)
+                    memory.record_task_status(spec.id, "completed", note=task_record["status"])
+                else:
+                    failed.add(spec.id)
+                    memory.record_task_status(spec.id, "failed", note=task_record.get("error") or "failed")
+                del pending[spec.id]
+                _write_json(run_dir / "ledger.json", ledger)
 
     finished = time.time()
     completion = {
@@ -220,9 +303,11 @@ def execute_manifest(
         "completed_tasks": sorted(completed),
         "failed_tasks": sorted(failed),
         "task_count": len(specs),
+        "memory": memory.describe(),
     }
     _write_json(run_dir / "ledger.json", ledger)
     _write_json(run_dir / "completion.json", completion)
+    memory.record_run_finished(completion)
     print(json.dumps(completion, indent=2))
     return 0 if completion["status"] == "completed" else 1
 

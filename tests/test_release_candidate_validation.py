@@ -68,6 +68,7 @@ def test_validate_release_candidate_script(tmp_path: Path):
         report_path = Path(result.stdout.strip())
         report = json.loads(report_path.read_text(encoding="utf-8"))
         assert report["compose"]["ok"] is True
+        assert report["repo_boundaries"]["ok"] is True
         assert all(check["ok"] for check in report["checks"])
     finally:
         server.shutdown()

@@ -92,7 +92,6 @@ def _create_profile(
 def app_current():
     pytest.importorskip("flask_swagger_ui", reason="flask_swagger_ui not installed")
     from auto_voice.web.app import create_app
-    from auto_voice.web import api as web_api
 
     app, socketio = create_app(
         config={
@@ -103,9 +102,7 @@ def app_current():
     )
     app.socketio = socketio
 
-    web_api._loaded_models.clear()
     yield app
-    web_api._loaded_models.clear()
 
 
 @pytest.fixture

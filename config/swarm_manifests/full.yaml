@@ -1,23 +1,32 @@
 version: 1
 name: autovoice-full-swarm
 issue_id: AV-jg6
+parallelism: 1
 tasks:
   - id: research
     description: Capture backlog and GitNexus context
+    lane: research
+    role: research_conductor
     cwd: .
     command: "python -m auto_voice.cli swarm run --manifest config/swarm_manifests/research.yaml --run-id full-research --dry-run"
   - id: development
     description: Execute the development swarm lane
+    lane: development
+    role: development_conductor
     cwd: .
     deps: [research]
     command: "python -m auto_voice.cli swarm run --manifest config/swarm_manifests/development.yaml --run-id full-development"
   - id: review
     description: Execute the review swarm lane
+    lane: review
+    role: review_conductor
     cwd: .
     deps: [development]
     command: "python -m auto_voice.cli swarm run --manifest config/swarm_manifests/review.yaml --run-id full-review"
   - id: testing
     description: Execute the testing swarm lane
+    lane: testing
+    role: testing_conductor
     cwd: .
     deps: [review]
     command: "python -m auto_voice.cli swarm run --manifest config/swarm_manifests/testing.yaml --run-id full-testing"

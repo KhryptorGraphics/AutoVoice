@@ -65,6 +65,7 @@ setup(
         'apispec>=6.0',
         'apispec-webframeworks>=1.0',
         'marshmallow>=3.0',
+        'memkraft>=0.1.0',
         'prometheus_client>=0.19',
     ],
     extras_require={
