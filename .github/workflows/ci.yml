@@ -23,8 +23,17 @@ jobs:
       - name: Compile backend sources
         run: python -m compileall src tests
 
-      - name: Run backend smoke tests
-        run: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_web_utils.py tests/test_web_api.py tests/test_pipeline_status_api.py
+      - name: Run backend contract lane
+        run: |
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest \
+            tests/test_web_utils.py \
+            tests/test_web_api.py \
+            tests/test_pipeline_status_api.py \
+            tests/test_training_ui_routes.py \
+            tests/test_web_api_presets.py \
+            tests/test_web_app_lifecycle.py \
+            tests/test_websocket_contract.py \
+            tests/test_api_docs_contract.py -q
 
   frontend:
     runs-on: ubuntu-latest

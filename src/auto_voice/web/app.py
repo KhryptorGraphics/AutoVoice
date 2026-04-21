@@ -8,7 +8,7 @@ import time
 from typing import Optional, Dict, Any, Tuple
 
 from flask import Flask, request, g
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.exceptions import HTTPException
 
 from auto_voice.config.secrets import SecretsManager
@@ -26,6 +26,36 @@ def _release_tracked_request(app: Flask) -> None:
     with app._request_lock:
         app._active_requests = max(0, app._active_requests - 1)
     g._request_tracked = False
+
+
+def register_default_socket_handlers(socketio: SocketIO) -> None:
+    """Register default-namespace room subscription handlers.
+
+    The frontend already relies on `join_job` / `leave_job` acknowledgements for
+    conversion job rooms. Keep this contract explicit in the backend so the
+    default namespace remains the canonical path for non-karaoke realtime
+    updates.
+    """
+
+    @socketio.on('join_job')
+    def handle_join_job(payload: Optional[Dict[str, Any]]) -> None:
+        job_id = str((payload or {}).get('job_id') or '').strip()
+        if not job_id:
+            emit('job_subscription_error', {'message': 'job_id is required'})
+            return
+
+        join_room(job_id)
+        emit('joined_job', {'job_id': job_id})
+
+    @socketio.on('leave_job')
+    def handle_leave_job(payload: Optional[Dict[str, Any]]) -> None:
+        job_id = str((payload or {}).get('job_id') or '').strip()
+        if not job_id:
+            emit('job_subscription_error', {'message': 'job_id is required'})
+            return
+
+        leave_room(job_id)
+        emit('left_job', {'job_id': job_id})
 
 
 def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] = None) -> Tuple[Flask, SocketIO]:
@@ -192,6 +222,7 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
 
     # Register WebSocket namespaces
     from .karaoke_events import register_karaoke_namespace
+    register_default_socket_handlers(socketio)
     register_karaoke_namespace(socketio)
 
     # Initialize components (skip in testing mode)

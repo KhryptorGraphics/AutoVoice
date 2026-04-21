@@ -1,498 +1,294 @@
-# WebSocket Events Documentation
+# WebSocket Events
 
-AutoVoice uses Socket.IO for real-time bidirectional communication. This document describes all available WebSocket events.
+AutoVoice uses Socket.IO for realtime updates. The current single-user MVP has one canonical non-karaoke namespace: the default namespace (`/`).
 
 ## Connection
 
-Connect to the Socket.IO endpoint:
+Default namespace:
 
 ```javascript
-const socket = io('http://localhost:5000');
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:5000");
 ```
 
-## Namespaces
+Karaoke namespace:
 
-### Default Namespace (`/`)
+```javascript
+import { io } from "socket.io-client";
 
-General application events.
+const karaokeSocket = io("http://localhost:5000/karaoke");
+```
 
-#### Client Events
+## Namespace Map
 
-None currently defined.
+- `/`: conversion jobs, training jobs, and generic application events
+- `/karaoke`: live karaoke streaming and separation events
 
-#### Server Events
+There is no separate `/training` namespace in the current backend.
 
-**`job_created`**
+## Default Namespace (`/`)
+
+### Client Events
+
+`join_job`
+
+Join a conversion job room. This is the canonical room handshake for conversion progress isolation.
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+`leave_job`
+
+Leave a previously joined conversion job room.
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### Server Events
+
+`joined_job`
+
+Acknowledges a successful room join.
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+`left_job`
+
+Acknowledges a successful room leave.
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+`job_subscription_error`
+
+Returned when a room subscription request is invalid.
+
+```json
+{
+  "message": "job_id is required"
+}
+```
+
+`job_created`
+
 Broadcast when a new conversion job is created.
 
 ```json
 {
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "queued",
-  "message": "Join this job room to receive progress updates"
+  "websocket_room": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 
-**`job_progress`**
-Emitted to job room when conversion progresses.
+`job_progress` and `conversion_progress`
+
+Both events are emitted during conversion. `conversion_progress` is the frontend-facing alias.
 
 ```json
 {
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "processing",
   "progress": 45,
-  "stage": "Vocal separation",
-  "message": "Separating vocals from instrumental..."
+  "message": "Converting vocals...",
+  "stage": "encoding",
+  "timestamp": 1761111111.25
 }
 ```
 
-**`job_complete`**
-Emitted when job completes successfully.
+`job_completed` and `conversion_complete`
+
+Both events are emitted when conversion succeeds. `conversion_complete` is the frontend-facing alias.
 
 ```json
 {
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "completed",
-  "progress": 100,
+  "output_url": "/api/v1/convert/download/550e8400-e29b-41d4-a716-446655440000",
   "download_url": "/api/v1/convert/download/550e8400-e29b-41d4-a716-446655440000",
-  "metadata": {
-    "duration": 180.5,
-    "sample_rate": 44100
-  }
+  "requested_pipeline": "quality_seedvc",
+  "resolved_pipeline": "quality_seedvc",
+  "runtime_backend": "pytorch",
+  "active_model_type": "adapter",
+  "adapter_type": "hq"
 }
 ```
 
-**`job_failed`**
-Emitted when job fails.
+`job_failed` and `conversion_error`
+
+Both events are emitted when conversion fails. `conversion_error` is the frontend-facing alias.
 
 ```json
 {
   "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "failed",
-  "error": "Conversion failed",
-  "message": "Voice separation failed: insufficient audio quality"
+  "error": "Profile missing speaker embedding for realtime conversion"
 }
 ```
 
----
+### Training Events
 
-### Karaoke Namespace (`/karaoke`)
+Training events are emitted on the default namespace and should currently be filtered by `job_id` on the client.
 
-Real-time karaoke and separation events.
+Canonical dotted events:
 
-#### Client Events
+- `training.started`
+- `training.progress`
+- `training.completed`
+- `training.failed`
+- `training.paused`
+- `training.resumed`
+- `training.cancelled`
 
-**`join_session`**
-Join a karaoke session room.
+Compatibility aliases still emitted for active UI paths:
 
-```json
-{
-  "session_id": "session_123"
-}
-```
+- `training_progress`
+- `training_complete`
+- `training_error`
+- `training_paused`
+- `training_resumed`
+- `training_cancelled`
 
-**`leave_session`**
-Leave a karaoke session room.
-
-```json
-{
-  "session_id": "session_123"
-}
-```
-
-**`start_separation`**
-Request separation of a track.
+`training.started`
 
 ```json
 {
-  "job_id": "job_456",
-  "settings": {
-    "model": "htdemucs",
-    "output_format": "wav"
-  }
-}
-```
-
-#### Server Events
-
-**`separation_progress`**
-Emitted during separation processing.
-
-```json
-{
-  "job_id": "job_456",
-  "progress": 60,
-  "status": "Separating stems",
-  "stage": "Processing vocals",
-  "current_step": 3,
-  "total_steps": 5
-}
-```
-
-**`separation_complete`**
-Emitted when separation completes.
-
-```json
-{
-  "job_id": "job_456",
-  "status": "completed",
-  "stems": {
-    "vocals": "/api/v1/separation/job_456/vocals.wav",
-    "instrumental": "/api/v1/separation/job_456/instrumental.wav",
-    "drums": "/api/v1/separation/job_456/drums.wav",
-    "bass": "/api/v1/separation/job_456/bass.wav"
-  },
-  "metadata": {
-    "duration": 210.3,
-    "sample_rate": 44100,
-    "model": "htdemucs"
-  }
-}
-```
-
-**`separation_failed`**
-Emitted when separation fails.
-
-```json
-{
-  "job_id": "job_456",
-  "status": "failed",
-  "error": "Separation failed",
-  "message": "Audio file corrupted or invalid format"
-}
-```
-
-**`track_added`**
-Emitted when a track is added to queue.
-
-```json
-{
-  "track_id": "track_789",
-  "title": "Song Title",
-  "artist": "Artist Name",
-  "duration": 180,
-  "position": 3
-}
-```
-
-**`playback_state`**
-Emitted when playback state changes.
-
-```json
-{
-  "state": "playing",
-  "track_id": "track_789",
-  "position": 45.2,
-  "timestamp": 1234567890
-}
-```
-
----
-
-### Training Namespace (`/training`)
-
-Training job progress and events.
-
-#### Client Events
-
-**`join_training`**
-Subscribe to training job updates.
-
-```json
-{
-  "job_id": "train_123"
-}
-```
-
-**`leave_training`**
-Unsubscribe from training job updates.
-
-```json
-{
-  "job_id": "train_123"
-}
-```
-
-#### Server Events
-
-**`training_started`**
-Emitted when training begins.
-
-```json
-{
-  "job_id": "train_123",
-  "profile_id": "profile_456",
-  "status": "training",
+  "job_id": "train_abc123",
+  "profile_id": "profile_550e8400",
+  "sample_count": 5,
   "config": {
     "epochs": 100,
     "batch_size": 8,
-    "learning_rate": 0.0001,
-    "adapter_type": "unified"
-  }
-}
-```
-
-**`training_progress`**
-Emitted during training with metrics.
-
-```json
-{
-  "job_id": "train_123",
-  "status": "training",
-  "progress": 35,
-  "epoch": 35,
-  "total_epochs": 100,
-  "metrics": {
-    "loss": 0.0234,
-    "learning_rate": 0.0001,
-    "steps_per_second": 2.5
+    "learning_rate": 0.0001
   },
-  "estimated_completion": "2026-02-01T12:45:00Z"
+  "started_at": "2026-02-01T10:05:00"
 }
 ```
 
-**`training_complete`**
-Emitted when training completes successfully.
+`training.progress` and `training_progress`
 
 ```json
 {
-  "job_id": "train_123",
-  "status": "completed",
-  "progress": 100,
-  "profile_id": "profile_456",
-  "adapter_path": "/models/profile_456/unified_adapter.pth",
-  "final_metrics": {
-    "final_loss": 0.0089,
-    "total_time": 3600,
-    "epochs_completed": 100
-  }
+  "job_id": "train_abc123",
+  "profile_id": "profile_550e8400",
+  "epoch": 3,
+  "total_epochs": 10,
+  "step": 150,
+  "total_steps": 500,
+  "loss": 0.45,
+  "learning_rate": 0.0001,
+  "progress_percent": 25.0,
+  "gpu_metrics": {
+    "available": false
+  },
+  "quality_metrics": {
+    "mos_proxy": 4.2
+  },
+  "checkpoint_path": null,
+  "is_paused": false
 }
 ```
 
-**`training_failed`**
-Emitted when training fails.
+`training.completed` and `training_complete`
 
 ```json
 {
-  "job_id": "train_123",
-  "status": "failed",
-  "error": "Training failed",
-  "message": "Insufficient GPU memory",
-  "epoch": 42
+  "job_id": "train_abc123",
+  "profile_id": "profile_550e8400",
+  "results": {
+    "final_loss": 0.15,
+    "artifact_type": "adapter"
+  },
+  "completed_at": "2026-02-01T11:05:00"
 }
 ```
 
-**`checkpoint_saved`**
-Emitted when a training checkpoint is saved.
+`training.failed` and `training_error`
 
 ```json
 {
-  "job_id": "train_123",
-  "epoch": 50,
-  "checkpoint_path": "/models/profile_456/checkpoint_epoch_50.pth",
-  "metrics": {
-    "loss": 0.0156,
-    "validation_loss": 0.0178
-  }
+  "job_id": "train_abc123",
+  "profile_id": "profile_550e8400",
+  "error": "CUDA out of memory",
+  "failed_at": "2026-02-01T10:17:00"
 }
 ```
 
----
+## Karaoke Namespace (`/karaoke`)
 
-## Usage Examples
+The `/karaoke` namespace is reserved for live session control, streaming, and separation workflow events.
 
-### JavaScript (Browser)
+Client events include:
+
+- `join_session`
+- `leave_session`
+- `startSession`
+- `stopSession`
+- `switchProfile`
+- `audioChunk`
+
+Server events include:
+
+- `session_joined`
+- `session_left`
+- `separation_progress`
+- `separation_complete`
+- `separation_failed`
+- live session status and recovery events emitted by the karaoke namespace handlers
+
+See [tutorials.md](./tutorials.md) for end-to-end usage flows.
+
+## Examples
+
+### Conversion Job Subscription
 
 ```javascript
-// Connect to Socket.IO
-const socket = io('http://localhost:5000');
+const socket = io("http://localhost:5000");
+const jobId = "550e8400-e29b-41d4-a716-446655440000";
 
-// Join job room to receive updates
-const jobId = '550e8400-e29b-41d4-a716-446655440000';
-socket.emit('join', jobId);
+socket.emit("join_job", { job_id: jobId });
 
-// Listen for progress
-socket.on('job_progress', (data) => {
-  console.log(`Progress: ${data.progress}%`);
-  console.log(`Stage: ${data.stage}`);
-  updateProgressBar(data.progress);
+socket.on("joined_job", (data) => {
+  if (data.job_id === jobId) {
+    console.log("Joined job room");
+  }
 });
 
-// Listen for completion
-socket.on('job_complete', (data) => {
-  console.log('Job completed!');
-  downloadResult(data.download_url);
-});
-
-// Listen for errors
-socket.on('job_failed', (data) => {
-  console.error('Job failed:', data.message);
-  showError(data.error);
-});
-
-// Karaoke namespace
-const karaokeSocket = io('http://localhost:5000/karaoke');
-
-karaokeSocket.on('separation_progress', (data) => {
-  updateSeparationProgress(data.progress);
-});
-
-karaokeSocket.on('separation_complete', (data) => {
-  console.log('Stems ready:', data.stems);
-  loadStems(data.stems);
-});
-
-// Training namespace
-const trainingSocket = io('http://localhost:5000/training');
-
-trainingSocket.emit('join_training', { job_id: 'train_123' });
-
-trainingSocket.on('training_progress', (data) => {
-  console.log(`Epoch ${data.epoch}/${data.total_epochs}`);
-  console.log(`Loss: ${data.metrics.loss}`);
-  updateTrainingChart(data.metrics);
-});
-
-trainingSocket.on('training_complete', (data) => {
-  console.log('Training complete!');
-  console.log('Final loss:', data.final_metrics.final_loss);
-  notifyTrainingComplete();
+socket.on("conversion_progress", (data) => {
+  if (data.job_id === jobId) {
+    console.log(data.stage, data.progress);
+  }
 });
 ```
 
-### Python (socketio-client)
-
-```python
-import socketio
-
-# Create client
-sio = socketio.Client()
-
-# Connect
-sio.connect('http://localhost:5000')
-
-# Join job room
-job_id = '550e8400-e29b-41d4-a716-446655440000'
-sio.emit('join', job_id)
-
-# Event handlers
-@sio.on('job_progress')
-def on_progress(data):
-    print(f"Progress: {data['progress']}%")
-    print(f"Stage: {data['stage']}")
-
-@sio.on('job_complete')
-def on_complete(data):
-    print("Job completed!")
-    download_url = data['download_url']
-    # Download result...
-
-@sio.on('job_failed')
-def on_failed(data):
-    print(f"Job failed: {data['message']}")
-
-# Wait for events
-sio.wait()
-```
-
-### React (socket.io-client)
-
-```typescript
-import { useEffect, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
-
-function ConversionProgress({ jobId }: { jobId: string }) {
-  const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState('');
-  const [socket, setSocket] = useState<Socket | null>(null);
-
-  useEffect(() => {
-    // Connect to Socket.IO
-    const newSocket = io('http://localhost:5000');
-    setSocket(newSocket);
-
-    // Join job room
-    newSocket.emit('join', jobId);
-
-    // Listen for progress
-    newSocket.on('job_progress', (data) => {
-      setProgress(data.progress);
-      setStatus(data.stage);
-    });
-
-    // Listen for completion
-    newSocket.on('job_complete', (data) => {
-      setProgress(100);
-      setStatus('Complete');
-      // Handle download
-      window.location.href = data.download_url;
-    });
-
-    // Listen for errors
-    newSocket.on('job_failed', (data) => {
-      setStatus(`Failed: ${data.message}`);
-    });
-
-    // Cleanup
-    return () => {
-      newSocket.emit('leave', jobId);
-      newSocket.close();
-    };
-  }, [jobId]);
-
-  return (
-    <div>
-      <div className="progress-bar" style={{ width: `${progress}%` }} />
-      <p>{status}</p>
-    </div>
-  );
-}
-```
-
----
-
-## Error Handling
-
-All error events include:
-
-- `error`: Short error identifier
-- `message`: Human-readable error description
-- `job_id`: Associated job identifier (if applicable)
-
-Common error types:
-
-- `validation_error`: Invalid input parameters
-- `processing_error`: Error during processing
-- `resource_error`: Insufficient resources (GPU memory, disk space)
-- `timeout_error`: Operation timed out
-- `not_found_error`: Resource not found
-
----
-
-## Rate Limiting
-
-WebSocket connections are rate-limited to prevent abuse:
-
-- Max 10 connections per IP address
-- Max 100 events per minute per connection
-- Connections idle for >30 minutes are automatically closed
-
----
-
-## Authentication
-
-Currently no authentication required for WebSocket connections. Production deployments should implement:
-
-- JWT token authentication
-- Room-based access control
-- Connection validation
-
-Example future authentication:
+### Training Progress Subscription
 
 ```javascript
-const socket = io('http://localhost:5000', {
-  auth: {
-    token: 'your-jwt-token'
+const socket = io("http://localhost:5000");
+const trainingJobId = "train_abc123";
+
+socket.on("training_progress", (data) => {
+  if (data.job_id === trainingJobId) {
+    console.log(`Epoch ${data.epoch}/${data.total_epochs}`);
+    console.log(`Loss: ${data.loss}`);
+  }
+});
+
+socket.on("training_complete", (data) => {
+  if (data.job_id === trainingJobId) {
+    console.log("Training complete", data.results);
   }
 });
 ```

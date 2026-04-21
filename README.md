@@ -15,6 +15,7 @@ AutoVoice is a local-first singing voice conversion and karaoke stack. The curre
 Start here when onboarding or validating current behavior:
 
 - [Docs Index](docs/README.md)
+- [Current Truth](docs/current-truth.md)
 - [Voice Profiles User Guide](docs/user-guide-voice-profiles.md)
 - [Frontend Persistence Boundaries](docs/frontend-persistence-boundaries.md)
 - [API Documentation](docs/api/README.md)
@@ -78,7 +79,8 @@ Backend health is exposed at:
 - `frontend/`: React/Vite frontend
 - `config/`: runtime configuration
 - `tests/`: backend and integration tests
-- `docs/`, `conductor/`, `reports/`, `academic-research/`: supporting docs and research artifacts
+- `docs/`: canonical product, API, and operator docs
+- `conductor/`, `ORCHESTRATOR*.md`, `reports/`, `academic-research/`: historical planning and research artifacts
 
 ## What Is Canonical vs Experimental
 

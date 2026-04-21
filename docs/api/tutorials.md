@@ -156,10 +156,14 @@ curl -X POST http://localhost:5000/api/v1/training/jobs \
   -H "Content-Type: application/json" \
   -d '{
     "profile_id": "profile_550e8400",
-    "epochs": 100,
-    "batch_size": 8,
-    "learning_rate": 0.0001,
-    "adapter_type": "unified"
+    "sample_ids": ["sample_a", "sample_b"],
+    "config": {
+      "training_mode": "lora",
+      "epochs": 100,
+      "batch_size": 8,
+      "learning_rate": 0.0001,
+      "adapter_type": "unified"
+    }
   }'
 ```
 
@@ -169,9 +173,8 @@ curl -X POST http://localhost:5000/api/v1/training/jobs \
 {
   "job_id": "train_abc123",
   "profile_id": "profile_550e8400",
-  "status": "queued",
+  "status": "pending",
   "progress": 0,
-  "total_epochs": 100,
   "created_at": "2026-02-01T10:05:00Z"
 }
 ```
@@ -187,18 +190,29 @@ curl http://localhost:5000/api/v1/training/jobs/train_abc123
 **Via WebSocket:**
 
 ```javascript
-const socket = io('http://localhost:5000/training');
-socket.emit('join_training', { job_id: 'train_abc123' });
+const socket = io('http://localhost:5000');
+const trainingJobId = 'train_abc123';
 
 socket.on('training_progress', (data) => {
+  if (data.job_id !== trainingJobId) return;
   console.log(`Epoch ${data.epoch}/${data.total_epochs}`);
-  console.log(`Loss: ${data.metrics.loss}`);
+  console.log(`Loss: ${data.loss}`);
 });
 
 socket.on('training_complete', (data) => {
+  if (data.job_id !== trainingJobId) return;
   console.log('Training complete!');
-  console.log('Model path:', data.adapter_path);
+  console.log('Results:', data.results);
 });
+```
+
+**Optional job controls:**
+
+```bash
+curl -X POST http://localhost:5000/api/v1/training/jobs/train_abc123/pause
+curl -X POST http://localhost:5000/api/v1/training/jobs/train_abc123/resume
+curl http://localhost:5000/api/v1/training/jobs/train_abc123/telemetry
+curl -X POST http://localhost:5000/api/v1/training/preview/train_abc123
 ```
 
 ### Step 4: Verify Training Complete

@@ -1,5 +1,6 @@
 """API documentation generator and Swagger UI integration."""
 import json
+import re
 import yaml
 from typing import Dict, Any
 from flask import Blueprint, jsonify, current_app
@@ -55,8 +56,21 @@ def get_openapi_yaml():
 def _add_endpoint_docs(spec):
     """Add endpoint documentation to OpenAPI spec."""
 
+    app = current_app._get_current_object()
+
+    def _spec_path(path: str, operations: Dict[str, Any]) -> None:
+        flask_path = re.sub(r"\{([^}]+)\}", r"<\1>", path)
+        view = None
+        for rule in app.url_map.iter_rules():
+            if rule.rule == flask_path and rule.endpoint != 'static':
+                view = app.view_functions.get(rule.endpoint)
+                break
+        if view is None:
+            raise RuntimeError(f"No Flask view registered for documented path: {path}")
+        spec.path(path=path, view=view, operations=operations, app=app)
+
     # Conversion endpoints
-    spec.path(
+    _spec_path(
         path="/api/v1/convert/song",
         operations={
             "post": {
@@ -189,7 +203,7 @@ and asynchronous processing modes.
         }
     )
 
-    spec.path(
+    _spec_path(
         path="/api/v1/convert/status/{job_id}",
         operations={
             "get": {
@@ -227,7 +241,7 @@ and asynchronous processing modes.
         }
     )
 
-    spec.path(
+    _spec_path(
         path="/api/v1/convert/download/{job_id}",
         operations={
             "get": {
@@ -268,7 +282,7 @@ and asynchronous processing modes.
         }
     )
 
-    spec.path(
+    _spec_path(
         path="/api/v1/convert/cancel/{job_id}",
         operations={
             "post": {
@@ -313,7 +327,7 @@ and asynchronous processing modes.
     )
 
     # Voice profile endpoints
-    spec.path(
+    _spec_path(
         path="/api/v1/voice/clone",
         operations={
             "post": {
@@ -367,7 +381,7 @@ and asynchronous processing modes.
         }
     )
 
-    spec.path(
+    _spec_path(
         path="/api/v1/voice/profiles",
         operations={
             "get": {
@@ -396,7 +410,7 @@ and asynchronous processing modes.
         }
     )
 
-    spec.path(
+    _spec_path(
         path="/api/v1/voice/profiles/{profile_id}",
         operations={
             "get": {
@@ -468,7 +482,7 @@ and asynchronous processing modes.
     )
 
     # Health check
-    spec.path(
+    _spec_path(
         path="/api/v1/health",
         operations={
             "get": {
@@ -490,22 +504,22 @@ and asynchronous processing modes.
     )
 
     # Training endpoints
-    spec.path(
+    _spec_path(
         path="/api/v1/training/jobs",
         operations={
             "get": {
                 "tags": ["Training"],
                 "summary": "List training jobs",
-                "description": "Get all training jobs with optional status filter",
+                "description": "Get all training jobs with optional profile filtering.",
                 "parameters": [
                     {
-                        "name": "status",
+                        "name": "profile_id",
                         "in": "query",
                         "required": False,
                         "schema": {
-                            "type": "string",
-                            "enum": ["queued", "training", "completed", "failed"]
-                        }
+                            "type": "string"
+                        },
+                        "description": "Filter jobs for a specific profile"
                     }
                 ],
                 "responses": {
@@ -514,13 +528,8 @@ and asynchronous processing modes.
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "jobs": {
-                                            "type": "array",
-                                            "items": {"$ref": "#/components/schemas/TrainingJob"}
-                                        }
-                                    }
+                                    "type": "array",
+                                    "items": {"$ref": "#/components/schemas/TrainingJob"}
                                 }
                             }
                         }
@@ -543,32 +552,44 @@ and asynchronous processing modes.
                                         "type": "string",
                                         "description": "Profile to train"
                                     },
-                                    "epochs": {
-                                        "type": "integer",
-                                        "minimum": 10,
-                                        "maximum": 1000,
-                                        "default": 100,
-                                        "description": "Number of training epochs"
+                                    "sample_ids": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Optional subset of training sample IDs. Defaults to all available samples."
                                     },
-                                    "batch_size": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                        "maximum": 64,
-                                        "default": 8,
-                                        "description": "Training batch size"
-                                    },
-                                    "learning_rate": {
-                                        "type": "number",
-                                        "minimum": 0.00001,
-                                        "maximum": 0.01,
-                                        "default": 0.0001,
-                                        "description": "Learning rate"
-                                    },
-                                    "adapter_type": {
-                                        "type": "string",
-                                        "enum": ["hq", "nvfp4", "unified"],
-                                        "default": "unified",
-                                        "description": "Adapter type to train"
+                                    "config": {
+                                        "type": "object",
+                                        "description": "Training configuration. Most knobs live under this object.",
+                                        "properties": {
+                                            "training_mode": {
+                                                "type": "string",
+                                                "enum": ["lora", "full"],
+                                                "default": "lora"
+                                            },
+                                            "epochs": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 5000,
+                                                "default": 100
+                                            },
+                                            "batch_size": {
+                                                "type": "integer",
+                                                "minimum": 1,
+                                                "maximum": 64,
+                                                "default": 8
+                                            },
+                                            "learning_rate": {
+                                                "type": "number",
+                                                "minimum": 0.00001,
+                                                "maximum": 0.01,
+                                                "default": 0.0001
+                                            },
+                                            "adapter_type": {
+                                                "type": "string",
+                                                "enum": ["hq", "nvfp4", "unified"],
+                                                "default": "unified"
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -576,7 +597,7 @@ and asynchronous processing modes.
                     }
                 },
                 "responses": {
-                    "202": {
+                    "201": {
                         "description": "Training job created",
                         "content": {
                             "application/json": {
@@ -597,8 +618,309 @@ and asynchronous processing modes.
         }
     )
 
+    _spec_path(
+        path="/api/v1/training/jobs/{job_id}",
+        operations={
+            "get": {
+                "tags": ["Training"],
+                "summary": "Get training job status",
+                "description": "Return the current status for a single training job.",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Training job identifier"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Training job details",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/TrainingJob"}
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Training job not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    _spec_path(
+        path="/api/v1/training/jobs/{job_id}/cancel",
+        operations={
+            "post": {
+                "tags": ["Training"],
+                "summary": "Cancel training job",
+                "description": "Cancel a queued or running training job.",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Training job identifier"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Training job cancelled",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/TrainingJob"}
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Training job not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    _spec_path(
+        path="/api/v1/training/jobs/{job_id}/pause",
+        operations={
+            "post": {
+                "tags": ["Training"],
+                "summary": "Pause a running training job",
+                "description": "Pause a training job that is currently running.",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Training job identifier"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Training job paused",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/TrainingJob"}
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Job cannot be paused in its current state",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Training job not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    _spec_path(
+        path="/api/v1/training/jobs/{job_id}/resume",
+        operations={
+            "post": {
+                "tags": ["Training"],
+                "summary": "Resume a paused training job",
+                "description": "Resume a training job that is currently paused.",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Training job identifier"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Training job resumed",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/TrainingJob"}
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Job cannot be resumed in its current state",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Training job not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    _spec_path(
+        path="/api/v1/training/jobs/{job_id}/telemetry",
+        operations={
+            "get": {
+                "tags": ["Training"],
+                "summary": "Get training telemetry",
+                "description": "Return the latest runtime metrics and preview availability for a training job.",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Training job identifier"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Training telemetry",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "job": {"$ref": "#/components/schemas/TrainingJob"},
+                                        "runtime_metrics": {"type": "object"},
+                                        "preview_available": {"type": "boolean"},
+                                        "preview_sample_id": {
+                                            "type": "string",
+                                            "nullable": True
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Training job not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    _spec_path(
+        path="/api/v1/training/preview/{job_id}",
+        operations={
+            "post": {
+                "tags": ["Training"],
+                "summary": "Generate a training preview clip",
+                "description": "Return a short WAV preview clip derived from the training job samples.",
+                "parameters": [
+                    {
+                        "name": "job_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Training job identifier"
+                    }
+                ],
+                "requestBody": {
+                    "required": False,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "sample_id": {
+                                        "type": "string",
+                                        "description": "Preferred sample identifier"
+                                    },
+                                    "duration_seconds": {
+                                        "type": "number",
+                                        "minimum": 1.0,
+                                        "maximum": 12.0,
+                                        "default": 4.0
+                                    },
+                                    "offset_seconds": {
+                                        "type": "number",
+                                        "minimum": 0.0,
+                                        "default": 0.0
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Preview clip",
+                        "content": {
+                            "audio/wav": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid preview request",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Training job or preview sample not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Preview generation unavailable",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
     # Audio processing endpoints
-    spec.path(
+    _spec_path(
         path="/api/v1/audio/diarize",
         operations={
             "post": {
@@ -652,7 +974,7 @@ and asynchronous processing modes.
     )
 
     # YouTube endpoints
-    spec.path(
+    _spec_path(
         path="/api/v1/youtube/info",
         operations={
             "post": {
@@ -698,7 +1020,7 @@ and asynchronous processing modes.
         }
     )
 
-    spec.path(
+    _spec_path(
         path="/api/v1/youtube/download",
         operations={
             "post": {
@@ -749,7 +1071,7 @@ and asynchronous processing modes.
     )
 
     # GPU metrics
-    spec.path(
+    _spec_path(
         path="/api/v1/gpu/metrics",
         operations={
             "get": {

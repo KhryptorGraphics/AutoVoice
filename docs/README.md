@@ -7,6 +7,7 @@ This file is the canonical entrypoint for repository documentation.
 These documents describe the current MVP behavior and should be treated as the source of truth:
 
 - [../README.md](../README.md): runtime entrypoints, repo map, and current MVP scope
+- [current-truth.md](./current-truth.md): canonical product boundary, runtime, docs, and historical artifact notes
 - [user-guide-voice-profiles.md](./user-guide-voice-profiles.md): source-artist and target-user workflow, training lifecycle, conversion, and karaoke usage
 - [frontend-persistence-boundaries.md](./frontend-persistence-boundaries.md): what lives in browser `localStorage` versus what is owned by backend storage
 - [api/README.md](./api/README.md): REST and WebSocket API entrypoint
