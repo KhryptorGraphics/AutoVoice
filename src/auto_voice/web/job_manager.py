@@ -10,6 +10,8 @@ from typing import Optional, Dict, Any
 
 import numpy as np
 
+from .offline_realtime import run_offline_realtime_conversion
+
 logger = logging.getLogger(__name__)
 
 
@@ -218,15 +220,38 @@ class JobManager:
         if active_model_type == 'full_model' and requested_pipeline != 'quality':
             resolved_pipeline = 'quality'
             runtime_backend = 'pytorch_full_model'
-        elif requested_pipeline == 'realtime':
-            # The live realtime stack does not have a fully stem-aware offline path yet.
-            resolved_pipeline = 'quality'
-            runtime_backend = 'pytorch'
 
         settings['pipeline_type'] = requested_pipeline
         settings['requested_pipeline'] = requested_pipeline
         settings['resolved_pipeline'] = resolved_pipeline
         settings['runtime_backend'] = runtime_backend
+
+        if resolved_pipeline == 'realtime':
+            profile_store = getattr(self.voice_profile_manager, 'store', None)
+            if profile_store is None:
+                raise RuntimeError('Voice profile store unavailable for realtime offline pipeline')
+
+            profile = profile_store.load(job['profile_id'])
+            if not profile:
+                raise RuntimeError(f"Voice profile '{job['profile_id']}' not found")
+
+            speaker_embedding = profile.get('embedding')
+            if speaker_embedding is None:
+                raise RuntimeError('Profile missing speaker embedding for realtime conversion')
+
+            self._emit_progress(job_id, 25, 'Loading realtime backend...', 'encoding')
+            result = run_offline_realtime_conversion(
+                job['file_path'],
+                speaker_embedding,
+                pitch_shift=settings.get('pitch_shift', 0.0),
+            )
+            result.setdefault('metadata', {})
+            result['metadata'].update({
+                'requested_pipeline': requested_pipeline,
+                'resolved_pipeline': resolved_pipeline,
+                'runtime_backend': runtime_backend,
+            })
+            return result
 
         if resolved_pipeline == 'quality':
             result = self.singing_pipeline.convert_song(

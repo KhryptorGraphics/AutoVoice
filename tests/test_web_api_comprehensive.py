@@ -179,6 +179,33 @@ class TestConversionEndpoints:
         assert response.status_code == 202
         assert response.get_json()["job_id"] == "job-settings"
 
+    def test_convert_song_async_realtime_preserves_pipeline_metadata(
+        self,
+        client_current,
+        app_current,
+        monkeypatch,
+    ):
+        profile_id = "00000000-0000-0000-0000-000000000202a"
+        _create_profile(app_current, profile_id=profile_id, has_trained_model=True)
+        monkeypatch.setattr(app_current.job_manager, "create_job", lambda *args, **kwargs: "job-realtime")
+
+        response = client_current.post(
+            "/api/v1/convert/song",
+            data={
+                "song": (_wav_bytes(), "song.wav"),
+                "profile_id": profile_id,
+                "pipeline_type": "realtime",
+            },
+            content_type="multipart/form-data",
+        )
+
+        assert response.status_code == 202
+        payload = response.get_json()
+        assert payload["job_id"] == "job-realtime"
+        assert payload["requested_pipeline"] == "realtime"
+        assert payload["resolved_pipeline"] == "realtime"
+        assert payload["runtime_backend"] == "pytorch"
+
     def test_convert_song_rejects_invalid_output_quality(self, client_current, app_current):
         profile_id = "00000000-0000-0000-0000-000000000203"
         _create_profile(app_current, profile_id=profile_id, has_trained_model=True)
@@ -267,6 +294,44 @@ class TestConversionEndpoints:
         data = response.get_json()
         assert data["active_model_type"] == "full_model"
         assert data["adapter_type"] is None
+
+    def test_convert_song_sync_realtime_uses_offline_backend(
+        self,
+        client_current,
+        app_current,
+        monkeypatch,
+    ):
+        profile_id = "00000000-0000-0000-0000-000000000206a"
+        _create_profile(app_current, profile_id=profile_id, has_trained_model=True)
+
+        monkeypatch.setattr(app_current, "job_manager", None, raising=False)
+        monkeypatch.setattr(
+            "auto_voice.web.api.run_offline_realtime_conversion",
+            lambda *args, **kwargs: {
+                "mixed_audio": np.zeros(22050, dtype=np.float32),
+                "sample_rate": 22050,
+                "duration": 1.0,
+                "metadata": {"pipeline": "realtime"},
+                "stems": {},
+            },
+        )
+
+        response = client_current.post(
+            "/api/v1/convert/song",
+            data={
+                "song": (_wav_bytes(), "song.wav"),
+                "profile_id": profile_id,
+                "pipeline_type": "realtime",
+            },
+            content_type="multipart/form-data",
+        )
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["requested_pipeline"] == "realtime"
+        assert payload["resolved_pipeline"] == "realtime"
+        assert payload["runtime_backend"] == "pytorch"
+        assert payload["metadata"]["resolved_pipeline"] == "realtime"
 
     def test_download_missing_or_invalid_asset_returns_404(self, client_current, app_current, monkeypatch):
         monkeypatch.setattr(app_current.job_manager, "get_job_asset_path", lambda *args, **kwargs: MagicMock())

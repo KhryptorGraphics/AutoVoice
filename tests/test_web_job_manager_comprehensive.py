@@ -1021,3 +1021,48 @@ class TestEdgeCases:
             # Should be a temp file path
             assert 'av_job_' in result_path
             assert result_path.endswith('.wav')
+
+
+class TestPipelineResolution:
+    def test_convert_with_resolved_pipeline_uses_realtime_backend(
+        self,
+        job_manager,
+        sample_audio_file,
+        mock_voice_profile_manager,
+    ):
+        mock_voice_profile_manager.store = MagicMock()
+        mock_voice_profile_manager.store.load.return_value = {
+            "embedding": np.ones(256, dtype=np.float32).tolist(),
+        }
+
+        settings = {
+            "pipeline_type": "realtime",
+            "requested_pipeline": "realtime",
+            "pitch_shift": 2.0,
+        }
+        job = {
+            "file_path": sample_audio_file,
+            "profile_id": "test-profile",
+            "settings": settings,
+        }
+
+        with patch(
+            "auto_voice.web.job_manager.run_offline_realtime_conversion",
+            return_value={
+                "mixed_audio": np.zeros(22050, dtype=np.float32),
+                "sample_rate": 22050,
+                "duration": 1.0,
+                "metadata": {"pipeline": "realtime"},
+                "stems": {},
+            },
+        ) as mock_realtime:
+            result = job_manager._convert_with_resolved_pipeline("job-rt", job, settings)
+
+        mock_realtime.assert_called_once()
+        call_args = mock_realtime.call_args
+        assert call_args.args[0] == sample_audio_file
+        assert call_args.kwargs["pitch_shift"] == 2.0
+        assert settings["resolved_pipeline"] == "realtime"
+        assert settings["runtime_backend"] == "pytorch"
+        assert result["metadata"]["resolved_pipeline"] == "realtime"
+        assert result["metadata"]["runtime_backend"] == "pytorch"

@@ -114,6 +114,7 @@ from ..storage.paths import (
     resolve_samples_dir,
     resolve_trained_models_dir,
 )
+from .offline_realtime import run_offline_realtime_conversion
 
 logger = logging.getLogger(__name__)
 
@@ -649,8 +650,6 @@ def convert_song():
     if use_full_model and requested_pipeline != 'quality':
         resolved_pipeline = 'quality'
         runtime_backend = 'pytorch_full_model'
-    elif requested_pipeline == 'realtime':
-        resolved_pipeline = 'quality'
 
     # Sample rate from config
     sample_rate = current_app.app_config.get('audio', {}).get('sample_rate', 22050)
@@ -720,42 +719,23 @@ def convert_song():
 
             # Route to appropriate pipeline based on pipeline_type
             if pipeline_type == 'realtime':
-                # Use RealtimePipeline for low-latency conversion
-                from ..inference.pipeline_factory import PipelineFactory
-                factory = PipelineFactory.get_instance()
-                realtime_pipeline = factory.get_pipeline('realtime')
-
-                # Load audio for realtime pipeline
-                import librosa
-                audio, sr = librosa.load(tmp_file.name, sr=16000, mono=True)
-
-                # Get speaker embedding from profile
                 speaker_embedding = profile.get('embedding')
                 if speaker_embedding is None:
                     return validation_error_response('Profile missing speaker embedding for realtime conversion')
 
-                # Convert using realtime pipeline
-                if isinstance(speaker_embedding, list):
-                    speaker_embedding = np.array(speaker_embedding, dtype=np.float32)
-
-                realtime_pipeline.set_speaker_embedding(speaker_embedding)
-                output_audio = realtime_pipeline.convert(audio, sr)
-
-                # Package result in same format as singing_pipeline
-                result = {
-                    'mixed_audio': output_audio,
-                    'sample_rate': realtime_pipeline.output_sample_rate,
-                    'duration': len(output_audio) / realtime_pipeline.output_sample_rate,
-                    'metadata': {
-                        'pipeline': 'realtime',
-                        'requested_pipeline': requested_pipeline,
-                        'resolved_pipeline': 'realtime',
-                        'runtime_backend': 'pytorch',
-                        'profile_id': profile_id,
-                        'active_model_type': active_model_type,
-                    },
-                    'stems': {},  # Realtime doesn't do separation
-                }
+                result = run_offline_realtime_conversion(
+                    tmp_file.name,
+                    speaker_embedding,
+                    pitch_shift=pitch_shift,
+                )
+                result.setdefault('metadata', {})
+                result['metadata'].update({
+                    'requested_pipeline': requested_pipeline,
+                    'resolved_pipeline': 'realtime',
+                    'runtime_backend': 'pytorch',
+                    'profile_id': profile_id,
+                    'active_model_type': active_model_type,
+                })
             else:
                 # Use SOTA quality pipeline (default)
                 result = singing_pipeline.convert_song(
