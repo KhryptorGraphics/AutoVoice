@@ -87,6 +87,11 @@ def cleanup_cuda_test_state():
     The full coverage gate exercises many GPU-heavy pipelines before the real
     TensorRT integration suite. Clearing cached CUDA allocations after each test
     keeps those long runs from poisoning later TensorRT engine builds.
+
+    Avoid ``torch.cuda.synchronize()`` here. On some lightweight API suites the
+    CUDA runtime is nominally available but not in a safe state for a blocking
+    global synchronize during fixture teardown, which can wedge pytest after all
+    assertions have already completed.
     """
     yield
 
@@ -100,7 +105,6 @@ def cleanup_cuda_test_state():
     if torch.cuda.is_available():
         try:
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
         except Exception:
             pass
 
