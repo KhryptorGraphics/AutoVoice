@@ -14,6 +14,7 @@ Metrics:
 - Sample rate: Output quality indicator
 """
 
+import gc
 import pytest
 import torch
 import numpy as np
@@ -59,6 +60,15 @@ def get_memory_usage():
         torch.cuda.synchronize()
         return torch.cuda.memory_allocated() / 1e9
     return 0.0
+
+
+def release_pipeline_resources(factory, pipeline_type):
+    """Best-effort cleanup to keep long benchmark runs from accumulating GPU state."""
+    factory.unload_pipeline(pipeline_type)
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 
 @pytest.mark.benchmark
@@ -137,7 +147,7 @@ def test_benchmark_all_pipelines(test_audio, benchmark_results, tmp_path):
 
         finally:
             # Unload pipeline to free memory
-            factory.unload_pipeline(pipeline_type)
+            release_pipeline_resources(factory, pipeline_type)
 
     # Print summary
     print(f"\n{'='*60}")
@@ -156,7 +166,13 @@ def test_benchmark_all_pipelines(test_audio, benchmark_results, tmp_path):
         else:
             print(f"{name:<20} {'FAILED':<10} {results.get('error', 'Unknown error')}")
 
-    return benchmark_results
+    assert set(benchmark_results) == {
+        'realtime',
+        'quality',
+        'quality_seedvc',
+        'realtime_meanvc',
+    }
+    assert all('success' in result for result in benchmark_results.values())
 
 
 @pytest.mark.benchmark
@@ -184,7 +200,7 @@ def test_compare_quality_pipelines(test_audio):
         except Exception as e:
             results[pipeline_type] = {'error': str(e)}
         finally:
-            factory.unload_pipeline(pipeline_type)
+            release_pipeline_resources(factory, pipeline_type)
 
     # Compare
     if 'quality' in results and 'quality_seedvc' in results:
@@ -197,7 +213,7 @@ def test_compare_quality_pipelines(test_audio):
             print(f"  Seed-VC (quality_seedvc): {results['quality_seedvc']['rtf']:.3f}x RT, {results['quality_seedvc']['sample_rate']}Hz")
             print(f"  Seed-VC is {speedup:.2f}x faster" if seedvc_faster else f"  CoMoSVC is {1/speedup:.2f}x faster")
 
-    return results
+    assert set(results) == {'quality', 'quality_seedvc'}
 
 
 @pytest.mark.benchmark
@@ -224,7 +240,7 @@ def test_compare_realtime_pipelines(test_audio):
     except Exception as e:
         results['realtime'] = {'error': str(e)}
     finally:
-        factory.unload_pipeline('realtime')
+        release_pipeline_resources(factory, 'realtime')
 
     # Test MeanVC
     try:
@@ -243,7 +259,7 @@ def test_compare_realtime_pipelines(test_audio):
     except Exception as e:
         results['realtime_meanvc'] = {'error': str(e)}
     finally:
-        factory.unload_pipeline('realtime_meanvc')
+        release_pipeline_resources(factory, 'realtime_meanvc')
 
     # Compare
     if 'realtime' in results and 'realtime_meanvc' in results:
@@ -256,7 +272,7 @@ def test_compare_realtime_pipelines(test_audio):
             print(f"  MeanVC (realtime_meanvc): {results['realtime_meanvc']['rtf']:.3f}x RT, {results['realtime_meanvc']['sample_rate']}Hz")
             print(f"  MeanVC is {speedup:.2f}x faster" if meanvc_faster else f"  Original is {speedup:.2f}x faster")
 
-    return results
+    assert set(results) == {'realtime', 'realtime_meanvc'}
 
 
 @pytest.mark.benchmark
@@ -296,7 +312,7 @@ def test_memory_profiling():
             print(f"  Error: {e}")
 
         finally:
-            factory.unload_pipeline(pipeline_type)
+            release_pipeline_resources(factory, pipeline_type)
 
     # Summary
     print(f"\n{'='*50}")
@@ -321,7 +337,12 @@ def test_memory_profiling():
     # Verify within budget
     assert total_memory < 64, f"Total memory {total_memory:.2f}GB exceeds 64GB budget"
 
-    return results
+    assert set(results) == {
+        'realtime',
+        'quality',
+        'quality_seedvc',
+        'realtime_meanvc',
+    }
 
 
 if __name__ == "__main__":
