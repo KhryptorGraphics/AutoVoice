@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Blueprint, request, jsonify, current_app, send_file
@@ -120,6 +121,7 @@ from ..runtime_contract import (
     LEGACY_PIPELINES,
     LIVE_PIPELINES,
     OFFLINE_PIPELINES,
+    PIPELINE_DEFINITIONS,
 )
 from .offline_realtime import run_offline_realtime_conversion
 from .persistence import (
@@ -129,6 +131,16 @@ from .persistence import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _DaemonExecutor:
+    def submit(self, fn, *args: Any, **kwargs: Any):
+        thread = threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True)
+        thread.start()
+        return thread
+
+
+_background_executor = _DaemonExecutor()
 
 
 # Use /api/v1 prefix for versioned API
@@ -258,6 +270,177 @@ def _default_runtime_device() -> str:
 
 def _default_gpu_enabled() -> bool:
     return bool(TORCH_AVAILABLE and torch.cuda.is_available())
+
+
+def _engine_inventory() -> List[Dict[str, Any]]:
+    engines_dir = (Path(__file__).resolve().parents[1] / "export" / "engines").resolve()
+    if not engines_dir.exists():
+        return []
+
+    inventory: List[Dict[str, Any]] = []
+    for engine_path in sorted(engines_dir.iterdir()):
+        if engine_path.suffix not in {".engine", ".plan"}:
+            continue
+        inventory.append({
+            "name": engine_path.name,
+            "model": engine_path.stem,
+            "path": str(engine_path),
+            "size": engine_path.stat().st_size,
+            "precision": "fp16" if "fp16" in engine_path.stem.lower() else "fp32",
+            "built_at": datetime.fromtimestamp(engine_path.stat().st_mtime, timezone.utc).isoformat(),
+        })
+    return inventory
+
+
+def _save_background_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    state_store = getattr(current_app, "state_store", None)
+    if state_store is not None:
+        return state_store.save_background_job(job)
+    return job
+
+
+def _get_background_job(job_id: str) -> Optional[Dict[str, Any]]:
+    state_store = getattr(current_app, "state_store", None)
+    if state_store is not None:
+        return state_store.get_background_job(job_id)
+    return None
+
+
+def _list_background_jobs(job_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    state_store = getattr(current_app, "state_store", None)
+    if state_store is not None:
+        return state_store.list_background_jobs(job_type=job_type)
+    return []
+
+
+def _update_background_job(job_id: str, **updates: Any) -> Dict[str, Any]:
+    job = dict(_get_background_job(job_id) or {})
+    if not job:
+        raise KeyError(f"Background job {job_id} not found")
+    job.update(updates)
+    _save_background_job(job)
+    return job
+
+
+def _create_background_job(job_type: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    job = {
+        "job_id": str(uuid.uuid4()),
+        "job_type": job_type,
+        "status": "queued",
+        "progress": 0,
+        "created_at": _utcnow_iso(),
+        "started_at": None,
+        "completed_at": None,
+        "error": None,
+        "payload": dict(payload or {}),
+        "result": None,
+    }
+    _save_background_job(job)
+    return job
+
+
+def _submit_background_job(job_id: str, runner, *args: Any, **kwargs: Any) -> None:
+    app = current_app._get_current_object()
+
+    def _wrapped() -> None:
+        with app.app_context():
+            _update_background_job(job_id, status="running", started_at=_utcnow_iso(), progress=5)
+            try:
+                result = runner(job_id, *args, **kwargs)
+                _update_background_job(
+                    job_id,
+                    status="completed",
+                    progress=100,
+                    completed_at=_utcnow_iso(),
+                    result=result,
+                )
+            except Exception as exc:
+                logger.error("Background job %s failed: %s", job_id, exc, exc_info=True)
+                _update_background_job(
+                    job_id,
+                    status="failed",
+                    completed_at=_utcnow_iso(),
+                    error=str(exc),
+                )
+
+    _background_executor.submit(_wrapped)
+
+
+def _resolve_trt_paths(model_name: str) -> tuple[Path, Path]:
+    engines_dir = (Path(__file__).resolve().parents[1] / "export" / "engines").resolve()
+    engines_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = engines_dir / f"{model_name}.onnx"
+    engine_path = engines_dir / f"{model_name}.engine"
+    return onnx_path, engine_path
+
+
+def _run_tensorrt_job(job_id: str, *, models: List[str], precision: str, force_rebuild: bool) -> Dict[str, Any]:
+    try:
+        from ..export.tensorrt_engine import TRT_AVAILABLE, TRTEngineBuilder
+    except Exception as exc:
+        raise RuntimeError(f"TensorRT export support unavailable: {exc}") from exc
+
+    if not TRT_AVAILABLE or TRTEngineBuilder is None:
+        raise RuntimeError("TensorRT is not available in this environment")
+
+    builder = TRTEngineBuilder()
+    built: List[Dict[str, Any]] = []
+    for index, model_name in enumerate(models, start=1):
+        onnx_path, engine_path = _resolve_trt_paths(model_name)
+        if not onnx_path.exists():
+            raise RuntimeError(f"ONNX source not found for {model_name}: {onnx_path}")
+        _update_background_job(
+            job_id,
+            progress=min(95, int((index - 1) / max(len(models), 1) * 100)),
+            result={
+                "current_model": model_name,
+                "models_requested": list(models),
+                "precision": precision,
+                "force_rebuild": force_rebuild,
+                "engines_built": built,
+            },
+        )
+        if force_rebuild:
+            engine = builder.build_engine(str(onnx_path), fp16=(precision == "fp16"), int8=(precision == "int8"))
+            builder.save_engine(engine, str(engine_path))
+        else:
+            builder.load_cached_engine(str(onnx_path), str(engine_path), fp16=(precision == "fp16"), int8=(precision == "int8"))
+        built.append({
+            "model": model_name,
+            "onnx_path": str(onnx_path),
+            "engine_path": str(engine_path),
+            "precision": precision,
+        })
+    return {
+        "models_requested": list(models),
+        "engines_built": built,
+        "precision": precision,
+        "force_rebuild": force_rebuild,
+    }
+
+
+def _build_loaded_model_entry(model_type: str, model_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    info = dict(model_info or {})
+    runtime_backend = info.get("runtime_backend", "pytorch")
+    memory_usage = float(info.get("memory_usage") or 0.0)
+    entry = {
+        "type": model_type,
+        "model_type": model_type,
+        "name": info.get("name") or model_type.replace("_", " ").title(),
+        "path": info.get("path"),
+        "loaded": bool(info.get("loaded", True)),
+        "loaded_at": info.get("loaded_at"),
+        "runtime_backend": runtime_backend,
+        "device": info.get("device", _default_runtime_device()),
+        "memory_usage": memory_usage,
+        "memory_mb": round(memory_usage / (1024 * 1024), 2) if memory_usage else 0.0,
+        "status": info.get("status", "loaded"),
+        "source": info.get("source", "registry"),
+        "artifact_path": info.get("artifact_path"),
+    }
+    if info.get("profile_id"):
+        entry["profile_id"] = info["profile_id"]
+    return entry
 
 
 def _load_separation_config() -> Dict[str, Any]:
@@ -3782,7 +3965,35 @@ def delete_preset(preset_id: str):
 @api_bp.route('/models/loaded', methods=['GET'])
 def get_loaded_models():
     """Get list of currently loaded models."""
-    return jsonify({'models': _get_state_store().list_loaded_models()})
+    persisted = {
+        entry.get('model_type') or entry.get('type'): entry
+        for entry in _get_state_store().list_loaded_models()
+    }
+
+    if PIPELINE_FACTORY_AVAILABLE:
+        factory = PipelineFactory.get_instance()
+        for pipeline_type, status in factory.get_status().items():
+            if not status.get('loaded'):
+                continue
+            persisted[pipeline_type] = {
+                **persisted.get(pipeline_type, {}),
+                'model_type': pipeline_type,
+                'type': pipeline_type,
+                'name': status.get('description') or pipeline_type,
+                'loaded': True,
+                'runtime_backend': persisted.get(pipeline_type, {}).get('runtime_backend', 'pytorch'),
+                'device': persisted.get(pipeline_type, {}).get('device', _default_runtime_device()),
+                'memory_usage': int((status.get('memory_gb') or 0.0) * 1024 * 1024 * 1024),
+                'source': 'pipeline_factory',
+                'status': 'loaded',
+                'loaded_at': persisted.get(pipeline_type, {}).get('loaded_at'),
+            }
+
+    models = [
+        _build_loaded_model_entry(model_type, model_info)
+        for model_type, model_info in sorted(persisted.items())
+    ]
+    return jsonify({'models': models})
 
 
 @api_bp.route('/models/load', methods=['POST'])
@@ -3800,21 +4011,46 @@ def load_model():
         path = data.get('path')
         runtime_backend = data.get('runtime_backend', 'pytorch')
         device = data.get('device', _default_runtime_device())
-        memory_usage = data.get('memory_usage', 0.0)
+        memory_usage = float(data.get('memory_usage', 0.0) or 0.0)
+
+        if model_type in PIPELINE_DEFINITIONS:
+            if not PIPELINE_FACTORY_AVAILABLE:
+                return service_unavailable_response('Pipeline factory unavailable')
+            factory = PipelineFactory.get_instance()
+            factory.get_pipeline(model_type)
+            status = factory.get_status().get(model_type, {})
+            runtime_backend = 'pytorch'
+            memory_usage = int((status.get('memory_gb') or 0.0) * 1024 * 1024 * 1024)
+            path = path or status.get('artifact_path')
+            source = 'pipeline_factory'
+            display_name = status.get('description') or model_type
+        else:
+            if path:
+                candidate = Path(path)
+                if not candidate.exists():
+                    return not_found_response(f'Model path not found: {path}')
+                path = str(candidate)
+                if memory_usage <= 0:
+                    memory_usage = float(candidate.stat().st_size)
+            source = 'registry'
+            display_name = data.get('name') or model_type
+
         model_info = {
             'model_type': model_type,
+            'type': model_type,
             'path': path,
-            'name': data.get('name') or model_type,
+            'name': display_name,
             'loaded': True,
-            'loaded_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'loaded_at': _utcnow_iso(),
             'runtime_backend': runtime_backend,
             'device': device,
             'memory_usage': memory_usage,
             'status': 'loaded',
+            'source': source,
         }
         _get_state_store().save_loaded_model(model_type, model_info)
         logger.info(f"Loaded model: {model_type}")
-        return jsonify(model_info), 201
+        return jsonify(_build_loaded_model_entry(model_type, model_info)), 201
     except Exception as e:
         logger.error(f"Error loading model: {e}", exc_info=True)
         return error_response(str(e))
@@ -3832,7 +4068,11 @@ def unload_model():
         if not model_type:
             return validation_error_response('model_type is required')
 
-        _get_state_store().delete_loaded_model(model_type)
+        removed = _get_state_store().delete_loaded_model(model_type)
+        if model_type in PIPELINE_DEFINITIONS and PIPELINE_FACTORY_AVAILABLE:
+            removed = PipelineFactory.get_instance().unload_pipeline(model_type) or removed
+        if not removed:
+            return not_found_response('Model not loaded')
 
         logger.info(f"Unloaded model: {model_type}")
         return '', 204
@@ -3845,22 +4085,17 @@ def unload_model():
 def get_tensorrt_status():
     """Get TensorRT engine status."""
     try:
-        # Check if TensorRT engines exist
-        engines_dir = os.path.join(os.path.dirname(__file__), '../../export/engines')
-        engines = []
-        if os.path.exists(engines_dir):
-            for f in os.listdir(engines_dir):
-                if f.endswith('.engine') or f.endswith('.plan'):
-                    engines.append({
-                        'name': f,
-                        'path': os.path.join(engines_dir, f),
-                        'size': os.path.getsize(os.path.join(engines_dir, f))
-                    })
+        engines = _engine_inventory()
+        jobs = _list_background_jobs(job_type='tensorrt_build')
+        active_job = next((job for job in jobs if job.get('status') in {'queued', 'running'}), None)
 
         return jsonify({
             'available': len(engines) > 0,
             'engines': engines,
-            'cuda_available': TORCH_AVAILABLE and torch.cuda.is_available()
+            'cuda_available': TORCH_AVAILABLE and torch.cuda.is_available(),
+            'build_in_progress': active_job is not None,
+            'active_job': active_job,
+            'jobs': jobs[:10],
         })
     except Exception as e:
         logger.error(f"Error getting TensorRT status: {e}", exc_info=True)
@@ -3873,15 +4108,29 @@ def rebuild_tensorrt():
     try:
         data = request.get_json() or {}
         precision = data.get('precision', 'fp16')
+        models = data.get('models') or [engine['model'] for engine in _engine_inventory()]
+        if not models:
+            return validation_error_response('No TensorRT models available to rebuild')
 
-        # TODO: Actually rebuild engines
-        logger.info(f"Rebuilding TensorRT engines with precision: {precision}")
+        job = _create_background_job(
+            'tensorrt_build',
+            {'models': list(models), 'precision': precision, 'force_rebuild': True},
+        )
+        _submit_background_job(
+            job['job_id'],
+            _run_tensorrt_job,
+            models=list(models),
+            precision=precision,
+            force_rebuild=True,
+        )
 
+        logger.info("Queued TensorRT rebuild job %s", job['job_id'])
         return jsonify({
-            'status': 'complete',
+            'job_id': job['job_id'],
+            'status': 'queued',
             'precision': precision,
-            'duration_seconds': 0  # TODO: actual duration
-        })
+            'models': list(models),
+        }), 202
     except Exception as e:
         logger.error(f"Error rebuilding TensorRT: {e}", exc_info=True)
         return error_response(str(e))
@@ -3894,16 +4143,25 @@ def build_tensorrt():
         data = request.get_json() or {}
         precision = data.get('precision', 'fp16')
         models = data.get('models', ['encoder', 'decoder', 'vocoder'])
+        job = _create_background_job(
+            'tensorrt_build',
+            {'models': list(models), 'precision': precision, 'force_rebuild': False},
+        )
+        _submit_background_job(
+            job['job_id'],
+            _run_tensorrt_job,
+            models=list(models),
+            precision=precision,
+            force_rebuild=False,
+        )
 
-        # TODO: Actually build engines
-        logger.info(f"Building TensorRT engines: {models} with precision: {precision}")
-
+        logger.info("Queued TensorRT build job %s", job['job_id'])
         return jsonify({
-            'status': 'complete',
+            'job_id': job['job_id'],
+            'status': 'queued',
             'precision': precision,
-            'models': models,
-            'duration_seconds': 0
-        })
+            'models': list(models),
+        }), 202
     except Exception as e:
         logger.error(f"Error building TensorRT: {e}", exc_info=True)
         return error_response(str(e))
@@ -4078,10 +4336,42 @@ def rollback_checkpoint(profile_id: str, checkpoint_id: str):
     checkpoint = _get_state_store().get_checkpoint(profile_id, checkpoint_id)
     if not checkpoint:
         return not_found_response('Checkpoint not found')
+    try:
+        store = _get_profile_store()
+        profile = store.load(profile_id)
+    except ProfileNotFoundError:
+        return not_found_response('Profile not found')
 
-    # TODO: Actually rollback the model
-    logger.info(f"Rolling back profile {profile_id} to checkpoint {checkpoint_id}")
-    return jsonify({'status': 'rolled_back', 'checkpoint': checkpoint})
+    profile_updates = dict(checkpoint.get('profile_snapshot') or {})
+    profile_updates['profile_id'] = profile_id
+    profile_updates['model_version'] = checkpoint.get('version') or checkpoint.get('model_version') or checkpoint_id
+    if checkpoint.get('active_model_type'):
+        profile_updates['active_model_type'] = checkpoint['active_model_type']
+    if checkpoint.get('selected_adapter'):
+        profile_updates['selected_adapter'] = checkpoint['selected_adapter']
+    profile.update(profile_updates)
+    store.save(profile)
+
+    for entry in _get_state_store().list_checkpoints(profile_id):
+        updated_entry = dict(entry)
+        updated_entry['is_active'] = entry.get('id') == checkpoint_id
+        _get_state_store().save_checkpoint(profile_id, updated_entry)
+
+    for loaded_model in _get_state_store().list_loaded_models():
+        if loaded_model.get('profile_id') == profile_id:
+            _get_state_store().delete_loaded_model(loaded_model.get('model_type') or loaded_model.get('type'))
+
+    logger.info(f"Rolled back profile {profile_id} to checkpoint {checkpoint_id}")
+    return jsonify({
+        'status': 'rolled_back',
+        'checkpoint': {
+            **checkpoint,
+            'is_active': True,
+        },
+        'profile_id': profile_id,
+        'active_model_type': profile.get('active_model_type'),
+        'model_version': profile.get('model_version'),
+    })
 
 
 @api_bp.route('/profiles/<profile_id>/checkpoints/<checkpoint_id>', methods=['DELETE'])

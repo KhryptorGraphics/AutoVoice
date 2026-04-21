@@ -27,19 +27,23 @@ def client_models(app_models):
     return app_models.test_client()
 
 
-def test_model_load_list_and_unload_round_trip(client_models):
+def test_model_load_list_and_unload_round_trip(client_models, tmp_path):
     empty = client_models.get("/api/v1/models/loaded")
     assert empty.status_code == 200
     assert empty.get_json() == {"models": []}
 
+    model_path = tmp_path / "encoder.pt"
+    model_path.write_bytes(b"encoder")
+
     loaded = client_models.post(
         "/api/v1/models/load",
-        json={"model_type": "encoder", "path": "/tmp/encoder.pt"},
+        json={"model_type": "encoder", "path": str(model_path)},
     )
     assert loaded.status_code == 201
     payload = loaded.get_json()
     assert payload["model_type"] == "encoder"
     assert payload["status"] == "loaded"
+    assert payload["type"] == "encoder"
 
     listed = client_models.get("/api/v1/models/loaded")
     assert listed.status_code == 200
@@ -73,12 +77,15 @@ def test_model_load_and_unload_validate_payload(client_models):
     assert "model_type is required" in missing_unload_type.get_json()["error"]
 
 
-def test_model_load_is_persisted(app_models, client_models):
+def test_model_load_is_persisted(app_models, client_models, tmp_path):
     from auto_voice.web.persistence import AppStateStore
+
+    model_path = tmp_path / "encoder.pt"
+    model_path.write_bytes(b"encoder")
 
     response = client_models.post(
         "/api/v1/models/load",
-        json={"model_type": "encoder", "path": "/tmp/encoder.pt", "runtime_backend": "tensorrt", "device": "cuda"},
+        json={"model_type": "encoder", "path": str(model_path), "runtime_backend": "tensorrt", "device": "cuda"},
     )
     assert response.status_code == 201
 
@@ -91,9 +98,14 @@ def test_model_load_is_persisted(app_models, client_models):
 def test_tensorrt_status_reports_engine_inventory(client_models, monkeypatch):
     from auto_voice.web import api as web_api
 
-    monkeypatch.setattr(web_api.os.path, "exists", lambda path: True)
-    monkeypatch.setattr(web_api.os, "listdir", lambda path: ["encoder.engine", "notes.txt", "decoder.plan"])
-    monkeypatch.setattr(web_api.os.path, "getsize", lambda path: 4096)
+    monkeypatch.setattr(
+        web_api,
+        "_engine_inventory",
+        lambda: [
+            {"name": "encoder.engine", "model": "encoder", "path": "/tmp/encoder.engine", "size": 4096},
+            {"name": "decoder.plan", "model": "decoder", "path": "/tmp/decoder.plan", "size": 4096},
+        ],
+    )
     monkeypatch.setattr(web_api, "TORCH_AVAILABLE", False)
 
     response = client_models.get("/api/v1/models/tensorrt/status")
@@ -105,16 +117,31 @@ def test_tensorrt_status_reports_engine_inventory(client_models, monkeypatch):
     assert payload["cuda_available"] is False
 
 
-def test_tensorrt_build_and_rebuild_use_defaults_and_overrides(client_models):
+def test_tensorrt_build_and_rebuild_use_defaults_and_overrides(client_models, monkeypatch):
+    from auto_voice.web import api as web_api
+
+    monkeypatch.setattr(web_api, "_submit_background_job", lambda *args, **kwargs: None)
+
     rebuild_default = client_models.post("/api/v1/models/tensorrt/rebuild", json={})
-    assert rebuild_default.status_code == 200
+    assert rebuild_default.status_code == 400
+    assert "No TensorRT models available to rebuild" in rebuild_default.get_json()["error"]
+
+    monkeypatch.setattr(
+        web_api,
+        "_engine_inventory",
+        lambda: [{"model": "encoder", "name": "encoder.engine", "path": "/tmp/encoder.engine", "size": 1024}],
+    )
+
+    rebuild_default = client_models.post("/api/v1/models/tensorrt/rebuild", json={})
+    assert rebuild_default.status_code == 202
     assert rebuild_default.get_json()["precision"] == "fp16"
+    assert rebuild_default.get_json()["models"] == ["encoder"]
 
     build_custom = client_models.post(
         "/api/v1/models/tensorrt/build",
         json={"precision": "fp32", "models": ["encoder", "vocoder"]},
     )
-    assert build_custom.status_code == 200
+    assert build_custom.status_code == 202
     payload = build_custom.get_json()
     assert payload["precision"] == "fp32"
     assert payload["models"] == ["encoder", "vocoder"]
@@ -124,11 +151,21 @@ def test_model_management_error_paths(client_models, monkeypatch):
     from auto_voice.web import api as web_api
 
     monkeypatch.setattr(web_api.logger, "info", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        web_api,
+        "_engine_inventory",
+        lambda: [{"model": "encoder", "name": "encoder.engine", "path": "/tmp/encoder.engine", "size": 1024}],
+    )
+    monkeypatch.setattr(web_api, "_submit_background_job", lambda *args, **kwargs: None)
 
-    load_error = client_models.post("/api/v1/models/load", json={"model_type": "encoder"})
+    load_error = client_models.post("/api/v1/models/load", json={"model_type": "encoder", "path": __file__})
     assert load_error.status_code == 500
     assert "boom" in load_error.get_json()["error"]
 
+    client_models.application.state_store.save_loaded_model(
+        "encoder",
+        {"model_type": "encoder", "type": "encoder", "loaded": True, "loaded_at": "2026-01-01T00:00:00Z"},
+    )
     unload_error = client_models.post("/api/v1/models/unload", json={"model_type": "encoder"})
     assert unload_error.status_code == 500
     assert "boom" in unload_error.get_json()["error"]
@@ -145,8 +182,7 @@ def test_model_management_error_paths(client_models, monkeypatch):
 def test_tensorrt_status_error_path(client_models, monkeypatch):
     from auto_voice.web import api as web_api
 
-    monkeypatch.setattr(web_api.os.path, "exists", lambda path: True)
-    monkeypatch.setattr(web_api.os, "listdir", lambda path: (_ for _ in ()).throw(RuntimeError("scan failed")))
+    monkeypatch.setattr(web_api, "_engine_inventory", lambda: (_ for _ in ()).throw(RuntimeError("scan failed")))
 
     response = client_models.get("/api/v1/models/tensorrt/status")
 

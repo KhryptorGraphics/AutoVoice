@@ -70,7 +70,7 @@ const ExtractionPanel: React.FC<ExtractionPanelProps> = ({
 
       setJob({
         job_id: data.job_id,
-        status: 'running',
+        status: data.status === 'queued' ? 'pending' : data.status,
         progress: 0,
         artist_name: selectedArtist,
         tracks_processed: 0,

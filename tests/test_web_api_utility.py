@@ -266,8 +266,8 @@ class TestTensorRTRebuildEndpoint:
             content_type='application/json'
         )
 
-        # May succeed or fail based on TensorRT availability
-        assert response.status_code in (200, 400, 404, 500, 503)
+        # May queue, succeed, or fail based on TensorRT availability
+        assert response.status_code in (202, 400, 404, 500, 503)
 
     def test_tensorrt_rebuild_with_model(self, client):
         """Rebuild specific model."""
@@ -277,7 +277,7 @@ class TestTensorRTRebuildEndpoint:
             content_type='application/json'
         )
 
-        assert response.status_code in (200, 400, 404, 500, 503)
+        assert response.status_code in (202, 400, 404, 500, 503)
 
 
 class TestKernelMetricsEndpoint:

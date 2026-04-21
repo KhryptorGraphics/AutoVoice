@@ -39,13 +39,14 @@ function ConvertPage() {
     const preferred = getPreferredPipeline()
     return {
       ...DEFAULT_CONVERSION_CONFIG,
-      pipeline_type: preferred && isOfflinePipeline(preferred) ? preferred : 'quality',
+      pipeline_type: preferred && isOfflinePipeline(preferred) ? preferred : 'quality_seedvc',
     }
   })
   const [pipelineStatus, setPipelineStatus] = useState<Record<string, { loaded: boolean; memory_gb?: number; latency_target_ms?: number }>>({})
   const [file, setFile] = useState<File | null>(null)
   const [isConverting, setIsConverting] = useState(false)
   const [conversionStatus, setConversionStatus] = useState<ConversionRecord | null>(null)
+  const [inlineResult, setInlineResult] = useState<{ blob: Blob; jobId: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const targetProfiles = profiles.filter(
     (profile) => profile.profile_role !== 'source_artist' && profile.has_trained_model
@@ -136,6 +137,7 @@ function ConvertPage() {
       setFile(f)
       setError(null)
       setConversionStatus(null)
+      setInlineResult(null)
     }
   }, [])
 
@@ -146,6 +148,7 @@ function ConvertPage() {
       setFile(f)
       setError(null)
       setConversionStatus(null)
+      setInlineResult(null)
     }
   }, [])
 
@@ -154,6 +157,7 @@ function ConvertPage() {
 
     setIsConverting(true)
     setError(null)
+    setInlineResult(null)
 
     try {
       // Start conversion with adapter type and pipeline selection
@@ -170,10 +174,36 @@ function ConvertPage() {
         return_stems: config.return_stems,
       })
 
+      if (result.audio) {
+        const binary = atob(result.audio)
+        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+        const blob = new Blob([bytes], { type: 'audio/wav' })
+        setInlineResult({ blob, jobId: result.job_id })
+        setConversionStatus({
+          id: result.job_id,
+          status: 'completed',
+          created_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          input_file: file.name,
+          profile_id: selectedProfile,
+          preset: config.preset,
+          duration: result.duration,
+          active_model_type: result.active_model_type,
+          adapter_type: result.adapter_type,
+          requested_pipeline: result.requested_pipeline,
+          resolved_pipeline: result.resolved_pipeline,
+          pipeline_type: result.resolved_pipeline || result.requested_pipeline || config.pipeline_type,
+          runtime_backend: result.runtime_backend,
+        })
+        toast.success('Conversion completed successfully!')
+        setIsConverting(false)
+        return
+      }
+
       // Poll for status
       const pollStatus = async () => {
         const status = await apiService.getConversionStatus(result.job_id)
-        setConversionStatus(status)
+        setConversionStatus({ ...status, id: result.job_id })
 
         if (status.status === 'processing' || status.status === 'queued') {
           setTimeout(pollStatus, 1000)
@@ -209,7 +239,9 @@ function ConvertPage() {
   const handleDownload = async () => {
     if (!conversionStatus) return
     try {
-      const blob = await apiService.downloadResult(conversionStatus.id)
+      const blob = inlineResult?.jobId === conversionStatus.id
+        ? inlineResult.blob
+        : await apiService.downloadResult(conversionStatus.id)
       triggerDownload(blob, `converted_${file?.name || 'audio.wav'}`)
     } catch {
       const errorMsg = 'Download failed'
@@ -266,7 +298,10 @@ function ConvertPage() {
                 <p className="text-white font-medium">{file.name}</p>
                 <p className="text-gray-400 text-sm">{(file.size / 1024 / 1024).toFixed(1)} MB</p>
                 <button
-                  onClick={() => setFile(null)}
+                  onClick={() => {
+                    setFile(null)
+                    setInlineResult(null)
+                  }}
                   className="text-red-400 hover:text-red-300 text-sm"
                 >
                   Remove

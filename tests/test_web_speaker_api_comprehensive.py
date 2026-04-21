@@ -152,8 +152,15 @@ class TestRunExtraction:
         assert 'artist_name' in data['error']
 
     @patch('auto_voice.audio.speaker_matcher.SpeakerMatcher')
-    def test_run_extraction_success_returns_job_id(self, mock_matcher_class, client):
+    def test_run_extraction_success_returns_job_id(self, mock_matcher_class, client, monkeypatch):
         """Returns job_id when extraction starts successfully."""
+        from auto_voice.web import speaker_api
+
+        monkeypatch.setattr(
+            speaker_api._extraction_executor,
+            'submit',
+            lambda fn, *args, **kwargs: fn(*args, **kwargs),
+        )
         mock_matcher = MagicMock()
         mock_matcher.extract_embeddings_for_artist.return_value = {
             'tracks_processed': 10,
@@ -172,15 +179,22 @@ class TestRunExtraction:
             json={'artist_name': 'conor_maynard'},
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         data = json.loads(response.data)
         assert 'job_id' in data
         assert 'status' in data
-        assert data['status'] == 'complete'
+        assert data['status'] == 'queued'
 
     @patch('auto_voice.audio.speaker_matcher.SpeakerMatcher')
-    def test_run_extraction_without_clustering(self, mock_matcher_class, client):
+    def test_run_extraction_without_clustering(self, mock_matcher_class, client, monkeypatch):
         """Runs extraction without clustering when run_clustering=False."""
+        from auto_voice.web import speaker_api
+
+        monkeypatch.setattr(
+            speaker_api._extraction_executor,
+            'submit',
+            lambda fn, *args, **kwargs: fn(*args, **kwargs),
+        )
         mock_matcher = MagicMock()
         mock_matcher.extract_embeddings_for_artist.return_value = {
             'tracks_processed': 5,
@@ -195,12 +209,19 @@ class TestRunExtraction:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         mock_matcher.cluster_speakers.assert_not_called()
 
     @patch('auto_voice.audio.speaker_matcher.SpeakerMatcher')
-    def test_run_extraction_handles_extraction_error(self, mock_matcher_class, client):
+    def test_run_extraction_handles_extraction_error(self, mock_matcher_class, client, monkeypatch):
         """Returns error status when extraction fails."""
+        from auto_voice.web import speaker_api
+
+        monkeypatch.setattr(
+            speaker_api._extraction_executor,
+            'submit',
+            lambda fn, *args, **kwargs: fn(*args, **kwargs),
+        )
         mock_matcher = MagicMock()
         mock_matcher.extract_embeddings_for_artist.side_effect = ValueError("Invalid artist")
         mock_matcher_class.return_value = mock_matcher
@@ -210,9 +231,12 @@ class TestRunExtraction:
             json={'artist_name': 'invalid_artist'},
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         data = json.loads(response.data)
-        assert data['status'] == 'failed'
+        assert data['status'] == 'queued'
+        status_response = client.get(f"/api/v1/speakers/extraction/status/{data['job_id']}")
+        assert status_response.status_code == 200
+        assert status_response.get_json()['status'] == 'failed'
 
 
 class TestGetExtractionStatus:
@@ -228,8 +252,15 @@ class TestGetExtractionStatus:
         assert 'not found' in data['error'].lower()
 
     @patch('auto_voice.audio.speaker_matcher.SpeakerMatcher')
-    def test_get_status_returns_job_progress(self, mock_matcher_class, client):
+    def test_get_status_returns_job_progress(self, mock_matcher_class, client, monkeypatch):
         """Returns job status and progress."""
+        from auto_voice.web import speaker_api
+
+        monkeypatch.setattr(
+            speaker_api._extraction_executor,
+            'submit',
+            lambda fn, *args, **kwargs: fn(*args, **kwargs),
+        )
         mock_matcher = MagicMock()
         mock_matcher.extract_embeddings_for_artist.return_value = {'tracks': 5}
         mock_matcher.cluster_speakers.return_value = []
@@ -252,6 +283,7 @@ class TestGetExtractionStatus:
         assert 'status' in data
         assert 'progress' in data
         assert 'message' in data
+        assert data['status'] == 'completed'
 
 
 # =============================================================================

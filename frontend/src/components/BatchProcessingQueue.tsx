@@ -113,6 +113,23 @@ export function BatchProcessingQueue({ profileId, config, onComplete }: BatchPro
 
       try {
         const submission = await processMutation.mutateAsync(batchFile.file)
+        if (submission.audio) {
+          setFiles(prev =>
+            prev.map(f =>
+              f.id === batchFile.id
+                ? {
+                    ...f,
+                    status: 'complete',
+                    progress: 100,
+                    jobId: submission.job_id,
+                    stemUrls: submission.stem_urls,
+                    reassembleUrl: submission.reassemble_url,
+                  }
+                : f
+            )
+          )
+          continue
+        }
         setFiles(prev =>
           prev.map(f =>
             f.id === batchFile.id

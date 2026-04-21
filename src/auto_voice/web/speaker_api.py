@@ -7,10 +7,12 @@ import json
 import logging
 import os
 import uuid
+import threading
 from pathlib import Path
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, current_app, request, jsonify, send_file
 from typing import Dict, Any, Optional
 import tempfile
+from datetime import datetime, timezone
 
 from .utils import validation_error_response, not_found_response, error_response
 
@@ -21,6 +23,101 @@ speaker_bp = Blueprint('speakers', __name__, url_prefix='/api/v1/speakers')
 
 # Track extraction jobs in memory
 _extraction_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+class _DaemonExecutor:
+    def submit(self, fn, *args, **kwargs):
+        thread = threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True)
+        thread.start()
+        return thread
+
+
+_extraction_executor = _DaemonExecutor()
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _get_state_store():
+    return getattr(current_app, "state_store", None)
+
+
+def _save_extraction_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    state_store = _get_state_store()
+    if state_store is not None:
+        state_store.save_background_job(job)
+    else:
+        _extraction_jobs[job["job_id"]] = dict(job)
+    return job
+
+
+def _load_extraction_job(job_id: str) -> Optional[Dict[str, Any]]:
+    state_store = _get_state_store()
+    if state_store is not None:
+        job = state_store.get_background_job(job_id)
+        if job and job.get("job_type") == "speaker_extraction":
+            return job
+    return _extraction_jobs.get(job_id)
+
+
+def _update_extraction_job(job_id: str, **updates: Any) -> Dict[str, Any]:
+    job = dict(_load_extraction_job(job_id) or {})
+    if not job:
+        raise KeyError(f"Extraction job {job_id} not found")
+    job.update(updates)
+    return _save_extraction_job(job)
+
+
+def _run_extraction_job(app, job_id: str, artist_name: str, run_clustering: bool) -> None:
+    with app.app_context():
+        try:
+            _update_extraction_job(
+                job_id,
+                status="running",
+                progress=10,
+                message=f"Extracting embeddings for {artist_name}...",
+                started_at=_utcnow_iso(),
+            )
+
+            from ..audio.speaker_matcher import SpeakerMatcher
+
+            matcher = SpeakerMatcher()
+            stats = matcher.extract_embeddings_for_artist(artist_name)
+            result = dict(stats or {})
+
+            _update_extraction_job(job_id, progress=55, message="Embedding extraction complete")
+
+            if run_clustering:
+                _update_extraction_job(job_id, progress=70, message="Clustering speakers across tracks...")
+                clusters = matcher.cluster_speakers()
+                _update_extraction_job(job_id, progress=85, message="Auto-matching clusters to artists...")
+                match_stats = matcher.auto_match_clusters_to_artists()
+                result["clustering"] = {"clusters_created": len(clusters)}
+                result["matching"] = match_stats
+
+            tracks_processed = int(result.get("tracks_processed") or result.get("tracks") or 0)
+            speakers_detected = result.get("speakers_detected") or []
+            _update_extraction_job(
+                job_id,
+                status="completed",
+                progress=100,
+                message="Extraction complete",
+                completed_at=_utcnow_iso(),
+                tracks_processed=tracks_processed,
+                tracks_total=max(tracks_processed, int(result.get("tracks_total") or tracks_processed)),
+                speakers_detected=speakers_detected,
+                result=result,
+            )
+        except Exception as exc:
+            logger.error("Extraction failed: %s", exc, exc_info=True)
+            _update_extraction_job(
+                job_id,
+                status="failed",
+                completed_at=_utcnow_iso(),
+                error=str(exc),
+                message=str(exc),
+            )
 
 
 def _get_db_operations():
@@ -72,59 +169,36 @@ def run_extraction():
     job_id = str(uuid.uuid4())
 
     # Start extraction in background
-    _extraction_jobs[job_id] = {
-        'status': 'pending',
+    job = {
+        'job_id': job_id,
+        'job_type': 'speaker_extraction',
+        'status': 'queued',
         'artist_name': artist_name,
         'progress': 0,
         'message': 'Starting extraction...',
         'error': None,
+        'tracks_processed': 0,
+        'tracks_total': 0,
+        'speakers_detected': [],
+        'created_at': _utcnow_iso(),
+        'started_at': None,
+        'completed_at': None,
+        'result': None,
     }
-
-    # TODO: Run in background thread/celery
-    # For now, run synchronously but track progress
-    try:
-        _extraction_jobs[job_id]['status'] = 'running'
-
-        from ..audio.speaker_matcher import SpeakerMatcher
-
-        matcher = SpeakerMatcher()
-
-        # Extract embeddings
-        _extraction_jobs[job_id]['message'] = f'Extracting embeddings for {artist_name}...'
-        _extraction_jobs[job_id]['progress'] = 25
-
-        stats = matcher.extract_embeddings_for_artist(artist_name)
-
-        # Run clustering if requested
-        if data.get('run_clustering', True):
-            _extraction_jobs[job_id]['message'] = 'Clustering speakers across tracks...'
-            _extraction_jobs[job_id]['progress'] = 50
-
-            clusters = matcher.cluster_speakers()
-
-            _extraction_jobs[job_id]['message'] = 'Auto-matching clusters to artists...'
-            _extraction_jobs[job_id]['progress'] = 75
-
-            match_stats = matcher.auto_match_clusters_to_artists()
-            stats['clustering'] = {
-                'clusters_created': len(clusters),
-            }
-            stats['matching'] = match_stats
-
-        _extraction_jobs[job_id]['status'] = 'complete'
-        _extraction_jobs[job_id]['progress'] = 100
-        _extraction_jobs[job_id]['message'] = 'Extraction complete'
-        _extraction_jobs[job_id]['result'] = stats
-
-    except Exception as e:
-        logger.error(f"Extraction failed: {e}")
-        _extraction_jobs[job_id]['status'] = 'failed'
-        _extraction_jobs[job_id]['error'] = str(e)
+    _save_extraction_job(job)
+    app = current_app._get_current_object()
+    _extraction_executor.submit(
+        _run_extraction_job,
+        app,
+        job_id,
+        artist_name,
+        bool(data.get('run_clustering', True)),
+    )
 
     return jsonify({
         'job_id': job_id,
-        'status': _extraction_jobs[job_id]['status'],
-    })
+        'status': 'queued',
+    }), 202
 
 
 @speaker_bp.route('/extraction/status/<job_id>', methods=['GET'])
@@ -134,16 +208,23 @@ def get_extraction_status(job_id: str):
     Returns:
         JSON with job status and progress
     """
-    if job_id not in _extraction_jobs:
+    job = _load_extraction_job(job_id)
+    if job is None:
         return not_found_response('Job not found')
 
-    job = _extraction_jobs[job_id]
     return jsonify({
         'job_id': job_id,
         'status': job['status'],
         'progress': job['progress'],
         'message': job['message'],
         'error': job.get('error'),
+        'artist_name': job.get('artist_name'),
+        'tracks_processed': job.get('tracks_processed', 0),
+        'tracks_total': job.get('tracks_total', 0),
+        'speakers_detected': job.get('speakers_detected', []),
+        'created_at': job.get('created_at'),
+        'started_at': job.get('started_at'),
+        'completed_at': job.get('completed_at'),
         'result': job.get('result'),
     })
 

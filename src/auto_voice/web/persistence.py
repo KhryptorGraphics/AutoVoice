@@ -284,6 +284,7 @@ class AppStateStore:
         self._lock = threading.RLock()
         self._files = {
             "training_jobs": self.base_dir / "training_jobs.json",
+            "background_jobs": self.base_dir / "background_jobs.json",
             "presets": self.base_dir / "presets.json",
             "conversion_history": self.base_dir / "conversion_history.json",
             "profile_checkpoints": self.base_dir / "profile_checkpoints.json",
@@ -330,6 +331,22 @@ class AppStateStore:
         jobs = self._read("training_jobs", {})
         jobs[job["job_id"]] = deepcopy(job)
         self._write("training_jobs", jobs)
+        return job
+
+    def list_background_jobs(self, job_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        jobs = list(self._read("background_jobs", {}).values())
+        if job_type:
+            jobs = [job for job in jobs if job.get("job_type") == job_type]
+        jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return jobs
+
+    def get_background_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        return self._read("background_jobs", {}).get(job_id)
+
+    def save_background_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        jobs = self._read("background_jobs", {})
+        jobs[job["job_id"]] = deepcopy(job)
+        self._write("background_jobs", jobs)
         return job
 
     def list_presets(self) -> List[Dict[str, Any]]:

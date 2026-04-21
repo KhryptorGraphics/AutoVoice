@@ -925,6 +925,8 @@ class TestLifecycleAndAnalysisErrorBranches:
 
 class TestStateAndModelRoutes:
     def test_presets_history_checkpoints_and_tensorrt_routes(self, client_remaining, app_remaining, tmp_path):
+        from auto_voice.web import api as web_api
+
         create_preset = client_remaining.post("/api/v1/presets", json={"name": "Studio", "config": {"gain": 2}})
         assert create_preset.status_code == 201
         preset_id = create_preset.get_json()["id"]
@@ -947,22 +949,37 @@ class TestStateAndModelRoutes:
 
         app_remaining.state_store.save_checkpoint(
             "profile-a",
-            {"id": "checkpoint-1", "created_at": "2026-04-17T00:00:00Z", "epoch": 5},
+            {
+                "id": "checkpoint-1",
+                "created_at": "2026-04-17T00:00:00Z",
+                "epoch": 5,
+                "version": "v1",
+                "active_model_type": "adapter",
+                "profile_snapshot": {"selected_adapter": "unified"},
+            },
         )
+        _create_profile(app_remaining, profile_id="profile-a")
         assert client_remaining.get("/api/v1/profiles/profile-a/checkpoints").status_code == 200
         rollback = client_remaining.post("/api/v1/profiles/profile-a/checkpoints/checkpoint-1/rollback")
         assert rollback.status_code == 200
         assert rollback.get_json()["status"] == "rolled_back"
+        assert rollback.get_json()["checkpoint"]["is_active"] is True
         assert client_remaining.delete("/api/v1/profiles/profile-a/checkpoints/checkpoint-1").status_code == 204
 
-        status = client_remaining.get("/api/v1/models/tensorrt/status")
-        assert status.status_code == 200
-        assert "available" in status.get_json()
-        assert client_remaining.post("/api/v1/models/tensorrt/rebuild", json={"precision": "fp32"}).status_code == 200
-        assert client_remaining.post(
-            "/api/v1/models/tensorrt/build",
-            json={"precision": "fp16", "models": ["encoder"]},
-        ).status_code == 200
+        with patch.object(web_api, "_submit_background_job", lambda *args, **kwargs: None), \
+             patch.object(
+                 web_api,
+                 "_engine_inventory",
+                 lambda: [{"model": "encoder", "name": "encoder.engine", "path": "/tmp/encoder.engine", "size": 1024}],
+             ):
+            status = client_remaining.get("/api/v1/models/tensorrt/status")
+            assert status.status_code == 200
+            assert "available" in status.get_json()
+            assert client_remaining.post("/api/v1/models/tensorrt/rebuild", json={"precision": "fp32"}).status_code == 202
+            assert client_remaining.post(
+                "/api/v1/models/tensorrt/build",
+                json={"precision": "fp16", "models": ["encoder"]},
+            ).status_code == 202
 
 
 class TestYoutubeAnalysisAndQualityRoutes:

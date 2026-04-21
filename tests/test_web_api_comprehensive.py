@@ -564,29 +564,37 @@ class TestUtilityAndConfigEndpoints:
         assert response.get_json()["sample_rate"] == 48000
 
     def test_model_management_endpoints_round_trip(self, client_current):
-        loaded = client_current.get("/api/v1/models/loaded")
-        assert loaded.status_code == 200
+        from auto_voice.web import api as web_api
 
-        created = client_current.post(
-            "/api/v1/models/load",
-            json={"model_type": "vocoder", "path": "/tmp/vocoder.pt"},
-        )
-        assert created.status_code == 201
-        assert created.get_json()["model_type"] == "vocoder"
+        with patch.object(web_api, "_submit_background_job", lambda *args, **kwargs: None), \
+             patch.object(
+                 web_api,
+                 "_engine_inventory",
+                 lambda: [{"model": "encoder", "name": "encoder.engine", "path": "/tmp/encoder.engine", "size": 1024}],
+             ):
+            loaded = client_current.get("/api/v1/models/loaded")
+            assert loaded.status_code == 200
 
-        rebuilt = client_current.post("/api/v1/models/tensorrt/rebuild", json={})
-        assert rebuilt.status_code == 200
-        assert rebuilt.get_json()["precision"] == "fp16"
+            created = client_current.post(
+                "/api/v1/models/load",
+                json={"model_type": "vocoder", "path": __file__},
+            )
+            assert created.status_code == 201
+            assert created.get_json()["model_type"] == "vocoder"
 
-        built = client_current.post(
-            "/api/v1/models/tensorrt/build",
-            json={"precision": "fp8", "models": ["encoder"]},
-        )
-        assert built.status_code == 200
-        assert built.get_json()["models"] == ["encoder"]
+            rebuilt = client_current.post("/api/v1/models/tensorrt/rebuild", json={})
+            assert rebuilt.status_code == 202
+            assert rebuilt.get_json()["precision"] == "fp16"
 
-        unloaded = client_current.post("/api/v1/models/unload", json={"model_type": "vocoder"})
-        assert unloaded.status_code == 204
+            built = client_current.post(
+                "/api/v1/models/tensorrt/build",
+                json={"precision": "fp8", "models": ["encoder"]},
+            )
+            assert built.status_code == 202
+            assert built.get_json()["models"] == ["encoder"]
+
+            unloaded = client_current.post("/api/v1/models/unload", json={"model_type": "vocoder"})
+            assert unloaded.status_code == 204
 
     def test_config_endpoints_update_values(self, client_current):
         separation = client_current.post("/api/v1/config/separation", json={"segment": 12, "overlap": 0.5})

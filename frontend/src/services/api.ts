@@ -387,7 +387,7 @@ export interface ConversionConfig {
 }
 
 export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
-  pipeline_type: 'quality',
+  pipeline_type: 'quality_seedvc',
   vocal_volume: 1.0,
   instrumental_volume: 0.9,
   pitch_shift: 0.0,
@@ -467,10 +467,18 @@ export const DEFAULT_AUDIO_ROUTER_CONFIG: AudioRouterConfig = {
 // Loaded model info
 export interface LoadedModel {
   type: string
+  model_type: string
   name: string
   path?: string
+  loaded?: boolean
+  runtime_backend?: string
+  device?: string
+  status?: string
+  memory_usage?: number
   memory_mb?: number
   loaded_at?: string
+  source?: string
+  artifact_path?: string
 }
 
 // TensorRT engine status
@@ -570,7 +578,7 @@ export const DEFAULT_PITCH_CONFIG: PitchConfig = {
 
 // Conversion job response (from POST /convert/song)
 export interface ConversionJobResponse {
-  status: 'queued' | 'processing'
+  status: 'queued' | 'processing' | 'success' | 'completed'
   job_id: string
   websocket_room?: string
   message?: string
@@ -581,6 +589,14 @@ export interface ConversionJobResponse {
   // When sync processing is used, result may be inline
   output_url?: string
   download_url?: string
+  audio?: string
+  format?: string
+  sample_rate?: number
+  duration?: number
+  quality_metrics?: QualityMetrics
+  requested_pipeline?: PipelineType
+  resolved_pipeline?: PipelineType
+  runtime_backend?: string
 }
 
 // Extended conversion status (from GET /convert/status/{job_id})
@@ -730,20 +746,20 @@ class ApiService {
     }
   }
 
-  async getModelsInfo(): Promise<{ models: any[] }> {
-    // Return mock data until backend endpoint exists
-    return { models: [] }
+  async getModelsInfo(): Promise<{ models: LoadedModel[] }> {
+    const models = await this.getLoadedModels()
+    return { models }
   }
 
   async healthCheck(): Promise<{ status: string; gpu_available: boolean; models_loaded: boolean; uptime: number }> {
-    const health = await this.getHealth()
+    const [health, models] = await Promise.all([this.getHealth(), this.getLoadedModels()])
     // Check if torch component details indicate CUDA is available
     const torchDetails = health.components?.torch?.details ?? ''
     const gpuAvailable = torchDetails.toLowerCase().includes('cuda') || health.components?.torch?.status === 'up'
     return {
       status: health.status,
       gpu_available: gpuAvailable,
-      models_loaded: health.components?.singing_pipeline?.status === 'up',
+      models_loaded: models.some((model) => model.loaded),
       uptime: health.uptime ?? 0,
     }
   }
@@ -955,7 +971,8 @@ class ApiService {
   }
 
   async getConversionStatus(jobId: string): Promise<ConversionRecord> {
-    return this.request(`/convert/status/${jobId}`)
+    const status = await this.request<ConversionRecord>(`/convert/status/${jobId}`)
+    return { ...status, id: (status as ConversionRecord).id ?? jobId }
   }
 
   async cancelConversion(jobId: string): Promise<void> {
@@ -1102,7 +1119,11 @@ class ApiService {
   // Model Management
   async getLoadedModels(): Promise<LoadedModel[]> {
     const response = await this.request<{ models: LoadedModel[] }>('/models/loaded')
-    return response.models
+    return response.models.map((model) => ({
+      ...model,
+      type: model.type ?? model.model_type,
+      memory_mb: model.memory_mb ?? ((model.memory_usage ?? 0) / (1024 * 1024)),
+    }))
   }
 
   async loadModel(modelType: string, path?: string): Promise<LoadedModel> {
