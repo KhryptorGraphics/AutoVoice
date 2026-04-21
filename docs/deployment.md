@@ -55,6 +55,32 @@ python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5000 --
 - Systemd unit source: `config/systemd/autovoice.service`
 - Root privileges are only required if you want the setup script to install the service unit
 
+## Apache Hosting
+
+The live AutoVoice app on this host is served behind Apache and the existing
+`autovoice.service` backend:
+
+- backend service: `autovoice.service`
+- backend bind: `127.0.0.1:10600`
+- frontend document root: `frontend/dist`
+- Apache vhost files:
+  - `/etc/apache2/sites-available/autovoice.giggadev.com.conf`
+  - `/etc/apache2/sites-available/autovoice.giggadev.com-le-ssl.conf`
+
+Apache serves the built frontend directly from `frontend/dist` and reverse
+proxies `/api`, `/socket.io`, and `/health` to the backend on `127.0.0.1:10600`.
+
+The current vhost accepts both hostnames:
+
+- `autovoice.giggadev.com`
+- `autovoice.giggahost.com`
+
+For public HTTPS on `autovoice.giggahost.com`, the host still needs two
+external prerequisites outside the repo:
+
+- DNS for `autovoice.giggahost.com` must resolve to this server
+- the active Let's Encrypt certificate must include `autovoice.giggahost.com`
+
 ## Release Candidate Workflow
 
 The repo now ships two executable validation lanes:
