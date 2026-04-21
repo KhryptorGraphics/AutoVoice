@@ -114,6 +114,13 @@ from ..storage.paths import (
     resolve_samples_dir,
     resolve_trained_models_dir,
 )
+from ..runtime_contract import (
+    CANONICAL_LIVE_PIPELINE,
+    CANONICAL_OFFLINE_PIPELINE,
+    LEGACY_PIPELINES,
+    LIVE_PIPELINES,
+    OFFLINE_PIPELINES,
+)
 from .offline_realtime import run_offline_realtime_conversion
 
 logger = logging.getLogger(__name__)
@@ -126,9 +133,6 @@ UPLOAD_FOLDER = '/tmp/autovoice_uploads'
 ALLOWED_EXTENSIONS = ALLOWED_AUDIO_EXTENSIONS  # Use shared constant
 MAX_TEXT_LENGTH = 5000
 MAX_AUDIO_DURATION = 600  # 10 minutes
-OFFLINE_PIPELINES = {"realtime", "quality", "quality_seedvc", "quality_shortcut"}
-LIVE_PIPELINES = {"realtime", "realtime_meanvc"}
-LEGACY_PIPELINES = {"realtime", "quality"}
 
 
 def get_param(data, form_key, settings_key, default, validator=None, type_hint=None):
@@ -167,10 +171,10 @@ def _normalize_app_settings_payload(raw_settings: Optional[Dict[str, Any]]) -> D
     live_pipeline = settings.get('preferred_live_pipeline')
 
     if offline_pipeline not in OFFLINE_PIPELINES:
-        offline_pipeline = 'realtime' if legacy_pipeline == 'realtime' else 'quality'
+        offline_pipeline = 'realtime' if legacy_pipeline == 'realtime' else CANONICAL_OFFLINE_PIPELINE
 
     if live_pipeline not in LIVE_PIPELINES:
-        live_pipeline = 'realtime'
+        live_pipeline = 'realtime' if legacy_pipeline == 'realtime' else CANONICAL_LIVE_PIPELINE
 
     settings['preferred_offline_pipeline'] = offline_pipeline
     settings['preferred_live_pipeline'] = live_pipeline
@@ -195,7 +199,7 @@ def _validate_offline_pipeline(value: str) -> str:
 def _normalize_preset_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Normalize preset config to the canonical offline conversion contract."""
     normalized = dict(config or {})
-    pipeline_type = str(normalized.get('pipeline_type', 'quality')).strip().lower()
+    pipeline_type = str(normalized.get('pipeline_type', CANONICAL_OFFLINE_PIPELINE)).strip().lower()
     if pipeline_type not in OFFLINE_PIPELINES:
         raise ValueError(
             'Preset pipeline_type must be one of: realtime, quality, quality_seedvc, quality_shortcut'
@@ -455,7 +459,7 @@ def convert_song():
         return_stems (bool): Return separate vocal/instrumental stems (optional)
         output_quality (str): 'draft', 'fast', 'balanced', 'high', 'studio' (optional)
         adapter_type (str): LoRA adapter to use: 'hq' (high-quality) or 'nvfp4' (fast) (optional)
-        pipeline_type (str): 'realtime' for low-latency (<100ms) or 'quality' for high-fidelity (optional, default: quality)
+        pipeline_type (str): 'realtime' for fast conversion or 'quality_seedvc' for canonical offline quality (optional, default: quality_seedvc)
 
     Returns:
         ASYNC MODE: HTTP 202 + JSON with job_id and status 'queued'
@@ -632,12 +636,13 @@ def convert_song():
 
     # Pipeline type selection for offline conversion.
     # - realtime: fastest offline conversion path
-    # - quality: default CoMoSVC path with best compatibility
+    # - quality_seedvc: canonical offline quality path
+    # - quality: experimental CoMoSVC compatibility path
     # - quality_seedvc: DiT-CFM quality path
     # - quality_shortcut: shortcut Seed-VC quality path
     try:
         pipeline_type = get_param(
-            settings_data, 'pipeline_type', 'pipeline_type', 'quality',
+            settings_data, 'pipeline_type', 'pipeline_type', CANONICAL_OFFLINE_PIPELINE,
             lambda v: v in OFFLINE_PIPELINES, type_hint='str'
         )
     except ValueError as e:
@@ -648,7 +653,10 @@ def convert_song():
     resolved_pipeline = pipeline_type
     runtime_backend = 'pytorch'
     if use_full_model and requested_pipeline != 'quality':
-        resolved_pipeline = 'quality'
+        return validation_error_response(
+            'Full-model profiles currently require pipeline_type=quality; no silent pipeline fallback is applied.'
+        )
+    if use_full_model:
         runtime_backend = 'pytorch_full_model'
 
     # Sample rate from config
@@ -1860,7 +1868,7 @@ def update_app_settings():
                 updates['preferred_offline_pipeline'] = 'realtime'
                 updates['preferred_live_pipeline'] = 'realtime'
             else:
-                updates['preferred_offline_pipeline'] = 'quality'
+                updates['preferred_offline_pipeline'] = CANONICAL_OFFLINE_PIPELINE
 
         if 'preferred_offline_pipeline' in data:
             preferred_offline_pipeline = str(data['preferred_offline_pipeline']).strip().lower()

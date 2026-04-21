@@ -148,9 +148,9 @@ and asynchronous processing modes.
                                     },
                                     "pipeline_type": {
                                         "type": "string",
-                                        "enum": ["realtime", "quality", "quality_seedvc"],
-                                        "default": "quality",
-                                        "description": "Processing pipeline type"
+                                        "enum": ["realtime", "quality", "quality_seedvc", "quality_shortcut"],
+                                        "default": "quality_seedvc",
+                                        "description": "Processing pipeline type. Canonical offline default is quality_seedvc; quality and quality_shortcut are experimental variants."
                                     }
                                 }
                             }

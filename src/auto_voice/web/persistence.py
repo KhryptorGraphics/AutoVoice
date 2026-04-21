@@ -9,9 +9,12 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
-OFFLINE_PIPELINES = {"realtime", "quality", "quality_seedvc", "quality_shortcut"}
-LIVE_PIPELINES = {"realtime", "realtime_meanvc"}
+from auto_voice.runtime_contract import (
+    CANONICAL_LIVE_PIPELINE,
+    CANONICAL_OFFLINE_PIPELINE,
+    LIVE_PIPELINES,
+    OFFLINE_PIPELINES,
+)
 
 
 def _normalize_app_settings(raw_settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -25,13 +28,13 @@ def _normalize_app_settings(raw_settings: Optional[Dict[str, Any]]) -> Dict[str,
         if legacy_pipeline == "realtime":
             offline_pipeline = "realtime"
         else:
-            offline_pipeline = "quality"
+            offline_pipeline = CANONICAL_OFFLINE_PIPELINE
 
     if live_pipeline not in LIVE_PIPELINES:
         if legacy_pipeline == "realtime":
             live_pipeline = "realtime"
         else:
-            live_pipeline = "realtime"
+            live_pipeline = CANONICAL_LIVE_PIPELINE
 
     settings["preferred_offline_pipeline"] = offline_pipeline
     settings["preferred_live_pipeline"] = live_pipeline

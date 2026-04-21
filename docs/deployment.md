@@ -44,6 +44,7 @@ You can rerun the validation independently:
 
 ```bash
 scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform
+python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5000 --report-dir reports/platform
 ```
 
 ## Operational Notes
@@ -53,5 +54,20 @@ scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform
 - Compose stack source: `docker-compose.yaml`
 - Systemd unit source: `config/systemd/autovoice.service`
 - Root privileges are only required if you want the setup script to install the service unit
+
+## Release Candidate Workflow
+
+The repo now ships two executable validation lanes:
+
+- GitHub Actions `release-candidate`: build frontend, validate compose config, boot the deterministic backend harness, and run `scripts/validate_release_candidate.py`
+- GitHub Actions `jetson-nightly`: run `scripts/validate_cuda_stack.sh --pipeline all` on a self-hosted Jetson runner
+
+Rollback criteria for a release candidate are simple:
+
+- `/health` is not healthy
+- `/ready` is not ready
+- `/api/v1/metrics` does not respond
+- compose config is invalid
+- Jetson CUDA/TensorRT validation fails on the target hardware lane
 
 For broader production guidance, monitoring, and Docker notes, see [deployment-guide.md](./deployment-guide.md).

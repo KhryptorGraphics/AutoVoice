@@ -31,7 +31,7 @@ class ConversionSettingsSchema(Schema):
     return_stems = fields.Bool(metadata={"description": "Return separate vocal/instrumental stems (default: false)"})
     output_quality = fields.Str(metadata={"description": "Quality preset: draft, fast, balanced, high, studio (default: balanced)"})
     adapter_type = fields.Str(metadata={"description": "LoRA adapter type: hq, nvfp4, unified (default: unified)"})
-    pipeline_type = fields.Str(metadata={"description": "Pipeline type: realtime, quality, quality_seedvc (default: quality)"})
+    pipeline_type = fields.Str(metadata={"description": "Pipeline type: realtime, quality, quality_seedvc, quality_shortcut (default: quality_seedvc; realtime/quality_shortcut are non-canonical variants)"})
 
 
 class ConversionResultSchema(Schema):
@@ -161,9 +161,10 @@ GPU-accelerated singing voice conversion and TTS system with real-time processin
 
 ## Pipeline Types
 
-- **realtime**: Low-latency conversion (<100ms) for live karaoke
-- **quality**: High-fidelity CoMoSVC with 30-step diffusion (24kHz)
-- **quality_seedvc**: SOTA DiT-CFM with 5-10 step flow matching (44kHz)
+- **realtime**: Canonical fast/live path for karaoke and offline realtime conversion
+- **quality_seedvc**: Canonical offline quality path with Seed-VC DiT-CFM (44.1kHz)
+- **quality**: Experimental CoMoSVC offline path
+- **quality_shortcut**: Experimental Seed-VC shortcut offline path
 
 ## Adapter Types
 

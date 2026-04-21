@@ -11,6 +11,7 @@ import json
 import torch
 import torch.nn as nn
 
+from auto_voice.runtime_contract import choose_artifact_manifest_path, load_packaged_artifact_manifest
 from auto_voice.storage.paths import resolve_profiles_dir, resolve_trained_models_dir
 
 logger = logging.getLogger(__name__)
@@ -241,6 +242,36 @@ class AdapterManager:
         """Get the profile embedding path."""
         return self.config.profiles_dir / f"{profile_id}.npy"
 
+    def get_packaged_manifest_path(self, profile_id: str) -> Optional[Path]:
+        """Return the packaged runtime manifest for a profile when available."""
+        project_root = Path(os.environ.get("AUTOVOICE_PROJECT_ROOT", Path.cwd()))
+        models_root = project_root / "models"
+        candidate_paths = []
+        if models_root.exists():
+            for child in sorted(models_root.iterdir()):
+                if not child.is_dir():
+                    continue
+                candidate_paths.append(child / "artifact_manifest.json")
+
+        manifest_path = choose_artifact_manifest_path(candidate_paths)
+        if manifest_path is None:
+            return None
+
+        try:
+            manifest = load_packaged_artifact_manifest(manifest_path)
+        except Exception:
+            return None
+        if manifest.get("profile_id") == profile_id:
+            return manifest_path
+        return None
+
+    def load_packaged_manifest(self, profile_id: str) -> Optional[Dict[str, Any]]:
+        """Load the packaged runtime manifest for a profile when present."""
+        manifest_path = self.get_packaged_manifest_path(profile_id)
+        if manifest_path is None:
+            return None
+        return load_packaged_artifact_manifest(manifest_path)
+
     def has_full_model(self, profile_id: str) -> bool:
         """Check if a full-model checkpoint exists for the profile."""
         return self.get_full_model_path(profile_id) is not None
@@ -371,7 +402,10 @@ class AdapterManager:
             artifact_type=resolved_type,
             path=artifact_path,
             handle=handle,
-            metadata={"artifact_types": self.get_available_artifact_types(profile_id)},
+            metadata={
+                "artifact_types": self.get_available_artifact_types(profile_id),
+                "packaged_manifest": self.load_packaged_manifest(profile_id),
+            },
         )
         if use_cache:
             self._cache.put(cache_key, artifact)

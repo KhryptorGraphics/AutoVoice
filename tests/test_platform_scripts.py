@@ -17,7 +17,11 @@ def _script_env() -> dict[str, str]:
 
 
 def test_platform_scripts_have_valid_bash_syntax():
-    for script_name in ("scripts/setup_jetson_thor.sh", "scripts/validate_cuda_stack.sh"):
+    for script_name in (
+        "scripts/setup_jetson_thor.sh",
+        "scripts/validate_cuda_stack.sh",
+        "scripts/launch_swarms.sh",
+    ):
         result = subprocess.run(
             ["bash", "-n", script_name],
             cwd=PROJECT_ROOT,

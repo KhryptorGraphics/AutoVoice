@@ -683,9 +683,9 @@ job_id = convert_song(
 ### Pipeline Selection
 
 ```python
-# realtime: <100ms latency, good for live karaoke
-# quality: High-fidelity, 24kHz output
-# quality_seedvc: SOTA quality, 44kHz output (recommended)
+# realtime: canonical fast/live path
+# quality: experimental CoMoSVC compatibility path
+# quality_seedvc: canonical offline quality path, 44kHz output
 
 PIPELINE_SELECTION = {
     'live_karaoke': 'realtime',

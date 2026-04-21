@@ -25,9 +25,11 @@ def _existing(path: Path) -> str | None:
 def _collect_model_release(artist_key: str) -> dict:
     release_dir = MODELS_DIR / artist_key
     registry = _load_json(release_dir / "registry_entry.json")
+    artifact_manifest = _load_json(release_dir / "artifact_manifest.json")
     return {
         "release_dir": _existing(release_dir),
         "registry_entry": registry,
+        "artifact_manifest": artifact_manifest,
     }
 
 

@@ -114,7 +114,7 @@ def test_app_settings_round_trip(training_ui_client):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["preferred_pipeline"] == "quality"
-    assert payload["preferred_offline_pipeline"] == "quality"
+    assert payload["preferred_offline_pipeline"] == "quality_seedvc"
     assert payload["preferred_live_pipeline"] == "realtime"
 
     update = training_ui_client.patch(

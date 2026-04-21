@@ -21,6 +21,8 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from auto_voice.runtime_contract import build_packaged_artifact_manifest, write_packaged_artifact_manifest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
@@ -282,8 +284,43 @@ def _package_release(spec: ReleaseSpec, mirror_alias_artifacts: bool = True) -> 
         },
     }
 
+    packaged_manifest = build_packaged_artifact_manifest(
+        profile_id=spec.canonical_profile_id,
+        display_name=spec.display_name,
+        model_family="seed_vc",
+        canonical_pipeline="quality_seedvc",
+        sample_rate=44_100,
+        speaker_embedding_dim=len(canonical_profile.get("embedding", []) or []),
+        mel_bins=80,
+        artifacts={
+            "profile_json": copied_profile_json,
+            "speaker_embedding": copied_profile_embedding,
+            "adapter": copied_base,
+            "hq_lora": copied_hq,
+            "nvfp4_lora": copied_nvfp4,
+            "tensorrt_engine": _existing_path_str(tensorrt_engine),
+            "tensorrt_metadata": _existing_path_str(tensorrt_metadata),
+        },
+        compatibility={
+            "supported_pipelines": ["quality_seedvc"],
+            "supported_runtime_backends": ["pytorch", "tensorrt"],
+            "supports_tensorrt": tensorrt_engine.exists(),
+        },
+        metadata={
+            "artist_key": spec.artist_key,
+            "artifact_profile_ids": list(spec.artifact_profile_ids),
+            "speaker_embedding_backend": speaker_backend,
+            "dataset_manifest": str(DATASET_MANIFEST),
+            "evaluation": registry_entry["evaluation"],
+            "training_metadata": training_metadata,
+            "profile_metadata": canonical_profile,
+            "acceptance": registry_entry["acceptance"],
+        },
+    )
+
     (release_dir / "registry_entry.json").write_text(json.dumps(registry_entry, indent=2))
     (release_dir / "metadata.json").write_text(json.dumps(registry_entry, indent=2))
+    write_packaged_artifact_manifest(release_dir / "artifact_manifest.json", packaged_manifest)
     (release_dir / "README.md").write_text(
         "\n".join(
             [
@@ -305,6 +342,7 @@ def _package_release(spec: ReleaseSpec, mirror_alias_artifacts: bool = True) -> 
                 "## Notes",
                 "",
                 "- `registry_entry.json` is the machine-readable release manifest.",
+                "- `artifact_manifest.json` is the canonical packaged runtime/export/deployment manifest.",
                 f"- Max recorded training steps: `{max_training_steps}`",
                 f"- 50k iteration target met: `{max_training_steps >= 50000}`",
             ]

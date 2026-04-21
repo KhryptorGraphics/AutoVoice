@@ -14,6 +14,7 @@ import logging
 from typing import Dict, Literal, Optional, TYPE_CHECKING, Union
 
 import torch
+from auto_voice.runtime_contract import PIPELINE_DEFINITIONS, get_pipeline_status_template
 
 if TYPE_CHECKING:
     from .realtime_pipeline import RealtimePipeline
@@ -101,7 +102,7 @@ class PipelineFactory:
             RuntimeError: If pipeline creation fails
             ValueError: If unknown pipeline_type
         """
-        if pipeline_type not in ('realtime', 'quality', 'quality_seedvc', 'realtime_meanvc', 'quality_shortcut'):
+        if pipeline_type not in PIPELINE_DEFINITIONS:
             raise ValueError(
                 f"Unknown pipeline type: {pipeline_type}. "
                 f"Use 'realtime', 'quality', 'quality_seedvc', 'realtime_meanvc', or 'quality_shortcut'"
@@ -273,63 +274,11 @@ class PipelineFactory:
                 - description: Human-readable description
                 - features: List of key features (for advanced pipelines)
         """
-        return {
-            'realtime': {
-                'loaded': self.is_loaded('realtime'),
-                'memory_gb': self.get_memory_usage('realtime'),
-                'latency_target_ms': 100,
-                'sample_rate': 22050,
-                'description': 'Low-latency pipeline for live karaoke',
-            },
-            'quality': {
-                'loaded': self.is_loaded('quality'),
-                'memory_gb': self.get_memory_usage('quality'),
-                'latency_target_ms': 3000,  # Full song processing
-                'sample_rate': 24000,
-                'description': 'High-quality CoMoSVC with 30-step diffusion',
-            },
-            'quality_seedvc': {
-                'loaded': self.is_loaded('quality_seedvc'),
-                'memory_gb': self.get_memory_usage('quality_seedvc'),
-                'latency_target_ms': 2000,  # Faster than CoMoSVC
-                'sample_rate': 44100,
-                'description': 'SOTA quality with DiT-CFM (5-10 steps), 44kHz output',
-                'features': [
-                    'In-context learning from reference audio',
-                    'Conditional Flow Matching (faster than diffusion)',
-                    'Whisper encoder for semantic content',
-                    'BigVGAN v2 vocoder at 44.1kHz',
-                ],
-            },
-            'realtime_meanvc': {
-                'loaded': self.is_loaded('realtime_meanvc'),
-                'memory_gb': self.get_memory_usage('realtime_meanvc'),
-                'latency_target_ms': 80,  # <100ms chunk latency
-                'sample_rate': 16000,
-                'description': 'MeanVC streaming with single-step mean flow inference',
-                'features': [
-                    'Single-step inference (1-2 NFE) via mean flows',
-                    'Chunk-wise autoregressive processing with KV-cache',
-                    'CPU-optimized 14M parameter model',
-                    'Vocos vocoder at 16kHz',
-                    'True streaming compatible',
-                ],
-            },
-            'quality_shortcut': {
-                'loaded': self.is_loaded('quality_shortcut'),
-                'memory_gb': self.get_memory_usage('quality_shortcut'),
-                'latency_target_ms': 800,  # ~2.83x faster than 10-step
-                'sample_rate': 44100,
-                'description': 'Shortcut flow matching with 2-step inference (2.83x speedup)',
-                'features': [
-                    '2-step inference via shortcut flow matching',
-                    'Self-consistency loss training',
-                    'DiT-CFM architecture (same as quality_seedvc)',
-                    'High quality with faster inference',
-                    'GPU-accelerated',
-                ],
-            },
-        }
+        status = get_pipeline_status_template()
+        for pipeline_type, entry in status.items():
+            entry["loaded"] = self.is_loaded(pipeline_type)  # type: ignore[index]
+            entry["memory_gb"] = self.get_memory_usage(pipeline_type)  # type: ignore[index]
+        return status
 
 
 # Type annotation for profile store (avoid circular import)

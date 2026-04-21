@@ -1,0 +1,24 @@
+name: jetson-nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * *"
+
+jobs:
+  jetson-validation:
+    runs-on: [self-hosted, linux, arm64, jetson]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate CUDA/TensorRT stack
+        run: bash scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform
+
+      - name: Upload Jetson validation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jetson-platform-artifacts
+          path: reports/platform
+          if-no-files-found: ignore

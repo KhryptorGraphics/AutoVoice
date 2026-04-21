@@ -40,7 +40,7 @@ def test_presets_crud_round_trip(client_presets):
     preset_id = created["id"]
     assert created["name"] == "Studio"
     assert created["config"]["pitch_shift"] == 2
-    assert created["config"]["pipeline_type"] == "quality"
+    assert created["config"]["pipeline_type"] == "quality_seedvc"
 
     list_response = client_presets.get("/api/v1/presets")
     assert list_response.status_code == 200

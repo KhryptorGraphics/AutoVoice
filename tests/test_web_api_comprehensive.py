@@ -286,6 +286,7 @@ class TestConversionEndpoints:
                 "song": (_wav_bytes(), "song.wav"),
                 "profile_id": profile_id,
                 "adapter_type": "hq",
+                "pipeline_type": "quality",
             },
             content_type="multipart/form-data",
         )

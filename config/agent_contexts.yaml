@@ -1,220 +1,26 @@
-# Historical per-agent context injection rules
-# This file describes the legacy claude-flow swarm stack and is retained only
-# for archaeology and migration work. It is not a canonical current workflow.
-# Generated: 2026-01-31
-
-# Default context for ALL agents
-defaults:
-  required:
-    - CLAUDE.md           # Critical coding rules
-    - PROMPT.md           # Project overview
-    - conductor/product.md
-    - conductor/tech-stack.md
-    - conductor/workflow.md  # TDD/commit rules
-
-# Agent type-specific contexts
-agent_types:
-  # ============================================
-  # Researcher Agents
-  # ============================================
-  researcher:
-    description: "Research and documentation agents"
-    context:
-      - academic-research/*.md    # Prior research
-      - docs/*.md                 # Existing documentation
-    capabilities:
-      - web_search
-      - web_fetch
-      - github_clone
-      - paper_search
-    output_format: markdown
-    validation:
-      - must_cite_sources: true
-      - must_include_code_examples: true
-
-  # ============================================
-  # Developer Agents
-  # ============================================
-  developer:
-    description: "Code implementation agents"
-    context:
-      - src/auto_voice/**/*.py    # Full codebase
-      - tests/**/*.py             # Test patterns
-    capabilities:
-      - read
-      - write
-      - edit
-      - bash
-      - grep
-      - glob
-    rules:
-      - tdd_first: true           # Write tests before implementation
-      - no_fallback: true         # Never pass silently
-      - type_hints: true          # All functions typed
-    validation:
-      - must_pass_tests: true
-      - must_have_docstrings: true
-
-  # ============================================
-  # Architect Agents
-  # ============================================
-  architect:
-    description: "System design and integration agents"
-    context:
-      - src/auto_voice/**/*.py
-      - conductor/tracks/*/spec.md
-      - docs/architecture*.md
-    capabilities:
-      - all_developer
-      - mermaid_diagrams
-      - api_design
-    rules:
-      - backward_compatible: true
-      - single_responsibility: true
-    validation:
-      - must_document_api: true
-      - must_update_specs: true
-
-  # ============================================
-  # Tester Agents
-  # ============================================
-  tester:
-    description: "Testing and validation agents"
-    context:
-      - tests/**/*.py
-      - pytest.ini
-      - src/auto_voice/**/*.py    # For understanding what to test
-    capabilities:
-      - read
-      - write
-      - edit
-      - bash
-      - pytest
-    rules:
-      - coverage_minimum: 80
-      - test_real_behavior: true  # Not just mocks
-    validation:
-      - all_tests_pass: true
-      - no_skipped_tests: false   # Skips need justification
-
-  # ============================================
-  # Worker Agents
-  # ============================================
-  worker:
-    description: "Data processing and batch job agents"
-    context:
-      - scripts/*.py
-      - src/auto_voice/audio/*.py
-    capabilities:
-      - bash
-      - read
-      - write
-      - gpu_access
-    rules:
-      - memory_monitoring: true
-      - progress_reporting: true
-      - checkpoint_saving: true
-    validation:
-      - output_files_exist: true
-      - no_oom_errors: true
-
-# Track-specific context overrides
-tracks:
-  sota-dual-pipeline_20260130:
-    additional_context:
-      - academic-research/perplexity-sota-svc.md
-      - academic-research/consistency-research.md
-      - academic-research/vocoder-separation-research.md
-      - models/seed-vc/               # If cloned
-      - models/hq-svc/                # If cloned
-    agent_overrides:
-      seed-vc-researcher:
-        additional_context:
-          - "https://github.com/Plachtaa/seed-vc"
-        web_search_queries:
-          - "Seed-VC voice conversion architecture 2024"
-          - "DiT diffusion transformer voice cloning"
-
-      hq-svc-researcher:
-        additional_context:
-          - "HQ-SVC AAAI 2026 decoupled codec"
-        web_search_queries:
-          - "HQ-SVC super resolution singing voice"
-
-      smoothsinger-researcher:
-        additional_context:
-          - "SmoothSinger multi-resolution U-Net"
-        web_search_queries:
-          - "SmoothSinger vocoder-free SVC 2025"
-
-  training-inference-integration_20260130:
-    additional_context:
-      - src/auto_voice/training/trainer.py
-      - src/auto_voice/models/adapter_manager.py
-      - data/trained_models/           # Existing adapters
-    agent_overrides:
-      adapter-validator:
-        focus_files:
-          - src/auto_voice/models/adapter_manager.py
-          - tests/test_adapter_integration_e2e.py
-
-  youtube-artist-training_20260130:
-    additional_context:
-      - src/auto_voice/youtube/*.py
-      - src/auto_voice/audio/speaker_diarization.py
-      - scripts/youtube_artist_pipeline.py
-    agent_overrides:
-      connor-downloader:
-        youtube_channel: "Conor Maynard"
-        filter_music_only: true
-      william-downloader:
-        youtube_channel: "William Singe"
-        filter_music_only: true
-      demucs-processor:
-        model: htdemucs_ft
-        batch_size: 4
-      diarization-runner:
-        chunk_duration: 60  # seconds
-        memory_limit_gb: 4
-
-# Memory injection patterns
-memory_injection:
-  # Inject relevant cipher memories on spawn
-  cipher_queries:
-    researcher: "research findings {track_name}"
-    developer: "implementation patterns {track_name}"
-    tester: "test failures {track_name}"
-    worker: "processing errors {track_name}"
-
-  # Inject relevant beads tasks
-  beads_filters:
-    researcher: "status:open type:research"
-    developer: "status:in_progress assignee:{agent_id}"
-    tester: "status:open type:test"
-    worker: "status:pending type:process"
-
-# Communication protocols
-protocols:
-  cross_agent:
-    method: cipher_memory
-    format:
-      type: discovery
-      agent: "{agent_id}"
-      timestamp: "{iso8601}"
-      content: "{structured_finding}"
-
-  to_queen:
-    method: beads_update
-    events:
-      - task_complete
-      - task_blocked
-      - error_occurred
-      - milestone_reached
-
-  broadcast:
-    method: hive_broadcast
-    priority_levels:
-      - critical    # OOM, crash
-      - high        # Blocking issue
-      - normal      # Progress update
-      - low         # FYI
+version: 1
+profiles:
+  research:
+    description: Deterministic repo-archaeology context pack
+    inputs:
+      - bd ready
+      - gitnexus://repo/autovoice/context
+      - docs/current-truth.md
+  development:
+    description: Build and implementation context pack
+    inputs:
+      - src/
+      - tests/
+      - config/gpu_config.yaml
+  review:
+    description: Review and contract validation context pack
+    inputs:
+      - docs/api/
+      - tests/test_api_docs_contract.py
+      - tests/test_websocket_contract.py
+  testing:
+    description: Regression and release verification context pack
+    inputs:
+      - run_tests.sh
+      - tests/test_platform_scripts.py
+      - frontend/e2e/

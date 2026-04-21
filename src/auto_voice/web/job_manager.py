@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any
 
 import numpy as np
 
+from auto_voice.runtime_contract import CANONICAL_OFFLINE_PIPELINE
 from .offline_realtime import run_offline_realtime_conversion
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,11 @@ class JobManager:
 
         try:
             settings = job['settings']
-            requested_pipeline = settings.get('requested_pipeline') or settings.get('pipeline_type') or 'quality'
+            requested_pipeline = (
+                settings.get('requested_pipeline')
+                or settings.get('pipeline_type')
+                or CANONICAL_OFFLINE_PIPELINE
+            )
             settings.setdefault('requested_pipeline', requested_pipeline)
             settings.setdefault('resolved_pipeline', requested_pipeline)
             settings.setdefault('runtime_backend', 'pytorch')
@@ -212,13 +217,20 @@ class JobManager:
         settings: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Run the most appropriate offline conversion backend for the requested pipeline."""
-        requested_pipeline = settings.get('requested_pipeline') or settings.get('pipeline_type') or 'quality'
+        requested_pipeline = (
+            settings.get('requested_pipeline')
+            or settings.get('pipeline_type')
+            or CANONICAL_OFFLINE_PIPELINE
+        )
         active_model_type = settings.get('active_model_type')
         resolved_pipeline = requested_pipeline
         runtime_backend = 'pytorch'
 
         if active_model_type == 'full_model' and requested_pipeline != 'quality':
-            resolved_pipeline = 'quality'
+            raise RuntimeError(
+                'Full-model profiles currently require pipeline_type=quality; no silent pipeline fallback is applied.'
+            )
+        if active_model_type == 'full_model':
             runtime_backend = 'pytorch_full_model'
 
         settings['pipeline_type'] = requested_pipeline

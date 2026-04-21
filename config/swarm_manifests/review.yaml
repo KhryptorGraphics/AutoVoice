@@ -1,0 +1,13 @@
+version: 1
+name: autovoice-review
+issue_id: AV-jg6
+tasks:
+  - id: docs-contract
+    description: Review API docs contract alignment
+    cwd: .
+    command: "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_api_docs_contract.py -q"
+  - id: websocket-contract
+    description: Review websocket event contract alignment
+    cwd: .
+    deps: [docs-contract]
+    command: "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_websocket_contract.py -q"

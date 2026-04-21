@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import signal
@@ -12,11 +13,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from auto_voice.config.loader import ConfigLoader, ConfigLoadError
+from auto_voice.swarm.runner import execute_manifest, load_manifest, print_status, task_specs, topological_order
 from auto_voice.web.app import create_app
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("config/gpu_config.yaml")
+DEFAULT_DATA_DIR = Path("data")
 
 
 def _serve_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -36,6 +39,27 @@ def _serve_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
     )
 
 
+def _swarm_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subparsers.add_parser("swarm", help="Run deterministic swarm manifests")
+    parser.add_argument(
+        "--data-dir",
+        default=str(DEFAULT_DATA_DIR),
+        help="Directory for durable swarm run state",
+    )
+    swarm_subparsers = parser.add_subparsers(dest="swarm_command", required=True)
+
+    run_parser = swarm_subparsers.add_parser("run", help="Execute a swarm manifest")
+    run_parser.add_argument("--manifest", required=True, help="Path to the swarm manifest")
+    run_parser.add_argument("--run-id", default=f"run-{int(time.time())}", help="Explicit run identifier")
+    run_parser.add_argument("--dry-run", action="store_true", help="Write run state without executing tasks")
+
+    validate_parser = swarm_subparsers.add_parser("validate", help="Validate a swarm manifest")
+    validate_parser.add_argument("--manifest", required=True, help="Path to the swarm manifest")
+
+    status_parser = swarm_subparsers.add_parser("status", help="Print status for an existing swarm run")
+    status_parser.add_argument("--run-id", required=True, help="Run identifier to inspect")
+
+
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     raw_args = list(argv if argv is not None else sys.argv[1:])
     if not raw_args or raw_args[0].startswith("-"):
@@ -44,6 +68,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="autovoice")
     subparsers = parser.add_subparsers(dest="command", required=True)
     _serve_parser(subparsers)
+    _swarm_parser(subparsers)
     return parser.parse_args(raw_args)
 
 
@@ -119,6 +144,35 @@ def _load_config(args: argparse.Namespace) -> Dict[str, Any]:
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
+
+    if args.command == "swarm":
+        run_root = Path(args.data_dir) / "swarm_runs"
+        if args.swarm_command == "validate":
+            manifest = load_manifest(Path(args.manifest))
+            specs = task_specs(manifest)
+            topological_order(specs)
+            print(
+                json.dumps(
+                    {
+                        "manifest": str(Path(args.manifest)),
+                        "task_count": len(specs),
+                        "status": "valid",
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+        if args.swarm_command == "status":
+            return print_status(args.run_id, run_root=run_root)
+        if args.swarm_command == "run":
+            return execute_manifest(
+                Path(args.manifest),
+                run_id=args.run_id,
+                dry_run=bool(args.dry_run),
+                run_root=run_root,
+                project_root=Path.cwd(),
+            )
+        raise SystemExit(f"Unsupported swarm command: {args.swarm_command}")
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,

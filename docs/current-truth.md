@@ -16,12 +16,16 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
 ## Canonical Runtime
 
 - backend entrypoint: `autovoice serve`
+- canonical swarm entrypoint: `autovoice swarm`
 - frontend entrypoint: `frontend/` Vite app
 - canonical REST base: `/api/v1`
 - canonical profile routes: `/api/v1/voice/profiles/*`
 - compatibility helper routes: `/api/v1/profiles/*`
 - canonical non-karaoke Socket.IO namespace: `/`
 - dedicated live namespace: `/karaoke`
+- canonical offline pipeline: `quality_seedvc`
+- canonical fast/live pipeline: `realtime`
+- experimental pipelines: `quality`, `quality_shortcut`, `realtime_meanvc`
 
 There is no separate `/training` Socket.IO namespace in the current backend.
 
@@ -39,8 +43,10 @@ Read these first:
 
 - `bd` is the canonical task and planning source of truth.
 - GitNexus is the canonical code-intelligence layer for repo exploration and impact analysis.
-- Historical claude-flow assets under `conductor/`, `config/swarm_config.yaml`, `config/agent_contexts.yaml`,
-  `scripts/launch_swarms.sh`, and `scripts/swarm_orchestrator.py` are not the current execution path.
+- `config/swarm_config.yaml`, `config/agent_contexts.yaml`, `config/swarm_manifests/*.yaml`, and
+  `autovoice swarm ...` define the canonical deterministic swarm runner.
+- `scripts/launch_swarms.sh` and `scripts/swarm_orchestrator.py` are compatibility wrappers around
+  the repo-native swarm runner, not separate orchestration systems.
 - A dedicated MemKraft MCP server is not installed in this workspace today. Until that exists, use the
   active repo state, `bd`, GitNexus, and the available `memory` MCP fallback instead of assuming a
   separate long-lived swarm-memory service.
@@ -61,3 +67,5 @@ Use those only after validating against the canonical docs and live code paths.
 - backend contract slice: targeted pytest suites in `tests/`
 - generated API docs: `/api/v1/openapi.json`, `/api/v1/openapi.yaml`, `/docs`
 - frontend build: `cd frontend && npm run build`
+- release-candidate validation: `python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5000`
+- Jetson/TensorRT validation: `bash scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform`
