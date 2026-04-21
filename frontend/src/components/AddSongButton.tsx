@@ -137,7 +137,7 @@ export function AddSongButton({ profileId, onSongAdded, className }: AddSongButt
         attempts++
 
       } catch (error) {
-        throw error
+        throw error instanceof Error ? error : new Error('Separation failed')
       }
     }
 

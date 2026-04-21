@@ -73,7 +73,7 @@ export function DiarizationResultsPage() {
     const artists: string[] = [];
 
     // Common patterns: "Artist - Song ft. Other Artist"
-    const ftMatch = filename.match(/(?:ft\.?|feat\.?|featuring)\s*([^()\[\]]+)/i);
+    const ftMatch = filename.match(/(?:ft\.?|feat\.?|featuring)\s*([^()[\]]+)/i);
     if (ftMatch) {
       artists.push(ftMatch[1].trim());
     }

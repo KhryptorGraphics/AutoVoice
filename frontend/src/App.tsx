@@ -211,7 +211,7 @@ function ConvertPage() {
     try {
       const blob = await apiService.downloadResult(conversionStatus.id)
       triggerDownload(blob, `converted_${file?.name || 'audio.wav'}`)
-    } catch (err) {
+    } catch {
       const errorMsg = 'Download failed'
       setError(errorMsg)
       toast.error(errorMsg)

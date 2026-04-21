@@ -113,7 +113,6 @@ export class AudioStreamingClient {
     return new Promise((resolve, reject) => {
       this.socket = io(`${this.serverUrl}/karaoke`, {
         path: '/socket.io',
-        transports: ['websocket'],
       });
 
       this.socket.on('connect', () => {

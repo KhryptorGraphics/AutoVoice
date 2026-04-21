@@ -12,6 +12,7 @@ def _script_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("AUTOVOICE_ENV_PREFIX", "/home/kp/anaconda3/envs/autovoice-thor")
     env.setdefault("AUTOVOICE_ENV_NAME", "autovoice-thor")
+    env.setdefault("AUTOVOICE_DB_PASS", "ci-dry-run-password")
     return env
 
 

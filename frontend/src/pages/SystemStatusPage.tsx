@@ -5,7 +5,7 @@ import { GPUMonitor } from '../components/GPUMonitor'
 import clsx from 'clsx'
 
 export function SystemStatusPage() {
-  const { data: _status, isLoading, error } = useQuery({
+  const { isLoading, error } = useQuery({
     queryKey: ['systemStatus'],
     queryFn: () => apiService.getSystemStatus(),
     refetchInterval: 5000, // Refresh every 5 seconds
@@ -252,4 +252,3 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`
 }
-
