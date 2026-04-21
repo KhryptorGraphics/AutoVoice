@@ -1090,3 +1090,45 @@ class TestPipelineResolution:
         assert settings["runtime_backend"] == "pytorch"
         assert result["metadata"]["resolved_pipeline"] == "realtime"
         assert result["metadata"]["runtime_backend"] == "pytorch"
+
+    def test_full_model_quality_seedvc_request_uses_full_model_backend(
+        self,
+        job_manager,
+        sample_audio_file,
+    ):
+        settings = {
+            "pipeline_type": "quality_seedvc",
+            "requested_pipeline": "quality_seedvc",
+            "active_model_type": "full_model",
+            "vocal_volume": 1.0,
+            "instrumental_volume": 0.9,
+            "pitch_shift": 0.0,
+            "return_stems": False,
+            "preset": "balanced",
+        }
+        job = {
+            "file_path": sample_audio_file,
+            "profile_id": "test-profile",
+            "settings": settings,
+        }
+
+        with patch.object(
+            job_manager.singing_pipeline,
+            "convert_song",
+            return_value={
+                "mixed_audio": np.zeros(22050, dtype=np.float32),
+                "sample_rate": 22050,
+                "duration": 1.0,
+                "metadata": {},
+                "stems": {},
+            },
+        ) as mock_convert:
+            result = job_manager._convert_with_resolved_pipeline("job-full", job, settings)
+
+        mock_convert.assert_called_once()
+        assert settings["requested_pipeline"] == "quality_seedvc"
+        assert settings["resolved_pipeline"] == "quality"
+        assert settings["runtime_backend"] == "pytorch_full_model"
+        assert result["metadata"]["requested_pipeline"] == "quality_seedvc"
+        assert result["metadata"]["resolved_pipeline"] == "quality"
+        assert result["metadata"]["runtime_backend"] == "pytorch_full_model"

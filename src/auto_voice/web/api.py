@@ -156,12 +156,16 @@ def get_param(data, form_key, settings_key, default, validator=None, type_hint=N
             value = str(value)
         else:
             value = str(value)
-        
+
         if validator and not validator(value):
             raise ValueError(f'Invalid value for {form_key}')
         return value
-    except (TypeError, ValueError):
-        raise ValueError(f'Invalid value for {form_key}')
+    except ValueError as exc:
+        if str(exc).startswith('Invalid value for '):
+            raise
+        raise ValueError(f'Invalid {form_key}')
+    except TypeError:
+        raise ValueError(f'Invalid {form_key}')
 
 
 def _normalize_app_settings_payload(raw_settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -653,11 +657,12 @@ def convert_song():
     requested_pipeline = pipeline_type
     resolved_pipeline = pipeline_type
     runtime_backend = 'pytorch'
-    if use_full_model and requested_pipeline != 'quality':
-        return validation_error_response(
-            'Full-model profiles currently require pipeline_type=quality; no silent pipeline fallback is applied.'
-        )
-    if use_full_model:
+    if use_full_model and requested_pipeline in {'quality_seedvc', 'quality_shortcut'}:
+        # Full-model artifacts still execute through the legacy singing pipeline.
+        # Report the actual backend choice explicitly while preserving the caller's
+        # requested pipeline in the response metadata.
+        resolved_pipeline = 'quality'
+    if use_full_model and resolved_pipeline == 'quality':
         runtime_backend = 'pytorch_full_model'
 
     # Sample rate from config
@@ -724,10 +729,10 @@ def convert_song():
             }, ), 202
         elif singing_pipeline:
             # Fallback to synchronous processing
-            logger.info(f"JobManager unavailable, using synchronous processing with {pipeline_type} pipeline")
+            logger.info(f"JobManager unavailable, using synchronous processing with {resolved_pipeline} pipeline")
 
-            # Route to appropriate pipeline based on pipeline_type
-            if pipeline_type == 'realtime':
+            # Route to the actual backend selected for this request.
+            if resolved_pipeline == 'realtime':
                 speaker_embedding = profile.get('embedding')
                 if speaker_embedding is None:
                     return validation_error_response('Profile missing speaker embedding for realtime conversion')
@@ -740,13 +745,13 @@ def convert_song():
                 result.setdefault('metadata', {})
                 result['metadata'].update({
                     'requested_pipeline': requested_pipeline,
-                    'resolved_pipeline': 'realtime',
-                    'runtime_backend': 'pytorch',
+                    'resolved_pipeline': resolved_pipeline,
+                    'runtime_backend': runtime_backend,
                     'profile_id': profile_id,
                     'active_model_type': active_model_type,
                 })
             else:
-                # Use SOTA quality pipeline (default)
+                # Full-model and legacy offline requests still use the singing pipeline.
                 result = singing_pipeline.convert_song(
                     song_path=tmp_file.name,
                     target_profile_id=profile_id,
@@ -1355,6 +1360,7 @@ def delete_voice_profile(profile_id):
 
 
 @api_bp.route('/voice/profiles/<profile_id>/adapters', methods=['GET'])
+@api_bp.route('/profiles/<profile_id>/adapters', methods=['GET'])
 def get_profile_adapters(profile_id):
     """Get available LoRA adapters for a voice profile.
 
@@ -1391,6 +1397,7 @@ def get_profile_adapters(profile_id):
 
 
 @api_bp.route('/voice/profiles/<profile_id>/model', methods=['GET'])
+@api_bp.route('/profiles/<profile_id>/model', methods=['GET'])
 def get_profile_model(profile_id):
     """Get trained model information for a voice profile.
 
@@ -1525,6 +1532,7 @@ def get_profile_model(profile_id):
 
 
 @api_bp.route('/voice/profiles/<profile_id>/adapter/select', methods=['POST'])
+@api_bp.route('/profiles/<profile_id>/adapter/select', methods=['POST'])
 def select_profile_adapter(profile_id):
     """Select which LoRA adapter to use for voice conversion.
 
@@ -1574,6 +1582,7 @@ def select_profile_adapter(profile_id):
 
 
 @api_bp.route('/voice/profiles/<profile_id>/adapter/metrics', methods=['GET'])
+@api_bp.route('/profiles/<profile_id>/adapter/metrics', methods=['GET'])
 def get_adapter_metrics(profile_id):
     """Get detailed metrics for all adapters of a voice profile.
 
@@ -1634,6 +1643,7 @@ def get_adapter_metrics(profile_id):
 
 
 @api_bp.route('/voice/profiles/<profile_id>/training-status', methods=['GET'])
+@api_bp.route('/profiles/<profile_id>/training-status', methods=['GET'])
 def get_profile_training_status(profile_id):
     """Get training status for a voice profile.
 

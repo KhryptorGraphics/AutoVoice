@@ -105,8 +105,10 @@ Still experimental or research-heavy:
 Backend sanity checks:
 
 ```bash
-python -m compileall src tests
-pytest tests/test_web_utils.py tests/test_web_api.py tests/test_pipeline_status_api.py
+PYTHONNOUSERSITE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m compileall src tests
+PYTHONNOUSERSITE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=src \
+  /home/kp/anaconda3/envs/autovoice-thor/bin/python -m pytest \
+  tests/test_web_utils.py tests/test_web_api.py tests/test_pipeline_status_api.py -q
 ```
 
 Frontend sanity checks:

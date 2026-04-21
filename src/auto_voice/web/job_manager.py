@@ -235,11 +235,9 @@ class JobManager:
         resolved_pipeline = requested_pipeline
         runtime_backend = 'pytorch'
 
-        if active_model_type == 'full_model' and requested_pipeline != 'quality':
-            raise RuntimeError(
-                'Full-model profiles currently require pipeline_type=quality; no silent pipeline fallback is applied.'
-            )
-        if active_model_type == 'full_model':
+        if active_model_type == 'full_model' and requested_pipeline in {'quality_seedvc', 'quality_shortcut'}:
+            resolved_pipeline = 'quality'
+        if active_model_type == 'full_model' and resolved_pipeline == 'quality':
             runtime_backend = 'pytorch_full_model'
 
         settings['pipeline_type'] = requested_pipeline

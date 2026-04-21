@@ -100,7 +100,9 @@ Use those only after validating against the canonical docs and live code paths.
 
 ## Current Verification Entry Points
 
-- backend contract slice: targeted pytest suites in `tests/`
+- backend contract slice: targeted pytest suites in `tests/`, run with
+  `PYTHONNOUSERSITE=1`, `PYTHONPATH=src`, and `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
+- canonical local test entrypoint: `./run_tests.sh`
 - generated API docs: `/api/v1/openapi.json`, `/api/v1/openapi.yaml`, `/docs`
 - frontend build: `cd frontend && npm run build`
 - release-candidate validation: `python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5000`

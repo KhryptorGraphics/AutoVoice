@@ -36,6 +36,7 @@ def app_with_profiles():
         'singing_conversion_enabled': True,
         'voice_cloning_enabled': True,
     })
+    real_store = app.voice_cloner.store
 
     # Mock voice cloner
     mock_voice_cloner = MagicMock()
@@ -47,6 +48,7 @@ def app_with_profiles():
     mock_voice_cloner.list_profiles.return_value = [
         {'profile_id': 'test-profile', 'name': 'Test Artist'},
     ]
+    mock_voice_cloner.store = real_store
 
     app.voice_cloner = mock_voice_cloner
     app.socketio = socketio
@@ -72,6 +74,17 @@ def audio_file():
         wav.writeframes(b'\x00' * 22050 * 2)  # 1 second
     buffer.seek(0)
     return buffer
+
+
+def _save_profile(store, profile_id: str, *, trained: bool = True) -> None:
+    store.save({
+        'profile_id': profile_id,
+        'name': f'Test {profile_id[-4:]}',
+        'embedding': np.zeros(256, dtype=np.float32).tolist(),
+        'profile_role': 'target_user',
+        'has_trained_model': trained,
+        'training_status': 'ready' if trained else 'pending',
+    })
 
 
 class TestListSamples:
@@ -263,3 +276,41 @@ class TestCheckDegradation:
         response = client.post('/api/v1/profiles/test-profile/check-degradation')
 
         assert response.status_code in (200, 400, 404, 500)
+
+
+class TestCompatibilityHelperRoutes:
+    """Test /api/v1/profiles compatibility helper aliases."""
+
+    def test_training_status_alias_returns_profile_status(self, app_with_profiles, client):
+        store = app_with_profiles.voice_cloner.store
+        profile_id = '00000000-0000-0000-0000-000000000401'
+        _save_profile(store, profile_id, trained=True)
+
+        response = client.get(f'/api/v1/profiles/{profile_id}/training-status')
+
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['profile_id'] == profile_id
+        assert data['training_status'] == 'ready'
+
+    def test_model_alias_matches_missing_profile_contract(self, client):
+        profile_id = '00000000-0000-0000-0000-000000000402'
+
+        response = client.get(f'/api/v1/profiles/{profile_id}/model')
+
+        assert response.status_code == 404
+        data = json.loads(response.data)
+        assert data['profile_id'] == profile_id
+
+    def test_adapters_alias_returns_empty_list_without_artifact(self, app_with_profiles, client):
+        store = app_with_profiles.voice_cloner.store
+        profile_id = '00000000-0000-0000-0000-000000000403'
+        _save_profile(store, profile_id, trained=True)
+
+        response = client.get(f'/api/v1/profiles/{profile_id}/adapters')
+
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['profile_id'] == profile_id
+        assert data['adapters'] == []
+        assert data['count'] == 0
