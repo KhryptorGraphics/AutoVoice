@@ -1,5 +1,6 @@
-# Per-Agent Context Injection Rules
-# Defines what context files each agent type receives on spawn
+# Historical per-agent context injection rules
+# This file describes the legacy claude-flow swarm stack and is retained only
+# for archaeology and migration work. It is not a canonical current workflow.
 # Generated: 2026-01-31
 
 # Default context for ALL agents

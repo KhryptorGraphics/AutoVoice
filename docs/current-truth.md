@@ -35,6 +35,16 @@ Read these first:
 - [user-guide-voice-profiles.md](./user-guide-voice-profiles.md)
 - [troubleshooting.md](./troubleshooting.md)
 
+## Governance And Swarm State
+
+- `bd` is the canonical task and planning source of truth.
+- GitNexus is the canonical code-intelligence layer for repo exploration and impact analysis.
+- Historical claude-flow assets under `conductor/`, `config/swarm_config.yaml`, `config/agent_contexts.yaml`,
+  `scripts/launch_swarms.sh`, and `scripts/swarm_orchestrator.py` are not the current execution path.
+- A dedicated MemKraft MCP server is not installed in this workspace today. Until that exists, use the
+  active repo state, `bd`, GitNexus, and the available `memory` MCP fallback instead of assuming a
+  separate long-lived swarm-memory service.
+
 ## Historical Artifacts
 
 These are useful for archaeology but are not the current product spec:

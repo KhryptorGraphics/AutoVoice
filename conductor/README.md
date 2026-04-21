@@ -1,6 +1,8 @@
 # Conductor Directory
 
-This directory contains all AutoVoice project tracks, gap analysis reports, and cross-context integration documentation.
+> Historical artifact: the files in `conductor/` capture January-February 2026 planning and audit work. They are useful for archaeology, but they are not the current backlog or operator source of truth. Use `bd`, [../docs/current-truth.md](../docs/current-truth.md), and [../README.md](../README.md) for the current project state.
+
+This directory contains archived AutoVoice track plans, gap analysis reports, and cross-context integration documentation from the earlier conductor workflow.
 
 ## Key Documents
 
@@ -29,7 +31,7 @@ This directory contains all AutoVoice project tracks, gap analysis reports, and 
 - **[CROSS_CONTEXT_DEPENDENCIES.md](./CROSS_CONTEXT_DEPENDENCIES.md)** - Dependency analysis
 - **[CROSS_CONTEXT_ACTION_ITEMS.md](./CROSS_CONTEXT_ACTION_ITEMS.md)** - Integration action items
 
-## Track Status (2026-02-01)
+## Historical Track Status (2026-02-01)
 
 | Status | Count | Percentage |
 |--------|-------|------------|
@@ -143,9 +145,9 @@ Each track directory contains:
 
 **Next Run:** After next track completion
 
-## Monitoring
+## Historical Monitoring
 
-**Gap Analysis Watcher v2:** ✅ Operational
+**Gap Analysis Watcher v2:** historical snapshot only
 - Monitors for track completions
 - Runs quality checks
 - Creates remediation tracks

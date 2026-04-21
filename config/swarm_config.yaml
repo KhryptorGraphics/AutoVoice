@@ -1,5 +1,6 @@
-# Claude-Flow Smart Swarm Orchestration Configuration
-# AutoVoice Parallel Agent Coordination
+# Historical claude-flow swarm configuration
+# This file is preserved for repo archaeology and migration work only.
+# It is not the current source of truth for planning or execution.
 # Generated: 2026-01-31
 
 # Global swarm settings

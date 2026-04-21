@@ -1,5 +1,7 @@
 # AutoVoice Master Orchestrator Stack
 
+> Historical artifact: this document reflects the January-February 2026 orchestration stack and is not the current source of truth. For current project governance and runtime guidance, start with [docs/current-truth.md](docs/current-truth.md), [README.md](README.md), and `bd`.
+
 ## Hierarchy
 
 ```
@@ -55,7 +57,7 @@
 
 ### 3. SERENA (Code Memory)
 - Stores code-level context
-- Activate: `mcp__serena__activate_project project="/home/kp/repo2/autovoice"`
+- Historical example path: `mcp__serena__activate_project project="/home/kp/thordrive/autovoice"`
 - Memory file: `.serena/memories/sota-dual-pipeline-2026-01-30.md`
 
 ### 4. BEADS (Task Management)
@@ -110,7 +112,7 @@
    └──► Loop until all tasks complete
 ```
 
-## Current State
+## Historical State
 
 ### Active Tasks (Beads)
 - AV-5k7 [in_progress]: REALTIME_PIPELINE
@@ -127,7 +129,7 @@
 ## Resume Commands
 
 ```bash
-cd /home/kp/repo2/autovoice
+cd /home/kp/thordrive/autovoice
 
 # 1. Query Cipher for context
 mcp__cipher__ask_cipher "What is the AutoVoice development status?"

@@ -3,6 +3,8 @@
 **Orchestrator:** Master Swarm Orchestrator
 **Status:** ✅ Analysis Complete, Execution In Progress
 
+> Historical artifact: this summary describes a February 2026 orchestrator run. It is not the live status of the current repo or backlog. Current truth lives in `bd`, [docs/current-truth.md](docs/current-truth.md), and the canonical docs under `docs/`.
+
 ---
 
 ## 🎯 Mission Accomplished
@@ -195,7 +197,7 @@ AV-39t ─────────────────────→ Indepe
 ### Immediate Actions Available
 1. **Monitor coverage report:** Check background task be7e369 for completion
    ```bash
-   cat /tmp/claude-2002/-home-kp-repo2-autovoice/tasks/be7e369.output
+   cat /tmp/claude-2002/-home-kp-thordrive-autovoice/tasks/be7e369.output
    ```
 
 2. **Review orchestration plan:** See `ORCHESTRATOR_PLAN.md` for detailed strategy
@@ -225,14 +227,14 @@ AV-39t ─────────────────────→ Indepe
 ## 📝 Files Created/Updated
 
 ### Created
-- `/home/kp/repo2/autovoice/ORCHESTRATOR_PLAN.md` - Detailed execution plan
-- `/home/kp/repo2/autovoice/ORCHESTRATOR_SUMMARY.md` - This file
+- `/home/kp/thordrive/autovoice/ORCHESTRATOR_PLAN.md` - Detailed execution plan
+- `/home/kp/thordrive/autovoice/ORCHESTRATOR_SUMMARY.md` - This file
 - Beads tasks: AV-4tg, AV-4kt, AV-maw, AV-39t
 
 ### Updated
-- `/home/kp/repo2/autovoice/conductor/tracks.md` - Marked sota-innovations complete
-- `/home/kp/repo2/autovoice/conductor/tracks/sota-innovations_20260131/metadata.json` - Status: complete
-- `/home/kp/repo2/autovoice/conductor/tracks/comprehensive-testing-coverage_20260201/metadata.json` - Progress update
+- `/home/kp/thordrive/autovoice/conductor/tracks.md` - Marked sota-innovations complete
+- `/home/kp/thordrive/autovoice/conductor/tracks/sota-innovations_20260131/metadata.json` - Status: complete
+- `/home/kp/thordrive/autovoice/conductor/tracks/comprehensive-testing-coverage_20260201/metadata.json` - Progress update
 
 ---
 

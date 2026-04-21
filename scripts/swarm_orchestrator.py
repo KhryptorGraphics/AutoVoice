@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude-Flow Smart Swarm Orchestrator for AutoVoice
+Historical claude-flow swarm orchestrator for AutoVoice.
 
 Launches and coordinates parallel agent swarms for:
 - SOTA Dual-Pipeline implementation (P0)

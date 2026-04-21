@@ -70,7 +70,7 @@ DISPLAY=:99 xdotool key --window $WID Return        # Click/activate
 ```
 
 ### Test Audio Files
-Located at: `/home/kp/repo2/autovoice/tests/quality_samples/*.wav`
+Located at: `/home/kp/thordrive/autovoice/tests/quality_samples/*.wav`
 
 ---
 

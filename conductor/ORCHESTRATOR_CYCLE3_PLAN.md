@@ -238,7 +238,7 @@ AV-c3 (Epic)
 **Mitigation:**
 - Use absolute paths in all agent prompts
 - Verify directory context before spawning agents
-- Include explicit `cd /home/kp/repo2/autovoice` in agent instructions
+- Include explicit `cd /home/kp/thordrive/autovoice` in agent instructions
 
 ---
 

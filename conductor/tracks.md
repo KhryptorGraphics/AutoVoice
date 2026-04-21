@@ -1,6 +1,9 @@
-# Tracks Registry
+# Historical Tracks Registry
 
-## Gap Analysis Status
+> Historical artifact: this file captures conductor-era track snapshots from January-February 2026.
+> Use `bd` and [../docs/current-truth.md](../docs/current-truth.md) for the current plan of record.
+
+## Historical Gap Analysis Status
 
 **Last Run:** 2026-02-01 by Gap Analysis Watcher v2
 
@@ -21,7 +24,7 @@
 
 ---
 
-## Coverage Gap-Filling Status
+## Historical Coverage Gap-Filling Status
 
 **Last Cycle:** Cycle 2 - 2026-02-02
 
@@ -42,17 +45,17 @@
 
 ---
 
-## Database Migration Status
+## Historical Database Migration Status
 
 **Migration:** SQLite → MySQL ✅ COMPLETE
-**MySQL Root:** teamrsi123teamrsi123teamrsi123
+**MySQL Root:** `<redacted legacy credential>`
 **Tables:** tracks, featured_artists, speaker_embeddings, speaker_clusters, cluster_members
 **Implementation:** SQLAlchemy ORM with environment-based switching (AUTOVOICE_DB_TYPE=mysql|sqlite)
 **Beads Task:** AV-buo ✅ CLOSED
 
 ---
 
-## Cross-Context Integration Status
+## Historical Cross-Context Integration Status
 
 **Last Verified:** 2026-02-01 by Cross-Context Coordinator Agent
 

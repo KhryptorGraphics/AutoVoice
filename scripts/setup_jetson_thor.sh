@@ -27,7 +27,7 @@ AUTOVOICE_DB_HOST="${AUTOVOICE_DB_HOST:-127.0.0.1}"
 AUTOVOICE_DB_PORT="${AUTOVOICE_DB_PORT:-3306}"
 AUTOVOICE_DB_NAME="${AUTOVOICE_DB_NAME:-autovoice}"
 AUTOVOICE_DB_USER="${AUTOVOICE_DB_USER:-root}"
-AUTOVOICE_DB_PASS="${AUTOVOICE_DB_PASS:-teamrsi123teamrsi123teamrsi123}"
+AUTOVOICE_DB_PASS="${AUTOVOICE_DB_PASS:-}"
 AUTOVOICE_DATABASE_URL="${AUTOVOICE_DATABASE_URL:-postgresql://autovoice:autovoice@127.0.0.1:5432/autovoice}"
 DOCKER_COMPOSE_COMMAND=()
 
@@ -167,6 +167,10 @@ ensure_container_running() {
 
 initialize_datastores() {
     log_section "Database Initialization"
+    if [[ -z "$AUTOVOICE_DB_PASS" ]]; then
+        echo "AUTOVOICE_DB_PASS is required for MySQL initialization" >&2
+        return 1
+    fi
     echo "Initializing MySQL-backed metadata schema"
     run_shell "cd '$AUTOVOICE_PROJECT_ROOT' && AUTOVOICE_DB_HOST='$AUTOVOICE_DB_HOST' AUTOVOICE_DB_PORT='$AUTOVOICE_DB_PORT' AUTOVOICE_DB_NAME='$AUTOVOICE_DB_NAME' AUTOVOICE_DB_USER='$AUTOVOICE_DB_USER' AUTOVOICE_DB_PASS='$AUTOVOICE_DB_PASS' '$PYTHON' -c \"from auto_voice.db.schema import init_database; init_database('mysql')\""
 

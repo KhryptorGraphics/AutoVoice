@@ -1,6 +1,8 @@
 # AutoVoice Master Orchestration Plan
 ## Generated: 2026-02-01
 
+> Historical artifact: this plan captured a February 2026 coordination snapshot. It is not the current backlog or execution source of truth. Use `bd`, [docs/current-truth.md](docs/current-truth.md), and current repo automation instead.
+
 ## Executive Summary
 
 **Current Status:**

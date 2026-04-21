@@ -1,7 +1,11 @@
-# Production Deployment Readiness Checklist
+# Historical Production Deployment Readiness Checklist
+
+> Historical artifact: this checklist reflects a February 2026 deployment-readiness snapshot.
+> Prefer [../docs/current-truth.md](../docs/current-truth.md), [../docs/deployment.md](../docs/deployment.md),
+> and the current CI/test entrypoints over this file.
 
 **Date:** 2026-02-02
-**Status:** DRAFT (Pending coverage validation)
+**Status:** Historical draft snapshot (Pending coverage validation at the time)
 **Trigger Condition:** Overall project coverage ≥80% after Cycle 2
 
 ---
@@ -90,7 +94,7 @@ FLUSH PRIVILEGES;
 EOF
 
 # Apply migrations
-cd /home/kp/repo2/autovoice
+cd /home/kp/thordrive/autovoice
 python -m src.auto_voice.db.migrations.init_db
 ```
 
@@ -129,7 +133,7 @@ After=network.target mysql.service
 Type=simple
 User=autovoice
 Group=autovoice
-WorkingDirectory=/home/kp/repo2/autovoice
+WorkingDirectory=/home/kp/thordrive/autovoice
 Environment="PATH=/home/kp/anaconda3/envs/autovoice_prod/bin:/usr/local/cuda-13.0/bin"
 Environment="LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64"
 Environment="CUDA_VISIBLE_DEVICES=0"
@@ -311,7 +315,7 @@ python -m src.auto_voice.export.tensorrt_engine \
 #### Rollback Plan
 ```bash
 # Quick rollback to previous version
-cd /home/kp/repo2/autovoice
+cd /home/kp/thordrive/autovoice
 git checkout <previous_tag>
 sudo systemctl restart autovoice-api
 
@@ -357,7 +361,7 @@ curl -X POST https://autovoice.yourdomain.com/api/convert \
 
 ### Close Completed Tracks
 ```bash
-cd /home/kp/repo2/autovoice
+cd /home/kp/thordrive/autovoice
 
 # Update tracks.md
 # Mark coverage-report-generation_20260201 as complete

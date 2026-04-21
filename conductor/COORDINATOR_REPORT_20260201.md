@@ -338,7 +338,7 @@ None. All critical dependencies are working.
 
 ```bash
 # Verify all pipelines load
-cd /home/kp/repo2/autovoice
+cd /home/kp/thordrive/autovoice
 PYTHONNOUSERSITE=1 PYTHONPATH=src python3 -c "
 from auto_voice.inference.pipeline_factory import PipelineFactory
 factory = PipelineFactory.get_instance()

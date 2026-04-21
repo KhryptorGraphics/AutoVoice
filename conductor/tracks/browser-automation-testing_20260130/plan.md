@@ -14,7 +14,7 @@
 - **BUG FIXED:** Frontend `audio` → `reference_audio` field name mismatch (api.ts:462)
 - **Frontend rebuilt:** Yes, dist/ updated
 - **Next action:** User retries profile upload with Connor audio file
-- **Audio file:** `/home/kp/repo2/autovoice/tests/quality_samples/conor_maynard_pillowtalk.wav`
+- **Audio file:** `/home/kp/thordrive/autovoice/tests/quality_samples/conor_maynard_pillowtalk.wav`
 - **Pending feature:** Voice/instrumental separation before training
 
 ## Overview

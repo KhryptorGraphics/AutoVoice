@@ -1,6 +1,7 @@
 #!/bin/bash
-# Claude-Flow Smart Swarm Launch Script
-# Quick launcher for AutoVoice parallel agent swarms
+# Historical claude-flow swarm launch script.
+# Preserved for archaeology while the repo migrates toward a thinner, repo-native
+# swarm runner. Do not treat this as the canonical current execution path.
 #
 # Usage:
 #   ./scripts/launch_swarms.sh           # Launch all swarms
@@ -41,7 +42,7 @@ check_deps() {
     # Check claude-flow
     if ! command -v claude-flow &> /dev/null; then
         echo -e "${RED}Error: claude-flow not found${NC}"
-        echo "Install with: npm install -g @anthropic/claude-flow"
+        echo "This legacy launcher requires the historical claude-flow stack."
         exit 1
     fi
     echo -e "  ${GREEN}✓${NC} claude-flow $(claude-flow --version 2>/dev/null | head -1)"
