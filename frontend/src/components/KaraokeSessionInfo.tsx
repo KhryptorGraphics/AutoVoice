@@ -3,14 +3,16 @@
  * Shows pipeline type, voice profile, adapter, and real-time latency metrics.
  */
 import { useState, useEffect, useRef } from 'react'
-import { Activity, User, Timer, Wifi, WifiOff } from 'lucide-react'
+import { Activity, User, Timer, Wifi, WifiOff, Cpu, Route, Database } from 'lucide-react'
 import clsx from 'clsx'
 import { PipelineBadge, type PipelineType } from './PipelineSelector'
 import { AdapterBadge } from './AdapterSelector'
 import { AdapterType, ActiveModelType } from '../services/api'
 
 interface KaraokeSessionInfoProps {
-  pipeline: PipelineType
+  requestedPipeline: PipelineType
+  resolvedPipeline?: PipelineType
+  runtimeBackend?: string | null
   profileName?: string
   adapterType?: AdapterType | null
   modelType?: ActiveModelType
@@ -18,6 +20,11 @@ interface KaraokeSessionInfoProps {
   isConnected: boolean
   isStreaming: boolean
   chunksProcessed: number
+  sampleCollectionEnabled?: boolean
+  audioRouterTargets?: {
+    speaker_device: number | null
+    headphone_device: number | null
+  } | null
 }
 
 // Real-time latency tracker with rolling average
@@ -71,7 +78,9 @@ function getLatencyQuality(latencyMs: number): { label: string; color: string } 
 }
 
 export function KaraokeSessionInfo({
-  pipeline,
+  requestedPipeline,
+  resolvedPipeline,
+  runtimeBackend,
   profileName,
   adapterType,
   modelType,
@@ -79,6 +88,8 @@ export function KaraokeSessionInfo({
   isConnected,
   isStreaming,
   chunksProcessed,
+  sampleCollectionEnabled = false,
+  audioRouterTargets,
 }: KaraokeSessionInfoProps) {
   const latencyStats = useLatencyStats(latencyMs)
   const quality = getLatencyQuality(latencyStats.average)
@@ -109,7 +120,19 @@ export function KaraokeSessionInfo({
 
       {/* Pipeline and Profile badges */}
       <div className="flex flex-wrap gap-2 mb-4">
-        <PipelineBadge pipeline={pipeline} />
+        <PipelineBadge pipeline={requestedPipeline} />
+        {resolvedPipeline && resolvedPipeline !== requestedPipeline && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-cyan-900/50 text-cyan-300">
+            <Route size={12} />
+            Resolved {resolvedPipeline}
+          </span>
+        )}
+        {runtimeBackend && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-200">
+            <Cpu size={12} />
+            {runtimeBackend}
+          </span>
+        )}
         {profileName && (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-blue-900/50 text-blue-300">
             <User size={12} />
@@ -129,6 +152,12 @@ export function KaraokeSessionInfo({
           </span>
         )}
         {adapterType && <AdapterBadge adapterType={adapterType} />}
+        {sampleCollectionEnabled && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-emerald-900/50 text-emerald-300">
+            <Database size={12} />
+            Sample capture on
+          </span>
+        )}
       </div>
 
       {/* Real-time latency display */}
@@ -193,6 +222,13 @@ export function KaraokeSessionInfo({
         <div className="flex items-center justify-between text-xs">
           <span className="text-gray-500">Chunks processed</span>
           <span className="text-gray-300">{chunksProcessed.toLocaleString()}</span>
+        </div>
+
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500">Routing</span>
+          <span className="text-gray-300">
+            SPK {audioRouterTargets?.speaker_device ?? 'sys'} · HP {audioRouterTargets?.headphone_device ?? 'sys'}
+          </span>
         </div>
       </div>
     </div>

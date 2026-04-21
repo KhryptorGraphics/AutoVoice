@@ -2,15 +2,43 @@
  * WebSocket audio streaming client for real-time voice conversion.
  */
 import { io, Socket } from 'socket.io-client';
+import type { ActiveModelType, LivePipelineType } from './api';
 
 export interface StreamingStats {
   latencyMs: number;
   chunksProcessed: number;
   isConnected: boolean;
   isStreaming: boolean;
+  sessionId?: string | null;
+  requestedPipeline?: LivePipelineType;
+  resolvedPipeline?: LivePipelineType;
+  runtimeBackend?: string | null;
+  targetProfileId?: string | null;
+  sourceVoiceModelId?: string | null;
+  activeModelType?: ActiveModelType | string | null;
+  sampleCollectionEnabled?: boolean;
+  audioRouterTargets?: {
+    speaker_device: number | null;
+    headphone_device: number | null;
+  } | null;
 }
 
 export type StreamingEventCallback = (event: string, data: unknown) => void;
+
+type SessionStartedPayload = {
+  session_id: string;
+  requested_pipeline?: LivePipelineType;
+  resolved_pipeline?: LivePipelineType;
+  runtime_backend?: string | null;
+  target_profile_id?: string | null;
+  source_voice_model_id?: string | null;
+  active_model_type?: ActiveModelType | string | null;
+  sample_collection_enabled?: boolean;
+  audio_router_targets?: {
+    speaker_device: number | null;
+    headphone_device: number | null;
+  };
+};
 
 type TestStreamingHook = {
   connect?: () => Promise<void> | void;
@@ -18,7 +46,7 @@ type TestStreamingHook = {
   startSession?: (payload: {
     songId: string;
     voiceModelId: string;
-    pipelineType: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut';
+    pipelineType: LivePipelineType;
     options?: {
       profileId?: string;
       adapterType?: 'hq' | 'nvfp4';
@@ -26,7 +54,7 @@ type TestStreamingHook = {
       vocalsPath?: string;
       instrumentalPath?: string;
     };
-  }) => Promise<{ session_id: string }> | { session_id: string };
+  }) => Promise<SessionStartedPayload> | SessionStartedPayload;
   endSession?: () => Promise<void> | void;
   startStreaming?: () => Promise<void> | void;
   stopStreaming?: () => void;
@@ -124,7 +152,7 @@ export class AudioStreamingClient {
       });
 
       // Handle session events
-      this.socket.on('session_started', (data: { session_id: string }) => {
+      this.socket.on('session_started', (data: SessionStartedPayload) => {
         this.sessionId = data.session_id;
         this.emitEvent('session_started', data);
       });
@@ -165,7 +193,7 @@ export class AudioStreamingClient {
   async startSession(
     songId: string,
     voiceModelId: string,
-    pipelineType: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut' = 'realtime',
+    pipelineType: LivePipelineType = 'realtime',
     options?: {
       profileId?: string;
       adapterType?: 'hq' | 'nvfp4';
@@ -173,7 +201,7 @@ export class AudioStreamingClient {
       vocalsPath?: string;
       instrumentalPath?: string;
     }
-  ): Promise<{ session_id: string }> {
+  ): Promise<SessionStartedPayload> {
     const testHook = getTestStreamingHook();
     if (testHook) {
       const result = await testHook.startSession?.({
@@ -198,11 +226,11 @@ export class AudioStreamingClient {
     const sessionId = globalThis.crypto?.randomUUID?.() ?? `karaoke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     return new Promise((resolve, reject) => {
-      const handleStarted = (data: { session_id: string }) => {
+      const handleStarted = (data: SessionStartedPayload) => {
         if (data.session_id !== sessionId) return;
         cleanup();
         this.sessionId = data.session_id;
-        resolve({ session_id: data.session_id });
+        resolve(data);
       };
 
       const handleError = (error: { message?: string }) => {

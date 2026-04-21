@@ -44,7 +44,20 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
 
     globalAny.__AUTOVOICE_TEST_STREAMING__ = {
       connect: () => undefined,
-      startSession: () => ({ session_id: 'session-1' }),
+      startSession: ({ pipelineType, options }: { pipelineType: string; options?: { profileId?: string; collectSamples?: boolean } }) => ({
+        session_id: 'session-1',
+        requested_pipeline: pipelineType,
+        resolved_pipeline: pipelineType,
+        runtime_backend: 'pytorch',
+        target_profile_id: options?.profileId ?? null,
+        source_voice_model_id: 'voice-model-1',
+        active_model_type: options?.profileId ? 'adapter' : 'base',
+        sample_collection_enabled: Boolean(options?.collectSamples),
+        audio_router_targets: {
+          speaker_device: 0,
+          headphone_device: 1,
+        },
+      }),
       startStreaming: () => {
         if (streamingStartError) {
           throw new Error(streamingStartError)
@@ -141,6 +154,8 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   ]
 
   let preferredPipeline: 'realtime' | 'quality' = options.preferredPipeline ?? 'quality'
+  let preferredOfflinePipeline: 'realtime' | 'quality' | 'quality_seedvc' | 'quality_shortcut' = preferredPipeline
+  let preferredLivePipeline: 'realtime' | 'realtime_meanvc' = 'realtime'
   let paused = false
   let separationPollCount = 0
   let speakerDevice = 0
@@ -160,14 +175,31 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
 
   await page.route('**/api/v1/settings/app', async (route) => {
     if (route.request().method() === 'PATCH') {
-      const body = route.request().postDataJSON() as { preferred_pipeline?: 'realtime' | 'quality' }
+      const body = route.request().postDataJSON() as {
+        preferred_pipeline?: 'realtime' | 'quality'
+        preferred_offline_pipeline?: 'realtime' | 'quality' | 'quality_seedvc' | 'quality_shortcut'
+        preferred_live_pipeline?: 'realtime' | 'realtime_meanvc'
+      }
       if (body.preferred_pipeline) {
         preferredPipeline = body.preferred_pipeline
+        preferredOfflinePipeline = body.preferred_pipeline
+        if (body.preferred_pipeline === 'realtime') {
+          preferredLivePipeline = 'realtime'
+        }
+      }
+      if (body.preferred_offline_pipeline) {
+        preferredOfflinePipeline = body.preferred_offline_pipeline
+        preferredPipeline = preferredOfflinePipeline === 'realtime' ? 'realtime' : 'quality'
+      }
+      if (body.preferred_live_pipeline) {
+        preferredLivePipeline = body.preferred_live_pipeline
       }
     }
 
     return jsonResponse(route, {
       preferred_pipeline: preferredPipeline,
+      preferred_offline_pipeline: preferredOfflinePipeline,
+      preferred_live_pipeline: preferredLivePipeline,
       last_updated: '2026-04-18T00:00:00Z',
     })
   })
@@ -480,12 +512,37 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     }, 201)
   })
 
+  await page.route('**/api/v1/karaoke/preflight', async (route) => {
+    const body = route.request().postDataJSON() as { pipeline_type?: string }
+    const pipelineType = body.pipeline_type ?? 'realtime'
+    const ok = pipelineType === 'realtime' || pipelineType === 'realtime_meanvc'
+    return jsonResponse(route, {
+      ok,
+      issues: ok ? [] : ['Live karaoke only supports the realtime or realtime_meanvc pipelines.'],
+      warnings: [],
+      checks: {
+        song_ready: true,
+        assets_ready: true,
+        pipeline_valid: ok,
+        profile_ready: true,
+        voice_model_ready: true,
+        routing_ready: true,
+      },
+      requested_pipeline: pipelineType,
+      active_model_type: 'adapter',
+      audio_router_targets: {
+        speaker_device: speakerDevice,
+        headphone_device: headphoneDevice,
+      },
+    })
+  })
+
   await page.route('**/socket.io/**', async (route) => {
     await route.abort()
   })
 
   return {
-    getPreferredPipeline: () => preferredPipeline,
+    getPreferredPipeline: () => preferredOfflinePipeline,
     isPaused: () => paused,
     getSpeakerDevice: () => speakerDevice,
     getHeadphoneDevice: () => headphoneDevice,

@@ -9,8 +9,24 @@ import { DiarizationResultsPage } from './pages/DiarizationResultsPage'
 import { YouTubeDownloadPage } from './pages/YouTubeDownloadPage'
 import HelpPage from './pages/HelpPage'
 import { AdapterSelector, AdapterBadge } from './components/AdapterSelector'
-import { PipelineSelector, PipelineBadge, type PipelineType, getPreferredPipeline } from './components/PipelineSelector'
-import { apiService, VoiceProfile, AdapterType, ConversionRecord } from './services/api'
+import {
+  PipelineSelector,
+  PipelineBadge,
+  type PipelineType,
+  getPreferredPipeline,
+  isOfflinePipeline,
+} from './components/PipelineSelector'
+import { PresetManager } from './components/PresetManager'
+import { BatchProcessingQueue } from './components/BatchProcessingQueue'
+import { ConversionHistoryTable } from './components/ConversionHistoryTable'
+import {
+  apiService,
+  VoiceProfile,
+  AdapterType,
+  ConversionRecord,
+  DEFAULT_CONVERSION_CONFIG,
+  type ConversionConfig,
+} from './services/api'
 import { ToastProvider, useToastContext } from './contexts/ToastContext'
 import clsx from 'clsx'
 
@@ -19,9 +35,12 @@ function ConvertPage() {
   const [profiles, setProfiles] = useState<VoiceProfile[]>([])
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null)
   const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null)
-  // Load preferred pipeline from localStorage, default to quality for song conversion
-  const [pipeline, setPipeline] = useState<PipelineType>(() => {
-    return getPreferredPipeline() || 'quality'
+  const [config, setConfig] = useState<ConversionConfig>(() => {
+    const preferred = getPreferredPipeline()
+    return {
+      ...DEFAULT_CONVERSION_CONFIG,
+      pipeline_type: preferred && isOfflinePipeline(preferred) ? preferred : 'quality',
+    }
   })
   const [pipelineStatus, setPipelineStatus] = useState<Record<string, { loaded: boolean; memory_gb?: number; latency_target_ms?: number }>>({})
   const [file, setFile] = useState<File | null>(null)
@@ -51,8 +70,8 @@ function ConvertPage() {
         if (cancelled) {
           return
         }
-        if (settings.preferred_pipeline === 'realtime' || settings.preferred_pipeline === 'quality') {
-          setPipeline(settings.preferred_pipeline)
+        if (isOfflinePipeline(settings.preferred_offline_pipeline)) {
+          setConfig((prev) => ({ ...prev, pipeline_type: settings.preferred_offline_pipeline }))
         }
         setPipelineStatus(status.pipelines || {})
       } catch (error) {
@@ -67,12 +86,11 @@ function ConvertPage() {
   }, [])
 
   const handlePipelineChange = useCallback((nextPipeline: PipelineType) => {
-    setPipeline(nextPipeline)
-    if (nextPipeline === 'realtime' || nextPipeline === 'quality') {
-      void apiService.updateAppSettings({ preferred_pipeline: nextPipeline }).catch((error) => {
-        console.error('Failed to persist pipeline preference:', error)
-      })
-    }
+    if (!isOfflinePipeline(nextPipeline)) return
+    setConfig((prev) => ({ ...prev, pipeline_type: nextPipeline }))
+    void apiService.updateAppSettings({ preferred_offline_pipeline: nextPipeline }).catch((error) => {
+      console.error('Failed to persist pipeline preference:', error)
+    })
   }, [])
 
   useEffect(() => {
@@ -86,6 +104,31 @@ function ConvertPage() {
       setSelectedProfile(targetProfiles[0]?.profile_id ?? null)
     }
   }, [selectedProfile, selectedProfileRecord, targetProfiles])
+
+  const handlePresetLoad = useCallback((presetConfig: Partial<ConversionConfig>) => {
+    setConfig((prev) => ({ ...prev, ...presetConfig }))
+    if (presetConfig.pipeline_type && isOfflinePipeline(presetConfig.pipeline_type)) {
+      void apiService.updateAppSettings({ preferred_offline_pipeline: presetConfig.pipeline_type }).catch((error) => {
+        console.error('Failed to persist preset pipeline preference:', error)
+      })
+    }
+  }, [])
+
+  const handleHistorySelect = useCallback((record: ConversionRecord) => {
+    setSelectedProfile(record.profile_id)
+    if (record.adapter_type && record.adapter_type !== 'unified') {
+      setSelectedAdapter(record.adapter_type)
+    }
+    const historyPipeline = record.pipeline_type
+    if (historyPipeline && isOfflinePipeline(historyPipeline)) {
+      setConfig((prev) => ({
+        ...prev,
+        pipeline_type: historyPipeline,
+        preset: (record.preset as ConversionConfig['preset']) || prev.preset,
+      }))
+    }
+    toast.info(`Loaded settings from ${record.originalFileName || record.input_file}`)
+  }, [toast])
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -115,13 +158,16 @@ function ConvertPage() {
     try {
       // Start conversion with adapter type and pipeline selection
       const result = await apiService.convertSong(file, selectedProfile, {
-        preset: 'balanced',
-        pipeline_type: pipeline,
+        preset: config.preset,
+        vocal_volume: config.vocal_volume,
+        instrumental_volume: config.instrumental_volume,
+        pitch_shift: config.pitch_shift,
+        pipeline_type: config.pipeline_type,
         adapter_type:
           selectedProfileRecord?.active_model_type === 'full_model'
             ? undefined
             : (selectedAdapter || undefined),
-        return_stems: true,
+        return_stems: config.return_stems,
       })
 
       // Poll for status
@@ -312,11 +358,18 @@ function ConvertPage() {
           <div>
             <h2 className="text-lg font-semibold mb-4">4. Select Pipeline</h2>
             <PipelineSelector
-              value={pipeline}
+              value={config.pipeline_type}
               onChange={handlePipelineChange}
+              context="offline"
               showDescription={true}
               statusByPipeline={pipelineStatus}
             />
+            <div className="mt-4">
+              <PresetManager
+                currentConfig={config}
+                onLoadPreset={handlePresetLoad}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -423,6 +476,19 @@ function ConvertPage() {
             </>
           )}
         </button>
+
+        {selectedProfile && (
+          <div className="mt-6">
+            <BatchProcessingQueue
+              profileId={selectedProfile}
+              config={config}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6">
+        <ConversionHistoryTable onSelect={handleHistorySelect} />
       </div>
     </div>
   )

@@ -165,6 +165,50 @@ class TestKaraokeUploadEndpoint:
             assert isinstance(data['duration'], (int, float))
             assert data['duration'] > 0
 
+
+class TestKaraokePreflight:
+    def test_preflight_rejects_offline_pipeline(self, client):
+        response = client.post(
+            '/api/v1/karaoke/preflight',
+            data=json.dumps({'pipeline_type': 'quality'}),
+            content_type='application/json',
+        )
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload['ok'] is False
+        assert payload['checks']['pipeline_valid'] is False
+
+    def test_preflight_reports_ready_assets(self, client):
+        from auto_voice.web import karaoke_api as karaoke_module
+
+        karaoke_module._uploaded_songs['song-ready'] = {
+            'song_id': 'song-ready',
+            'separation_job_id': 'job-ready',
+        }
+        karaoke_module._separation_jobs['job-ready'] = {
+            'job_id': 'job-ready',
+            'song_id': 'song-ready',
+            'status': 'completed',
+            'vocals_path': '/tmp/vocals.wav',
+            'instrumental_path': '/tmp/instrumental.wav',
+        }
+        karaoke_module._device_config['speaker_device'] = 1
+        karaoke_module._device_config['headphone_device'] = 2
+
+        response = client.post(
+            '/api/v1/karaoke/preflight',
+            data=json.dumps({'song_id': 'song-ready', 'pipeline_type': 'realtime'}),
+            content_type='application/json',
+        )
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload['ok'] is True
+        assert payload['checks']['assets_ready'] is True
+        assert payload['audio_router_targets']['speaker_device'] == 1
+        assert payload['audio_router_targets']['headphone_device'] == 2
+
     def test_upload_size_limit(self, client):
         """Upload endpoint enforces size limit (e.g., 100MB)."""
         # Create oversized content (simulated, not actually 100MB)

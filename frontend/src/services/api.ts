@@ -57,9 +57,25 @@ export interface TrainingProgressEvent {
 
 export type WSEventHandler<T = unknown> = (event: WSEvent<T>) => void
 
+export type PipelineType =
+  | 'realtime'
+  | 'quality'
+  | 'quality_seedvc'
+  | 'realtime_meanvc'
+  | 'quality_shortcut'
+
+export type OfflinePipelineType =
+  | 'realtime'
+  | 'quality'
+  | 'quality_seedvc'
+  | 'quality_shortcut'
+
+export type LivePipelineType = 'realtime' | 'realtime_meanvc'
+
 export interface ConversionRecord {
   id: string
   status: 'queued' | 'processing' | 'in_progress' | 'complete' | 'completed' | 'error' | 'failed' | 'cancelled'
+  progress?: number
   created_at: string
   started_at?: string
   completed_at?: string
@@ -69,7 +85,10 @@ export interface ConversionRecord {
   duration?: number
   error?: string
   // Pipeline and adapter info
-  pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
+  pipeline_type?: PipelineType
+  requested_pipeline?: PipelineType
+  resolved_pipeline?: PipelineType
+  runtime_backend?: 'pytorch' | 'tensorrt' | 'pytorch_full_model' | string
   adapter_type?: 'hq' | 'nvfp4' | 'unified'
   active_model_type?: ActiveModelType
   // Quality metrics
@@ -233,6 +252,8 @@ export interface TrainingJob {
 
 export interface AppSettings {
   preferred_pipeline: 'realtime' | 'quality'
+  preferred_offline_pipeline: OfflinePipelineType
+  preferred_live_pipeline: LivePipelineType
   last_updated?: string | null
 }
 
@@ -354,6 +375,7 @@ export type EncoderBackend = 'hubert' | 'contentvec'
 export type VocoderType = 'hifigan' | 'bigvgan'
 
 export interface ConversionConfig {
+  pipeline_type: OfflinePipelineType
   vocal_volume: number
   instrumental_volume: number
   pitch_shift: number
@@ -365,6 +387,7 @@ export interface ConversionConfig {
 }
 
 export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
+  pipeline_type: 'quality',
   vocal_volume: 1.0,
   instrumental_volume: 0.9,
   pitch_shift: 0.0,
@@ -471,6 +494,26 @@ export interface UserPreset {
   config: Partial<ConversionConfig>
   created_at: string
   updated_at?: string
+}
+
+export interface KaraokePreflightResponse {
+  ok: boolean
+  issues: string[]
+  warnings: string[]
+  checks: {
+    song_ready: boolean
+    assets_ready: boolean
+    pipeline_valid: boolean
+    profile_ready: boolean
+    voice_model_ready: boolean
+    routing_ready: boolean
+  }
+  requested_pipeline: LivePipelineType
+  active_model_type?: ActiveModelType | string | null
+  audio_router_targets: {
+    speaker_device: number | null
+    headphone_device: number | null
+  }
 }
 
 // Model checkpoint for version control
@@ -724,6 +767,18 @@ class ApiService {
     })
   }
 
+  async karaokePreflight(payload: {
+    song_id?: string
+    profile_id?: string | null
+    voice_model_id?: string | null
+    pipeline_type: LivePipelineType
+  }): Promise<KaraokePreflightResponse> {
+    return this.request('/karaoke/preflight', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
   async getKernelMetrics(): Promise<KernelMetric[]> {
     const response = await this.request<{ kernels?: KernelMetric[]; note?: string }>('/kernels/metrics')
     return response.kernels ?? []
@@ -870,7 +925,7 @@ class ApiService {
       vocal_volume?: number
       instrumental_volume?: number
       pitch_shift?: number
-      pipeline_type?: 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
+      pipeline_type?: OfflinePipelineType
       adapter_type?: 'hq' | 'nvfp4' | 'unified'
       return_stems?: boolean
     }

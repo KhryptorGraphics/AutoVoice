@@ -112,7 +112,10 @@ def test_app_settings_round_trip(training_ui_client):
     response = training_ui_client.get("/api/v1/settings/app")
 
     assert response.status_code == 200
-    assert response.get_json()["preferred_pipeline"] == "quality"
+    payload = response.get_json()
+    assert payload["preferred_pipeline"] == "quality"
+    assert payload["preferred_offline_pipeline"] == "quality"
+    assert payload["preferred_live_pipeline"] == "realtime"
 
     update = training_ui_client.patch(
         "/api/v1/settings/app",
@@ -120,8 +123,25 @@ def test_app_settings_round_trip(training_ui_client):
     )
 
     assert update.status_code == 200
-    assert update.get_json()["preferred_pipeline"] == "realtime"
-    assert update.get_json()["last_updated"]
+    updated = update.get_json()
+    assert updated["preferred_pipeline"] == "realtime"
+    assert updated["preferred_offline_pipeline"] == "realtime"
+    assert updated["preferred_live_pipeline"] == "realtime"
+    assert updated["last_updated"]
+
+    split_update = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={
+            "preferred_offline_pipeline": "quality_shortcut",
+            "preferred_live_pipeline": "realtime_meanvc",
+        },
+    )
+
+    assert split_update.status_code == 200
+    split_payload = split_update.get_json()
+    assert split_payload["preferred_offline_pipeline"] == "quality_shortcut"
+    assert split_payload["preferred_live_pipeline"] == "realtime_meanvc"
+    assert split_payload["preferred_pipeline"] == "quality"
 
 
 def test_training_pause_resume_and_telemetry_routes(training_ui_app, training_ui_client):

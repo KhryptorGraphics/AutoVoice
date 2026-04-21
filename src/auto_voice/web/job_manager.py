@@ -82,17 +82,12 @@ class JobManager:
 
         try:
             settings = job['settings']
+            requested_pipeline = settings.get('requested_pipeline') or settings.get('pipeline_type') or 'quality'
+            settings.setdefault('requested_pipeline', requested_pipeline)
+            settings.setdefault('resolved_pipeline', requested_pipeline)
+            settings.setdefault('runtime_backend', 'pytorch')
             self._emit_progress(job_id, 10, 'Loading audio...', 'encoding')
-
-            result = self.singing_pipeline.convert_song(
-                song_path=job['file_path'],
-                target_profile_id=job['profile_id'],
-                vocal_volume=settings.get('vocal_volume', 1.0),
-                instrumental_volume=settings.get('instrumental_volume', 0.9),
-                pitch_shift=settings.get('pitch_shift', 0.0),
-                return_stems=settings.get('return_stems', False),
-                preset=settings.get('preset', 'balanced'),
-            )
+            result = self._convert_with_resolved_pipeline(job_id, job, settings)
 
             self._emit_progress(job_id, 80, 'Encoding output...', 'mixing')
 
@@ -130,6 +125,11 @@ class JobManager:
                 'output_url': f'/api/v1/convert/download/{job_id}',
                 'download_url': f'/api/v1/convert/download/{job_id}',
                 'duration': result['duration'],
+                'requested_pipeline': settings.get('requested_pipeline') or settings.get('pipeline_type'),
+                'resolved_pipeline': settings.get('resolved_pipeline') or settings.get('pipeline_type'),
+                'runtime_backend': settings.get('runtime_backend', 'pytorch'),
+                'active_model_type': settings.get('active_model_type'),
+                'adapter_type': settings.get('adapter_type'),
             }
             if stem_paths:
                 completion_payload['stem_urls'] = {
@@ -203,6 +203,93 @@ class JobManager:
                 self._jobs[job_id]['progress'] = progress
                 self._persist_job(job_id)
 
+    def _convert_with_resolved_pipeline(
+        self,
+        job_id: str,
+        job: Dict[str, Any],
+        settings: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run the most appropriate offline conversion backend for the requested pipeline."""
+        requested_pipeline = settings.get('requested_pipeline') or settings.get('pipeline_type') or 'quality'
+        active_model_type = settings.get('active_model_type')
+        resolved_pipeline = requested_pipeline
+        runtime_backend = 'pytorch'
+
+        if active_model_type == 'full_model' and requested_pipeline != 'quality':
+            resolved_pipeline = 'quality'
+            runtime_backend = 'pytorch_full_model'
+        elif requested_pipeline == 'realtime':
+            # The live realtime stack does not have a fully stem-aware offline path yet.
+            resolved_pipeline = 'quality'
+            runtime_backend = 'pytorch'
+
+        settings['pipeline_type'] = requested_pipeline
+        settings['requested_pipeline'] = requested_pipeline
+        settings['resolved_pipeline'] = resolved_pipeline
+        settings['runtime_backend'] = runtime_backend
+
+        if resolved_pipeline == 'quality':
+            result = self.singing_pipeline.convert_song(
+                song_path=job['file_path'],
+                target_profile_id=job['profile_id'],
+                vocal_volume=settings.get('vocal_volume', 1.0),
+                instrumental_volume=settings.get('instrumental_volume', 0.9),
+                pitch_shift=settings.get('pitch_shift', 0.0),
+                return_stems=settings.get('return_stems', False),
+                preset=settings.get('preset', 'balanced'),
+            )
+            result.setdefault('metadata', {})
+            result['metadata'].update({
+                'requested_pipeline': requested_pipeline,
+                'resolved_pipeline': resolved_pipeline,
+                'runtime_backend': runtime_backend,
+            })
+            return result
+
+        if resolved_pipeline not in {'quality_seedvc', 'quality_shortcut'}:
+            raise RuntimeError(f'Unsupported offline pipeline: {resolved_pipeline}')
+
+        profile_store = getattr(self.voice_profile_manager, 'store', None)
+        if profile_store is None:
+            raise RuntimeError('Voice profile store unavailable for advanced offline pipeline')
+
+        import soundfile as sf
+        from ..inference.pipeline_factory import PipelineFactory
+
+        audio, sample_rate = sf.read(job['file_path'])
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+
+        self._emit_progress(job_id, 25, f'Loading {resolved_pipeline} backend...', 'encoding')
+        pipeline = PipelineFactory.get_instance().get_pipeline(resolved_pipeline)
+        pipeline.set_reference_from_profile_id(job['profile_id'])
+
+        self._emit_progress(job_id, 55, f'Running {resolved_pipeline} conversion...', 'converting')
+        converted = pipeline.convert(
+            audio,
+            sample_rate,
+            pitch_shift=int(round(settings.get('pitch_shift', 0.0))),
+        )
+        output_audio = converted.get('audio')
+        if hasattr(output_audio, 'detach'):
+            output_audio = output_audio.detach().cpu().numpy()
+        output_audio = np.asarray(output_audio, dtype=np.float32)
+        output_sample_rate = int(converted.get('sample_rate', sample_rate))
+
+        return {
+            'mixed_audio': output_audio,
+            'sample_rate': output_sample_rate,
+            'duration': len(output_audio) / max(output_sample_rate, 1),
+            'metadata': {
+                **converted.get('metadata', {}),
+                'requested_pipeline': requested_pipeline,
+                'resolved_pipeline': resolved_pipeline,
+                'runtime_backend': runtime_backend,
+            },
+            'stems': {},
+        }
+
     def _calculate_metrics(self, result: Dict) -> Dict[str, Any]:
         """Calculate quality metrics for completed conversion."""
         metrics = {}
@@ -258,6 +345,11 @@ class JobManager:
                 'completed_at': job.get('completed_at'),
                 'profile_id': job.get('profile_id'),
                 'pipeline_type': job.get('settings', {}).get('pipeline_type'),
+                'requested_pipeline': job.get('settings', {}).get('requested_pipeline')
+                or job.get('settings', {}).get('pipeline_type'),
+                'resolved_pipeline': job.get('settings', {}).get('resolved_pipeline')
+                or job.get('settings', {}).get('pipeline_type'),
+                'runtime_backend': job.get('settings', {}).get('runtime_backend', 'pytorch'),
                 'adapter_type': job.get('settings', {}).get('adapter_type'),
                 'active_model_type': job.get('settings', {}).get('active_model_type'),
                 'input_file': job.get('input_file'),
@@ -483,6 +575,11 @@ class JobManager:
             'preset': job.get('settings', {}).get('preset', 'balanced'),
             'quality': job.get('settings', {}).get('preset', 'balanced'),
             'pipeline_type': job.get('settings', {}).get('pipeline_type'),
+            'requested_pipeline': job.get('settings', {}).get('requested_pipeline')
+            or job.get('settings', {}).get('pipeline_type'),
+            'resolved_pipeline': job.get('settings', {}).get('resolved_pipeline')
+            or job.get('settings', {}).get('pipeline_type'),
+            'runtime_backend': job.get('settings', {}).get('runtime_backend', 'pytorch'),
             'adapter_type': job.get('settings', {}).get('adapter_type'),
             'active_model_type': job.get('settings', {}).get('active_model_type'),
             'duration': job.get('duration'),

@@ -226,7 +226,7 @@ class KaraokeNamespace(Namespace):
                 - speaker_embedding: Optional base64-encoded embedding
                 - profile_id: Optional voice profile ID for sample collection
                 - collect_samples: Optional bool to enable training sample collection
-                - pipeline_type: 'realtime' for low-latency or 'quality' for high-fidelity (default: realtime)
+                - pipeline_type: 'realtime' or 'realtime_meanvc' for live conversion (default: realtime)
         """
         from flask import request
 
@@ -237,10 +237,12 @@ class KaraokeNamespace(Namespace):
         voice_model_id = data.get('voice_model_id')
         client_id = request.sid
 
-        # Pipeline selection (realtime/realtime_meanvc for karaoke, quality/quality_seedvc/quality_shortcut for offline)
+        # Live karaoke only exposes the low-latency pipelines.
         pipeline_type = data.get('pipeline_type', 'realtime')
-        if pipeline_type not in ('realtime', 'quality', 'quality_seedvc', 'realtime_meanvc', 'quality_shortcut'):
-            pipeline_type = 'realtime'  # Default to realtime for live karaoke
+        if pipeline_type not in ('realtime', 'realtime_meanvc'):
+            emit('error', {'message': 'Live karaoke pipeline_type must be realtime or realtime_meanvc'})
+            _analytics.record_error()
+            return
         logger.info(f"Session using pipeline_type: {pipeline_type}")
 
         # Sample collection settings (requires explicit consent)
@@ -345,6 +347,8 @@ class KaraokeNamespace(Namespace):
                         f"Session will continue without collection."
                     )
 
+            from .karaoke_api import _device_config
+
             emit('session_started', {
                 'session_id': session_id,
                 'status': 'ready',
@@ -352,6 +356,13 @@ class KaraokeNamespace(Namespace):
                 'target_profile_id': profile_id,
                 'active_model_type': getattr(session, '_target_model_type', None),
                 'source_voice_model_id': voice_model_id,
+                'requested_pipeline': pipeline_type,
+                'resolved_pipeline': pipeline_type,
+                'runtime_backend': session.pipeline_type,
+                'audio_router_targets': {
+                    'speaker_device': _device_config.get('speaker_device'),
+                    'headphone_device': _device_config.get('headphone_device'),
+                },
             })
             logger.info(f"Karaoke session started: {session_id} for client {client_id[:8]}...")
 

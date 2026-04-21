@@ -30,9 +30,14 @@ import {
   type VoiceModel,
 } from '../services/karaokeApi';
 import { getAudioStreamingClient, type StreamingStats } from '../services/audioStreaming';
-import { apiService, VoiceProfile } from '../services/api';
+import { apiService, VoiceProfile, type LivePipelineType } from '../services/api';
 import { AudioDeviceSelector } from '../components/AudioDeviceSelector';
-import { PipelineSelector, type PipelineType, getPreferredPipeline } from '../components/PipelineSelector';
+import {
+  PipelineSelector,
+  type PipelineType,
+  getPreferredPipeline,
+  isLivePipeline,
+} from '../components/PipelineSelector';
 import { AdapterDropdown } from '../components/AdapterSelector';
 import { AdapterType } from '../services/api';
 import { KaraokeSessionInfo } from '../components/KaraokeSessionInfo';
@@ -44,10 +49,9 @@ export function KaraokePage() {
   const [stage, setStage] = useState<Stage>('upload');
 
   // Pipeline selection (default to realtime for karaoke, but respect user preference)
-  const [pipeline, setPipeline] = useState<PipelineType>(() => {
+  const [pipeline, setPipeline] = useState<LivePipelineType>(() => {
     const preferred = getPreferredPipeline();
-    // For karaoke, prefer realtime pipelines but allow quality if that's what user saved
-    if (preferred === 'realtime' || preferred === 'quality') {
+    if (preferred && isLivePipeline(preferred)) {
       return preferred;
     }
     return 'realtime';
@@ -60,6 +64,8 @@ export function KaraokePage() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [preflightIssues, setPreflightIssues] = useState<string[]>([]);
+  const [preflightWarnings, setPreflightWarnings] = useState<string[]>([]);
 
   // Device state
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -98,6 +104,13 @@ export function KaraokePage() {
   // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollingRef = useRef<number | null>(null);
+  const stageRef = useRef<Stage>('upload');
+  const recoveringRef = useRef(false);
+  const intentionalStopRef = useRef(false);
+
+  useEffect(() => {
+    stageRef.current = stage;
+  }, [stage]);
 
   // Load devices, models, and profiles on mount
   useEffect(() => {
@@ -118,8 +131,8 @@ export function KaraokePage() {
         if (cancelled) {
           return;
         }
-        if (settings.preferred_pipeline === 'realtime' || settings.preferred_pipeline === 'quality') {
-          setPipeline(settings.preferred_pipeline);
+        if (isLivePipeline(settings.preferred_live_pipeline)) {
+          setPipeline(settings.preferred_live_pipeline);
         }
         setPipelineStatus(status.pipelines || {});
       } catch (error) {
@@ -148,6 +161,66 @@ export function KaraokePage() {
     }
   }, [selectedProfileId, trainedTargetProfiles]);
 
+  const applySessionStarted = useCallback((data: Partial<StreamingStats> & Record<string, unknown>) => {
+    setStreamingStats((stats) => ({
+      ...stats,
+      sessionId: typeof data.session_id === 'string' ? data.session_id : stats.sessionId,
+      requestedPipeline: (data.requested_pipeline as LivePipelineType | undefined) ?? stats.requestedPipeline,
+      resolvedPipeline: (data.resolved_pipeline as LivePipelineType | undefined) ?? stats.resolvedPipeline,
+      runtimeBackend: typeof data.runtime_backend === 'string' ? data.runtime_backend : stats.runtimeBackend,
+      targetProfileId: typeof data.target_profile_id === 'string' ? data.target_profile_id : stats.targetProfileId,
+      sourceVoiceModelId: typeof data.source_voice_model_id === 'string' ? data.source_voice_model_id : stats.sourceVoiceModelId,
+      activeModelType: (data.active_model_type as string | undefined) ?? stats.activeModelType,
+      sampleCollectionEnabled:
+        typeof data.sample_collection_enabled === 'boolean'
+          ? data.sample_collection_enabled
+          : stats.sampleCollectionEnabled,
+      audioRouterTargets:
+        (data.audio_router_targets as StreamingStats['audioRouterTargets']) ?? stats.audioRouterTargets,
+    }));
+  }, []);
+
+  const recoverPerformance = useCallback(async () => {
+    if (!uploadedSong || !selectedModel) {
+      setStage('ready');
+      setSessionError('Live session disconnected and could not be recovered.');
+      recoveringRef.current = false;
+      return;
+    }
+
+    try {
+      const client = getAudioStreamingClient();
+      await client.connect();
+      const started = await client.startSession(uploadedSong.song_id, selectedModel, pipeline, {
+        profileId: selectedProfileId || undefined,
+        adapterType: selectedAdapter || undefined,
+        collectSamples: collectTrainingSamples,
+        vocalsPath: separationJob?.vocals_path,
+        instrumentalPath: separationJob?.instrumental_path,
+      });
+      applySessionStarted(started as Record<string, unknown>);
+      await client.startStreaming();
+      setSessionError(null);
+      setStage('performing');
+    } catch (error) {
+      console.error('Failed to recover performance:', error);
+      setSessionError('Live session disconnected and could not be recovered.');
+      setStage('ready');
+    } finally {
+      recoveringRef.current = false;
+    }
+  }, [
+    applySessionStarted,
+    collectTrainingSamples,
+    pipeline,
+    selectedAdapter,
+    selectedModel,
+    selectedProfileId,
+    separationJob?.instrumental_path,
+    separationJob?.vocals_path,
+    uploadedSong,
+  ]);
+
   // Setup streaming client events
   useEffect(() => {
     const client = getAudioStreamingClient();
@@ -163,19 +236,30 @@ export function KaraokePage() {
         setStreamingStats((s) => ({ ...s, isConnected: true }));
       } else if (event === 'disconnected') {
         setStreamingStats((s) => ({ ...s, isConnected: false, isStreaming: false }));
+        if (
+          stageRef.current === 'performing'
+          && !intentionalStopRef.current
+          && !recoveringRef.current
+        ) {
+          recoveringRef.current = true;
+          setSessionError('Connection lost. Attempting recovery...');
+          void recoverPerformance();
+        }
       } else if (event === 'streaming_started') {
         setStreamingStats((s) => ({ ...s, isStreaming: true }));
       } else if (event === 'streaming_stopped') {
         setStreamingStats((s) => ({ ...s, isStreaming: false }));
         setInputLevel(0);
         setOutputLevel(0);
+      } else if (event === 'session_started') {
+        applySessionStarted(data as Record<string, unknown>);
       }
     });
 
     return () => {
       client.disconnect();
     };
-  }, []);
+  }, [applySessionStarted, recoverPerformance]);
 
   // Poll separation status
   useEffect(() => {
@@ -286,12 +370,13 @@ export function KaraokePage() {
   );
 
   const handlePipelineChange = useCallback((nextPipeline: PipelineType) => {
-    setPipeline(nextPipeline);
-    if (nextPipeline === 'realtime' || nextPipeline === 'quality') {
-      void apiService.updateAppSettings({ preferred_pipeline: nextPipeline }).catch((error) => {
-        console.error('Failed to persist pipeline preference:', error);
-      });
+    if (!isLivePipeline(nextPipeline)) {
+      return;
     }
+    setPipeline(nextPipeline);
+    void apiService.updateAppSettings({ preferred_live_pipeline: nextPipeline }).catch((error) => {
+      console.error('Failed to persist pipeline preference:', error);
+    });
   }, []);
 
   const handleExtractVoice = async () => {
@@ -336,16 +421,34 @@ export function KaraokePage() {
 
     try {
       setSessionError(null);
+      setPreflightIssues([]);
+      setPreflightWarnings([]);
+      const preflight = await apiService.karaokePreflight({
+        song_id: uploadedSong.song_id,
+        profile_id: selectedProfileId,
+        voice_model_id: selectedModel,
+        pipeline_type: pipeline,
+      });
+      if (!preflight.ok) {
+        setPreflightIssues(preflight.issues);
+        setPreflightWarnings(preflight.warnings);
+        setSessionError(preflight.issues[0] || 'Karaoke preflight failed');
+        return;
+      }
+      setPreflightWarnings(preflight.warnings);
+
+      intentionalStopRef.current = false;
       const client = getAudioStreamingClient();
       await client.connect();
       // Pass pipeline type and optional profile/adapter for trained voice conversion
-      await client.startSession(uploadedSong.song_id, selectedModel, pipeline, {
+      const started = await client.startSession(uploadedSong.song_id, selectedModel, pipeline, {
         profileId: selectedProfileId || undefined,
         adapterType: selectedAdapter || undefined,
         collectSamples: collectTrainingSamples,
         vocalsPath: separationJob?.vocals_path,
         instrumentalPath: separationJob?.instrumental_path,
       });
+      applySessionStarted(started as Record<string, unknown>);
       await client.startStreaming();
       setStage('performing');
     } catch (error) {
@@ -356,16 +459,20 @@ export function KaraokePage() {
 
   const stopPerformance = async () => {
     try {
+      intentionalStopRef.current = true;
       const client = getAudioStreamingClient();
       await client.endSession();
       setStage('ready');
     } catch (error) {
       console.error('Failed to stop performance:', error);
       setSessionError(error instanceof Error ? error.message : 'Failed to stop performance');
+    } finally {
+      intentionalStopRef.current = false;
     }
   };
 
   const resetSession = () => {
+    intentionalStopRef.current = true;
     const client = getAudioStreamingClient();
     client.disconnect();
     setStage('upload');
@@ -373,6 +480,8 @@ export function KaraokePage() {
     setSeparationJob(null);
     setUploadError(null);
     setSessionError(null);
+    setPreflightIssues([]);
+    setPreflightWarnings([]);
   };
 
   return (
@@ -490,6 +599,7 @@ export function KaraokePage() {
             <PipelineSelector
               value={pipeline}
               onChange={handlePipelineChange}
+              context="live"
               disabled={stage === 'performing'}
               showDescription={true}
               size="md"
@@ -704,7 +814,9 @@ export function KaraokePage() {
 
           {/* Session Info with Real-time Latency */}
           <KaraokeSessionInfo
-            pipeline={pipeline}
+            requestedPipeline={streamingStats.requestedPipeline || pipeline}
+            resolvedPipeline={streamingStats.resolvedPipeline}
+            runtimeBackend={streamingStats.runtimeBackend}
             profileName={selectedProfile?.name || selectedProfileId || undefined}
             adapterType={selectedAdapter}
             modelType={selectedProfile?.active_model_type}
@@ -712,7 +824,37 @@ export function KaraokePage() {
             isConnected={streamingStats.isConnected}
             isStreaming={streamingStats.isStreaming}
             chunksProcessed={streamingStats.chunksProcessed}
+            sampleCollectionEnabled={streamingStats.sampleCollectionEnabled}
+            audioRouterTargets={streamingStats.audioRouterTargets || {
+              speaker_device: speakerDevice,
+              headphone_device: headphoneDevice,
+            }}
           />
+
+          {(preflightIssues.length > 0 || preflightWarnings.length > 0) && (
+            <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-4 text-sm text-yellow-100 lg:col-span-2">
+              {preflightIssues.length > 0 && (
+                <div>
+                  <div className="font-semibold text-yellow-200">Preflight issues</div>
+                  <ul className="mt-1 list-disc pl-5">
+                    {preflightIssues.map((issue) => (
+                      <li key={issue}>{issue}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {preflightWarnings.length > 0 && (
+                <div className={clsx(preflightIssues.length > 0 && 'mt-3')}>
+                  <div className="font-semibold text-yellow-200">Warnings</div>
+                  <ul className="mt-1 list-disc pl-5">
+                    {preflightWarnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
 
           {sessionError && (
             <div

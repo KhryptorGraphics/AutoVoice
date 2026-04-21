@@ -217,7 +217,10 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
                     onClick={() => handleLoad(preset)}
                     className="flex-1 text-left text-sm hover:text-white transition-colors"
                   >
-                    {preset.name}
+                    <div>{preset.name}</div>
+                    <div className="text-xs text-gray-500">
+                      {(preset.config.pipeline_type as string) || 'quality'}
+                    </div>
                   </button>
                   <span className="text-xs text-gray-500">
                     {new Date(preset.created_at).toLocaleDateString()}

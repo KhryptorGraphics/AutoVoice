@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from flask import Blueprint, request, jsonify, current_app, send_file
 from werkzeug.utils import secure_filename
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import tempfile
 
 # Graceful imports with fallback
@@ -125,6 +125,9 @@ UPLOAD_FOLDER = '/tmp/autovoice_uploads'
 ALLOWED_EXTENSIONS = ALLOWED_AUDIO_EXTENSIONS  # Use shared constant
 MAX_TEXT_LENGTH = 5000
 MAX_AUDIO_DURATION = 600  # 10 minutes
+OFFLINE_PIPELINES = {"realtime", "quality", "quality_seedvc", "quality_shortcut"}
+LIVE_PIPELINES = {"realtime", "realtime_meanvc"}
+LEGACY_PIPELINES = {"realtime", "quality"}
 
 
 def get_param(data, form_key, settings_key, default, validator=None, type_hint=None):
@@ -151,8 +154,63 @@ def get_param(data, form_key, settings_key, default, validator=None, type_hint=N
         if validator and not validator(value):
             raise ValueError(f'Invalid value for {form_key}')
         return value
-    except (ValueError, TypeError) as e:
-        raise ValueError(f'Invalid {form_key}: {e}')
+    except (TypeError, ValueError):
+        raise ValueError(f'Invalid value for {form_key}')
+
+
+def _normalize_app_settings_payload(raw_settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return app settings with split pipeline defaults and legacy compatibility."""
+    settings = dict(raw_settings or {})
+    legacy_pipeline = settings.get('preferred_pipeline')
+    offline_pipeline = settings.get('preferred_offline_pipeline')
+    live_pipeline = settings.get('preferred_live_pipeline')
+
+    if offline_pipeline not in OFFLINE_PIPELINES:
+        offline_pipeline = 'realtime' if legacy_pipeline == 'realtime' else 'quality'
+
+    if live_pipeline not in LIVE_PIPELINES:
+        live_pipeline = 'realtime'
+
+    settings['preferred_offline_pipeline'] = offline_pipeline
+    settings['preferred_live_pipeline'] = live_pipeline
+    settings['preferred_pipeline'] = (
+        'realtime'
+        if offline_pipeline == 'realtime' and live_pipeline == 'realtime'
+        else 'quality'
+    )
+    settings.setdefault('last_updated', None)
+    return settings
+
+
+def _validate_offline_pipeline(value: str) -> str:
+    normalized = str(value).strip().lower()
+    if normalized not in OFFLINE_PIPELINES:
+        raise ValueError(
+            'pipeline_type must be one of: realtime, quality, quality_seedvc, quality_shortcut'
+        )
+    return normalized
+
+
+def _normalize_preset_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize preset config to the canonical offline conversion contract."""
+    normalized = dict(config or {})
+    pipeline_type = str(normalized.get('pipeline_type', 'quality')).strip().lower()
+    if pipeline_type not in OFFLINE_PIPELINES:
+        raise ValueError(
+            'Preset pipeline_type must be one of: realtime, quality, quality_seedvc, quality_shortcut'
+        )
+    normalized['pipeline_type'] = pipeline_type
+
+    if pipeline_type == 'quality_seedvc' and normalized.get('vocoder_type') == 'hifigan':
+        raise ValueError('quality_seedvc presets cannot force the HiFiGAN vocoder')
+
+    if pipeline_type == 'quality_shortcut' and normalized.get('preset') == 'studio':
+        raise ValueError('quality_shortcut presets do not support the studio preset tier')
+
+    if pipeline_type == 'realtime' and normalized.get('return_stems') is True:
+        raise ValueError('Realtime presets cannot request offline stems')
+
+    return normalized
 
 
 def _utcnow_iso() -> str:
@@ -571,18 +629,28 @@ def convert_song():
         profile_id,
     )
 
-    # Pipeline type selection
-    # - realtime: Low-latency for live karaoke (<100ms)
-    # - quality: CoMoSVC with 30-step diffusion (24kHz)
-    # - quality_seedvc: DiT-CFM with 5-10 step flow matching (44kHz SOTA)
+    # Pipeline type selection for offline conversion.
+    # - realtime: fastest offline conversion path
+    # - quality: default CoMoSVC path with best compatibility
+    # - quality_seedvc: DiT-CFM quality path
+    # - quality_shortcut: shortcut Seed-VC quality path
     try:
         pipeline_type = get_param(
             settings_data, 'pipeline_type', 'pipeline_type', 'quality',
-            lambda v: v in ['realtime', 'quality', 'quality_seedvc'], type_hint='str'
+            lambda v: v in OFFLINE_PIPELINES, type_hint='str'
         )
     except ValueError as e:
         return validation_error_response(str(e))
     logger.info(f'Using pipeline type: {pipeline_type}')
+
+    requested_pipeline = pipeline_type
+    resolved_pipeline = pipeline_type
+    runtime_backend = 'pytorch'
+    if use_full_model and requested_pipeline != 'quality':
+        resolved_pipeline = 'quality'
+        runtime_backend = 'pytorch_full_model'
+    elif requested_pipeline == 'realtime':
+        resolved_pipeline = 'quality'
 
     # Sample rate from config
     sample_rate = current_app.app_config.get('audio', {}).get('sample_rate', 22050)
@@ -615,7 +683,10 @@ def convert_song():
                 'return_stems': return_stems,
                 'preset': preset,
                 'adapter_type': adapter_type,
-                'pipeline_type': pipeline_type,
+                'pipeline_type': requested_pipeline,
+                'requested_pipeline': requested_pipeline,
+                'resolved_pipeline': resolved_pipeline,
+                'runtime_backend': runtime_backend,
                 'active_model_type': active_model_type,
             }
             job_id = job_manager.create_job(tmp_file.name, profile_id, settings_dict)
@@ -639,6 +710,9 @@ def convert_song():
                 'message': 'Join WebSocket room with job_id to receive progress updates',
                 'active_model_type': active_model_type,
                 'adapter_type': adapter_type,
+                'requested_pipeline': requested_pipeline,
+                'resolved_pipeline': resolved_pipeline,
+                'runtime_backend': runtime_backend,
             }, ), 202
         elif singing_pipeline:
             # Fallback to synchronous processing
@@ -674,6 +748,9 @@ def convert_song():
                     'duration': len(output_audio) / realtime_pipeline.output_sample_rate,
                     'metadata': {
                         'pipeline': 'realtime',
+                        'requested_pipeline': requested_pipeline,
+                        'resolved_pipeline': 'realtime',
+                        'runtime_backend': 'pytorch',
                         'profile_id': profile_id,
                         'active_model_type': active_model_type,
                     },
@@ -690,6 +767,14 @@ def convert_song():
                     return_stems=return_stems,
                     preset=preset,
                 )
+                result.setdefault('metadata', {})
+                result['metadata'].update({
+                    'requested_pipeline': requested_pipeline,
+                    'resolved_pipeline': resolved_pipeline,
+                    'runtime_backend': runtime_backend,
+                    'active_model_type': active_model_type,
+                    'adapter_type': adapter_type,
+                })
 
             # Comment 2: Defensive validation of pipeline result
             if not isinstance(result, dict):
@@ -779,6 +864,9 @@ def convert_song():
                 'metadata': result['metadata'],
                 'active_model_type': active_model_type,
                 'adapter_type': adapter_type,
+                'requested_pipeline': requested_pipeline,
+                'resolved_pipeline': result['metadata'].get('resolved_pipeline', resolved_pipeline),
+                'runtime_backend': result['metadata'].get('runtime_backend', runtime_backend),
             }
 
             # Add pitch contour data if available
@@ -1766,10 +1854,7 @@ def pipelines_status():
 def get_app_settings():
     """Return durable app-level settings used by the frontend."""
     try:
-        settings = _get_state_store().get_app_settings()
-        settings.setdefault('preferred_pipeline', 'quality')
-        settings.setdefault('last_updated', None)
-        return jsonify(settings)
+        return jsonify(_normalize_app_settings_payload(_get_state_store().get_app_settings()))
     except Exception as e:
         logger.error(f"Error reading app settings: {e}", exc_info=True)
         return error_response(str(e))
@@ -1786,18 +1871,39 @@ def update_app_settings():
         updates: Dict[str, Any] = {}
         if 'preferred_pipeline' in data:
             preferred_pipeline = str(data['preferred_pipeline']).strip().lower()
-            if preferred_pipeline not in {'realtime', 'quality'}:
+            if preferred_pipeline not in LEGACY_PIPELINES:
                 return validation_error_response(
                     'preferred_pipeline must be one of: realtime, quality'
                 )
             updates['preferred_pipeline'] = preferred_pipeline
+            if preferred_pipeline == 'realtime':
+                updates['preferred_offline_pipeline'] = 'realtime'
+                updates['preferred_live_pipeline'] = 'realtime'
+            else:
+                updates['preferred_offline_pipeline'] = 'quality'
+
+        if 'preferred_offline_pipeline' in data:
+            preferred_offline_pipeline = str(data['preferred_offline_pipeline']).strip().lower()
+            if preferred_offline_pipeline not in OFFLINE_PIPELINES:
+                return validation_error_response(
+                    'preferred_offline_pipeline must be one of: realtime, quality, quality_seedvc, quality_shortcut'
+                )
+            updates['preferred_offline_pipeline'] = preferred_offline_pipeline
+
+        if 'preferred_live_pipeline' in data:
+            preferred_live_pipeline = str(data['preferred_live_pipeline']).strip().lower()
+            if preferred_live_pipeline not in LIVE_PIPELINES:
+                return validation_error_response(
+                    'preferred_live_pipeline must be one of: realtime, realtime_meanvc'
+                )
+            updates['preferred_live_pipeline'] = preferred_live_pipeline
 
         if not updates:
             return validation_error_response('No supported app settings were provided')
 
         updates['last_updated'] = _utcnow_iso()
         settings = _get_state_store().update_app_settings(updates)
-        return jsonify(settings)
+        return jsonify(_normalize_app_settings_payload(settings))
     except Exception as e:
         logger.error(f"Error updating app settings: {e}", exc_info=True)
         return error_response(str(e))
@@ -3558,7 +3664,10 @@ _presets: Dict[str, Dict[str, Any]] = {}
 @api_bp.route('/presets', methods=['GET'])
 def list_presets():
     """List all user presets."""
-    return jsonify(_get_state_store().list_presets())
+    presets = _get_state_store().list_presets()
+    for preset in presets:
+        preset['config'] = _normalize_preset_config(preset.get('config', {}))
+    return jsonify(presets)
 
 
 @api_bp.route('/presets', methods=['POST'])
@@ -3574,10 +3683,11 @@ def create_preset():
             return validation_error_response('name is required')
 
         preset_id = str(uuid.uuid4())
+        config = _normalize_preset_config(data.get('config', {}))
         preset = {
             'id': preset_id,
             'name': name,
-            'config': data.get('config', {}),
+            'config': config,
             'created_at': _utcnow_iso(),
             'updated_at': _utcnow_iso()
         }
@@ -3585,6 +3695,8 @@ def create_preset():
         _get_state_store().save_preset(preset)
         logger.info(f"Created preset {preset_id}: {name}")
         return jsonify(preset), 201
+    except ValueError as e:
+        return validation_error_response(str(e))
     except Exception as e:
         logger.error(f"Error creating preset: {e}", exc_info=True)
         return error_response(str(e))
@@ -3596,6 +3708,7 @@ def get_preset(preset_id: str):
     preset = _get_state_store().get_preset(preset_id)
     if not preset:
         return not_found_response('Preset not found')
+    preset['config'] = _normalize_preset_config(preset.get('config', {}))
     return jsonify(preset)
 
 
@@ -3614,13 +3727,15 @@ def update_preset(preset_id: str):
         if 'name' in data:
             preset['name'] = data['name']
         if 'config' in data:
-            preset['config'] = data['config']
+            preset['config'] = _normalize_preset_config(data['config'])
         preset['updated_at'] = _utcnow_iso()
 
         _presets[preset_id] = preset
         _get_state_store().save_preset(preset)
         logger.info(f"Updated preset {preset_id}")
         return jsonify(preset)
+    except ValueError as e:
+        return validation_error_response(str(e))
     except Exception as e:
         logger.error(f"Error updating preset: {e}", exc_info=True)
         return error_response(str(e))

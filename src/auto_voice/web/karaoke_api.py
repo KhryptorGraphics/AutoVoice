@@ -28,6 +28,7 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 karaoke_bp = Blueprint('karaoke', __name__, url_prefix='/api/v1/karaoke')
+LIVE_PIPELINES = {'realtime', 'realtime_meanvc'}
 
 
 # ============================================================================
@@ -846,6 +847,85 @@ def get_output_device_config():
     return jsonify({
         'speaker_device': _device_config['speaker_device'],
         'headphone_device': _device_config['headphone_device'],
+    })
+
+
+@karaoke_bp.route('/preflight', methods=['POST'])
+def karaoke_preflight():
+    """Validate the current karaoke session inputs before starting live conversion."""
+    data = request.get_json(silent=True) or {}
+    song_id = data.get('song_id')
+    profile_id = data.get('profile_id')
+    voice_model_id = data.get('voice_model_id')
+    pipeline_type = str(data.get('pipeline_type', 'realtime')).strip().lower()
+
+    issues = []
+    warnings = []
+
+    song = _uploaded_songs.get(song_id) if song_id else None
+    song_ready = bool(song)
+    if not song_ready:
+        issues.append('Upload a song before starting karaoke.')
+
+    separation_job = None
+    if song:
+        separation_job = _separation_jobs.get(song.get('separation_job_id', ''))
+    assets_ready = bool(
+        separation_job
+        and separation_job.get('status') == 'completed'
+        and separation_job.get('vocals_path')
+        and separation_job.get('instrumental_path')
+    )
+    if song and not assets_ready:
+        issues.append('Vocals and instrumental stems are not ready yet.')
+
+    pipeline_valid = pipeline_type in LIVE_PIPELINES
+    if not pipeline_valid:
+        issues.append('Live karaoke only supports the realtime or realtime_meanvc pipelines.')
+
+    profile_ready = True
+    active_model_type = None
+    if profile_id:
+        voice_cloner = getattr(current_app, 'voice_cloner', None)
+        profile_store = getattr(voice_cloner, 'store', None)
+        profile = profile_store.load(profile_id) if profile_store is not None else None
+        profile_ready = bool(profile and profile.get('has_trained_model'))
+        active_model_type = profile.get('active_model_type') if profile else None
+        if not profile_ready:
+            issues.append('Selected voice profile is not trained and ready for live conversion.')
+
+    voice_model_ready = True
+    if voice_model_id:
+        registry = _get_voice_model_registry()
+        voice_model_ready = registry.get_model(voice_model_id) is not None
+        if not voice_model_ready:
+            issues.append('Selected voice model is unavailable.')
+
+    routing_ready = (
+        _device_config.get('speaker_device') is not None
+        or _device_config.get('headphone_device') is not None
+    )
+    if not routing_ready:
+        warnings.append('No explicit output devices selected; system defaults will be used.')
+
+    return jsonify({
+        'ok': len(issues) == 0,
+        'issues': issues,
+        'warnings': warnings,
+        'checks': {
+            'song_ready': song_ready,
+            'assets_ready': assets_ready,
+            'pipeline_valid': pipeline_valid,
+            'profile_ready': profile_ready,
+            'voice_model_ready': voice_model_ready,
+            'routing_ready': routing_ready,
+        },
+        'requested_pipeline': pipeline_type,
+        'active_model_type': active_model_type,
+        'audio_router_targets': {
+            'speaker_device': _device_config.get('speaker_device'),
+            'headphone_device': _device_config.get('headphone_device'),
+        },
     })
 
 

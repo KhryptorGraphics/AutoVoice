@@ -325,6 +325,11 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
                         {record.pipeline_type && (
                           <PipelineBadge pipeline={record.pipeline_type} />
                         )}
+                        {record.runtime_backend && (
+                          <span className="text-[11px] text-gray-500">
+                            {record.runtime_backend}
+                          </span>
+                        )}
                         {record.adapter_type && record.adapter_type !== 'unified' && (
                           <AdapterBadge adapterType={record.adapter_type as 'hq' | 'nvfp4'} />
                         )}
@@ -358,6 +363,13 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
                             >
                               <Download size={14} />
                             </a>
+                            <button
+                              onClick={() => onSelect?.(record)}
+                              className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
+                              title="Rerun with these settings"
+                            >
+                              <History size={14} />
+                            </button>
                           </>
                         )}
                         <button
@@ -445,6 +457,12 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
                   <div className="font-mono mt-1">
                     {formatDuration(selectedRecord.duration)}
                   </div>
+                </div>
+              )}
+              {selectedRecord.runtime_backend && (
+                <div>
+                  <div className="text-gray-500">Runtime</div>
+                  <div className="font-mono mt-1">{selectedRecord.runtime_backend}</div>
                 </div>
               )}
             </div>

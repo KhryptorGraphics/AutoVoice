@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react'
 import { Zap, Sparkles, HelpCircle, Crown, Radio, Rocket, BarChart3, X } from 'lucide-react'
 import clsx from 'clsx'
 import { STORAGE_KEYS } from '../hooks/usePersistedState'
-
-export type PipelineType = 'realtime' | 'quality' | 'quality_seedvc' | 'realtime_meanvc' | 'quality_shortcut'
+import type { LivePipelineType, OfflinePipelineType, PipelineType } from '../services/api'
 
 interface PipelineRuntimeStatus {
   loaded?: boolean
@@ -16,13 +15,10 @@ interface PipelineRuntimeStatus {
 // LocalStorage key for persisting user's preferred pipeline
 const PIPELINE_PREFERENCE_KEY = STORAGE_KEYS.PIPELINE_PREFERENCE
 
-/**
- * Get the user's preferred pipeline from localStorage
- */
 export function getPreferredPipeline(): PipelineType | null {
   try {
     const saved = localStorage.getItem(PIPELINE_PREFERENCE_KEY)
-    if (saved && isUserSelectablePipeline(saved)) {
+    if (saved && isPipelineType(saved)) {
       return saved as PipelineType
     }
   } catch (e) {
@@ -31,9 +27,6 @@ export function getPreferredPipeline(): PipelineType | null {
   return null
 }
 
-/**
- * Save the user's preferred pipeline to localStorage
- */
 export function savePreferredPipeline(pipeline: PipelineType): void {
   try {
     localStorage.setItem(PIPELINE_PREFERENCE_KEY, pipeline)
@@ -42,13 +35,35 @@ export function savePreferredPipeline(pipeline: PipelineType): void {
   }
 }
 
-function isUserSelectablePipeline(value: string): value is PipelineType {
-  return value === 'realtime' || value === 'quality'
+export type PipelineSelectionContext = 'offline' | 'live'
+
+export function isPipelineType(value: string): value is PipelineType {
+  return (
+    value === 'realtime'
+    || value === 'quality'
+    || value === 'quality_seedvc'
+    || value === 'realtime_meanvc'
+    || value === 'quality_shortcut'
+  )
+}
+
+export function isOfflinePipeline(value: string): value is OfflinePipelineType {
+  return (
+    value === 'realtime'
+    || value === 'quality'
+    || value === 'quality_seedvc'
+    || value === 'quality_shortcut'
+  )
+}
+
+export function isLivePipeline(value: string): value is LivePipelineType {
+  return value === 'realtime' || value === 'realtime_meanvc'
 }
 
 interface PipelineSelectorProps {
   value: PipelineType
   onChange: (value: PipelineType) => void
+  context?: PipelineSelectionContext
   disabled?: boolean
   showDescription?: boolean
   size?: 'sm' | 'md' | 'lg'
@@ -138,9 +153,12 @@ const pipelines: PipelineInfo[] = [
   },
 ]
 
-const selectablePipelines = pipelines.filter(
-  (pipeline) => pipeline.id === 'realtime' || pipeline.id === 'quality'
-)
+export function getSelectablePipelines(context: PipelineSelectionContext): PipelineInfo[] {
+  if (context === 'live') {
+    return pipelines.filter((pipeline) => isLivePipeline(pipeline.id))
+  }
+  return pipelines.filter((pipeline) => isOfflinePipeline(pipeline.id))
+}
 
 /**
  * Get pipeline info by ID
@@ -152,6 +170,7 @@ export function getPipelineInfo(pipelineId: PipelineType): PipelineInfo | undefi
 export function PipelineSelector({
   value,
   onChange,
+  context = 'offline',
   disabled = false,
   showDescription = true,
   size = 'md',
@@ -160,6 +179,7 @@ export function PipelineSelector({
 }: PipelineSelectorProps) {
   const [showTooltip, setShowTooltip] = useState<PipelineType | null>(null)
   const [showBenchmarkModal, setShowBenchmarkModal] = useState(false)
+  const selectablePipelines = getSelectablePipelines(context)
 
   // Load saved preference on mount
   useEffect(() => {
@@ -276,6 +296,7 @@ export function PipelineSelector({
       {showBenchmarkModal && (
         <PipelineBenchmarkModal
           currentPipeline={value}
+          context={context}
           onSelect={(p) => {
             handleChange(p)
             setShowBenchmarkModal(false)
@@ -290,11 +311,13 @@ export function PipelineSelector({
 // Benchmark comparison modal component
 interface BenchmarkModalProps {
   currentPipeline: PipelineType
+  context: PipelineSelectionContext
   onSelect: (pipeline: PipelineType) => void
   onClose: () => void
 }
 
-function PipelineBenchmarkModal({ currentPipeline, onSelect, onClose }: BenchmarkModalProps) {
+function PipelineBenchmarkModal({ currentPipeline, context, onSelect, onClose }: BenchmarkModalProps) {
+  const selectablePipelines = getSelectablePipelines(context)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div className="bg-gray-800 rounded-xl border border-gray-700 shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
@@ -400,10 +423,12 @@ function PipelineBenchmarkModal({ currentPipeline, onSelect, onClose }: Benchmar
 interface PipelineDropdownProps {
   value: PipelineType
   onChange: (value: PipelineType) => void
+  context?: PipelineSelectionContext
   disabled?: boolean
 }
 
-export function PipelineDropdown({ value, onChange, disabled }: PipelineDropdownProps) {
+export function PipelineDropdown({ value, onChange, context = 'offline', disabled }: PipelineDropdownProps) {
+  const selectablePipelines = getSelectablePipelines(context)
   return (
     <select
       value={value}
@@ -461,4 +486,4 @@ export function PipelineBadge({ pipeline, showLatency = false }: PipelineBadgePr
 
 // Export all pipeline types for use in other components
 export { pipelines }
-export type { PipelineInfo }
+export type { PipelineInfo, PipelineType, OfflinePipelineType, LivePipelineType }

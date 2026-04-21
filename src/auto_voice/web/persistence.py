@@ -10,6 +10,40 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+OFFLINE_PIPELINES = {"realtime", "quality", "quality_seedvc", "quality_shortcut"}
+LIVE_PIPELINES = {"realtime", "realtime_meanvc"}
+
+
+def _normalize_app_settings(raw_settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize app settings while preserving one-release legacy compatibility."""
+    settings = deepcopy(raw_settings or {})
+    legacy_pipeline = settings.get("preferred_pipeline")
+    offline_pipeline = settings.get("preferred_offline_pipeline")
+    live_pipeline = settings.get("preferred_live_pipeline")
+
+    if offline_pipeline not in OFFLINE_PIPELINES:
+        if legacy_pipeline == "realtime":
+            offline_pipeline = "realtime"
+        else:
+            offline_pipeline = "quality"
+
+    if live_pipeline not in LIVE_PIPELINES:
+        if legacy_pipeline == "realtime":
+            live_pipeline = "realtime"
+        else:
+            live_pipeline = "realtime"
+
+    settings["preferred_offline_pipeline"] = offline_pipeline
+    settings["preferred_live_pipeline"] = live_pipeline
+    settings["preferred_pipeline"] = (
+        "realtime"
+        if offline_pipeline == "realtime" and live_pipeline == "realtime"
+        else "quality"
+    )
+    settings.setdefault("last_updated", None)
+    return settings
+
+
 def resolve_data_dir(explicit_data_dir: Optional[str] = None) -> Path:
     """Resolve the application data directory."""
     raw_data_dir = explicit_data_dir or os.environ.get("DATA_DIR") or "data"
@@ -168,14 +202,11 @@ class AppStateStore:
         self._write("youtube_history", [])
 
     def get_app_settings(self) -> Dict[str, Any]:
-        default_settings = {
-            "preferred_pipeline": "quality",
-            "last_updated": None,
-        }
-        return self._read("app_settings", default_settings)
+        return _normalize_app_settings(self._read("app_settings", {}))
 
     def update_app_settings(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         settings = self.get_app_settings()
         settings.update(deepcopy(updates))
-        self._write("app_settings", settings)
-        return settings
+        normalized = _normalize_app_settings(settings)
+        self._write("app_settings", normalized)
+        return normalized

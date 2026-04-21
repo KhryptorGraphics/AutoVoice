@@ -10,10 +10,13 @@ import clsx from 'clsx'
 interface BatchFile {
   id: string
   file: File
-  status: 'pending' | 'processing' | 'complete' | 'error'
+  status: 'pending' | 'queued' | 'processing' | 'complete' | 'error'
   progress: number
+  jobId?: string
   error?: string
   resultUrl?: string
+  stemUrls?: Partial<Record<'vocals' | 'instrumental', string>>
+  reassembleUrl?: string
 }
 
 interface BatchProcessingQueueProps {
@@ -35,6 +38,8 @@ export function BatchProcessingQueue({ profileId, config, onComplete }: BatchPro
         vocal_volume: config.vocal_volume,
         instrumental_volume: config.instrumental_volume,
         pitch_shift: config.pitch_shift,
+        pipeline_type: config.pipeline_type,
+        return_stems: config.return_stems,
       })
     },
     onSuccess: () => {
@@ -107,16 +112,52 @@ export function BatchProcessingQueue({ profileId, config, onComplete }: BatchPro
       )
 
       try {
-        await processMutation.mutateAsync(batchFile.file)
-        // Job submitted successfully - mark as complete
-        // In a real implementation, we'd poll the job status
+        const submission = await processMutation.mutateAsync(batchFile.file)
         setFiles(prev =>
           prev.map(f =>
             f.id === batchFile.id
-              ? { ...f, status: 'complete', progress: 100 }
+              ? { ...f, status: 'queued', progress: 5, jobId: submission.job_id }
               : f
           )
         )
+
+        let status = await apiService.getConversionStatus(submission.job_id)
+        while (status.status === 'queued' || status.status === 'processing' || status.status === 'in_progress') {
+          setFiles(prev =>
+            prev.map(f =>
+              f.id === batchFile.id
+                ? {
+                    ...f,
+                    status: status.status === 'queued' ? 'queued' : 'processing',
+                    progress: Math.max(10, status.progress ?? f.progress),
+                    jobId: submission.job_id,
+                  }
+                : f
+            )
+          )
+          await new Promise((resolve) => window.setTimeout(resolve, 1000))
+          status = await apiService.getConversionStatus(submission.job_id)
+        }
+
+        if (status.status === 'complete' || status.status === 'completed') {
+          setFiles(prev =>
+            prev.map(f =>
+              f.id === batchFile.id
+                ? {
+                    ...f,
+                    status: 'complete',
+                    progress: 100,
+                    jobId: submission.job_id,
+                    resultUrl: status.resultUrl ?? status.output_url ?? status.download_url,
+                    stemUrls: status.stem_urls,
+                    reassembleUrl: status.reassemble_url,
+                  }
+                : f
+            )
+          )
+        } else {
+          throw new Error(status.error || 'Batch conversion failed')
+        }
       } catch (err) {
         setFiles(prev =>
           prev.map(f =>
@@ -129,7 +170,9 @@ export function BatchProcessingQueue({ profileId, config, onComplete }: BatchPro
     }
 
     setIsProcessing(false)
-    onComplete?.(files)
+    onComplete?.(
+      files.map((item) => item)
+    )
   }
 
   const stopProcessing = () => {
@@ -223,7 +266,7 @@ export function BatchProcessingQueue({ profileId, config, onComplete }: BatchPro
                 )}
 
                 {/* Status Icon */}
-                {file.status === 'pending' && <Clock size={14} className="text-gray-500" />}
+                {(file.status === 'pending' || file.status === 'queued') && <Clock size={14} className="text-gray-500" />}
                 {file.status === 'processing' && (
                   <Loader2 size={14} className="text-blue-400 animate-spin" />
                 )}
@@ -237,7 +280,7 @@ export function BatchProcessingQueue({ profileId, config, onComplete }: BatchPro
                 {/* File Info */}
                 <div className="flex-1 min-w-0">
                   <div className="text-sm truncate">{file.file.name}</div>
-                  {file.status === 'processing' && (
+                  {(file.status === 'processing' || file.status === 'queued') && (
                     <div className="h-1 bg-gray-700 rounded-full mt-1 overflow-hidden">
                       <div
                         className="h-full bg-blue-500 transition-all"
@@ -247,6 +290,9 @@ export function BatchProcessingQueue({ profileId, config, onComplete }: BatchPro
                   )}
                   {file.error && (
                     <div className="text-xs text-red-400 truncate">{file.error}</div>
+                  )}
+                  {file.jobId && (
+                    <div className="text-xs text-gray-500 truncate">Job {file.jobId}</div>
                   )}
                 </div>
 

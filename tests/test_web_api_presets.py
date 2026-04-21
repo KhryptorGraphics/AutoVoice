@@ -40,6 +40,7 @@ def test_presets_crud_round_trip(client_presets):
     preset_id = created["id"]
     assert created["name"] == "Studio"
     assert created["config"]["pitch_shift"] == 2
+    assert created["config"]["pipeline_type"] == "quality"
 
     list_response = client_presets.get("/api/v1/presets")
     assert list_response.status_code == 200
@@ -89,6 +90,16 @@ def test_update_preset_handles_missing_and_invalid_payload(client_presets):
     )
     assert invalid_response.status_code == 400
     assert "No JSON data provided" in invalid_response.get_json()["error"]
+
+
+def test_create_preset_rejects_live_only_pipeline(client_presets):
+    response = client_presets.post(
+        "/api/v1/presets",
+        json={"name": "Live only", "config": {"pipeline_type": "realtime_meanvc"}},
+    )
+
+    assert response.status_code == 400
+    assert "pipeline_type" in response.get_json()["error"]
 
 
 def test_delete_preset_returns_not_found_for_unknown_id(client_presets):
