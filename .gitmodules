@@ -1,0 +1,9 @@
+[submodule "models/hq-svc"]
+	path = models/hq-svc
+	url = https://github.com/ShawnPi233/HQ-SVC.git
+[submodule "models/meanvc"]
+	path = models/meanvc
+	url = https://github.com/ASLP-lab/MeanVC.git
+[submodule "models/seed-vc"]
+	path = models/seed-vc
+	url = https://github.com/Plachtaa/seed-vc.git

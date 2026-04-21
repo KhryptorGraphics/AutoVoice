@@ -30,6 +30,39 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
   `config/experimental_evidence.json` and validated by
   `python scripts/validate_experimental_evidence.py`
 
+## Vendor Model Repos
+
+The nested model directories are canonical vendor repos tracked as gitlinks/submodules:
+
+- `models/hq-svc`
+- `models/meanvc`
+- `models/seed-vc`
+
+Initialize or refresh them with:
+
+```bash
+git submodule update --init --recursive
+```
+
+Audit their parent-repo contract and local hygiene with:
+
+```bash
+PYTHONNOUSERSITE=1 PYTHONPATH=src /home/kp/anaconda3/envs/autovoice-thor/bin/python \
+  scripts/audit_vendor_repos.py
+```
+
+Use `--require-clean` only when you explicitly want local dirt in those vendor repos to fail the audit.
+Local experiments or runtime artifacts inside nested vendor repos are not parent-repo product changes until
+they are committed in the vendor repo and the parent gitlink is updated intentionally.
+
+## Canonical Training SSIM
+
+There is one supported SSIM implementation on the current training path:
+
+- `src/auto_voice/models/so_vits_svc.py::_ssim_loss`
+
+There is no separate canonical `src/auto_voice/training/ssim_loss.py` module.
+
 There is no separate `/training` Socket.IO namespace in the current backend.
 
 ## Canonical Docs
