@@ -5,6 +5,7 @@ support, FP16/INT8 precision, and engine caching. Targets Jetson Thor
 (SM 11.0, CUDA 13.0, TensorRT 10.x).
 """
 
+import gc
 import logging
 import os
 import time
@@ -78,6 +79,14 @@ class TRTEngineBuilder:
         """
         self._workspace_bytes = int(workspace_size_gb * (1 << 30))
 
+    @staticmethod
+    def _cleanup_cuda() -> None:
+        """Release Python refs and return cached CUDA memory before heavy TRT work."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
     def build_engine(
         self,
         onnx_path: str,
@@ -107,6 +116,7 @@ class TRTEngineBuilder:
         if not Path(onnx_path).exists():
             raise RuntimeError(f"ONNX file not found: {onnx_path}")
 
+        self._cleanup_cuda()
         builder = trt.Builder(TRT_LOGGER)
         network = builder.create_network(
             1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
@@ -170,6 +180,9 @@ class TRTEngineBuilder:
         if engine is None:
             raise RuntimeError("Failed to deserialize built engine")
 
+        del serialized, runtime, parser, network, config, builder
+        self._cleanup_cuda()
+
         logger.info(
             f"Engine built: {engine.num_io_tensors} tensors, "
             f"{sum(engine.get_tensor_dtype(engine.get_tensor_name(i)).itemsize for i in range(engine.num_io_tensors))} bytes/element total"
@@ -211,6 +224,7 @@ class TRTEngineBuilder:
         if not Path(path).exists():
             raise RuntimeError(f"Engine file not found: {path}")
 
+        self._cleanup_cuda()
         runtime = trt.Runtime(TRT_LOGGER)
         with open(path, 'rb') as f:
             engine = runtime.deserialize_cuda_engine(f.read())
@@ -218,6 +232,8 @@ class TRTEngineBuilder:
         if engine is None:
             raise RuntimeError(f"Failed to deserialize engine from {path}")
 
+        del runtime
+        self._cleanup_cuda()
         logger.info(f"Loaded TRT engine from {path}")
         return engine
 
@@ -271,6 +287,7 @@ class TRTEngineBuilder:
             RuntimeError: If inference execution fails.
         """
         context = engine.create_execution_context()
+        self._cleanup_cuda()
 
         # Set input shapes for dynamic dims
         for name, arr in inputs.items():
@@ -315,6 +332,8 @@ class TRTEngineBuilder:
         for name in output_names:
             outputs[name] = device_buffers[name].cpu().numpy()
 
+        del context, device_buffers, stream
+        self._cleanup_cuda()
         return outputs
 
     def benchmark(
@@ -336,6 +355,7 @@ class TRTEngineBuilder:
             LatencyStats with mean, p50, p95, p99 in milliseconds.
         """
         context = engine.create_execution_context()
+        self._cleanup_cuda()
 
         # Set input shapes
         for name, arr in inputs.items():
@@ -379,7 +399,7 @@ class TRTEngineBuilder:
         latencies_sorted = sorted(latencies)
         n = len(latencies_sorted)
 
-        return LatencyStats(
+        stats = LatencyStats(
             mean_ms=sum(latencies) / n,
             p50_ms=latencies_sorted[n // 2],
             p95_ms=latencies_sorted[int(n * 0.95)],
@@ -387,3 +407,6 @@ class TRTEngineBuilder:
             n_runs=n_runs,
             all_ms=latencies,
         )
+        del context, device_buffers, stream
+        self._cleanup_cuda()
+        return stats

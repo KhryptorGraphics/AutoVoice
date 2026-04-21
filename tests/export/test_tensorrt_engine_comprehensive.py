@@ -20,38 +20,17 @@ import os
 import sys
 import tempfile
 import time
-from importlib.machinery import ModuleSpec
 from pathlib import Path
-from types import ModuleType
 from unittest.mock import Mock, MagicMock, patch, mock_open, call
 
 import numpy as np
 import pytest
 import torch
 
-# Mock tensorrt before importing the module
-mock_trt = ModuleType("tensorrt")
-mock_trt.__spec__ = ModuleSpec("tensorrt", loader=None)
-mock_trt.Logger = MagicMock()
-mock_trt.Logger.WARNING = 1
-mock_trt.NetworkDefinitionCreationFlag = MagicMock()
-mock_trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH = 0
-mock_trt.MemoryPoolType = MagicMock()
-mock_trt.MemoryPoolType.WORKSPACE = 0
-mock_trt.BuilderFlag = MagicMock()
-mock_trt.BuilderFlag.FP16 = 1
-mock_trt.BuilderFlag.INT8 = 2
-mock_trt.TensorIOMode = MagicMock()
-mock_trt.TensorIOMode.INPUT = 0
-mock_trt.TensorIOMode.OUTPUT = 1
-mock_trt.ICudaEngine = MagicMock()
-sys.modules['tensorrt'] = mock_trt
-
 from auto_voice.export.tensorrt_engine import (
     LatencyStats,
     ShapeProfile,
     TRTEngineBuilder,
-    trt,
 )
 
 

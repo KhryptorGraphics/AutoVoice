@@ -150,11 +150,8 @@ def test_gpu_oom_handling():
 
 def test_missing_demucs_model():
     """Test error when Demucs not installed."""
-    with patch('auto_voice.audio.separation.VocalSeparator._load_model') as mock_load:
-        mock_load.side_effect = RuntimeError("Model not found")
-
-        sep = VocalSeparator()
-
+    sep = VocalSeparator()
+    with patch.object(sep, '_load_model', side_effect=RuntimeError("Model not found")):
         with pytest.raises(RuntimeError):
             sep.separate(np.zeros(1000), 44100)
 

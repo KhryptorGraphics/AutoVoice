@@ -131,6 +131,14 @@ class TestVocalSeparatorSeparate:
         result = separator.separate(audio, 22050)
         assert 'vocals' in result
 
+    def test_separate_with_non_integer_sample_rate_metadata(self, separator, mock_demucs):
+        """Separator should normalize numeric sample-rate metadata before resampling."""
+        mock_demucs['model'].samplerate = np.float64(44100.0)
+        audio = np.random.randn(22050).astype(np.float32)
+        result = separator.separate(audio, np.float64(22050.0))
+        assert 'vocals' in result
+        assert 'instrumental' in result
+
     def test_separate_with_segment(self, separator, mock_demucs):
         """Segment parameter passed to apply_model."""
         sep_with_segment = type(separator)(

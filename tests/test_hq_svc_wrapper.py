@@ -14,9 +14,19 @@ import sys
 import pytest
 import torch
 import numpy as np
+import soundfile as sf
 
 # Mark all tests in this module as requiring CUDA
 pytestmark = [pytest.mark.cuda, pytest.mark.slow]
+
+
+def _load_audio_with_soundfile(path: str) -> tuple[torch.Tensor, int]:
+    """Load audio without relying on torchaudio's TorchCodec backend."""
+    audio, sample_rate = sf.read(path, dtype='float32')
+    audio_tensor = torch.from_numpy(audio)
+    if audio_tensor.ndim == 2:
+        audio_tensor = audio_tensor.transpose(0, 1)
+    return audio_tensor, int(sample_rate)
 
 
 class TestHQSVCWrapperInit:
@@ -379,8 +389,6 @@ class TestHQSVCIntegration:
     )
     def test_real_audio_super_resolution(self, wrapper):
         """Super-resolution works on real audio file."""
-        import torchaudio
-
         # Find a test audio file
         test_dir = '/home/kp/thordrive/autovoice/test_audio'
         audio_files = [f for f in os.listdir(test_dir) if f.endswith('.wav')]
@@ -389,8 +397,9 @@ class TestHQSVCIntegration:
             pytest.skip("No test audio files found")
 
         audio_path = os.path.join(test_dir, audio_files[0])
-        audio, sr = torchaudio.load(audio_path)
-        audio = audio.mean(dim=0)  # Mono
+        audio, sr = _load_audio_with_soundfile(audio_path)
+        if audio.ndim == 2:
+            audio = audio.mean(dim=0)
 
         result = wrapper.super_resolve(audio, sample_rate=sr)
 
@@ -403,8 +412,6 @@ class TestHQSVCIntegration:
     )
     def test_real_audio_voice_conversion(self, wrapper):
         """Voice conversion works on real audio files."""
-        import torchaudio
-
         test_dir = '/home/kp/thordrive/autovoice/test_audio'
         audio_files = [f for f in os.listdir(test_dir) if f.endswith('.wav')]
 
@@ -414,11 +421,13 @@ class TestHQSVCIntegration:
         source_path = os.path.join(test_dir, audio_files[0])
         target_path = os.path.join(test_dir, audio_files[1])
 
-        source_audio, source_sr = torchaudio.load(source_path)
-        target_audio, target_sr = torchaudio.load(target_path)
+        source_audio, source_sr = _load_audio_with_soundfile(source_path)
+        target_audio, target_sr = _load_audio_with_soundfile(target_path)
 
-        source_audio = source_audio.mean(dim=0)
-        target_audio = target_audio.mean(dim=0)
+        if source_audio.ndim == 2:
+            source_audio = source_audio.mean(dim=0)
+        if target_audio.ndim == 2:
+            target_audio = target_audio.mean(dim=0)
 
         result = wrapper.convert(
             source_audio=source_audio,

@@ -3,12 +3,106 @@ import os
 import sys
 import tempfile
 import shutil
+from types import ModuleType
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+
+@pytest.fixture(autouse=True)
+def reset_separation_backend_hooks():
+    """Clear leaked Demucs test doubles between tests.
+
+    Some separation suites patch the module-level ``get_model``/``apply_model``
+    hooks in ``auto_voice.audio.separation``. When those mocks leak across test
+    boundaries, later integration tests instantiate ``VocalSeparator`` against
+    empty MagicMocks instead of the real Demucs backend.
+    """
+    yield
+
+    try:
+        import auto_voice.audio.separation as separation
+    except Exception:
+        return
+
+    if isinstance(separation.get_model, Mock) or isinstance(separation.apply_model, Mock):
+        separation.get_model = None
+        separation.apply_model = None
+
+
+@pytest.fixture(autouse=True)
+def restore_test_module_overrides():
+    """Restore known sys.modules overrides that some legacy tests leak.
+
+    A few suites patch heavyweight optional dependencies by assigning directly to
+    ``sys.modules`` instead of using ``patch.dict``. If those shims survive into
+    later tests, they can silently replace real TensorRT or HQ-SVC support
+    modules and break unrelated integration coverage.
+    """
+    tracked_modules = (
+        'tensorrt',
+        'logger',
+        'logger.utils',
+        'utils',
+        'utils.vocoder',
+        'utils.models',
+        'utils.models.models_v2_beta',
+        'utils.data_preprocessing',
+    )
+    original_modules = {
+        name: sys.modules.get(name)
+        for name in tracked_modules
+    }
+
+    yield
+
+    for name, original in original_modules.items():
+        current = sys.modules.get(name)
+        if current is original:
+            continue
+
+        is_test_double = isinstance(current, Mock) or (
+            isinstance(current, ModuleType)
+            and getattr(current, '__file__', None) is None
+            and current is not original
+        )
+
+        if original is None:
+            if is_test_double:
+                sys.modules.pop(name, None)
+            continue
+
+        if is_test_double or current is None:
+            sys.modules[name] = original
+
+
+@pytest.fixture(autouse=True)
+def cleanup_cuda_test_state():
+    """Release cached CUDA state between tests to reduce cross-suite bleed.
+
+    The full coverage gate exercises many GPU-heavy pipelines before the real
+    TensorRT integration suite. Clearing cached CUDA allocations after each test
+    keeps those long runs from poisoning later TensorRT engine builds.
+    """
+    yield
+
+    try:
+        import gc
+        import torch
+    except Exception:
+        return
+
+    gc.collect()
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        except Exception:
+            pass
 
 
 @pytest.fixture

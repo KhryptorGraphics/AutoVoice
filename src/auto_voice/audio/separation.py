@@ -77,6 +77,14 @@ class VocalSeparator:
         self._apply_model = apply_model
         self._get_model = get_model
 
+    @staticmethod
+    def _normalize_sample_rate(rate) -> int:
+        """Convert sample-rate metadata to a stable integer for resampling APIs."""
+        normalized = int(round(float(rate)))
+        if normalized <= 0:
+            raise RuntimeError(f"Invalid sample rate for separation: {rate!r}")
+        return normalized
+
     def _load_model(self):
         """Lazy-load Demucs model.
 
@@ -103,7 +111,7 @@ class VocalSeparator:
     def model_sample_rate(self) -> int:
         """Return the model's expected sample rate."""
         self._load_model()
-        return self._model.samplerate
+        return self._normalize_sample_rate(self._model.samplerate)
 
     @property
     def sources(self):
@@ -145,10 +153,11 @@ class VocalSeparator:
         audio_tensor = audio_tensor.to(self.device)
 
         # Resample to model's expected rate if needed
-        model_sr = self._model.samplerate
-        if sr != model_sr:
+        model_sr = self._normalize_sample_rate(self._model.samplerate)
+        input_sr = self._normalize_sample_rate(sr)
+        if input_sr != model_sr:
             import torchaudio
-            resampler = torchaudio.transforms.Resample(sr, model_sr).to(self.device)
+            resampler = torchaudio.transforms.Resample(input_sr, model_sr).to(self.device)
             audio_tensor = resampler(audio_tensor)
 
         # Clear GPU cache before processing
@@ -189,10 +198,10 @@ class VocalSeparator:
         instrumental = sources[0, non_vocal_indices].sum(dim=0).mean(dim=0).cpu().numpy()
 
         # Resample back to input sample rate if needed
-        if sr != model_sr:
+        if input_sr != model_sr:
             import librosa
-            vocals = librosa.resample(vocals, orig_sr=model_sr, target_sr=sr)
-            instrumental = librosa.resample(instrumental, orig_sr=model_sr, target_sr=sr)
+            vocals = librosa.resample(vocals, orig_sr=model_sr, target_sr=input_sr)
+            instrumental = librosa.resample(instrumental, orig_sr=model_sr, target_sr=input_sr)
 
         # Match original length
         orig_len = len(audio) if audio.ndim == 1 else audio.shape[-1]
