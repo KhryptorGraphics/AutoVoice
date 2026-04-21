@@ -12,10 +12,18 @@ from typing import Dict, Any, Optional
 
 import numpy as np
 import torch
+from flask import current_app
 from flask_socketio import Namespace, emit, join_room, leave_room
 
 from .karaoke_session import KaraokeSession
-from .karaoke_api import register_session, update_session_activity, cleanup_session
+from .karaoke_api import (
+    cleanup_session,
+    load_karaoke_session_snapshot,
+    register_session,
+    save_karaoke_session_snapshot,
+    update_session_activity,
+    _load_audio_router_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +142,37 @@ class KaraokeNamespace(Namespace):
         self._client_connect_time: Dict[str, float] = {}  # client_id -> connect timestamp
         self._sample_collectors: Dict[str, Any] = {}  # session_id -> SampleCollector
 
+    def _build_session_snapshot(
+        self,
+        session: KaraokeSession,
+        *,
+        collect_samples: bool = False,
+        sample_collection_enabled: bool = False,
+    ) -> Dict[str, Any]:
+        snapshot = session.get_recovery_snapshot()
+        snapshot['collect_samples'] = collect_samples
+        snapshot['sample_collection_enabled'] = sample_collection_enabled
+        snapshot['audio_router_targets'] = _load_audio_router_config()
+        return snapshot
+
+    def _persist_session_snapshot(
+        self,
+        session: KaraokeSession,
+        *,
+        collect_samples: bool = False,
+        sample_collection_enabled: bool = False,
+    ) -> None:
+        try:
+            save_karaoke_session_snapshot(
+                self._build_session_snapshot(
+                    session,
+                    collect_samples=collect_samples,
+                    sample_collection_enabled=sample_collection_enabled,
+                )
+            )
+        except Exception as exc:
+            logger.debug("Failed to persist karaoke session snapshot %s: %s", session.session_id, exc)
+
     def on_connect(self):
         """Handle client connection to karaoke namespace."""
         from flask import request
@@ -154,11 +193,17 @@ class KaraokeNamespace(Namespace):
             if session:
                 # Record analytics before cleanup
                 stats = session.get_stats()
+                collect_samples = session_id in self._sample_collectors
                 _analytics.record_session_end(
                     duration_s=stats.get('duration_s', 0),
                     chunks_processed=stats.get('chunks_processed', 0)
                 )
                 session.stop()
+                self._persist_session_snapshot(
+                    session,
+                    collect_samples=collect_samples,
+                    sample_collection_enabled=collect_samples,
+                )
                 # Clean up from API tracking
                 cleanup_session(session_id, reason='client_disconnect')
                 logger.info(
@@ -234,11 +279,20 @@ class KaraokeNamespace(Namespace):
         song_id = data.get('song_id')
         vocals_path = data.get('vocals_path')
         instrumental_path = data.get('instrumental_path')
-        voice_model_id = data.get('voice_model_id')
+        persisted_session = load_karaoke_session_snapshot(session_id) if session_id else None
+        if not vocals_path and persisted_session:
+            vocals_path = persisted_session.get('vocals_path')
+        if not instrumental_path and persisted_session:
+            instrumental_path = persisted_session.get('instrumental_path')
+        voice_model_id = data.get('voice_model_id') or (
+            persisted_session.get('voice_model_id') if persisted_session else None
+        )
         client_id = request.sid
 
         # Live karaoke only exposes the low-latency pipelines.
-        pipeline_type = data.get('pipeline_type', 'realtime')
+        pipeline_type = data.get('pipeline_type') or (
+            persisted_session.get('requested_pipeline') if persisted_session else 'realtime'
+        )
         if pipeline_type not in ('realtime', 'realtime_meanvc'):
             emit('error', {'message': 'Live karaoke pipeline_type must be realtime or realtime_meanvc'})
             _analytics.record_error()
@@ -246,8 +300,13 @@ class KaraokeNamespace(Namespace):
         logger.info(f"Session using pipeline_type: {pipeline_type}")
 
         # Sample collection settings (requires explicit consent)
-        profile_id = data.get('profile_id')
-        collect_samples = data.get('collect_samples', False)
+        profile_id = data.get('profile_id') or (
+            persisted_session.get('target_profile_id') if persisted_session else None
+        )
+        collect_samples = data.get(
+            'collect_samples',
+            persisted_session.get('collect_samples', False) if persisted_session else False,
+        )
 
         if not all([session_id, song_id]):
             emit('error', {'message': 'session_id and song_id are required'})
@@ -272,9 +331,15 @@ class KaraokeNamespace(Namespace):
                 import base64
                 embedding_bytes = base64.b64decode(data['speaker_embedding'])
                 embedding = torch.from_numpy(
-                    np.frombuffer(embedding_bytes, dtype=np.float32)
+                    np.frombuffer(embedding_bytes, dtype=np.float32).copy()
                 )
                 session.set_speaker_embedding(embedding)
+            elif persisted_session and persisted_session.get('speaker_embedding'):
+                session.set_speaker_embedding(
+                    torch.from_numpy(
+                        np.asarray(persisted_session['speaker_embedding'], dtype=np.float32)
+                    )
+                )
             elif profile_id:
                 from flask import current_app
                 from auto_voice.storage.voice_profiles import VoiceProfileStore
@@ -346,8 +411,12 @@ class KaraokeNamespace(Namespace):
                         f"Failed to initialize sample collection: {e}. "
                         f"Session will continue without collection."
                     )
-
-            from .karaoke_api import _device_config
+            self._persist_session_snapshot(
+                session,
+                collect_samples=collect_samples,
+                sample_collection_enabled=sample_collection_enabled,
+            )
+            audio_router_targets = _load_audio_router_config()
 
             emit('session_started', {
                 'session_id': session_id,
@@ -360,8 +429,8 @@ class KaraokeNamespace(Namespace):
                 'resolved_pipeline': pipeline_type,
                 'runtime_backend': session.pipeline_type,
                 'audio_router_targets': {
-                    'speaker_device': _device_config.get('speaker_device'),
-                    'headphone_device': _device_config.get('headphone_device'),
+                    'speaker_device': audio_router_targets.get('speaker_device'),
+                    'headphone_device': audio_router_targets.get('headphone_device'),
                 },
             })
             logger.info(f"Karaoke session started: {session_id} for client {client_id[:8]}...")
@@ -384,8 +453,12 @@ class KaraokeNamespace(Namespace):
         session = self._sessions.get(session_id)
         if session:
             stats = session.get_stats()
+            collect_samples = session_id in self._sample_collectors
             session.stop()
             del self._sessions[session_id]
+            for client_id, mapped_session_id in list(self._client_sessions.items()):
+                if mapped_session_id == session_id:
+                    self._client_sessions.pop(client_id, None)
 
             # Stop sample collection if active (Task 3.7)
             samples_collected = 0
@@ -400,6 +473,13 @@ class KaraokeNamespace(Namespace):
                     )
                 except Exception as e:
                     logger.warning(f"Error stopping sample collection: {e}")
+
+            self._persist_session_snapshot(
+                session,
+                collect_samples=collect_samples,
+                sample_collection_enabled=collect_samples,
+            )
+            cleanup_session(session_id, reason='stopped')
 
             emit('session_stopped', {
                 'session_id': session_id,
@@ -452,7 +532,7 @@ class KaraokeNamespace(Namespace):
             # Decode audio data
             audio_b64 = data.get('audio', '')
             audio_bytes = base64.b64decode(audio_b64)
-            audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
+            audio_np = np.frombuffer(audio_bytes, dtype=np.float32).copy()
             audio_tensor = torch.from_numpy(audio_np)
 
             # Process through conversion pipeline
@@ -463,6 +543,11 @@ class KaraokeNamespace(Namespace):
             # Assume 24kHz sample rate, calculate seconds from samples
             audio_seconds = len(audio_np) / 24000.0
             _analytics.record_audio_processed(audio_seconds, latency_ms)
+            self._persist_session_snapshot(
+                session,
+                collect_samples=session_id in self._sample_collectors,
+                sample_collection_enabled=session_id in self._sample_collectors,
+            )
 
             # Feed to sample collector if active (Task 3.7)
             collector = self._sample_collectors.get(session_id)
@@ -507,9 +592,14 @@ class KaraokeNamespace(Namespace):
             import base64
             embedding_bytes = base64.b64decode(data['speaker_embedding'])
             embedding = torch.from_numpy(
-                np.frombuffer(embedding_bytes, dtype=np.float32)
+                np.frombuffer(embedding_bytes, dtype=np.float32).copy()
             )
             session.set_speaker_embedding(embedding)
+            self._persist_session_snapshot(
+                session,
+                collect_samples=session_id in self._sample_collectors,
+                sample_collection_enabled=session_id in self._sample_collectors,
+            )
             emit('embedding_updated', {'session_id': session_id})
         except Exception as e:
             emit('error', {'message': f'Failed to set embedding: {str(e)}'})

@@ -17,6 +17,25 @@ from auto_voice.runtime_contract import (
 )
 
 
+DEFAULT_AUDIO_ROUTER_CONFIG: Dict[str, Any] = {
+    "speaker_gain": 1.0,
+    "headphone_gain": 1.0,
+    "voice_gain": 1.0,
+    "instrumental_gain": 0.8,
+    "speaker_enabled": True,
+    "headphone_enabled": True,
+    "speaker_device": None,
+    "headphone_device": None,
+    "sample_rate": 24000,
+}
+
+DEFAULT_DEVICE_CONFIG: Dict[str, Any] = {
+    "input_device_id": None,
+    "output_device_id": None,
+    "sample_rate": 22050,
+}
+
+
 def _normalize_app_settings(raw_settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Normalize app settings while preserving one-release legacy compatibility."""
     settings = deepcopy(raw_settings or {})
@@ -47,6 +66,123 @@ def _normalize_app_settings(raw_settings: Optional[Dict[str, Any]]) -> Dict[str,
     return settings
 
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def _coerce_float(value: Any, default: float, *, minimum: float = 0.0, maximum: float = 2.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, number))
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a valid integer field")
+    return int(value)
+
+
+def _normalize_audio_router_config(raw_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    config = deepcopy(DEFAULT_AUDIO_ROUTER_CONFIG)
+    incoming = deepcopy(raw_config or {})
+
+    for key in ("speaker_gain", "headphone_gain", "voice_gain", "instrumental_gain"):
+        if key in incoming:
+            config[key] = _coerce_float(incoming.get(key), config[key])
+
+    for key in ("speaker_enabled", "headphone_enabled"):
+        if key in incoming:
+            config[key] = _coerce_bool(incoming.get(key), config[key])
+
+    for key in ("speaker_device", "headphone_device"):
+        try:
+            if key in incoming:
+                config[key] = _coerce_optional_int(incoming.get(key))
+        except (TypeError, ValueError):
+            config[key] = DEFAULT_AUDIO_ROUTER_CONFIG[key]
+
+    try:
+        if "sample_rate" in incoming:
+            sample_rate = int(incoming.get("sample_rate"))
+            if sample_rate > 0:
+                config["sample_rate"] = sample_rate
+    except (TypeError, ValueError):
+        pass
+
+    return config
+
+
+def _normalize_device_config(raw_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    config = deepcopy(DEFAULT_DEVICE_CONFIG)
+    incoming = deepcopy(raw_config or {})
+
+    for key in ("input_device_id", "output_device_id"):
+        value = incoming.get(key, config[key])
+        config[key] = None if value in (None, "") else str(value)
+
+    try:
+        if "sample_rate" in incoming:
+            sample_rate = int(incoming.get("sample_rate"))
+            if sample_rate > 0:
+                config["sample_rate"] = sample_rate
+    except (TypeError, ValueError):
+        pass
+
+    return config
+
+
+def _normalize_karaoke_session(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not snapshot:
+        return None
+
+    session = deepcopy(snapshot)
+    session_id = str(session.get("session_id") or "").strip()
+    if not session_id:
+        return None
+
+    session["session_id"] = session_id
+    session["song_id"] = str(session.get("song_id") or "").strip()
+    session["vocals_path"] = str(session.get("vocals_path") or "")
+    session["instrumental_path"] = str(session.get("instrumental_path") or "")
+    session["requested_pipeline"] = str(session.get("requested_pipeline") or CANONICAL_LIVE_PIPELINE).strip().lower()
+    session["resolved_pipeline"] = str(session.get("resolved_pipeline") or session["requested_pipeline"]).strip().lower()
+    session["runtime_backend"] = session.get("runtime_backend")
+    session["voice_model_id"] = session.get("voice_model_id")
+    session["source_voice_model_id"] = session.get("source_voice_model_id")
+    session["target_profile_id"] = session.get("target_profile_id")
+    session["active_model_type"] = session.get("active_model_type")
+    session["sample_rate"] = int(session.get("sample_rate") or DEFAULT_AUDIO_ROUTER_CONFIG["sample_rate"])
+    session["is_active"] = _coerce_bool(session.get("is_active"), False)
+    session["collect_samples"] = _coerce_bool(session.get("collect_samples"), False)
+    session["sample_collection_enabled"] = _coerce_bool(session.get("sample_collection_enabled"), False)
+    session["audio_router_targets"] = _normalize_audio_router_config(session.get("audio_router_targets", {}))
+    session["started_at"] = session.get("started_at")
+    session["last_activity"] = session.get("last_activity")
+    session["stats"] = deepcopy(session.get("stats") or {})
+
+    speaker_embedding = session.get("speaker_embedding")
+    if isinstance(speaker_embedding, list):
+        session["speaker_embedding"] = list(speaker_embedding)
+    else:
+        session["speaker_embedding"] = None
+
+    return session
+
+
 def resolve_data_dir(explicit_data_dir: Optional[str] = None) -> Path:
     """Resolve the application data directory."""
     raw_data_dir = explicit_data_dir or os.environ.get("DATA_DIR") or "data"
@@ -68,6 +204,9 @@ class AppStateStore:
             "profile_checkpoints": self.base_dir / "profile_checkpoints.json",
             "youtube_history": self.base_dir / "youtube_history.json",
             "app_settings": self.base_dir / "app_settings.json",
+            "audio_router_config": self.base_dir / "audio_router_config.json",
+            "device_config": self.base_dir / "device_config.json",
+            "karaoke_sessions": self.base_dir / "karaoke_sessions.json",
         }
 
     def _read(self, name: str, default: Any) -> Any:
@@ -213,3 +352,58 @@ class AppStateStore:
         normalized = _normalize_app_settings(settings)
         self._write("app_settings", normalized)
         return normalized
+
+    def get_audio_router_config(self) -> Dict[str, Any]:
+        return _normalize_audio_router_config(self._read("audio_router_config", DEFAULT_AUDIO_ROUTER_CONFIG))
+
+    def update_audio_router_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        config = self.get_audio_router_config()
+        config.update(deepcopy(updates))
+        normalized = _normalize_audio_router_config(config)
+        self._write("audio_router_config", normalized)
+        return normalized
+
+    def get_device_config(self) -> Dict[str, Any]:
+        return _normalize_device_config(self._read("device_config", DEFAULT_DEVICE_CONFIG))
+
+    def update_device_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        config = self.get_device_config()
+        config.update(deepcopy(updates))
+        normalized = _normalize_device_config(config)
+        self._write("device_config", normalized)
+        return normalized
+
+    def list_karaoke_sessions(self) -> List[Dict[str, Any]]:
+        sessions = [
+            normalized
+            for normalized in (
+                _normalize_karaoke_session(item)
+                for item in self._read("karaoke_sessions", {}).values()
+            )
+            if normalized is not None
+        ]
+        sessions.sort(
+            key=lambda item: item.get("last_activity") or item.get("started_at") or 0,
+            reverse=True,
+        )
+        return sessions
+
+    def get_karaoke_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        return _normalize_karaoke_session(self._read("karaoke_sessions", {}).get(session_id))
+
+    def save_karaoke_session(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = _normalize_karaoke_session(snapshot)
+        if normalized is None:
+            raise ValueError("karaoke session snapshot requires a session_id")
+        sessions = self._read("karaoke_sessions", {})
+        sessions[normalized["session_id"]] = normalized
+        self._write("karaoke_sessions", sessions)
+        return normalized
+
+    def delete_karaoke_session(self, session_id: str) -> bool:
+        sessions = self._read("karaoke_sessions", {})
+        if session_id not in sessions:
+            return False
+        del sessions[session_id]
+        self._write("karaoke_sessions", sessions)
+        return True

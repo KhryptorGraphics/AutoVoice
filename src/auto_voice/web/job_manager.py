@@ -5,7 +5,7 @@ import tempfile
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional, Dict, Any
 
 import numpy as np
@@ -39,9 +39,11 @@ class JobManager:
 
         self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
         self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._futures: Dict[str, Future] = {}
         self._lock = threading.Lock()
         self._cleanup_thread: Optional[threading.Thread] = None
         self._running = False
+        self._cleanup_stop_event = threading.Event()
 
     def create_job(self, file_path: str, profile_id: str, settings: Dict[str, Any]) -> str:
         """Create and queue a conversion job. Returns job_id."""
@@ -67,9 +69,16 @@ class JobManager:
             }
             self._persist_job(job_id)
 
-        self._executor.submit(self._process_job, job_id)
+        future = self._executor.submit(self._process_job, job_id)
+        with self._lock:
+            self._futures[job_id] = future
+        future.add_done_callback(lambda _future, current_job_id=job_id: self._finalize_future(current_job_id))
         logger.info(f"Job {job_id} queued for profile {profile_id}")
         return job_id
+
+    def _finalize_future(self, job_id: str) -> None:
+        with self._lock:
+            self._futures.pop(job_id, None)
 
     def _process_job(self, job_id: str):
         """Process a conversion job in background thread."""
@@ -464,6 +473,7 @@ class JobManager:
             return
 
         self._running = True
+        self._cleanup_stop_event.clear()
         self._cleanup_thread = threading.Thread(
             target=self._cleanup_loop, daemon=True, name='job-cleanup'
         )
@@ -471,7 +481,7 @@ class JobManager:
 
     def _cleanup_loop(self):
         """Periodically clean up expired jobs."""
-        while self._running:
+        while self._running and not self._cleanup_stop_event.is_set():
             try:
                 now = time.time()
                 expired = []
@@ -491,7 +501,7 @@ class JobManager:
             except Exception as e:
                 logger.error(f"Cleanup error: {e}")
 
-            time.sleep(60)
+            self._cleanup_stop_event.wait(60)
 
     def _cleanup_job(self, job_id: str):
         """Clean up a single job's resources."""
@@ -517,11 +527,26 @@ class JobManager:
     def stop(self):
         """Stop the job manager."""
         self._running = False
+        self._cleanup_stop_event.set()
         self._executor.shutdown(wait=False)
 
     def stop_cleanup_thread(self):
         """Compatibility wrapper for shutdown path."""
         self.stop()
+
+    def shutdown(self, wait: bool = True, cleanup_timeout: float = 2.0) -> None:
+        """Deterministically stop worker threads and cleanup background state."""
+        self._running = False
+        self._cleanup_stop_event.set()
+
+        cleanup_thread = self._cleanup_thread
+        if cleanup_thread and cleanup_thread.is_alive():
+            cleanup_thread.join(timeout=max(cleanup_timeout, 0.0))
+
+        self._executor.shutdown(wait=wait, cancel_futures=wait)
+        with self._lock:
+            self._futures.clear()
+        self._cleanup_thread = None
 
     def _public_status(self, status: str) -> str:
         return {

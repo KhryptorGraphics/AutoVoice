@@ -7,6 +7,7 @@ import json
 import pytest
 import tempfile
 import numpy as np
+from unittest.mock import patch
 
 # Test fixtures and mocks
 
@@ -208,6 +209,25 @@ class TestKaraokePreflight:
         assert payload['checks']['assets_ready'] is True
         assert payload['audio_router_targets']['speaker_device'] == 1
         assert payload['audio_router_targets']['headphone_device'] == 2
+
+    def test_preflight_uses_persisted_device_targets(self, app, client):
+        from auto_voice.web.persistence import AppStateStore
+
+        AppStateStore(app.config['DATA_DIR']).update_audio_router_config({
+            'speaker_device': 7,
+            'headphone_device': 8,
+        })
+
+        response = client.post(
+            '/api/v1/karaoke/preflight',
+            data=json.dumps({'pipeline_type': 'realtime'}),
+            content_type='application/json',
+        )
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload['audio_router_targets']['speaker_device'] == 7
+        assert payload['audio_router_targets']['headphone_device'] == 8
 
     def test_upload_size_limit(self, client):
         """Upload endpoint enforces size limit (e.g., 100MB)."""
@@ -724,6 +744,48 @@ class TestAudioOutputDeviceAPI:
         assert response.status_code == 200
         data = response.get_json()
         assert 'speaker_device' in data or 'error' in data
+
+    def test_device_output_config_persists_to_state_store(self, app, client):
+        from auto_voice.web.persistence import AppStateStore
+
+        with patch('auto_voice.web.audio_router.list_audio_devices') as mock_list:
+            mock_list.return_value = [
+                {'device_id': '0', 'index': 0, 'name': 'Device 0', 'channels': 2, 'type': 'output'},
+                {'device_id': '1', 'index': 1, 'name': 'Device 1', 'channels': 2, 'type': 'output'},
+            ]
+            response = client.post(
+                '/api/v1/karaoke/devices/output',
+                json={'speaker_device': 0, 'headphone_device': 1},
+                content_type='application/json'
+            )
+
+        assert response.status_code == 200
+        persisted = AppStateStore(app.config['DATA_DIR']).get_audio_router_config()
+        assert persisted['speaker_device'] == 0
+        assert persisted['headphone_device'] == 1
+
+
+class TestKaraokeSessionRecoveryEndpoint:
+    def test_get_session_snapshot_returns_persisted_state(self, app, client):
+        from auto_voice.web.persistence import AppStateStore
+
+        AppStateStore(app.config['DATA_DIR']).save_karaoke_session({
+            'session_id': 'session-test',
+            'song_id': 'song-test',
+            'vocals_path': '/tmp/vocals.wav',
+            'instrumental_path': '/tmp/instrumental.wav',
+            'requested_pipeline': 'realtime',
+            'resolved_pipeline': 'realtime',
+            'runtime_backend': 'pytorch',
+            'stats': {'chunks_processed': 2},
+        })
+
+        response = client.get('/api/v1/karaoke/sessions/session-test')
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload['session_id'] == 'session-test'
+        assert payload['stats']['chunks_processed'] == 2
 
 
 class TestVoiceModelAPI:

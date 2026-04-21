@@ -66,12 +66,16 @@ def job_manager(monkeypatch, mock_socketio, mock_singing_pipeline, mock_voice_pr
         'ttl_seconds': 60,
         'in_progress_ttl_seconds': 120,
     }
-    return JobManager(
+    manager = JobManager(
         config=config,
         socketio=mock_socketio,
         singing_pipeline=mock_singing_pipeline,
         voice_profile_manager=mock_voice_profile_manager,
     )
+    try:
+        yield manager
+    finally:
+        manager.shutdown(wait=True, cleanup_timeout=1.0)
 
 
 @pytest.fixture
@@ -839,6 +843,23 @@ class TestJobManagerLifecycle:
         with patch.object(job_manager._executor, 'shutdown') as mock_shutdown:
             job_manager.stop()
             mock_shutdown.assert_called_once_with(wait=False)
+
+    def test_shutdown_joins_cleanup_thread(self, job_manager):
+        """Deterministic shutdown should stop the cleanup thread and clear futures."""
+        job_manager.start_cleanup_thread()
+
+        fake_future = MagicMock()
+        with job_manager._lock:
+            job_manager._futures["job-1"] = fake_future
+
+        with patch.object(job_manager._executor, 'shutdown') as mock_shutdown:
+            job_manager.shutdown(wait=True, cleanup_timeout=0.2)
+
+        assert job_manager._cleanup_thread is None
+        assert job_manager._cleanup_stop_event.is_set() is True
+        with job_manager._lock:
+            assert job_manager._futures == {}
+        mock_shutdown.assert_called_once_with(wait=True, cancel_futures=True)
 
 
 class TestMetricsCalculation:

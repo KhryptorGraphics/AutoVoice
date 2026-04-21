@@ -561,6 +561,39 @@ class KaraokeSession:
 
         return stats
 
+    def get_recovery_snapshot(self) -> dict:
+        """Return a restart-safe snapshot of the session state."""
+        speaker_embedding = None
+        if self._speaker_embedding is not None:
+            speaker_embedding = (
+                self._speaker_embedding.squeeze(0)
+                .detach()
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+                .tolist()
+            )
+
+        return {
+            'session_id': self.session_id,
+            'song_id': self.song_id,
+            'vocals_path': self.vocals_path,
+            'instrumental_path': self.instrumental_path,
+            'sample_rate': self.sample_rate,
+            'is_active': self.is_active,
+            'requested_pipeline': getattr(self, '_user_pipeline_preference', None),
+            'resolved_pipeline': getattr(self, '_user_pipeline_preference', None),
+            'runtime_backend': self._pipeline_type,
+            'voice_model_id': self.voice_model_id,
+            'source_voice_model_id': self._source_voice_model_id,
+            'target_profile_id': self._target_profile_id,
+            'active_model_type': self._target_model_type,
+            'speaker_embedding': speaker_embedding,
+            'started_at': self._started_at,
+            'last_activity': time.time(),
+            'stats': self.get_stats(),
+        }
+
     def process_chunk_with_mix(
         self,
         audio_chunk: torch.Tensor

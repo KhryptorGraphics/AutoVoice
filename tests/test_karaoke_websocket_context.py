@@ -163,6 +163,86 @@ def test_on_start_session_with_profile_and_sample_collection(ws_app):
     assert payload['active_model_type'] == 'full_model'
 
 
+def test_on_start_session_persists_snapshot_and_uses_recovery_defaults(ws_app, tmp_path):
+    from auto_voice.web.karaoke_events import KaraokeNamespace
+    from auto_voice.web.persistence import AppStateStore
+
+    ws_app.state_store = AppStateStore(str(tmp_path))
+    ws_app.state_store.save_karaoke_session({
+        'session_id': 'session-restore',
+        'song_id': 'song-restore',
+        'vocals_path': '/tmp/vocals.wav',
+        'instrumental_path': '/tmp/instrumental.wav',
+        'requested_pipeline': 'realtime',
+        'speaker_embedding': np.ones(256, dtype=np.float32).tolist(),
+    })
+
+    ns = KaraokeNamespace()
+    mock_session = MagicMock()
+    mock_session._target_model_type = None
+    mock_session.get_recovery_snapshot.return_value = {
+        'session_id': 'session-restore',
+        'song_id': 'song-restore',
+        'vocals_path': '/tmp/vocals.wav',
+        'instrumental_path': '/tmp/instrumental.wav',
+        'requested_pipeline': 'realtime',
+        'resolved_pipeline': 'realtime',
+        'runtime_backend': 'pytorch',
+        'speaker_embedding': np.ones(256, dtype=np.float32).tolist(),
+        'stats': {'chunks_processed': 0},
+    }
+
+    with ws_app.test_request_context('/socket.io'):
+        request.sid = 'client-restore'
+        with patch('auto_voice.web.karaoke_events.KaraokeSession', return_value=mock_session) as mock_cls:
+            with patch('auto_voice.web.karaoke_events.register_session'):
+                with patch('auto_voice.web.karaoke_events.emit'):
+                    ns.on_start_session({'session_id': 'session-restore', 'song_id': 'song-restore'})
+
+    assert mock_cls.call_args.kwargs['vocals_path'] == '/tmp/vocals.wav'
+    assert mock_cls.call_args.kwargs['instrumental_path'] == '/tmp/instrumental.wav'
+    mock_session.set_speaker_embedding.assert_called_once()
+    snapshot = ws_app.state_store.get_karaoke_session('session-restore')
+    assert snapshot is not None
+    assert snapshot['session_id'] == 'session-restore'
+    assert snapshot['audio_router_targets']['speaker_device'] is None
+
+
+def test_on_stop_session_persists_inactive_snapshot(ws_app, tmp_path):
+    from auto_voice.web.karaoke_events import KaraokeNamespace
+    from auto_voice.web.persistence import AppStateStore
+
+    ws_app.state_store = AppStateStore(str(tmp_path))
+    ns = KaraokeNamespace()
+    mock_session = MagicMock()
+    mock_session.get_stats.return_value = {'duration_s': 3.0, 'chunks_processed': 4}
+    mock_session.get_recovery_snapshot.return_value = {
+        'session_id': 'session-stop',
+        'song_id': 'song-stop',
+        'vocals_path': '/tmp/vocals.wav',
+        'instrumental_path': '/tmp/instrumental.wav',
+        'requested_pipeline': 'realtime',
+        'resolved_pipeline': 'realtime',
+        'runtime_backend': 'pytorch',
+        'is_active': False,
+        'stats': {'duration_s': 3.0, 'chunks_processed': 4},
+    }
+    ns._sessions['session-stop'] = mock_session
+    ns._client_sessions['client-stop'] = 'session-stop'
+
+    with ws_app.test_request_context('/socket.io'):
+        request.sid = 'client-stop'
+        with patch('auto_voice.web.karaoke_events.emit'):
+            with patch('auto_voice.web.karaoke_events.cleanup_session') as mock_cleanup:
+                ns.on_stop_session({'session_id': 'session-stop'})
+
+    snapshot = ws_app.state_store.get_karaoke_session('session-stop')
+    assert snapshot is not None
+    assert snapshot['stats']['chunks_processed'] == 4
+    assert 'client-stop' not in ns._client_sessions
+    mock_cleanup.assert_called_once_with('session-stop', reason='stopped')
+
+
 def test_on_audio_chunk_without_session_emits_error(ws_app):
     from auto_voice.web.karaoke_events import KaraokeNamespace
 

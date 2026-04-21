@@ -16,6 +16,7 @@ from typing import Dict, Any, Optional, Callable
 from flask import Blueprint, request, jsonify, current_app, g
 from werkzeug.utils import secure_filename
 
+from .persistence import DEFAULT_AUDIO_ROUTER_CONFIG
 from .utils import (
     allowed_file,
     ALLOWED_AUDIO_EXTENSIONS,
@@ -794,11 +795,80 @@ def complete_separation(job_id: str, vocals_path: str, instrumental_path: str):
             song['status'] = 'separated'
 
 
-# Audio device configuration storage
+# Audio device configuration cache.
+# The canonical source of truth is AppStateStore; keep this module-level copy in
+# sync for older tests and helpers that still patch the karaoke module directly.
 _device_config = {
-    'speaker_device': None,  # None = system default
+    'speaker_device': None,
     'headphone_device': None,
 }
+
+
+def _load_audio_router_config() -> Dict[str, Any]:
+    try:
+        state_store = getattr(current_app, 'state_store', None)
+    except RuntimeError:
+        state_store = None
+
+    if state_store is None:
+        config = dict(DEFAULT_AUDIO_ROUTER_CONFIG)
+        config.update(_device_config)
+        return config
+
+    config = state_store.get_audio_router_config()
+    if (
+        config.get('speaker_device') is None
+        and config.get('headphone_device') is None
+        and (
+            _device_config.get('speaker_device') is not None
+            or _device_config.get('headphone_device') is not None
+        )
+    ):
+        config = state_store.update_audio_router_config(_device_config)
+    _device_config['speaker_device'] = config.get('speaker_device')
+    _device_config['headphone_device'] = config.get('headphone_device')
+    return config
+
+
+def _persist_audio_router_targets(updates: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        state_store = getattr(current_app, 'state_store', None)
+    except RuntimeError:
+        state_store = None
+
+    if state_store is None:
+        _device_config.update({
+            'speaker_device': updates.get('speaker_device', _device_config.get('speaker_device')),
+            'headphone_device': updates.get('headphone_device', _device_config.get('headphone_device')),
+        })
+        config = dict(DEFAULT_AUDIO_ROUTER_CONFIG)
+        config.update(_device_config)
+        return config
+
+    config = state_store.update_audio_router_config(updates)
+    _device_config['speaker_device'] = config.get('speaker_device')
+    _device_config['headphone_device'] = config.get('headphone_device')
+    return config
+
+
+def load_karaoke_session_snapshot(session_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        state_store = getattr(current_app, 'state_store', None)
+    except RuntimeError:
+        state_store = None
+    if state_store is None:
+        return None
+    return state_store.get_karaoke_session(session_id)
+
+
+def save_karaoke_session_snapshot(snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        state_store = getattr(current_app, 'state_store', None)
+    except RuntimeError:
+        state_store = None
+    if state_store is None:
+        return None
+    return state_store.save_karaoke_session(snapshot)
 
 
 @karaoke_bp.route('/devices', methods=['GET'])
@@ -844,9 +914,10 @@ def get_output_device_config():
             "headphone_device": 1
         }
     """
+    config = _load_audio_router_config()
     return jsonify({
-        'speaker_device': _device_config['speaker_device'],
-        'headphone_device': _device_config['headphone_device'],
+        'speaker_device': config.get('speaker_device'),
+        'headphone_device': config.get('headphone_device'),
     })
 
 
@@ -859,6 +930,7 @@ def karaoke_preflight():
     voice_model_id = data.get('voice_model_id')
     pipeline_type = str(data.get('pipeline_type', 'realtime')).strip().lower()
 
+    audio_router_config = _load_audio_router_config()
     issues = []
     warnings = []
 
@@ -902,8 +974,8 @@ def karaoke_preflight():
             issues.append('Selected voice model is unavailable.')
 
     routing_ready = (
-        _device_config.get('speaker_device') is not None
-        or _device_config.get('headphone_device') is not None
+        audio_router_config.get('speaker_device') is not None
+        or audio_router_config.get('headphone_device') is not None
     )
     if not routing_ready:
         warnings.append('No explicit output devices selected; system defaults will be used.')
@@ -923,10 +995,19 @@ def karaoke_preflight():
         'requested_pipeline': pipeline_type,
         'active_model_type': active_model_type,
         'audio_router_targets': {
-            'speaker_device': _device_config.get('speaker_device'),
-            'headphone_device': _device_config.get('headphone_device'),
+            'speaker_device': audio_router_config.get('speaker_device'),
+            'headphone_device': audio_router_config.get('headphone_device'),
         },
     })
+
+
+@karaoke_bp.route('/sessions/<session_id>', methods=['GET'])
+def get_karaoke_session_snapshot(session_id: str):
+    """Return the latest durable karaoke session snapshot for recovery/debugging."""
+    snapshot = load_karaoke_session_snapshot(session_id)
+    if not snapshot:
+        return error_response('Session not found', status_code=404, session_id=session_id)
+    return jsonify(snapshot)
 
 
 @karaoke_bp.route('/devices/output', methods=['POST'])
@@ -971,6 +1052,8 @@ def set_output_device_config():
         except (TypeError, ValueError):
             logger.debug("Skipping device with invalid index payload: %s", device)
 
+    persisted_updates = {}
+
     # Validate and set speaker device
     if 'speaker_device' in data:
         try:
@@ -987,7 +1070,7 @@ def set_output_device_config():
                 status_code=400,
                 available_devices=sorted(device_indices)
             )
-        _device_config['speaker_device'] = speaker_idx
+        persisted_updates['speaker_device'] = speaker_idx
 
     # Validate and set headphone device
     if 'headphone_device' in data:
@@ -1005,16 +1088,18 @@ def set_output_device_config():
                 status_code=400,
                 available_devices=sorted(device_indices)
             )
-        _device_config['headphone_device'] = headphone_idx
+        persisted_updates['headphone_device'] = headphone_idx
+
+    config = _persist_audio_router_targets(persisted_updates)
 
     logger.info(
-        f"Device config updated: speaker={_device_config['speaker_device']}, "
-        f"headphone={_device_config['headphone_device']}"
+        f"Device config updated: speaker={config['speaker_device']}, "
+        f"headphone={config['headphone_device']}"
     )
 
     return jsonify({
-        'speaker_device': _device_config['speaker_device'],
-        'headphone_device': _device_config['headphone_device'],
+        'speaker_device': config['speaker_device'],
+        'headphone_device': config['headphone_device'],
         'status': 'updated'
     })
 
@@ -1032,6 +1117,8 @@ def reset_test_state() -> None:
     _active_sessions.clear()
     _rate_limit_store.clear()
     _voice_model_registry = None
+    _device_config['speaker_device'] = None
+    _device_config['headphone_device'] = None
 
 
 def _get_voice_model_registry():

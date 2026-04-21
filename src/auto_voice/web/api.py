@@ -122,6 +122,7 @@ from ..runtime_contract import (
     OFFLINE_PIPELINES,
 )
 from .offline_realtime import run_offline_realtime_conversion
+from .persistence import DEFAULT_AUDIO_ROUTER_CONFIG, DEFAULT_DEVICE_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -2268,16 +2269,15 @@ def get_device_config():
             "sample_rate": int
         }
     """
-    # Get config from app context, or use defaults
-    device_config = getattr(current_app, '_device_config', None)
-    if device_config is None:
-        device_config = {
-            'input_device_id': None,
-            'output_device_id': None,
-            'sample_rate': current_app.app_config.get('audio', {}).get('sample_rate', 22050)
-        }
-        current_app._device_config = device_config
-
+    device_config = _get_state_store().get_device_config()
+    if (
+        device_config.get('sample_rate') == DEFAULT_DEVICE_CONFIG['sample_rate']
+        and current_app.app_config.get('audio', {}).get('sample_rate')
+    ):
+        device_config = _get_state_store().update_device_config({
+            'sample_rate': current_app.app_config.get('audio', {}).get('sample_rate')
+        })
+    current_app._device_config = dict(device_config)
     return jsonify(device_config)
 
 
@@ -2301,13 +2301,7 @@ def set_device_config():
             return validation_error_response('Request body required')
 
         # Get current config
-        device_config = getattr(current_app, '_device_config', None)
-        if device_config is None:
-            device_config = {
-                'input_device_id': None,
-                'output_device_id': None,
-                'sample_rate': current_app.app_config.get('audio', {}).get('sample_rate', 22050)
-            }
+        device_config = _get_state_store().get_device_config()
 
         # Validate and update input_device_id
         if 'input_device_id' in data:
@@ -2319,7 +2313,7 @@ def set_device_config():
                 valid_ids = [d['device_id'] for d in input_devices]
                 if input_id not in valid_ids:
                     return validation_error_response(f'Invalid input device ID: {input_id}')
-                device_config['input_device_id'] = input_id
+                device_config['input_device_id'] = str(input_id)
             else:
                 device_config['input_device_id'] = None
 
@@ -2333,7 +2327,7 @@ def set_device_config():
                 valid_ids = [d['device_id'] for d in output_devices]
                 if output_id not in valid_ids:
                     return validation_error_response(f'Invalid output device ID: {output_id}')
-                device_config['output_device_id'] = output_id
+                device_config['output_device_id'] = str(output_id)
             else:
                 device_config['output_device_id'] = None
 
@@ -2346,7 +2340,8 @@ def set_device_config():
                 return validation_error_response('Invalid sample_rate, must be positive integer')
 
         # Store updated config
-        current_app._device_config = device_config
+        device_config = _get_state_store().update_device_config(device_config)
+        current_app._device_config = dict(device_config)
 
         logger.info(f"Device config updated: {device_config}")
         return jsonify(device_config)
@@ -3896,17 +3891,7 @@ _pitch_config = {
     'device': 'cuda' if TORCH_AVAILABLE and torch.cuda.is_available() else 'cpu'
 }
 
-_audio_router_config = {
-    'speaker_gain': 1.0,
-    'headphone_gain': 1.0,
-    'voice_gain': 1.0,
-    'instrumental_gain': 0.8,
-    'speaker_enabled': True,
-    'headphone_enabled': True,
-    'speaker_device': None,
-    'headphone_device': None,
-    'sample_rate': 24000,
-}
+_audio_router_config = dict(DEFAULT_AUDIO_ROUTER_CONFIG)
 
 
 @api_bp.route('/config/separation', methods=['GET'])
@@ -3973,7 +3958,9 @@ def update_pitch_config():
 @api_bp.route('/audio/router/config', methods=['GET'])
 def get_audio_router_config():
     """Get audio router configuration."""
-    return jsonify(_audio_router_config)
+    config = _get_state_store().get_audio_router_config()
+    _audio_router_config.update(config)
+    return jsonify(config)
 
 
 @api_bp.route('/audio/router/config', methods=['POST', 'PATCH'])
@@ -3984,14 +3971,17 @@ def update_audio_router_config():
         if not data:
             return validation_error_response('No JSON data provided')
 
+        updates = {}
         for key in ['speaker_gain', 'headphone_gain', 'voice_gain',
                     'instrumental_gain', 'speaker_enabled', 'headphone_enabled',
                     'speaker_device', 'headphone_device', 'sample_rate']:
             if key in data:
-                _audio_router_config[key] = data[key]
+                updates[key] = data[key]
 
-        logger.info(f"Updated audio router config: {_audio_router_config}")
-        return jsonify(_audio_router_config)
+        config = _get_state_store().update_audio_router_config(updates)
+        _audio_router_config.update(config)
+        logger.info(f"Updated audio router config: {config}")
+        return jsonify(config)
     except Exception as e:
         logger.error(f"Error updating audio router config: {e}", exc_info=True)
         return error_response(str(e))

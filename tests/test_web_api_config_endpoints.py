@@ -75,6 +75,45 @@ def test_audio_router_config_get_and_update(client_config_api):
     assert payload["sample_rate"] == 48000
 
 
+def test_audio_router_config_is_persisted(app_config_api, client_config_api):
+    from auto_voice.web.persistence import AppStateStore
+
+    response = client_config_api.patch(
+        "/api/v1/audio/router/config",
+        json={"speaker_device": 2, "headphone_device": 3, "voice_gain": 1.1},
+    )
+
+    assert response.status_code == 200
+    persisted = AppStateStore(app_config_api.config["DATA_DIR"]).get_audio_router_config()
+    assert persisted["speaker_device"] == 2
+    assert persisted["headphone_device"] == 3
+    assert persisted["voice_gain"] == 1.1
+
+
+def test_device_config_is_persisted(app_config_api, client_config_api, monkeypatch):
+    from auto_voice.web.persistence import AppStateStore
+
+    monkeypatch.setattr(
+        "auto_voice.web.audio_router.list_audio_devices",
+        lambda device_type=None: (
+            [{"device_id": "mic-2", "type": "input"}]
+            if device_type == "input"
+            else [{"device_id": "spk-2", "type": "output"}]
+        ),
+    )
+
+    response = client_config_api.post(
+        "/api/v1/devices/config",
+        json={"input_device_id": "mic-2", "output_device_id": "spk-2", "sample_rate": 32000},
+    )
+
+    assert response.status_code == 200
+    persisted = AppStateStore(app_config_api.config["DATA_DIR"]).get_device_config()
+    assert persisted["input_device_id"] == "mic-2"
+    assert persisted["output_device_id"] == "spk-2"
+    assert persisted["sample_rate"] == 32000
+
+
 @pytest.mark.parametrize(
     "endpoint",
     [
