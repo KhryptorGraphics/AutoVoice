@@ -9,6 +9,8 @@ from typing import Optional, List, Dict, Any
 import numpy as np
 import torch
 
+from auto_voice.runtime_contract import load_packaged_artifact_manifest, write_packaged_artifact_manifest
+
 from .paths import (
     resolve_profiles_dir,
     resolve_samples_dir,
@@ -34,16 +36,20 @@ class TrainingSample:
 
     def __init__(self, sample_id: str, vocals_path: str, instrumental_path: Optional[str] = None,
                  source_file: Optional[str] = None, duration: float = 0.0,
-                 created_at: Optional[str] = None):
+                 created_at: Optional[str] = None,
+                 quality_metadata: Optional[Dict[str, Any]] = None,
+                 extra_metadata: Optional[Dict[str, Any]] = None):
         self.sample_id = sample_id
         self.vocals_path = vocals_path
         self.instrumental_path = instrumental_path
         self.source_file = source_file
         self.duration = duration
         self.created_at = created_at or datetime.now(timezone.utc).isoformat()
+        self.quality_metadata = dict(quality_metadata or {})
+        self.extra_metadata = dict(extra_metadata or {})
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             'sample_id': self.sample_id,
             'vocals_path': self.vocals_path,
             'instrumental_path': self.instrumental_path,
@@ -51,10 +57,29 @@ class TrainingSample:
             'duration': self.duration,
             'created_at': self.created_at,
         }
+        if self.quality_metadata:
+            data['quality_metadata'] = self.quality_metadata
+        data.update(self.extra_metadata)
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'TrainingSample':
-        return cls(**data)
+        known_fields = {
+            'sample_id',
+            'vocals_path',
+            'instrumental_path',
+            'source_file',
+            'duration',
+            'created_at',
+            'quality_metadata',
+            'extra_metadata',
+        }
+        payload = {k: v for k, v in data.items() if k in known_fields}
+        extras = {k: v for k, v in data.items() if k not in known_fields}
+        extra_metadata = dict(payload.pop('extra_metadata', {}) or {})
+        extra_metadata.update(extras)
+        payload['extra_metadata'] = extra_metadata
+        return cls(**payload)
 
 
 class VoiceProfileStore:
@@ -98,8 +123,16 @@ class VoiceProfileStore:
         profile_id = normalized.get("profile_id")
         has_adapter = False
         has_full_model = False
+        runtime_manifest = None
+        manifest_path = None
 
         if profile_id:
+            manifest_path = self._artifact_manifest_path(profile_id)
+            if os.path.exists(manifest_path):
+                try:
+                    runtime_manifest = load_packaged_artifact_manifest(manifest_path)
+                except Exception as exc:
+                    logger.warning("Failed to load runtime artifact manifest for %s: %s", profile_id, exc)
             has_adapter = any(
                 os.path.exists(path)
                 for path in (
@@ -108,6 +141,10 @@ class VoiceProfileStore:
                 )
             )
             has_full_model = os.path.exists(self._full_model_path(profile_id))
+            if runtime_manifest:
+                artifacts = runtime_manifest.get("artifacts", {})
+                has_adapter = has_adapter or bool(artifacts.get("adapter"))
+                has_full_model = has_full_model or bool(artifacts.get("full_model"))
 
         sample_count = normalized.get("training_sample_count")
         total_training_duration = normalized.get("total_training_duration")
@@ -149,6 +186,13 @@ class VoiceProfileStore:
         normalized["has_trained_model"] = bool(
             normalized.get("has_trained_model") or has_adapter or has_full_model
         )
+        if runtime_manifest:
+            normalized["runtime_artifact_manifest_path"] = manifest_path
+            normalized["runtime_artifact_pipeline"] = runtime_manifest.get("canonical_pipeline")
+            normalized["runtime_artifact_model_family"] = runtime_manifest.get("model_family")
+            normalized["runtime_artifact_compatibility_version"] = runtime_manifest.get(
+                "compatibility_version"
+            )
 
         if normalized["has_full_model"]:
             normalized["active_model_type"] = "full_model"
@@ -249,6 +293,25 @@ class VoiceProfileStore:
         """Get path to a full model checkpoint for a profile."""
         return os.path.join(self.trained_models_dir, f"{profile_id}_full_model.pt")
 
+    def _artifact_manifest_path(self, profile_id: str) -> str:
+        """Get path to the canonical runtime artifact manifest for a profile."""
+        return os.path.join(self.trained_models_dir, profile_id, "artifact_manifest.json")
+
+    def save_runtime_artifact_manifest(self, profile_id: str, manifest: Dict[str, Any]) -> str:
+        """Persist a runtime artifact manifest for a profile."""
+        if not self.exists(profile_id):
+            raise ValueError(f"Profile {profile_id} not found")
+        manifest_path = self._artifact_manifest_path(profile_id)
+        write_packaged_artifact_manifest(manifest_path, manifest)
+        return manifest_path
+
+    def load_runtime_artifact_manifest(self, profile_id: str) -> Optional[Dict[str, Any]]:
+        """Load a profile runtime artifact manifest when present."""
+        manifest_path = self._artifact_manifest_path(profile_id)
+        if not os.path.exists(manifest_path):
+            return None
+        return load_packaged_artifact_manifest(manifest_path)
+
     def save_lora_weights(
         self, profile_id: str, state_dict: Dict[str, torch.Tensor]
     ) -> None:
@@ -305,6 +368,8 @@ class VoiceProfileStore:
         """
         if not self.exists(profile_id):
             return False
+        if os.path.exists(self._artifact_manifest_path(profile_id)):
+            return True
         return any(
             os.path.exists(path)
             for path in (

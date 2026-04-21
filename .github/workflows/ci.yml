@@ -81,6 +81,9 @@ jobs:
       - name: Run critical-module coverage gate
         run: python scripts/run_remaining_module_coverage.py
 
+      - name: Validate experimental evidence registry
+        run: python scripts/validate_experimental_evidence.py
+
       - name: Upload coverage artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -89,6 +92,7 @@ jobs:
           path: |
             coverage.remaining.json
             .coverage
+            reports/experimental_evidence/validation.json
           if-no-files-found: ignore
 
   deployment-smoke:

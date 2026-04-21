@@ -56,8 +56,11 @@ def mock_voice_profile_manager():
 
 
 @pytest.fixture
-def job_manager(mock_socketio, mock_singing_pipeline, mock_voice_profile_manager):
+def job_manager(monkeypatch, mock_socketio, mock_singing_pipeline, mock_voice_profile_manager):
     """Create JobManager instance for testing."""
+    import auto_voice.web.job_manager as job_manager_module
+
+    monkeypatch.setattr(job_manager_module, "CANONICAL_OFFLINE_PIPELINE", "quality")
     config = {
         'max_workers': 2,
         'ttl_seconds': 60,

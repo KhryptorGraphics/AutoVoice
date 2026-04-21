@@ -155,8 +155,8 @@ class TestVoiceDatasetEdgeCases:
         from auto_voice.training.trainer import VoiceDataset
 
         with patch('librosa.load') as mock_load:
-            # Return very short audio (100 samples)
-            short_audio = np.random.randn(100).astype(np.float32)
+            # Return short-but-valid audio that still exercises padding.
+            short_audio = np.random.randn(12000).astype(np.float32)
             mock_load.return_value = (short_audio, 22050)
 
             with patch('librosa.feature.melspectrogram') as mock_mel:
@@ -194,6 +194,45 @@ class TestVoiceDatasetEdgeCases:
 
                     assert item1['audio'].shape[0] == 32768
                     assert item2['audio'].shape[0] == 32768
+
+    def test_quality_gates_reject_silence_heavy_audio(self, temp_data_dir):
+        """VoiceDataset fails fast on silence-heavy training samples."""
+        from auto_voice.training.trainer import VoiceDataset
+
+        with patch('librosa.load') as mock_load:
+            silent_audio = np.zeros(22050, dtype=np.float32)
+            mock_load.return_value = (silent_audio, 22050)
+
+            with patch('librosa.feature.melspectrogram') as mock_mel:
+                mock_mel.return_value = np.random.randn(80, 10)
+
+                with patch('librosa.pyin') as mock_pyin:
+                    mock_pyin.return_value = (np.zeros(10), np.zeros(10, dtype=bool), None)
+
+                    dataset = VoiceDataset(str(temp_data_dir), segment_length=32768)
+                    with pytest.raises(ValueError, match="silence-heavy|effectively silent"):
+                        dataset[0]
+
+    def test_quality_gates_reject_bad_sidecar_metadata(self, temp_data_dir):
+        """VoiceDataset honors optional speaker-purity and diarization gates from sidecars."""
+        from auto_voice.training.trainer import VoiceDataset
+
+        sidecar = temp_data_dir / "sample_0.json"
+        sidecar.write_text(json.dumps({"speaker_purity": 0.4, "diarization_ok": False}))
+
+        with patch('librosa.load') as mock_load:
+            voiced_audio = np.random.randn(22050).astype(np.float32) * 0.05
+            mock_load.return_value = (voiced_audio, 22050)
+
+            with patch('librosa.feature.melspectrogram') as mock_mel:
+                mock_mel.return_value = np.random.randn(80, 10)
+
+                with patch('librosa.pyin') as mock_pyin:
+                    mock_pyin.return_value = (np.full(10, 220.0), np.ones(10, dtype=bool), None)
+
+                    dataset = VoiceDataset(str(temp_data_dir), segment_length=32768)
+                    with pytest.raises(ValueError, match="speaker purity|diarization"):
+                        dataset[0]
 
 
 class TestTrainerInitialization:

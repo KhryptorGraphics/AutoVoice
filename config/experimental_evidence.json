@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "features": {
+    "hq_svc": {
+      "display_name": "HQ-SVC super-resolution",
+      "status": "experimental",
+      "summary": "Codec-diffusion singing enhancement remains experimental until it has benchmark, latency, packaging, and deployment evidence.",
+      "component_paths": [
+        "src/auto_voice/inference/hq_svc_wrapper.py",
+        "scripts/quality_pipeline.py",
+        "docs/hq-svc-patterns.md"
+      ],
+      "evidence": {
+        "quality": {
+          "artifacts": [],
+          "notes": "Requires benchmark evidence against the canonical quality_seedvc path."
+        },
+        "latency": {
+          "artifacts": [],
+          "notes": "Requires latency and RTF evidence from the supported deployment targets."
+        },
+        "packaging": {
+          "artifacts": [],
+          "notes": "Requires packaged artifact and export validation."
+        },
+        "deployability": {
+          "artifacts": [],
+          "notes": "Requires release-candidate and target-platform deployment validation."
+        }
+      }
+    },
+    "nsf_harmonic_enhancement": {
+      "display_name": "NSF harmonic enhancement",
+      "status": "experimental",
+      "summary": "Lightweight NSF refinement is available for testing but cannot graduate without evidence.",
+      "component_paths": [
+        "src/auto_voice/models/nsf_module.py",
+        "src/auto_voice/models/nsf.py",
+        "scripts/quality_pipeline.py"
+      ],
+      "evidence": {
+        "quality": {
+          "artifacts": [],
+          "notes": "Needs quality metrics showing audible and benchmarked improvement."
+        },
+        "latency": {
+          "artifacts": [],
+          "notes": "Needs runtime overhead evidence."
+        },
+        "packaging": {
+          "artifacts": [],
+          "notes": "Needs packaging and artifact-contract evidence."
+        },
+        "deployability": {
+          "artifacts": [],
+          "notes": "Needs deployment validation on supported targets."
+        }
+      }
+    },
+    "ecapa2_encoder": {
+      "display_name": "ECAPA2 speaker encoder",
+      "status": "experimental",
+      "summary": "Optional ECAPA2-based speaker embeddings stay experimental until validated across quality and deployment paths.",
+      "component_paths": [
+        "src/auto_voice/models/ecapa2_encoder.py",
+        "scripts/prepare_pillowtalk_dataset.py",
+        "src/auto_voice/inference/voice_cloner.py"
+      ],
+      "evidence": {
+        "quality": {
+          "artifacts": [],
+          "notes": "Needs speaker-similarity evidence versus the canonical encoder path."
+        },
+        "latency": {
+          "artifacts": [],
+          "notes": "Needs embedding-extraction latency evidence."
+        },
+        "packaging": {
+          "artifacts": [],
+          "notes": "Needs packaging/runtime compatibility evidence."
+        },
+        "deployability": {
+          "artifacts": [],
+          "notes": "Needs deployment validation for environments without SpeechBrain."
+        }
+      }
+    },
+    "pupu_vocoder_refinement": {
+      "display_name": "Pupu vocoder refinement",
+      "status": "experimental",
+      "summary": "Post-vocoder cleanup remains optional until evidence proves it beats the canonical path.",
+      "component_paths": [
+        "src/auto_voice/models/pupu_vocoder.py",
+        "src/auto_voice/inference/singing_conversion_pipeline.py"
+      ],
+      "evidence": {
+        "quality": {
+          "artifacts": [],
+          "notes": "Needs benchmark evidence that refinement improves perceptual quality."
+        },
+        "latency": {
+          "artifacts": [],
+          "notes": "Needs measured overhead evidence."
+        },
+        "packaging": {
+          "artifacts": [],
+          "notes": "Needs packaging/runtime compatibility evidence."
+        },
+        "deployability": {
+          "artifacts": [],
+          "notes": "Needs deployment validation on supported targets."
+        }
+      }
+    }
+  }
+}

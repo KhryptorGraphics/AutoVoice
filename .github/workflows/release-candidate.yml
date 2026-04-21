@@ -45,6 +45,9 @@ jobs:
       - name: Validate release candidate endpoints
         run: python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5050 --skip-compose --report-dir reports/platform
 
+      - name: Validate experimental evidence registry
+        run: python scripts/validate_experimental_evidence.py
+
       - name: Stop live backend harness
         if: always()
         run: |

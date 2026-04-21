@@ -20,6 +20,12 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
+from .artifacts import (
+    build_lora_checkpoint_payload,
+    extract_lora_metadata,
+    extract_lora_state_dict,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -362,15 +368,16 @@ def save_lora_adapter(model: nn.Module, path: Path) -> None:
 
     adapter_states = {}
     for name, adapter in model.lora_adapters.items():
-        adapter_states[name] = {
-            "lora_A": adapter.lora_A.data.cpu(),
-            "lora_B": adapter.lora_B.data.cpu(),
-            "rank": adapter.rank,
-            "alpha": adapter.alpha,
-            "scaling": adapter.scaling,
-        }
+        adapter_states[f"{name}.lora_A"] = adapter.lora_A.data.cpu()
+        adapter_states[f"{name}.lora_B"] = adapter.lora_B.data.cpu()
 
-    save_dict = {"adapters": adapter_states, "config": getattr(model, "_lora_config", {})}
+    save_dict = build_lora_checkpoint_payload(
+        adapter_states,
+        config=getattr(model, "_lora_config", {}),
+        metadata={
+            "adapter_names": list(model.lora_adapters.keys()),
+        },
+    )
     torch.save(save_dict, path)
     logger.info(f"Saved LoRA adapter to {path}")
 
@@ -378,7 +385,8 @@ def save_lora_adapter(model: nn.Module, path: Path) -> None:
 def load_lora_adapter(model: nn.Module, path: Path) -> nn.Module:
     """Load LoRA adapter weights into a model."""
     save_dict = torch.load(path, map_location="cpu")
-    config = save_dict.get("config", {})
+    metadata = extract_lora_metadata(save_dict)
+    config = dict(metadata.get("config", {}))
 
     model = inject_lora_adapters(
         model,
@@ -388,12 +396,14 @@ def load_lora_adapter(model: nn.Module, path: Path) -> nn.Module:
         dropout=config.get("dropout", 0.0),
     )
 
-    adapter_states = save_dict["adapters"]
-    for name, state in adapter_states.items():
-        if name in model.lora_adapters:
-            adapter = model.lora_adapters[name]
-            adapter.lora_A.data.copy_(state["lora_A"])
-            adapter.lora_B.data.copy_(state["lora_B"])
+    adapter_states = extract_lora_state_dict(save_dict)
+    for name, adapter in model.lora_adapters.items():
+        lora_a = adapter_states.get(f"{name}.lora_A")
+        lora_b = adapter_states.get(f"{name}.lora_B")
+        if lora_a is not None:
+            adapter.lora_A.data.copy_(lora_a)
+        if lora_b is not None:
+            adapter.lora_B.data.copy_(lora_b)
 
     logger.info(f"Loaded LoRA adapter from {path}")
     return model
@@ -402,12 +412,8 @@ def load_lora_adapter(model: nn.Module, path: Path) -> nn.Module:
 def load_adapter_metadata(path: Path) -> Dict[str, Any]:
     """Load adapter metadata without full weights."""
     save_dict = torch.load(path, map_location="cpu")
-    config = save_dict.get("config", {})
-    adapter_states = save_dict.get("adapters", {})
-    if adapter_states:
-        first_adapter = list(adapter_states.values())[0]
-        config["rank"] = first_adapter.get("rank", config.get("rank", 8))
-        config["alpha"] = first_adapter.get("alpha", config.get("alpha", 16))
+    metadata = extract_lora_metadata(save_dict)
+    config = dict(metadata.get("config", {}))
     return config
 
 

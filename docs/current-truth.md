@@ -26,6 +26,9 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
 - canonical offline pipeline: `quality_seedvc`
 - canonical fast/live pipeline: `realtime`
 - experimental pipelines: `quality`, `quality_shortcut`, `realtime_meanvc`
+- experimental quality upgrades remain behind the evidence gate defined in
+  `config/experimental_evidence.json` and validated by
+  `python scripts/validate_experimental_evidence.py`
 
 There is no separate `/training` Socket.IO namespace in the current backend.
 
@@ -68,4 +71,5 @@ Use those only after validating against the canonical docs and live code paths.
 - generated API docs: `/api/v1/openapi.json`, `/api/v1/openapi.yaml`, `/docs`
 - frontend build: `cd frontend && npm run build`
 - release-candidate validation: `python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5000`
+- experimental evidence validation: `python scripts/validate_experimental_evidence.py`
 - Jetson/TensorRT validation: `bash scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform`

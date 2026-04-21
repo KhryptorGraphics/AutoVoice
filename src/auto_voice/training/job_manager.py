@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
+from auto_voice.runtime_contract import build_packaged_artifact_manifest
 from auto_voice.storage.paths import (
     resolve_checkpoints_dir,
     resolve_profiles_dir,
@@ -32,6 +33,7 @@ from auto_voice.storage.voice_profiles import (
     FULL_MODEL_TRAINING_UNLOCK_SECONDS,
     PROFILE_ROLE_TARGET_USER,
 )
+from auto_voice.training.artifacts import build_lora_checkpoint_payload
 
 logger = logging.getLogger(__name__)
 
@@ -874,6 +876,12 @@ class TrainingJobManager:
                     if src_path.exists():
                         dst_path = train_dir / f"{sample.sample_id}.wav"
                         shutil.copy2(src_path, dst_path)
+                        source_metadata = src_path.parent / "metadata.json"
+                        if source_metadata.exists():
+                            shutil.copy2(
+                                source_metadata,
+                                train_dir / f"{sample.sample_id}.json",
+                            )
                         sample_files.append(str(dst_path))
                         logger.info(f"Copied sample: {src_path} -> {dst_path}")
 
@@ -912,13 +920,14 @@ class TrainingJobManager:
                         'batch_size': batch_size,
                         'checkpoint_dir': str(self._resolve_checkpoints_dir(job.profile_id)),
                         'checkpoint_interval_steps': 1000,
+                        'n_mels': 80,
                     }
 
                     model = CoMoSVCDecoder(
                         content_dim=768,
                         pitch_dim=256,
                         speaker_dim=256,
-                        n_mels=100,
+                        n_mels=80,
                         hidden_dim=512,
                         n_layers=8,
                         device=device,
@@ -994,6 +1003,7 @@ class TrainingJobManager:
                         trainer=trainer,
                         profile_id=job.profile_id,
                         job_id=job_id,
+                        training_mode=training_mode,
                     )
 
                     # Get results
@@ -1005,6 +1015,7 @@ class TrainingJobManager:
                         'job_type': training_mode,
                         'adapter_path': adapter_saved.get('adapter_path') if adapter_saved else None,
                         'embedding_path': adapter_saved.get('embedding_path') if adapter_saved else None,
+                        'manifest_path': adapter_saved.get('manifest_path') if adapter_saved else None,
                         'artifact_type': adapter_saved.get('artifact_type') if adapter_saved else None,
                     }
 
@@ -1057,6 +1068,7 @@ class TrainingJobManager:
         trainer: Any,
         profile_id: str,
         job_id: str,
+        training_mode: str = "lora",
     ) -> Dict[str, str]:
         """Save trained adapter and speaker embedding to correct location.
 
@@ -1082,14 +1094,13 @@ class TrainingJobManager:
             trained_models_dir.mkdir(parents=True, exist_ok=True)
             profiles_dir.mkdir(parents=True, exist_ok=True)
 
+            store = self._get_profile_store()
+            profile = store.load(profile_id)
+            display_name = profile.get("name") or profile.get("display_name") or profile_id
+
             # Check if model has LoRA injected
             has_lora = getattr(trainer.model, '_lora_injected', False)
-            if not has_lora:
-                logger.warning(
-                    f"Model does not have LoRA injected for job {job_id}. "
-                    "Saving full model checkpoint instead."
-                )
-                # Save full model as fallback
+            if training_mode == "full":
                 full_checkpoint_path = trained_models_dir / f"{profile_id}_full_model.pt"
                 torch.save(trainer.model.state_dict(), full_checkpoint_path)
                 logger.info(f"Saved full model checkpoint: {full_checkpoint_path}")
@@ -1110,18 +1121,55 @@ class TrainingJobManager:
                 np.save(embedding_path, embedding_np)
                 logger.info(f"Saved speaker embedding: {embedding_path}")
 
+                manifest = build_packaged_artifact_manifest(
+                    profile_id=profile_id,
+                    display_name=display_name,
+                    model_family="realtime",
+                    canonical_pipeline="realtime",
+                    sample_rate=int(getattr(trainer, "sample_rate", 22050)),
+                    speaker_embedding_dim=int(embedding_np.shape[0]),
+                    mel_bins=int(getattr(trainer.model, "n_mels", trainer.config.get("n_mels", 80))),
+                    artifacts={
+                        "profile_json": str(profiles_dir / f"{profile_id}.json"),
+                        "speaker_embedding": str(embedding_path),
+                        "adapter": None,
+                        "full_model": str(full_checkpoint_path),
+                        "checkpoint": str(getattr(trainer, "checkpoint_dir", profiles_dir) / "final.pth"),
+                    },
+                    metadata={
+                        "job_id": job_id,
+                        "training_mode": training_mode,
+                    },
+                )
+                manifest_path = store.save_runtime_artifact_manifest(profile_id, manifest.to_dict())
+
                 return {
                     'adapter_path': str(full_checkpoint_path),
                     'embedding_path': str(embedding_path),
+                    'manifest_path': str(manifest_path),
                     'artifact_type': 'full_model',
                 }
 
+            if not has_lora:
+                raise RuntimeError(
+                    f"Training job {job_id} requested LoRA output but the model has no injected LoRA adapters"
+                )
+
             # Task 3.1: Extract LoRA adapter weights
             lora_state = trainer.model.get_lora_state_dict()
+            adapter_payload = build_lora_checkpoint_payload(
+                lora_state,
+                config=getattr(trainer.model, "_lora_config", {}),
+                metadata={
+                    "profile_id": profile_id,
+                    "job_id": job_id,
+                    "training_mode": training_mode,
+                },
+            )
 
             # Save adapter with correct naming: {profile_id}_adapter.pt
             adapter_path = trained_models_dir / f"{profile_id}_adapter.pt"
-            torch.save(lora_state, adapter_path)
+            torch.save(adapter_payload, adapter_path)
             size_kb = adapter_path.stat().st_size / 1024
             logger.info(f"Saved LoRA adapter: {adapter_path} ({size_kb:.1f} KB)")
 
@@ -1179,9 +1227,33 @@ class TrainingJobManager:
                 f"{sum(p.numel() for p in loaded_state.values())} total elements"
             )
 
+            manifest = build_packaged_artifact_manifest(
+                profile_id=profile_id,
+                display_name=display_name,
+                model_family="realtime",
+                canonical_pipeline="realtime",
+                sample_rate=int(getattr(trainer, "sample_rate", 22050)),
+                speaker_embedding_dim=int(embedding_np.shape[0]),
+                mel_bins=int(getattr(trainer.model, "n_mels", trainer.config.get("n_mels", 80))),
+                artifacts={
+                    "profile_json": str(profiles_dir / f"{profile_id}.json"),
+                    "speaker_embedding": str(embedding_path),
+                    "adapter": str(adapter_path),
+                    "full_model": None,
+                    "checkpoint": str(getattr(trainer, "checkpoint_dir", profiles_dir) / "final.pth"),
+                },
+                metadata={
+                    "job_id": job_id,
+                    "training_mode": training_mode,
+                    "adapter_parameters": len(loaded_state),
+                },
+            )
+            manifest_path = store.save_runtime_artifact_manifest(profile_id, manifest.to_dict())
+
             return {
                 'adapter_path': str(adapter_path),
                 'embedding_path': str(embedding_path),
+                'manifest_path': str(manifest_path),
                 'artifact_type': 'adapter',
             }
 
@@ -1203,6 +1275,7 @@ class TrainingJobManager:
         profile['last_trained_at'] = datetime.now().isoformat()
         profile['model_version'] = profile.get('model_version') or '1.0'
         profile['model_path'] = results.get('adapter_path')
+        profile['runtime_artifact_manifest_path'] = results.get('manifest_path')
         profile['training_epochs'] = results.get('epochs_completed')
         profile['loss_final'] = results.get('final_loss')
         profile['sample_count'] = sample_count

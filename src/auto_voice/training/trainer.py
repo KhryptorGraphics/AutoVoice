@@ -5,6 +5,7 @@ checkpointing, and quality assessment.
 """
 import logging
 import os
+import json
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -37,6 +38,11 @@ class VoiceDataset(Dataset):
         if augment:
             from ..audio.augmentation import AugmentationPipeline
             self._augmentation = AugmentationPipeline()
+        self.min_source_duration_seconds = 0.5
+        self.min_active_ratio = 0.08
+        self.min_voiced_ratio = 0.02
+        self.min_peak_amplitude = 1e-4
+        self.min_speaker_purity = 0.75
         self.audio_files = self._scan_files()
         logger.info(f"VoiceDataset: {len(self.audio_files)} files from {data_dir}"
                     f"{' (augment=True)' if augment else ''}")
@@ -51,16 +57,64 @@ class VoiceDataset(Dataset):
     def __len__(self) -> int:
         return len(self.audio_files)
 
+    def _load_quality_sidecar(self, audio_path: Path) -> Dict[str, Any]:
+        sidecar = audio_path.with_suffix('.json')
+        if not sidecar.exists():
+            return {}
+        try:
+            return json.loads(sidecar.read_text(encoding='utf-8'))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ValueError(f"Invalid quality metadata for {audio_path}: {exc}") from exc
+
+    def _validate_quality_gates(
+        self,
+        *,
+        audio_path: Path,
+        raw_audio: np.ndarray,
+        f0: np.ndarray,
+        voiced: Optional[np.ndarray],
+    ) -> None:
+        if raw_audio.size < int(self.sample_rate * self.min_source_duration_seconds):
+            raise ValueError(f"Training sample too short for stable features: {audio_path}")
+
+        peak = float(np.max(np.abs(raw_audio))) if raw_audio.size else 0.0
+        if peak < self.min_peak_amplitude:
+            raise ValueError(f"Training sample is effectively silent: {audio_path}")
+
+        active_ratio = float(np.mean(np.abs(raw_audio) >= self.min_peak_amplitude))
+        if active_ratio < self.min_active_ratio:
+            raise ValueError(f"Training sample is silence-heavy: {audio_path}")
+
+        voiced_mask = np.asarray(voiced, dtype=bool) if voiced is not None else (f0 > 0)
+        voiced_ratio = float(np.mean(voiced_mask)) if voiced_mask.size else 0.0
+        if voiced_ratio < self.min_voiced_ratio:
+            raise ValueError(f"Training sample has insufficient pitch coverage: {audio_path}")
+
+        metadata = self._load_quality_sidecar(audio_path)
+        quality_metadata = metadata.get('quality_metadata') if isinstance(metadata, dict) else None
+        if isinstance(quality_metadata, dict):
+            speaker_purity = quality_metadata.get('speaker_purity')
+            diarization_ok = quality_metadata.get('diarization_ok')
+        else:
+            speaker_purity = metadata.get('speaker_purity') if isinstance(metadata, dict) else None
+            diarization_ok = metadata.get('diarization_ok') if isinstance(metadata, dict) else None
+
+        if speaker_purity is not None and float(speaker_purity) < self.min_speaker_purity:
+            raise ValueError(f"Training sample failed speaker purity gate: {audio_path}")
+        if diarization_ok is False:
+            raise ValueError(f"Training sample failed diarization gate: {audio_path}")
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         import librosa
         audio_path = self.audio_files[idx]
         audio, sr = librosa.load(str(audio_path), sr=self.sample_rate, mono=True)
+        raw_audio = np.asarray(audio, dtype=np.float32)
 
-        if len(audio) > self.segment_length:
-            start = np.random.randint(0, len(audio) - self.segment_length)
-            audio = audio[start:start + self.segment_length]
+        if len(raw_audio) > self.segment_length:
+            start = np.random.randint(0, len(raw_audio) - self.segment_length)
+            audio = raw_audio[start:start + self.segment_length]
         else:
-            audio = np.pad(audio, (0, self.segment_length - len(audio)))
+            audio = np.pad(raw_audio, (0, self.segment_length - len(raw_audio)))
 
         # Apply augmentation if enabled
         if self._augmentation is not None:
@@ -75,6 +129,12 @@ class VoiceDataset(Dataset):
 
         f0, voiced, _ = librosa.pyin(audio, fmin=50, fmax=1100, sr=self.sample_rate)
         f0 = np.nan_to_num(f0, nan=0.0)
+        self._validate_quality_gates(
+            audio_path=audio_path,
+            raw_audio=raw_audio,
+            f0=f0,
+            voiced=voiced,
+        )
 
         return {
             'audio': torch.from_numpy(audio).float(),

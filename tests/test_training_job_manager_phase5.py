@@ -204,7 +204,7 @@ class TestTrainingJobHelpers:
 
 
 class TestSaveTrainedAdapter:
-    def test_save_trained_adapter_falls_back_to_full_model_and_normalizes_embedding(self, manager):
+    def test_save_trained_adapter_raises_when_lora_mode_missing_injected_adapters(self, manager):
         speaker_embedding = torch.ones(256)
         trainer = types.SimpleNamespace(
             model=types.SimpleNamespace(
@@ -214,27 +214,73 @@ class TestSaveTrainedAdapter:
             speaker_embedding=speaker_embedding,
         )
 
-        result = manager._save_trained_adapter(trainer=trainer, profile_id="profile-1", job_id="job-1")
+        store = Mock()
+        store.load.return_value = {"profile_id": "profile-1", "name": "Profile 1"}
+
+        with patch.object(manager, "_get_profile_store", return_value=store), \
+             pytest.raises(RuntimeError, match="requested LoRA output but the model has no injected LoRA adapters"):
+            manager._save_trained_adapter(trainer=trainer, profile_id="profile-1", job_id="job-1")
+
+    def test_save_trained_adapter_saves_explicit_full_model_manifest(self, manager, tmp_path):
+        speaker_embedding = torch.ones(256)
+        trainer = types.SimpleNamespace(
+            model=types.SimpleNamespace(
+                _lora_injected=False,
+                state_dict=lambda: {"weights": torch.tensor([1.0])},
+                n_mels=80,
+            ),
+            speaker_embedding=speaker_embedding,
+            sample_rate=22050,
+            checkpoint_dir=tmp_path / "checkpoints",
+            config={"n_mels": 80},
+        )
+        trainer.checkpoint_dir.mkdir(parents=True)
+        (trainer.checkpoint_dir / "final.pth").write_bytes(b"final")
+
+        store = Mock()
+        store.load.return_value = {"profile_id": "profile-1", "name": "Profile 1"}
+        store.save_runtime_artifact_manifest.return_value = str(tmp_path / "artifact_manifest.json")
+
+        with patch.object(manager, "_get_profile_store", return_value=store):
+            result = manager._save_trained_adapter(
+                trainer=trainer,
+                profile_id="profile-1",
+                job_id="job-1",
+                training_mode="full",
+            )
 
         assert result["artifact_type"] == "full_model"
         assert Path(result["adapter_path"]).exists()
         embedding = np.load(result["embedding_path"])
         assert np.isclose(np.linalg.norm(embedding), 1.0, atol=1e-5)
+        store.save_runtime_artifact_manifest.assert_called_once()
 
-    def test_save_trained_adapter_saves_and_validates_lora_artifacts(self, manager):
+    def test_save_trained_adapter_saves_and_validates_lora_artifacts(self, manager, tmp_path):
         speaker_embedding = torch.nn.functional.normalize(torch.ones(256), dim=0)
         trainer = types.SimpleNamespace(
             model=types.SimpleNamespace(
                 _lora_injected=True,
+                _lora_config={"rank": 8, "alpha": 16, "target_modules": ["q_proj"]},
+                n_mels=80,
                 get_lora_state_dict=lambda: {
                     "layer.lora_A": torch.ones(1),
                     "layer.lora_B": torch.ones(1),
                 },
             ),
             speaker_embedding=speaker_embedding,
+            sample_rate=22050,
+            checkpoint_dir=tmp_path / "checkpoints",
+            config={"n_mels": 80},
         )
+        trainer.checkpoint_dir.mkdir(parents=True)
+        (trainer.checkpoint_dir / "final.pth").write_bytes(b"final")
 
-        with patch("auto_voice.models.adapter_manager.AdapterManager") as manager_cls:
+        store = Mock()
+        store.load.return_value = {"profile_id": "profile-2", "name": "Profile 2"}
+        store.save_runtime_artifact_manifest.return_value = str(tmp_path / "artifact_manifest.json")
+
+        with patch.object(manager, "_get_profile_store", return_value=store), \
+             patch("auto_voice.models.adapter_manager.AdapterManager") as manager_cls:
             manager_cls.return_value.load_adapter.return_value = {
                 "layer.lora_A": torch.ones(1),
                 "layer.lora_B": torch.ones(1),
@@ -244,20 +290,32 @@ class TestSaveTrainedAdapter:
         assert result["artifact_type"] == "adapter"
         assert Path(result["adapter_path"]).exists()
         assert Path(result["embedding_path"]).exists()
+        saved_payload = torch.load(result["adapter_path"], map_location="cpu", weights_only=False)
+        assert "__autovoice_lora_metadata__" in saved_payload
+        store.save_runtime_artifact_manifest.assert_called_once()
 
     def test_save_trained_adapter_wraps_validation_errors(self, manager):
         trainer = types.SimpleNamespace(
             model=types.SimpleNamespace(
                 _lora_injected=True,
+                _lora_config={},
+                n_mels=80,
                 get_lora_state_dict=lambda: {
                     "layer.lora_A": torch.ones(1),
                     "layer.lora_B": torch.ones(1),
                 },
             ),
             speaker_embedding=torch.ones(128),
+            sample_rate=22050,
+            checkpoint_dir=Path("/tmp/checkpoints"),
+            config={"n_mels": 80},
         )
 
-        with pytest.raises(RuntimeError, match="Adapter save failed"):
+        store = Mock()
+        store.load.return_value = {"profile_id": "profile-3", "name": "Profile 3"}
+
+        with patch.object(manager, "_get_profile_store", return_value=store), \
+             pytest.raises(RuntimeError, match="Adapter save failed"):
             manager._save_trained_adapter(trainer=trainer, profile_id="profile-3", job_id="job-3")
 
 

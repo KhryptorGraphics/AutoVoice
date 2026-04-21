@@ -13,6 +13,7 @@ import torch.nn as nn
 
 from auto_voice.runtime_contract import choose_artifact_manifest_path, load_packaged_artifact_manifest
 from auto_voice.storage.paths import resolve_profiles_dir, resolve_trained_models_dir
+from auto_voice.training.artifacts import extract_lora_state_dict
 
 logger = logging.getLogger(__name__)
 ARTIFACT_PRIORITY = ("tensorrt", "full_model", "adapter")
@@ -393,7 +394,12 @@ class AdapterManager:
         if resolved_type == "tensorrt":
             handle = self._load_tensorrt_engine(artifact_path)
         else:
-            handle = torch.load(artifact_path, map_location=self.device, weights_only=False)
+            raw_handle = torch.load(artifact_path, map_location=self.device, weights_only=False)
+            handle = (
+                self._normalize_adapter_payload(raw_handle)
+                if resolved_type == "adapter"
+                else raw_handle
+            )
             if resolved_type == "adapter" and self.config.auto_validate:
                 self._validate_adapter(handle, profile_id)
 
@@ -435,6 +441,16 @@ class AdapterManager:
             use_cache=use_cache,
         )
         return artifact.handle
+
+    @staticmethod
+    def _normalize_adapter_payload(payload: Any) -> Dict[str, torch.Tensor]:
+        """Normalize canonical and legacy adapter payloads to a flat state dict."""
+        if not isinstance(payload, dict):
+            raise ValueError("Adapter payload must be a dictionary")
+        state_dict = extract_lora_state_dict(payload)
+        if not state_dict:
+            raise ValueError("Adapter payload did not contain any LoRA tensors")
+        return state_dict
 
     def _validate_adapter(self, state_dict: Dict[str, torch.Tensor], profile_id: str) -> None:
         """Validate adapter state dict structure."""
