@@ -215,7 +215,8 @@ class SpeakerDiarizer:
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        # Try scipy first (more compatible), fall back to torchaudio
+        # Prefer decoders that don't require TorchCodec so MP3/M4A uploads
+        # work in the deployed environment too.
         try:
             from scipy.io import wavfile
             sample_rate, waveform_np = wavfile.read(str(audio_path))
@@ -234,13 +235,40 @@ class SpeakerDiarizer:
 
             waveform = torch.from_numpy(waveform_np)
 
-        except Exception:
-            # Fall back to torchaudio
-            waveform, sample_rate = torchaudio.load(str(audio_path))
-            # Convert to mono if stereo
-            if waveform.shape[0] > 1:
-                waveform = waveform.mean(dim=0, keepdim=True)
-            waveform = waveform.squeeze(0)
+        except Exception as scipy_exc:
+            logger.debug("scipy wavfile failed for %s: %s", audio_path, scipy_exc)
+
+            try:
+                import soundfile as sf
+
+                waveform_np, sample_rate = sf.read(str(audio_path), dtype='float32')
+                if waveform_np.ndim > 1:
+                    waveform_np = waveform_np.mean(axis=1)
+                waveform = torch.from_numpy(np.asarray(waveform_np, dtype=np.float32))
+            except Exception as soundfile_exc:
+                logger.debug(
+                    "soundfile read failed for %s: %s",
+                    audio_path,
+                    soundfile_exc,
+                )
+                try:
+                    import librosa
+
+                    waveform_np, sample_rate = librosa.load(
+                        str(audio_path),
+                        sr=None,
+                        mono=True,
+                    )
+                    waveform = torch.from_numpy(np.asarray(waveform_np, dtype=np.float32))
+                except Exception as librosa_exc:
+                    logger.warning(
+                        "librosa fallback failed for %s after scipy and soundfile errors",
+                        audio_path,
+                    )
+                    raise RuntimeError(
+                        f"Failed to load audio file {audio_path}: "
+                        f"scipy={scipy_exc}; soundfile={soundfile_exc}; librosa={librosa_exc}"
+                    ) from librosa_exc
 
         # Resample to 16kHz if needed
         if sample_rate != 16000:

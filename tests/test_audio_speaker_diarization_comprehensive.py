@@ -376,6 +376,29 @@ class TestAudioLoading:
         # Values should be normalized
         assert waveform.abs().max() <= 1.0 + 0.01  # Small tolerance
 
+    @patch('torchaudio.load', side_effect=AssertionError("torchaudio.load should not be used"))
+    @patch('soundfile.read')
+    @patch('scipy.io.wavfile.read', side_effect=ValueError("File format b'ID3' not understood"))
+    def test_load_audio_non_wav_uses_soundfile_before_torchaudio(
+        self,
+        _mock_wavfile_read,
+        mock_soundfile_read,
+        _mock_torchaudio_load,
+        diarizer,
+        tmp_path,
+    ):
+        """Test MP3/non-WAV audio falls back to soundfile without TorchCodec."""
+        audio_path = tmp_path / 'test.mp3'
+        audio_path.write_bytes(b'fake mp3 data')
+        audio = np.random.randn(16000).astype(np.float32) * 0.1
+        mock_soundfile_read.return_value = (audio, 16000)
+
+        waveform, sr = diarizer._load_audio(audio_path)
+
+        assert sr == 16000
+        assert isinstance(waveform, torch.Tensor)
+        assert len(waveform) == 16000
+
 
 class TestExtractSpeakerEmbedding:
     """Test speaker embedding extraction."""

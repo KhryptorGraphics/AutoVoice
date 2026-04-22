@@ -159,7 +159,7 @@ export function TrainingConfigPanel({
   fullTrainingHint,
   continuationHint,
 }: TrainingConfigPanelProps) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(true)
 
   const update = <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => {
     onChange({ ...config, [key]: value })

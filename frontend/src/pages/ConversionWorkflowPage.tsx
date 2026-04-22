@@ -796,6 +796,31 @@ export function ConversionWorkflowPage() {
             )}
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-3">
+              <div className="text-xs uppercase tracking-wide text-gray-500">Target Profile</div>
+              <div className="mt-1 font-medium text-gray-100">
+                {targetProfileDetail.name || workflow.resolved_target_profile?.name || workflow.resolved_target_profile_id}
+              </div>
+            </div>
+            <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-3">
+              <div className="text-xs uppercase tracking-wide text-gray-500">Samples</div>
+              <div className="mt-1 font-medium text-gray-100">{targetSamples.length}</div>
+            </div>
+            <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-3">
+              <div className="text-xs uppercase tracking-wide text-gray-500">Clean Vocals</div>
+              <div className="mt-1 font-medium text-gray-100">
+                {(targetProfileDetail.clean_vocal_minutes ?? 0).toFixed(1)} min
+              </div>
+            </div>
+            <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-3">
+              <div className="text-xs uppercase tracking-wide text-gray-500">Current Artifact</div>
+              <div className="mt-1 font-medium text-gray-100">
+                {targetProfileDetail.active_model_type || 'base'}
+              </div>
+            </div>
+          </div>
+
           <TrainingConfigPanel
             config={trainingConfig}
             onChange={setTrainingConfig}
@@ -840,16 +865,24 @@ export function ConversionWorkflowPage() {
           </div>
 
           {workflow.current_training_job_id && (
-            <LiveTrainingMonitor
-              jobId={workflow.current_training_job_id}
-              profileId={workflow.resolved_target_profile_id}
-              onComplete={() => {
-                void loadProfiles()
-                if (workflow.workflow_id) {
-                  void apiService.getConversionWorkflow(workflow.workflow_id).then(setWorkflow).catch(console.error)
-                }
-              }}
-            />
+            <div className="space-y-3">
+              <div>
+                <h3 className="font-medium text-white">Live Training Progress</h3>
+                <p className="text-sm text-gray-400 mt-1">
+                  Epoch, step, loss, telemetry, pause/resume, cancel, and preview are shown here while the workflow training job is active.
+                </p>
+              </div>
+              <LiveTrainingMonitor
+                jobId={workflow.current_training_job_id}
+                profileId={workflow.resolved_target_profile_id}
+                onComplete={() => {
+                  void loadProfiles()
+                  if (workflow.workflow_id) {
+                    void apiService.getConversionWorkflow(workflow.workflow_id).then(setWorkflow).catch(console.error)
+                  }
+                }}
+              />
+            </div>
           )}
         </div>
       )}
