@@ -10,9 +10,16 @@
         "scripts/quality_pipeline.py",
         "docs/hq-svc-patterns.md"
       ],
+      "benchmark_gate": {
+        "dashboard_artifact": "reports/benchmarks/latest/benchmark_dashboard.json",
+        "candidate_pipeline": "hq_svc",
+        "canonical_pipeline": "quality_seedvc"
+      },
       "evidence": {
         "quality": {
-          "artifacts": [],
+          "artifacts": [
+            "reports/benchmarks/latest/benchmark_dashboard.json"
+          ],
           "notes": "Requires benchmark evidence against the canonical quality_seedvc path."
         },
         "latency": {
@@ -38,9 +45,16 @@
         "src/auto_voice/models/nsf.py",
         "scripts/quality_pipeline.py"
       ],
+      "benchmark_gate": {
+        "dashboard_artifact": "reports/benchmarks/latest/benchmark_dashboard.json",
+        "candidate_pipeline": "nsf_harmonic_enhancement",
+        "canonical_pipeline": "quality_seedvc"
+      },
       "evidence": {
         "quality": {
-          "artifacts": [],
+          "artifacts": [
+            "reports/benchmarks/latest/benchmark_dashboard.json"
+          ],
           "notes": "Needs quality metrics showing audible and benchmarked improvement."
         },
         "latency": {
@@ -66,9 +80,16 @@
         "scripts/prepare_pillowtalk_dataset.py",
         "src/auto_voice/inference/voice_cloner.py"
       ],
+      "benchmark_gate": {
+        "dashboard_artifact": "reports/benchmarks/latest/benchmark_dashboard.json",
+        "candidate_pipeline": "ecapa2_encoder",
+        "canonical_pipeline": "quality_seedvc"
+      },
       "evidence": {
         "quality": {
-          "artifacts": [],
+          "artifacts": [
+            "reports/benchmarks/latest/benchmark_dashboard.json"
+          ],
           "notes": "Needs speaker-similarity evidence versus the canonical encoder path."
         },
         "latency": {
@@ -93,9 +114,16 @@
         "src/auto_voice/models/pupu_vocoder.py",
         "src/auto_voice/inference/singing_conversion_pipeline.py"
       ],
+      "benchmark_gate": {
+        "dashboard_artifact": "reports/benchmarks/latest/benchmark_dashboard.json",
+        "candidate_pipeline": "pupu_vocoder_refinement",
+        "canonical_pipeline": "quality_seedvc"
+      },
       "evidence": {
         "quality": {
-          "artifacts": [],
+          "artifacts": [
+            "reports/benchmarks/latest/benchmark_dashboard.json"
+          ],
           "notes": "Needs benchmark evidence that refinement improves perceptual quality."
         },
         "latency": {

@@ -369,6 +369,12 @@ export function KaraokePage() {
     [handleFileSelect]
   );
 
+  const showSeparationStage = Boolean(separationJob) && stage !== 'upload';
+  const separationStageReady = stage === 'ready' || stage === 'performing';
+  const separationProgress = separationStageReady
+    ? 100
+    : separationJob?.progress ?? 0;
+
   const handlePipelineChange = useCallback((nextPipeline: PipelineType) => {
     if (!isLivePipeline(nextPipeline)) {
       return;
@@ -561,27 +567,36 @@ export function KaraokePage() {
       )}
 
       {/* Stage: Separating */}
-      {stage === 'separating' && separationJob && (
+      {showSeparationStage && separationJob && (
         <div className="bg-gray-800 rounded-lg p-8" data-testid="karaoke-separation-stage">
           <div className="text-center">
-            <Music className="mx-auto h-16 w-16 text-blue-500 mb-4 animate-pulse" />
-            <h2 className="text-xl font-semibold mb-2">Processing Your Song</h2>
+            <Music
+              className={clsx(
+                'mx-auto h-16 w-16 mb-4',
+                separationStageReady ? 'text-green-500' : 'text-blue-500 animate-pulse'
+              )}
+            />
+            <h2 className="text-xl font-semibold mb-2">
+              {separationStageReady ? 'Song Ready' : 'Processing Your Song'}
+            </h2>
             <p className="text-gray-400 mb-6">
-              Separating vocals and instrumental tracks...
+              {separationStageReady
+                ? 'Vocals and instrumental tracks are ready for live conversion.'
+                : 'Separating vocals and instrumental tracks...'}
             </p>
             <div className="max-w-md mx-auto">
               <div className="flex justify-between text-sm text-gray-400 mb-2">
-                <span>Progress</span>
-                <span>{separationJob.progress}%</span>
+                <span>{separationStageReady ? 'Status' : 'Progress'}</span>
+                <span>{separationStageReady ? 'Complete' : `${separationProgress}%`}</span>
               </div>
               <div className="h-3 bg-gray-700 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-blue-500 transition-all duration-500"
                   data-testid="karaoke-separation-progress"
-                  style={{ width: `${separationJob.progress}%` }}
+                  style={{ width: `${separationProgress}%` }}
                 />
               </div>
-              {separationJob.estimated_remaining !== undefined && (
+              {!separationStageReady && separationJob.estimated_remaining !== undefined && (
                 <p className="mt-2 text-sm text-gray-500">
                   ~{separationJob.estimated_remaining}s remaining
                 </p>

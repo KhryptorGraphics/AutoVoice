@@ -109,6 +109,29 @@ def cleanup_cuda_test_state():
             pass
 
 
+@pytest.fixture(autouse=True)
+def reset_karaoke_api_test_state():
+    """Clear leaked karaoke module globals between tests.
+
+    The karaoke API still exposes a small compatibility cache for output device
+    selection. Some tests mutate that module-global cache directly, which can
+    otherwise bleed into later tests that use a fresh ``AppStateStore`` and
+    expect default routing targets.
+    """
+    yield
+
+    try:
+        from auto_voice.web import karaoke_api
+    except Exception:
+        return
+
+    karaoke_api._device_config['speaker_device'] = None
+    karaoke_api._device_config['headphone_device'] = None
+    karaoke_api._uploaded_songs.clear()
+    karaoke_api._separation_jobs.clear()
+    karaoke_api._active_sessions.clear()
+
+
 @pytest.fixture
 def sample_audio():
     """Generate a simple sine wave audio sample."""

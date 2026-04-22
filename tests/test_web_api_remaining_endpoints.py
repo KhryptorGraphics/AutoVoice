@@ -32,7 +32,8 @@ def _wav_bytes(sample_rate: int = 22050, duration_seconds: float = 1.0) -> io.By
 
 def _write_wav(path: Path, *, sample_rate: int = 22050, duration_seconds: float = 1.0) -> None:
     frames = int(sample_rate * duration_seconds)
-    audio = np.zeros(frames, dtype=np.int16)
+    time_axis = np.linspace(0.0, duration_seconds, frames, endpoint=False)
+    audio = (0.3 * np.sin(2 * np.pi * 220.0 * time_axis) * 32767.0).astype(np.int16)
     with wave.open(str(path), "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)
@@ -645,6 +646,53 @@ class TestSampleAndDiarizationEndpoints:
         payload = status_response.get_json()
         assert payload["status"] == "complete"
         assert payload["vocals_path"] is not None
+        assert payload["sample_id"] is not None
+        stored_sample = app_remaining.voice_cloner.store.list_training_samples(profile_id)[0]
+        assert stored_sample.sample_id == payload["sample_id"]
+        assert stored_sample.quality_metadata["qa_status"] in {"pass", "fail", "warn"}
+
+    def test_training_job_rejects_failed_quality_samples(self, client_remaining, app_remaining, tmp_path):
+        profile_id = "00000000-0000-0000-0000-000000000316"
+        _create_profile(app_remaining, profile_id=profile_id)
+        sample_path = tmp_path / "silent.wav"
+        _write_wav(sample_path, duration_seconds=0.01)
+        sample = app_remaining.voice_cloner.store.add_training_sample(
+            profile_id=profile_id,
+            vocals_path=str(sample_path),
+            source_file=sample_path.name,
+            duration=0.01,
+        )
+
+        response = client_remaining.post(
+            "/api/v1/training/jobs",
+            json={"profile_id": profile_id, "sample_ids": [sample.sample_id]},
+            content_type="application/json",
+        )
+
+        assert response.status_code == 400
+        payload = response.get_json()
+        assert "quality gates" in payload["error"]
+        assert payload["details"]["trainable_sample_count"] == 0
+
+    def test_reports_endpoints_return_latest_dashboard_and_release_evidence(self, client_remaining):
+        reports_dir = Path("reports/benchmarks/latest")
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        dashboard_path = reports_dir / "benchmark_dashboard.json"
+        evidence_path = reports_dir / "release_evidence.json"
+        dashboard_path.write_text(json.dumps({"generated_at": "now", "pipelines": {}, "comparisons": {}}))
+        evidence_path.write_text(json.dumps({"generated_at": "now", "quality_gate_passed": True}))
+
+        try:
+            dashboard_response = client_remaining.get("/api/v1/reports/benchmarks/latest")
+            evidence_response = client_remaining.get("/api/v1/reports/release-evidence/latest")
+
+            assert dashboard_response.status_code == 200
+            assert evidence_response.status_code == 200
+            assert dashboard_response.get_json()["generated_at"] == "now"
+            assert evidence_response.get_json()["quality_gate_passed"] is True
+        finally:
+            dashboard_path.unlink(missing_ok=True)
+            evidence_path.unlink(missing_ok=True)
 
     def test_filter_sample_set_embedding_assign_segment_and_auto_create_profile(
         self, client_remaining, app_remaining, tmp_path, monkeypatch

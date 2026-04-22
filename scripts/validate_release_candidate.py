@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         "base_url": args.base_url.rstrip("/"),
         "compose": None,
         "repo_boundaries": run_repo_boundary_audit(PROJECT_ROOT),
+        "evidence_files": {},
         "checks": [],
     }
 
@@ -71,8 +72,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         results["compose"] = {"ok": True, "skipped": True}
 
-    for path in ("/health", "/ready", "/api/v1/metrics"):
+    for path in ("/health", "/api/v1/ready", "/api/v1/metrics"):
         results["checks"].append(_check_url(f"{results['base_url']}{path}"))
+
+    for name, relative_path in {
+        "benchmark_dashboard": Path("reports/benchmarks/latest/benchmark_dashboard.json"),
+        "release_evidence": Path("reports/benchmarks/latest/release_evidence.json"),
+    }.items():
+        file_path = PROJECT_ROOT / relative_path
+        results["evidence_files"][name] = {
+            "path": str(file_path),
+            "ok": file_path.exists(),
+        }
 
     report_path = report_dir / "release-candidate-validation.json"
     report_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
@@ -80,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     all_ok = (
         bool(results["compose"]["ok"])
         and bool(results["repo_boundaries"]["ok"])
+        and all(item["ok"] for item in results["evidence_files"].values())
         and all(check["ok"] for check in results["checks"])
     )
     print(report_path)

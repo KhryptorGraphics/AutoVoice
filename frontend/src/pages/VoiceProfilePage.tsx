@@ -723,6 +723,23 @@ function CreateProfileForm({ onCreated }: { onCreated: (profile: VoiceProfile) =
 
 type ProfileFilter = 'all' | 'trained' | 'untrained'
 
+function mergeProfiles(...groups: VoiceProfile[][]): VoiceProfile[] {
+  const merged: VoiceProfile[] = []
+  const seen = new Set<string>()
+
+  for (const group of groups) {
+    for (const profile of group) {
+      if (!profile?.profile_id || seen.has(profile.profile_id)) {
+        continue
+      }
+      seen.add(profile.profile_id)
+      merged.push(profile)
+    }
+  }
+
+  return merged
+}
+
 export function VoiceProfilePage() {
   const [profiles, setProfiles] = useState<VoiceProfile[]>([])
   const [loading, setLoading] = useState(true)
@@ -734,7 +751,7 @@ export function VoiceProfilePage() {
   const fetchProfiles = useCallback(async () => {
     try {
       const data = await apiService.listProfiles()
-      setProfiles(data)
+      setProfiles(prev => mergeProfiles(data, prev))
     } catch (error) {
       console.error('Failed to fetch profiles:', error)
     } finally {
@@ -763,7 +780,7 @@ export function VoiceProfilePage() {
   }, [fetchProfiles])
 
   const handleProfileCreated = (profile: VoiceProfile) => {
-    setProfiles(prev => [profile, ...prev])
+    setProfiles(prev => mergeProfiles([profile], prev))
     setShowCreateForm(false)
   }
 

@@ -499,6 +499,8 @@ class AppStateStore:
     def update_pitch_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         config = self.get_pitch_config()
         config.update(deepcopy(updates))
+        if "device" in updates and "use_gpu" not in updates:
+            config["use_gpu"] = updates.get("device") == "cuda"
         normalized = _normalize_pitch_config(config)
         self._write("pitch_config", normalized)
         return normalized

@@ -47,6 +47,11 @@ def validate_experimental_registry(payload: Mapping[str, Any]) -> Dict[str, Any]
             "status": status,
             "summary": str(feature.get("summary", "")),
             "component_paths": [str(path) for path in feature.get("component_paths", [])],
+            "benchmark_gate": {
+                "dashboard_artifact": str((feature.get("benchmark_gate", {}) or {}).get("dashboard_artifact", "")),
+                "candidate_pipeline": str((feature.get("benchmark_gate", {}) or {}).get("candidate_pipeline", feature_id)),
+                "canonical_pipeline": str((feature.get("benchmark_gate", {}) or {}).get("canonical_pipeline", "")),
+            },
             "evidence": normalized_evidence,
         }
 
@@ -108,6 +113,26 @@ def evaluate_evidence_gates(
                 "notes": category_entry["notes"],
             }
 
+        benchmark_gate = feature.get("benchmark_gate") or {}
+        benchmark_gate_status = {"configured": False, "satisfied": True}
+        if benchmark_gate.get("dashboard_artifact"):
+            benchmark_gate_status = {
+                "configured": True,
+                "candidate_pipeline": benchmark_gate.get("candidate_pipeline"),
+                "canonical_pipeline": benchmark_gate.get("canonical_pipeline"),
+                "dashboard_artifact": str(benchmark_gate.get("dashboard_artifact")),
+                "satisfied": False,
+            }
+            dashboard_path = root / str(benchmark_gate["dashboard_artifact"])
+            if dashboard_path.exists():
+                try:
+                    dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+                    candidate_name = str(benchmark_gate.get("candidate_pipeline"))
+                    comparison = (dashboard.get("comparisons") or {}).get(candidate_name) or {}
+                    benchmark_gate_status["satisfied"] = bool(comparison.get("meets_or_beats_canonical"))
+                except (OSError, json.JSONDecodeError):
+                    benchmark_gate_status["satisfied"] = False
+
         promotable = not missing_components and not missing_evidence
         results["features"][feature_id] = {
             "display_name": feature["display_name"],
@@ -117,8 +142,10 @@ def evaluate_evidence_gates(
             "evidence": evidence_status,
             "missing_evidence_categories": missing_evidence,
             "promotion_ready": promotable,
+            "benchmark_gate": benchmark_gate_status,
             "gate_passed": not missing_components and (
-                feature["status"] == "experimental" or promotable
+                feature["status"] == "experimental"
+                or (promotable and benchmark_gate_status.get("satisfied", True))
             ),
         }
 

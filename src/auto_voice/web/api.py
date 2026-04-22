@@ -272,6 +272,10 @@ def _default_gpu_enabled() -> bool:
     return bool(TORCH_AVAILABLE and torch.cuda.is_available())
 
 
+def _reports_dir() -> Path:
+    return Path(__file__).resolve().parents[3] / "reports"
+
+
 def _engine_inventory() -> List[Dict[str, Any]]:
     engines_dir = (Path(__file__).resolve().parents[1] / "export" / "engines").resolve()
     if not engines_dir.exists():
@@ -927,7 +931,7 @@ def convert_song():
                         'job_id': job_id,
                         'status': 'queued',
                         'message': 'Join this job room to receive progress updates'
-                    }, broadcast=True)
+                    })
             except Exception as e:
                 logger.warning(f"Failed to emit job_created event: {e}")
             return jsonify({
@@ -1382,6 +1386,24 @@ def get_conversion_metrics(job_id):
 
     logger.info(f"Metrics request for job {job_id}: success")
     return jsonify(metrics)
+
+
+@api_bp.route('/reports/benchmarks/latest', methods=['GET'])
+def get_latest_benchmark_dashboard():
+    """Return the latest canonical benchmark dashboard JSON."""
+    dashboard_path = _reports_dir() / "benchmarks" / "latest" / "benchmark_dashboard.json"
+    if not dashboard_path.exists():
+        return not_found_response('Benchmark dashboard not found')
+    return jsonify(json.loads(dashboard_path.read_text(encoding='utf-8')))
+
+
+@api_bp.route('/reports/release-evidence/latest', methods=['GET'])
+def get_latest_release_evidence():
+    """Return the latest release evidence JSON."""
+    report_path = _reports_dir() / "benchmarks" / "latest" / "release_evidence.json"
+    if not report_path.exists():
+        return not_found_response('Release evidence not found')
+    return jsonify(json.loads(report_path.read_text(encoding='utf-8')))
 
 
 @api_bp.route('/voice/clone', methods=['POST'])
@@ -2814,19 +2836,13 @@ def create_training_job():
         available_samples = store.list_training_samples(profile_id)
         if not available_samples:
             return validation_error_response('No training samples found for this profile')
+        quality_summary = store.get_training_quality_summary(profile_id)
 
         if profile.get('profile_role', 'target_user') != 'target_user':
             return validation_error_response(
                 'Only target user profiles can be trained. '
                 'Source artist profiles are reference voices extracted from songs.'
             )
-
-        sample_ids = data.get('sample_ids') or [sample.sample_id for sample in available_samples]
-        sample_ids = [sample_id for sample_id in sample_ids if isinstance(sample_id, str)]
-        if not sample_ids:
-            return validation_error_response('At least one valid sample_id is required')
-
-        from ..training.job_manager import TrainingConfig
 
         training_mode = config_payload.get('training_mode', 'lora')
         if training_mode not in {'lora', 'full'}:
@@ -2841,6 +2857,8 @@ def create_training_job():
         normalized_config['training_mode'] = training_mode
         normalized_config['initialization_mode'] = initialization_mode
         job_manager = _get_training_job_manager()
+
+        from ..training.job_manager import TrainingConfig
 
         if training_mode == 'full':
             eligibility = job_manager.check_needs_full_model(profile_id)
@@ -2877,6 +2895,27 @@ def create_training_job():
                     'No existing LoRA adapter is available to continue training for this profile'
                 )
 
+        sample_ids = data.get('sample_ids') or [sample.sample_id for sample in available_samples]
+        sample_ids = [sample_id for sample_id in sample_ids if isinstance(sample_id, str)]
+        if not sample_ids:
+            return validation_error_response('At least one valid sample_id is required')
+
+        selected_samples = [
+            sample for sample in available_samples if sample.sample_id in sample_ids
+        ]
+        trainable_samples = [
+            sample for sample in selected_samples
+            if (sample.quality_metadata or {}).get('qa_status', 'unknown') != 'fail'
+        ]
+        if not trainable_samples:
+            return validation_error_response(
+                'No selected training samples passed the quality gates',
+                details=quality_summary,
+                recommendations=quality_summary.get('recommendations'),
+            )
+        filtered_sample_ids = [sample.sample_id for sample in trainable_samples]
+        rejected_sample_ids = sorted(set(sample_ids) - set(filtered_sample_ids))
+
         training_config = TrainingConfig.from_dict(normalized_config)
         if training_mode == 'full':
             job = job_manager.create_full_model_job(
@@ -2887,12 +2926,15 @@ def create_training_job():
         else:
             job = job_manager.create_job(
                 profile_id=profile_id,
-                sample_ids=sample_ids,
+                sample_ids=filtered_sample_ids,
                 config=training_config,
             )
         job_manager.execute_job(job.job_id)
 
         serialized = _sanitize_job(_serialize_training_job(job))
+        if rejected_sample_ids:
+            serialized['rejected_sample_ids'] = rejected_sample_ids
+            serialized['training_quality_summary'] = quality_summary
         logger.info(f"Created training job {job.job_id} for profile {profile_id}")
         return jsonify(serialized), 201
     except Exception as e:
@@ -2934,6 +2976,8 @@ _profile_samples: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
 def _serialize_training_sample(profile_id: str, training_sample: Any) -> Dict[str, Any]:
+    quality_metadata = dict(getattr(training_sample, 'quality_metadata', {}) or {})
+    extra_metadata = dict(getattr(training_sample, 'extra_metadata', {}) or {})
     return {
         'id': training_sample.sample_id,
         'sample_id': training_sample.sample_id,
@@ -2950,7 +2994,9 @@ def _serialize_training_sample(profile_id: str, training_sample: Any) -> Dict[st
         'metadata': {
             'source_file': training_sample.source_file,
             'instrumental_path': training_sample.instrumental_path,
+            **extra_metadata,
         },
+        'quality_metadata': quality_metadata,
     }
 
 
@@ -3050,6 +3096,11 @@ def upload_sample(profile_id: str):
             vocals_path=file_path,
             source_file=metadata.get('source_file') or filename,
             duration=duration,
+            extra_metadata={
+                'source': metadata.get('source', 'upload'),
+                'provenance': metadata.get('provenance') or filename,
+            },
+            quality_metadata=metadata.get('quality_metadata'),
         )
         if metadata:
             sample_payload = _serialize_training_sample(profile_id, training_sample)
@@ -3176,6 +3227,13 @@ def add_sample_from_path(profile_id: str):
             instrumental_path=metadata.get('instrumental_path'),
             source_file=metadata.get('original_path') or filename,
             duration=duration or 0.0,
+            extra_metadata={
+                'source': metadata.get('source', 'youtube_download'),
+                'original_path': metadata.get('original_path'),
+                'provenance': metadata.get('original_path') or filename,
+                'separated': metadata.get('separated', False),
+            },
+            quality_metadata=metadata.get('quality_metadata'),
         )
         sample_payload = _serialize_training_sample(profile_id, training_sample)
         sample_payload['metadata'].update(metadata)
@@ -3227,8 +3285,9 @@ def upload_song(profile_id: str):
         auto_split = request.form.get('auto_split', 'true').lower() == 'true'
 
         # Store job info
-        _separation_jobs[job_id] = {
+        separation_job = {
             'job_id': job_id,
+            'job_type': 'song_separation',
             'song_id': song_id,
             'profile_id': profile_id,
             'filename': filename,
@@ -3241,6 +3300,8 @@ def upload_song(profile_id: str):
             'instrumental_path': None,
             'error': None
         }
+        _separation_jobs[job_id] = separation_job
+        _save_background_job(separation_job)
 
         if auto_split:
             # Start separation in background (simplified - in production use Celery/etc)
@@ -3250,6 +3311,7 @@ def upload_song(profile_id: str):
                     _separation_jobs[job_id]['status'] = 'processing'
                     _separation_jobs[job_id]['message'] = 'Separating vocals and instrumental...'
                     _separation_jobs[job_id]['progress'] = 10
+                    _save_background_job(_separation_jobs[job_id])
 
                     # Use Demucs VocalSeparator
                     import soundfile as sf
@@ -3261,6 +3323,7 @@ def upload_song(profile_id: str):
 
                     _separation_jobs[job_id]['progress'] = 20
                     _separation_jobs[job_id]['message'] = 'Loading audio...'
+                    _save_background_job(_separation_jobs[job_id])
 
                     # Load audio file
                     audio, sr = sf.read(file_path)
@@ -3269,6 +3332,7 @@ def upload_song(profile_id: str):
 
                     _separation_jobs[job_id]['progress'] = 30
                     _separation_jobs[job_id]['message'] = 'Running vocal separation (this may take a while)...'
+                    _save_background_job(_separation_jobs[job_id])
 
                     # Run separation
                     separator = VocalSeparator()
@@ -3276,6 +3340,7 @@ def upload_song(profile_id: str):
 
                     _separation_jobs[job_id]['progress'] = 80
                     _separation_jobs[job_id]['message'] = 'Saving separated tracks...'
+                    _save_background_job(_separation_jobs[job_id])
 
                     # Save vocals and instrumental
                     vocals_path = os.path.join(output_dir, 'vocals.wav')
@@ -3289,27 +3354,30 @@ def upload_song(profile_id: str):
                     _separation_jobs[job_id]['progress'] = 100
                     _separation_jobs[job_id]['message'] = 'Separation complete'
 
-                    # Auto-add vocals as training sample
-                    sample_id = str(uuid.uuid4())
-                    sample = {
-                        'sample_id': sample_id,
-                        'profile_id': profile_id,
-                        'filename': f"vocals_{filename}",
-                        'file_path': vocals_path,
-                        'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                        'duration': None,
-                        'metadata': {'source_song': song_id, 'source_file': filename}
-                    }
-                    if profile_id not in _profile_samples:
-                        _profile_samples[profile_id] = {}
-                    _profile_samples[profile_id][sample_id] = sample
+                    store = _get_profile_store()
+                    sample = store.add_training_sample(
+                        profile_id=profile_id,
+                        vocals_path=vocals_path,
+                        instrumental_path=instrumental_path,
+                        source_file=filename,
+                        duration=float(len(result['vocals']) / sr) if sr else 0.0,
+                        extra_metadata={
+                            'source_song': song_id,
+                            'source': 'uploaded_song',
+                            'provenance': filename,
+                            'separated': True,
+                        },
+                    )
+                    _separation_jobs[job_id]['sample_id'] = sample.sample_id
+                    _save_background_job(_separation_jobs[job_id])
 
-                    logger.info(f"Separation complete for song {song_id}, added sample {sample_id}")
+                    logger.info(f"Separation complete for song {song_id}, added sample {sample.sample_id}")
                 except Exception as e:
                     logger.error(f"Separation failed for job {job_id}: {e}", exc_info=True)
                     _separation_jobs[job_id]['status'] = 'error'
                     _separation_jobs[job_id]['error'] = str(e)
                     _separation_jobs[job_id]['message'] = f'Separation failed: {str(e)}'
+                    _save_background_job(_separation_jobs[job_id])
 
             thread = threading.Thread(target=run_separation, daemon=True)
             thread.start()
@@ -3330,7 +3398,7 @@ def upload_song(profile_id: str):
 @api_bp.route('/separation/<job_id>/status', methods=['GET'])
 def get_separation_status(job_id: str):
     """Get status of a vocal separation job."""
-    job = _separation_jobs.get(job_id)
+    job = _separation_jobs.get(job_id) or _get_background_job(job_id)
     if not job:
         return not_found_response('Job not found')
     return jsonify(job)

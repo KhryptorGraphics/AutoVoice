@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from auto_voice.runtime_contract import load_packaged_artifact_manifest, write_packaged_artifact_manifest
+from auto_voice.training.sample_quality import analyze_training_sample, summarize_training_samples
 
 from .paths import (
     resolve_profiles_dir,
@@ -155,6 +156,7 @@ class VoiceProfileStore:
                 sample_count = len(samples)
             if total_training_duration is None:
                 total_training_duration = sum(sample.duration for sample in samples)
+            normalized["training_quality_summary"] = summarize_training_samples(samples)
 
         sample_count = int(sample_count or normalized.get("sample_count") or 0)
         total_training_duration = float(
@@ -394,6 +396,8 @@ class VoiceProfileStore:
         instrumental_path: Optional[str] = None,
         source_file: Optional[str] = None,
         duration: float = 0.0,
+        quality_metadata: Optional[Dict[str, Any]] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> TrainingSample:
         """Add a training sample for progressive model improvement.
 
@@ -434,13 +438,21 @@ class VoiceProfileStore:
             dest_instrumental = os.path.join(sample_dir, 'instrumental.wav')
             shutil.copy2(instrumental_path, dest_instrumental)
 
+        analyzed_quality = analyze_training_sample(
+            dest_vocals,
+            quality_metadata=quality_metadata,
+            provenance=(extra_metadata or {}).get("provenance") if isinstance(extra_metadata, dict) else source_file,
+        )
+
         # Create sample metadata
         sample = TrainingSample(
             sample_id=sample_id,
             vocals_path=dest_vocals,
             instrumental_path=dest_instrumental,
             source_file=source_file,
-            duration=duration,
+            duration=float(duration or analyzed_quality.get("duration_seconds") or 0.0),
+            quality_metadata=analyzed_quality,
+            extra_metadata=extra_metadata,
         )
 
         # Save metadata
@@ -509,13 +521,28 @@ class VoiceProfileStore:
         samples = self.list_training_samples(profile_id)
         return sum(s.duration for s in samples)
 
+    def list_trainable_samples(self, profile_id: str) -> List[TrainingSample]:
+        """Return samples that passed or warned through the QA gate."""
+        samples = self.list_training_samples(profile_id)
+        return [
+            sample
+            for sample in samples
+            if (sample.quality_metadata or {}).get("qa_status", "unknown") != "fail"
+        ]
+
+    def get_training_quality_summary(self, profile_id: str) -> Dict[str, Any]:
+        """Summarize QA metadata across a profile's training samples."""
+        return summarize_training_samples(self.list_training_samples(profile_id))
+
     def _update_sample_count(self, profile_id: str) -> None:
         """Update the profile with current sample count and total duration."""
         try:
             profile = self.load(profile_id)
             samples = self.list_training_samples(profile_id)
+            quality_summary = summarize_training_samples(samples)
             profile['training_sample_count'] = len(samples)
             profile['total_training_duration'] = sum(s.duration for s in samples)
+            profile['training_quality_summary'] = quality_summary
 
             # Re-add embedding for save (since load includes it)
             embedding = profile.pop('embedding', None)

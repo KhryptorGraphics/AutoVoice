@@ -386,8 +386,9 @@ def _cleanup_on_shutdown() -> None:
     # Clean up temp files
     for song in _uploaded_songs.values():
         try:
-            if os.path.exists(song['path']):
-                os.unlink(song['path'])
+            path = song.get('path')
+            if path and os.path.exists(path):
+                os.unlink(path)
         except OSError:
             pass
 
