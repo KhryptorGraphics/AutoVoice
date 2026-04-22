@@ -15,15 +15,21 @@ Usage:
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from auto_voice.storage.paths import (
+    resolve_data_dir,
+    resolve_diarized_audio_dir,
+    resolve_profiles_dir,
+    resolve_trained_models_dir,
+)
 
 
 @dataclass
@@ -63,6 +69,18 @@ class AuditSummary:
     adapter_types: Dict[str, int]
 
 
+def resolve_runtime_paths(data_dir: str | Path | None = None) -> dict[str, Path]:
+    """Resolve audit runtime paths from the shared data-dir contract."""
+
+    resolved_data_dir = resolve_data_dir(str(data_dir) if data_dir is not None else None)
+    return {
+        "data_dir": resolved_data_dir,
+        "voice_profiles_dir": resolve_profiles_dir(data_dir=str(resolved_data_dir)),
+        "trained_models_dir": resolve_trained_models_dir(data_dir=str(resolved_data_dir)),
+        "diarized_dir": resolve_diarized_audio_dir(data_dir=str(resolved_data_dir)),
+    }
+
+
 class LoRAAuditor:
     """Audits LoRA adapters across voice profiles.
 
@@ -85,15 +103,16 @@ class LoRAAuditor:
 
     def __init__(
         self,
-        data_dir: Path = Path("data"),
+        data_dir: str | Path | None = None,
         verbose: bool = False
     ):
-        self.data_dir = Path(data_dir)
+        paths = resolve_runtime_paths(data_dir)
+        self.data_dir = paths["data_dir"]
         self.verbose = verbose
 
-        self.voice_profiles_dir = self.data_dir / "voice_profiles"
-        self.trained_models_dir = self.data_dir / "trained_models"
-        self.diarized_dir = self.data_dir / "diarized_youtube"
+        self.voice_profiles_dir = paths["voice_profiles_dir"]
+        self.trained_models_dir = paths["trained_models_dir"]
+        self.diarized_dir = paths["diarized_dir"]
 
         self._statuses: List[LoRAStatus] = []
 
@@ -406,12 +425,12 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--markdown", action="store_true", help="Output as Markdown")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    parser.add_argument("--data-dir", type=str, default="data", help="Data directory path")
+    parser.add_argument("--data-dir", type=str, default=None, help="Data directory path")
 
     args = parser.parse_args()
 
     auditor = LoRAAuditor(
-        data_dir=Path(args.data_dir),
+        data_dir=args.data_dir,
         verbose=args.verbose,
     )
 

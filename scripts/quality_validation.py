@@ -35,6 +35,8 @@ except ImportError:
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from auto_voice.storage.paths import resolve_data_dir
+
 
 @dataclass
 class QualityMetrics:
@@ -76,6 +78,24 @@ class ComparisonReport:
     recommended: str
 
     notes: list[str]
+
+
+def resolve_runtime_paths(
+    data_dir: str | Path | None = None,
+    *,
+    output_path: str | Path | None = None,
+) -> dict[str, Path]:
+    """Resolve quality-validation runtime paths from shared data-dir defaults."""
+    resolved_data_dir = resolve_data_dir(str(data_dir) if data_dir is not None else None)
+    if output_path is not None:
+        resolved_output = Path(output_path)
+    else:
+        resolved_output = resolved_data_dir / "reports" / "quality_validation.json"
+
+    return {
+        "data_dir": resolved_data_dir,
+        "output_path": resolved_output,
+    }
 
 
 def calculate_snr(signal: torch.Tensor, noise_floor: float = 1e-10) -> float:
@@ -404,12 +424,15 @@ def main():
     parser.add_argument('--profile-id', help='Profile ID to validate')
     parser.add_argument('--all-profiles', action='store_true', help='Validate all profiles')
     parser.add_argument('--input', type=Path, help='Input audio file for conversion test')
-    parser.add_argument('--data-dir', type=Path, default=Path('data'), help='Data directory')
+    parser.add_argument('--data-dir', type=Path, default=None, help='Data directory')
     parser.add_argument('--report', action='store_true', help='Generate comparison report')
-    parser.add_argument('--output', type=Path, default=Path('reports/quality_validation.json'),
+    parser.add_argument('--output', type=Path, default=None,
                         help='Output report path')
 
     args = parser.parse_args()
+    runtime_paths = resolve_runtime_paths(args.data_dir, output_path=args.output)
+    args.data_dir = runtime_paths["data_dir"]
+    args.output = runtime_paths["output_path"]
 
     # Check for test audio
     if not args.input:
