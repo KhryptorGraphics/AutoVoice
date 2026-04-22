@@ -287,6 +287,7 @@ class AppStateStore:
             "background_jobs": self.base_dir / "background_jobs.json",
             "presets": self.base_dir / "presets.json",
             "conversion_history": self.base_dir / "conversion_history.json",
+            "conversion_workflows": self.base_dir / "conversion_workflows.json",
             "profile_checkpoints": self.base_dir / "profile_checkpoints.json",
             "youtube_history": self.base_dir / "youtube_history.json",
             "app_settings": self.base_dir / "app_settings.json",
@@ -393,6 +394,33 @@ class AppStateStore:
             return False
         del records[record_id]
         self._write("conversion_history", records)
+        return True
+
+    def list_conversion_workflows(
+        self,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        workflows = list(self._read("conversion_workflows", {}).values())
+        if status:
+            workflows = [workflow for workflow in workflows if workflow.get("status") == status]
+        workflows.sort(key=lambda item: item.get("updated_at") or item.get("created_at", ""), reverse=True)
+        return workflows
+
+    def get_conversion_workflow(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        return self._read("conversion_workflows", {}).get(workflow_id)
+
+    def save_conversion_workflow(self, workflow: Dict[str, Any]) -> Dict[str, Any]:
+        workflows = self._read("conversion_workflows", {})
+        workflows[workflow["workflow_id"]] = deepcopy(workflow)
+        self._write("conversion_workflows", workflows)
+        return workflow
+
+    def delete_conversion_workflow(self, workflow_id: str) -> bool:
+        workflows = self._read("conversion_workflows", {})
+        if workflow_id not in workflows:
+            return False
+        del workflows[workflow_id]
+        self._write("conversion_workflows", workflows)
         return True
 
     def list_checkpoints(self, profile_id: str) -> List[Dict[str, Any]]:

@@ -264,6 +264,16 @@ def _get_state_store():
     return state_store
 
 
+def _get_conversion_workflow_manager():
+    manager = getattr(current_app, 'conversion_workflow_manager', None)
+    if manager is None:
+        from .conversion_workflows import ConversionWorkflowManager
+
+        manager = ConversionWorkflowManager(current_app._get_current_object())
+        current_app.conversion_workflow_manager = manager
+    return manager
+
+
 def _default_runtime_device() -> str:
     return 'cuda' if TORCH_AVAILABLE and torch.cuda.is_available() else 'cpu'
 
@@ -648,6 +658,118 @@ def _get_canonical_adapter_artifact(profile_id: str, profile: Optional[Dict[str,
         'modified_time': datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
         'adapter_info': adapter_info,
     }
+
+
+@api_bp.route('/convert/workflows', methods=['GET'])
+def list_conversion_workflows():
+    """List durable conversion intake workflows."""
+    workflows = _get_conversion_workflow_manager().list_workflows()
+    return jsonify(workflows)
+
+
+@api_bp.route('/convert/workflows', methods=['POST'])
+def create_conversion_workflow():
+    """Create a dual-upload conversion intake workflow."""
+    artist_song = request.files.get('artist_song')
+    user_vocals = request.files.getlist('user_vocals')
+
+    if artist_song is None or artist_song.filename == '':
+        return validation_error_response('artist_song file is required')
+    if not user_vocals:
+        return validation_error_response('At least one user_vocals file is required')
+    if any(upload.filename == '' for upload in user_vocals):
+        return validation_error_response('All user_vocals files must have a filename')
+
+    dominant_source_profile_override = request.form.get('dominant_source_profile_id') or None
+    target_profile_override = request.form.get('target_profile_id') or None
+
+    workflow = _get_conversion_workflow_manager().create_workflow(
+        artist_song=artist_song,
+        user_vocals=user_vocals,
+        target_profile_override=target_profile_override,
+        dominant_source_profile_override=dominant_source_profile_override,
+    )
+    return jsonify(workflow), 201
+
+
+@api_bp.route('/convert/workflows/<workflow_id>', methods=['GET'])
+def get_conversion_workflow(workflow_id: str):
+    """Get a durable conversion workflow."""
+    workflow = _get_conversion_workflow_manager().get_workflow(workflow_id)
+    if workflow is None:
+        return not_found_response('Conversion workflow not found')
+    return jsonify(workflow)
+
+
+@api_bp.route('/convert/workflows/<workflow_id>/resolve-match', methods=['POST'])
+def resolve_conversion_workflow_match(workflow_id: str):
+    """Resolve an ambiguous workflow match by reusing or creating a profile."""
+    payload = request.get_json(silent=True) or {}
+    review_id = str(payload.get('review_id') or '').strip()
+    resolution = str(payload.get('resolution') or '').strip()
+    profile_id = payload.get('profile_id')
+    name = payload.get('name')
+
+    if not review_id:
+        return validation_error_response('review_id is required')
+    if not resolution:
+        return validation_error_response('resolution is required')
+
+    try:
+        workflow = _get_conversion_workflow_manager().resolve_review_item(
+            workflow_id,
+            review_id,
+            resolution=resolution,
+            profile_id=profile_id,
+            name=name,
+        )
+    except KeyError as exc:
+        return not_found_response(str(exc))
+    except ValueError as exc:
+        return validation_error_response(str(exc))
+
+    return jsonify(workflow)
+
+
+@api_bp.route('/convert/workflows/<workflow_id>/training-job', methods=['POST'])
+def attach_conversion_workflow_training_job(workflow_id: str):
+    """Persist the current training job associated with a workflow."""
+    payload = request.get_json(silent=True) or {}
+    job_id = str(payload.get('job_id') or '').strip()
+    if not job_id:
+        return validation_error_response('job_id is required')
+    try:
+        workflow = _get_conversion_workflow_manager().attach_training_job(workflow_id, job_id)
+    except KeyError as exc:
+        return not_found_response(str(exc))
+    return jsonify(workflow)
+
+
+@api_bp.route('/convert/workflows/<workflow_id>/convert', methods=['POST'])
+def convert_from_workflow(workflow_id: str):
+    """Queue a conversion job using the source song and resolved target profile from a workflow."""
+    payload = request.get_json(silent=True) or {}
+    settings = {
+        'preset': payload.get('preset'),
+        'vocal_volume': payload.get('vocal_volume'),
+        'instrumental_volume': payload.get('instrumental_volume'),
+        'pitch_shift': payload.get('pitch_shift'),
+        'pipeline_type': payload.get('pipeline_type'),
+        'requested_pipeline': payload.get('pipeline_type'),
+        'adapter_type': payload.get('adapter_type'),
+        'return_stems': payload.get('return_stems', True),
+    }
+    try:
+        result = _get_conversion_workflow_manager().create_conversion_job(workflow_id, settings)
+    except KeyError as exc:
+        return not_found_response(str(exc))
+    except ValueError as exc:
+        return validation_error_response(str(exc))
+    except FileNotFoundError as exc:
+        return not_found_response(str(exc))
+    except RuntimeError as exc:
+        return service_unavailable_response('Job management service unavailable', message=str(exc))
+    return jsonify(result), 202
 
 
 @api_bp.route('/convert/song', methods=['POST'])

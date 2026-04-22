@@ -640,20 +640,86 @@ class VoiceProfileStore:
         self,
         embedding: np.ndarray,
         threshold: float = 0.7,
+        profile_role: Optional[str] = None,
     ) -> Optional[str]:
         """Match a speaker embedding to existing profiles.
 
         Args:
             embedding: Speaker embedding to match (512-dim WavLM)
             threshold: Cosine similarity threshold (0-1)
+            profile_role: Optional profile role filter.
 
         Returns:
             Profile ID of best match, or None if no match above threshold
         """
-        from auto_voice.audio.speaker_diarization import match_speaker_to_profile
+        matches = self.rank_speaker_embedding_matches(
+            embedding,
+            profile_role=profile_role,
+            limit=1,
+        )
+        if not matches:
+            return None
+        best_match = matches[0]
+        if float(best_match.get("similarity") or 0.0) < threshold:
+            return None
+        return str(best_match["profile_id"])
 
-        profile_embeddings = self.get_all_speaker_embeddings()
-        return match_speaker_to_profile(embedding, profile_embeddings, threshold)
+    def rank_speaker_embedding_matches(
+        self,
+        embedding: np.ndarray,
+        profile_role: Optional[str] = None,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Return the highest-similarity speaker matches for an embedding.
+
+        Args:
+            embedding: Speaker embedding to compare against saved profile embeddings.
+            profile_role: Optional profile-role filter.
+            limit: Maximum number of matches to return.
+
+        Returns:
+            Sorted list of match dictionaries containing profile metadata and similarity.
+        """
+        normalized_embedding = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(normalized_embedding))
+        if norm > 0:
+            normalized_embedding = normalized_embedding / norm
+
+        matches: List[Dict[str, Any]] = []
+        for profile in self.list_profiles():
+            if profile_role and profile.get("profile_role") != profile_role:
+                continue
+
+            profile_id = profile.get("profile_id")
+            if not profile_id:
+                continue
+
+            profile_embedding = self.load_speaker_embedding(profile_id)
+            if profile_embedding is None:
+                continue
+
+            normalized_profile = np.asarray(profile_embedding, dtype=np.float32).reshape(-1)
+            profile_norm = float(np.linalg.norm(normalized_profile))
+            if profile_norm > 0:
+                normalized_profile = normalized_profile / profile_norm
+
+            min_len = min(len(normalized_embedding), len(normalized_profile))
+            if min_len == 0:
+                continue
+
+            similarity = float(np.dot(normalized_embedding[:min_len], normalized_profile[:min_len]))
+            matches.append({
+                "profile_id": profile_id,
+                "name": profile.get("name") or profile_id,
+                "profile_role": profile.get("profile_role"),
+                "similarity": similarity,
+                "active_model_type": profile.get("active_model_type"),
+                "has_trained_model": profile.get("has_trained_model"),
+                "sample_count": profile.get("sample_count", 0),
+            })
+
+        matches.sort(key=lambda item: item["similarity"], reverse=True)
+        return matches[: max(limit, 0)]
 
     def create_profile_from_diarization(
         self,

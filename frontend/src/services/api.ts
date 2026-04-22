@@ -622,6 +622,97 @@ export interface ConversionStatusExtended extends ConversionRecord {
   active_model_type?: ActiveModelType
 }
 
+export type ConversionWorkflowStatus =
+  | 'queued'
+  | 'processing'
+  | 'awaiting_review'
+  | 'ready_for_training'
+  | 'training_in_progress'
+  | 'ready_for_conversion'
+  | 'error'
+
+export interface ConversionWorkflowResolvedProfile {
+  profile_id: string
+  name: string
+  profile_role?: ProfileRole
+  has_trained_model?: boolean
+  active_model_type?: ActiveModelType
+  sample_count?: number
+  clean_vocal_minutes?: number
+}
+
+export interface ConversionWorkflowCandidatePayload {
+  role: ProfileRole
+  speaker_id?: string
+  duration_seconds?: number
+  name?: string
+  sample_paths?: string[]
+  source_files?: string[]
+}
+
+export interface ConversionWorkflowReviewItem {
+  review_id: string
+  role: ProfileRole
+  reason: string
+  suggested_match?: {
+    profile_id: string
+    name: string
+    profile_role?: ProfileRole
+    similarity: number
+  } | null
+  candidate: ConversionWorkflowCandidatePayload
+}
+
+export interface ConversionWorkflowResolvedSourceProfile {
+  profile_id: string
+  name: string
+  profile_role?: ProfileRole
+  speaker_id?: string
+  duration_seconds?: number
+  status?: 'matched' | 'created' | 'review_required'
+  suggested_match?: {
+    profile_id: string
+    name: string
+    similarity: number
+  } | null
+}
+
+export interface ConversionWorkflow {
+  workflow_id: string
+  status: ConversionWorkflowStatus
+  stage: string
+  progress: number
+  artist_song: {
+    filename: string
+    path?: string
+  }
+  user_vocals: Array<{
+    filename: string
+    path?: string
+  }>
+  artist_vocals_path?: string | null
+  instrumental_path?: string | null
+  diarization_id?: string | null
+  resolved_source_profiles: ConversionWorkflowResolvedSourceProfile[]
+  resolved_target_profile_id?: string | null
+  resolved_target_profile?: ConversionWorkflowResolvedProfile | null
+  review_items: ConversionWorkflowReviewItem[]
+  training_readiness: {
+    ready: boolean
+    reason: string
+    sample_count?: number
+    clean_vocal_minutes?: number
+  }
+  conversion_readiness: {
+    ready: boolean
+    reason: string
+  }
+  current_training_job_id?: string | null
+  created_at: string
+  updated_at: string
+  error?: string | null
+}
+
 // CUDA kernel metrics
 export interface KernelMetric {
   name: string
@@ -977,6 +1068,88 @@ class ApiService {
     }
 
     return response.json()
+  }
+
+  async listConversionWorkflows(): Promise<ConversionWorkflow[]> {
+    return this.request('/convert/workflows')
+  }
+
+  async getConversionWorkflow(workflowId: string): Promise<ConversionWorkflow> {
+    return this.request(`/convert/workflows/${workflowId}`)
+  }
+
+  async createConversionWorkflow(
+    artistSong: File,
+    userVocalFiles: File[],
+    options?: {
+      target_profile_id?: string | null
+      dominant_source_profile_id?: string | null
+    }
+  ): Promise<ConversionWorkflow> {
+    const formData = new FormData()
+    formData.append('artist_song', artistSong)
+    userVocalFiles.forEach((file) => formData.append('user_vocals', file))
+    if (options?.target_profile_id) {
+      formData.append('target_profile_id', options.target_profile_id)
+    }
+    if (options?.dominant_source_profile_id) {
+      formData.append('dominant_source_profile_id', options.dominant_source_profile_id)
+    }
+
+    const response = await fetch(`${API_BASE}/convert/workflows`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: `Workflow creation failed: ${response.status}` }))
+      throw new ApiError(
+        error.error || `HTTP ${response.status}`,
+        response.status,
+        error.code,
+        error.details
+      )
+    }
+    return response.json()
+  }
+
+  async resolveConversionWorkflowMatch(
+    workflowId: string,
+    payload: {
+      review_id: string
+      resolution: 'use_suggested' | 'use_existing' | 'create_new'
+      profile_id?: string
+      name?: string
+    }
+  ): Promise<ConversionWorkflow> {
+    return this.request(`/convert/workflows/${workflowId}/resolve-match`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
+  async attachConversionWorkflowTrainingJob(workflowId: string, jobId: string): Promise<ConversionWorkflow> {
+    return this.request(`/convert/workflows/${workflowId}/training-job`, {
+      method: 'POST',
+      body: JSON.stringify({ job_id: jobId }),
+    })
+  }
+
+  async convertWorkflow(
+    workflowId: string,
+    settings?: {
+      preset?: string
+      vocal_volume?: number
+      instrumental_volume?: number
+      pitch_shift?: number
+      pipeline_type?: OfflinePipelineType
+      adapter_type?: 'hq' | 'nvfp4' | 'unified'
+      return_stems?: boolean
+    }
+  ): Promise<ConversionJobResponse> {
+    return this.request(`/convert/workflows/${workflowId}/convert`, {
+      method: 'POST',
+      body: JSON.stringify(settings || {}),
+    })
   }
 
   async getConversionStatus(jobId: string): Promise<ConversionRecord> {
