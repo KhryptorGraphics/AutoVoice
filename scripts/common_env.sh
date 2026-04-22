@@ -6,8 +6,19 @@ set -euo pipefail
 AUTOVOICE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTOVOICE_PROJECT_ROOT="$(cd "$AUTOVOICE_SCRIPT_DIR/.." && pwd)"
 AUTOVOICE_ENV_NAME="${AUTOVOICE_ENV_NAME:-autovoice-thor}"
-AUTOVOICE_ENV_PREFIX="${AUTOVOICE_ENV_PREFIX:-/home/kp/anaconda3/envs/${AUTOVOICE_ENV_NAME}}"
+if [[ -z "${AUTOVOICE_ENV_PREFIX:-}" ]]; then
+    if [[ -n "${AUTOVOICE_PYTHON:-}" && -x "${AUTOVOICE_PYTHON}" ]]; then
+        AUTOVOICE_ENV_PREFIX="$(cd "$(dirname "${AUTOVOICE_PYTHON}")/.." && pwd)"
+    elif [[ -n "${PYTHON:-}" && -x "${PYTHON}" ]]; then
+        AUTOVOICE_ENV_PREFIX="$(cd "$(dirname "${PYTHON}")/.." && pwd)"
+    elif [[ -n "${CONDA_PREFIX:-}" ]]; then
+        AUTOVOICE_ENV_PREFIX="${CONDA_PREFIX}"
+    else
+        AUTOVOICE_ENV_PREFIX="${HOME}/anaconda3/envs/${AUTOVOICE_ENV_NAME}"
+    fi
+fi
 AUTOVOICE_PYTHON_DEFAULT="${AUTOVOICE_ENV_PREFIX}/bin/python"
+AUTOVOICE_DATA_DIR="${AUTOVOICE_DATA_DIR:-${DATA_DIR:-${AUTOVOICE_PROJECT_ROOT}/data}}"
 
 autovoice_activate_env() {
     local requested_python="${PYTHON:-${AUTOVOICE_PYTHON:-$AUTOVOICE_PYTHON_DEFAULT}}"

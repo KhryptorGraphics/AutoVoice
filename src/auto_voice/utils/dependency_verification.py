@@ -12,8 +12,7 @@ import os
 import sys
 
 
-EXPECTED_ENV_NAME = "autovoice-thor"
-EXPECTED_ENV_PATH = Path.home() / "anaconda3" / "envs" / EXPECTED_ENV_NAME / "bin" / "python"
+DEFAULT_EXPECTED_ENV_NAME = "autovoice-thor"
 
 
 @dataclass(frozen=True)
@@ -81,25 +80,70 @@ def infer_env_name(executable: str) -> Optional[str]:
     return parts[idx + 1]
 
 
+def resolve_expected_env_name(expected_env_name: Optional[str] = None) -> str:
+    """Resolve the canonical AutoVoice environment name."""
+
+    candidate = (
+        expected_env_name
+        or os.environ.get("AUTOVOICE_ENV_NAME")
+        or os.environ.get("CONDA_DEFAULT_ENV")
+        or DEFAULT_EXPECTED_ENV_NAME
+    )
+    return str(candidate).strip() or DEFAULT_EXPECTED_ENV_NAME
+
+
+def resolve_expected_env_prefix(
+    expected_env_name: Optional[str] = None,
+    *,
+    executable: Optional[str] = None,
+) -> Optional[Path]:
+    """Resolve the expected interpreter prefix without assuming one machine layout."""
+
+    configured_prefix = os.environ.get("AUTOVOICE_ENV_PREFIX")
+    if configured_prefix:
+        return Path(configured_prefix).expanduser()
+
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        return Path(conda_prefix).expanduser()
+
+    resolved_executable = Path(executable or sys.executable).resolve()
+    inferred_name = infer_env_name(str(resolved_executable))
+    resolved_env_name = resolve_expected_env_name(expected_env_name)
+    if inferred_name and inferred_name == resolved_env_name:
+        return resolved_executable.parent.parent
+
+    home = Path.home()
+    if home:
+        return home / "anaconda3" / "envs" / resolved_env_name
+    return None
+
+
 def check_python_environment(
     executable: Optional[str] = None,
-    expected_env_name: str = EXPECTED_ENV_NAME,
+    expected_env_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Collect environment facts for the current Python interpreter."""
 
     resolved = Path(executable or sys.executable).resolve()
+    resolved_env_name = resolve_expected_env_name(expected_env_name)
     inferred_name = infer_env_name(str(resolved))
-    expected_executable = Path.home() / "anaconda3" / "envs" / expected_env_name / "bin" / "python"
+    expected_prefix = resolve_expected_env_prefix(resolved_env_name, executable=str(resolved))
+    expected_executable = expected_prefix / "bin" / "python" if expected_prefix else None
+    conda_default_env = os.environ.get("CONDA_DEFAULT_ENV")
+    matches_expected_env = inferred_name == resolved_env_name or conda_default_env == resolved_env_name
+    matches_expected_executable = resolved == expected_executable if expected_executable else matches_expected_env
 
     return {
         "executable": str(resolved),
         "version": sys.version.split()[0],
-        "expected_env_name": expected_env_name,
-        "expected_executable": str(expected_executable),
-        "conda_default_env": os.environ.get("CONDA_DEFAULT_ENV"),
+        "expected_env_name": resolved_env_name,
+        "expected_env_prefix": str(expected_prefix) if expected_prefix else None,
+        "expected_executable": str(expected_executable) if expected_executable else None,
+        "conda_default_env": conda_default_env,
         "inferred_env_name": inferred_name,
-        "matches_expected_env": inferred_name == expected_env_name,
-        "matches_expected_executable": resolved == expected_executable,
+        "matches_expected_env": matches_expected_env,
+        "matches_expected_executable": matches_expected_executable,
     }
 
 

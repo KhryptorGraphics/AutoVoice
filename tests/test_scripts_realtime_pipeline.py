@@ -15,7 +15,7 @@ import pytest
 import torch
 import numpy as np
 
-from realtime_pipeline import RealtimeVoiceConverter, RealtimeConfig
+from realtime_pipeline import RealtimeVoiceConverter, RealtimeConfig, load_speaker_embedding
 
 
 @pytest.fixture
@@ -79,6 +79,34 @@ class TestRealtimeConverter:
         converted, out_sr = converter.convert_full(audio, sr, speaker_embedding)
         assert len(converted) > 0
         assert out_sr == 22050
+
+
+def test_load_speaker_embedding_uses_data_dir_env(monkeypatch, tmp_path):
+    profile_id = "profile-123"
+    data_dir = tmp_path / "runtime-data"
+    profiles_dir = data_dir / "voice_profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    expected = np.array([0.1, -0.2, 0.3], dtype=np.float32)
+    np.save(profiles_dir / f"{profile_id}.npy", expected)
+
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+
+    loaded = load_speaker_embedding(profile_id)
+
+    assert np.array_equal(loaded, expected)
+
+
+def test_load_speaker_embedding_supports_explicit_data_dir(tmp_path):
+    profile_id = "profile-456"
+    data_dir = tmp_path / "custom-data"
+    profiles_dir = data_dir / "voice_profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    expected = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    np.save(profiles_dir / f"{profile_id}.npy", expected)
+
+    loaded = load_speaker_embedding(profile_id, data_dir=str(data_dir))
+
+    assert np.array_equal(loaded, expected)
 
 
 if __name__ == "__main__":

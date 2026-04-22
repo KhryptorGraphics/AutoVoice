@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -10,7 +11,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def _script_env() -> dict[str, str]:
     env = os.environ.copy()
-    env.setdefault("AUTOVOICE_ENV_PREFIX", "/home/kp/anaconda3/envs/autovoice-thor")
+    env.setdefault("AUTOVOICE_PYTHON", sys.executable)
+    env.setdefault("AUTOVOICE_ENV_PREFIX", sys.prefix)
     env.setdefault("AUTOVOICE_ENV_NAME", "autovoice-thor")
     env.setdefault("AUTOVOICE_DB_PASS", "ci-dry-run-password")
     return env

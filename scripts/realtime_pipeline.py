@@ -30,6 +30,8 @@ import librosa
 import soundfile as sf
 import torchaudio
 
+from auto_voice.storage.paths import resolve_data_dir, resolve_profiles_dir
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -509,10 +511,11 @@ class RealtimeVoiceConverter:
         logger.info("Models unloaded")
 
 
-def load_speaker_embedding(profile_id: str) -> np.ndarray:
+def load_speaker_embedding(profile_id: str, data_dir: Optional[str] = None) -> np.ndarray:
     """Load speaker embedding from profile."""
-    embedding_path = f"data/voice_profiles/{profile_id}.npy"
-    if not Path(embedding_path).exists():
+    profiles_dir = resolve_profiles_dir(data_dir=data_dir)
+    embedding_path = profiles_dir / f"{profile_id}.npy"
+    if not embedding_path.exists():
         raise FileNotFoundError(f"Speaker embedding not found: {embedding_path}")
     return np.load(embedding_path)
 
@@ -524,6 +527,7 @@ def main():
     print("=" * 60 + "\n")
 
     os.chdir(Path(__file__).parent.parent)
+    data_dir = resolve_data_dir(os.environ.get("DATA_DIR"))
 
     WILLIAM_ID = "7da05140-1303-40c6-95d9-5b6e2c3624df"
     CONOR_ID = "9679a6ec-e6e2-43c4-b64e-1f004fed34f9"
@@ -538,17 +542,17 @@ def main():
     converter = RealtimeVoiceConverter(config)
 
     # Load test audio
-    vocals_path = f"data/separated/{WILLIAM_ID}/vocals.wav"
-    if not Path(vocals_path).exists():
+    vocals_path = data_dir / "separated" / WILLIAM_ID / "vocals.wav"
+    if not vocals_path.exists():
         print(f"Test vocals not found: {vocals_path}")
         return
 
-    audio, sr = librosa.load(vocals_path, sr=None, mono=True)
+    audio, sr = librosa.load(str(vocals_path), sr=None, mono=True)
     print(f"Source: {len(audio)/sr:.1f}s @ {sr}Hz")
 
     # Load target embedding
     try:
-        target_embedding = load_speaker_embedding(CONOR_ID)
+        target_embedding = load_speaker_embedding(CONOR_ID, data_dir=str(data_dir))
         print(f"Target: Conor embedding {target_embedding.shape}")
     except FileNotFoundError as e:
         print(f"Error: {e}")
@@ -562,7 +566,7 @@ def main():
     )
 
     # Save output
-    output_dir = Path("data/conversions")
+    output_dir = data_dir / "conversions"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "william_as_conor_REALTIME.wav"
     sf.write(str(output_path), converted, out_sr)

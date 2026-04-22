@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import types
+from pathlib import Path
 
 from auto_voice.utils.dependency_verification import (
     DependencySpec,
     check_dependency,
+    check_python_environment,
     default_dependencies,
     infer_env_name,
 )
@@ -21,6 +23,41 @@ def test_infer_env_name_from_conda_path():
 
 def test_infer_env_name_returns_none_without_env_segment():
     assert infer_env_name("/usr/bin/python3") is None
+
+
+def test_check_python_environment_prefers_configured_env_prefix(monkeypatch, tmp_path):
+    expected_prefix = tmp_path / "envs" / "custom-autovoice"
+    expected_python = expected_prefix / "bin" / "python"
+    expected_python.parent.mkdir(parents=True, exist_ok=True)
+    expected_python.write_text("", encoding="utf-8")
+
+    monkeypatch.setenv("AUTOVOICE_ENV_NAME", "custom-autovoice")
+    monkeypatch.setenv("AUTOVOICE_ENV_PREFIX", str(expected_prefix))
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "custom-autovoice")
+
+    status = check_python_environment(executable=str(expected_python))
+
+    assert status["expected_env_name"] == "custom-autovoice"
+    assert status["expected_env_prefix"] == str(expected_prefix)
+    assert status["expected_executable"] == str(expected_python)
+    assert status["matches_expected_env"] is True
+    assert status["matches_expected_executable"] is True
+
+
+def test_check_python_environment_uses_current_prefix_when_path_matches(monkeypatch, tmp_path):
+    executable = tmp_path / "miniconda3" / "envs" / "autovoice-thor" / "bin" / "python"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text("", encoding="utf-8")
+
+    monkeypatch.delenv("AUTOVOICE_ENV_PREFIX", raising=False)
+    monkeypatch.delenv("CONDA_PREFIX", raising=False)
+    monkeypatch.delenv("CONDA_DEFAULT_ENV", raising=False)
+
+    status = check_python_environment(executable=str(executable))
+
+    assert status["expected_env_prefix"] == str(Path(executable).parent.parent)
+    assert status["matches_expected_env"] is True
+    assert status["matches_expected_executable"] is True
 
 
 def test_default_dependencies_make_tensorrt_optional_by_default():
