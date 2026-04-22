@@ -38,6 +38,21 @@ logger = logging.getLogger(__name__)
 AUTO_MATCH_THRESHOLD = 0.85
 REVIEW_MATCH_THRESHOLD = 0.75
 MIN_ARTIST_DURATION_SECONDS = 1.5
+TERMINAL_WORKFLOW_STATUSES = {
+    "awaiting_review",
+    "ready_for_training",
+    "ready_for_conversion",
+    "training_in_progress",
+    "error",
+}
+RECOVERABLE_WORKFLOW_STATUSES = {"queued", "processing"}
+RECOVERABLE_WORKFLOW_STAGES = {
+    "uploaded",
+    "separating_artist_song",
+    "analyzing_user_vocals",
+    "diarizing_artist_song",
+    "matching_profiles",
+}
 
 
 def _utcnow_iso() -> str:
@@ -57,6 +72,37 @@ def _serialize_match(match: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     return serialized
 
 
+def _serialize_embedding(embedding: Optional[np.ndarray | List[float]]) -> Optional[List[float]]:
+    if embedding is None:
+        return None
+    array = np.asarray(embedding, dtype=np.float32)
+    if array.size == 0:
+        return None
+    return array.astype(np.float32).tolist()
+
+
+def _serialize_speaker_segment(segment: SpeakerSegment) -> Dict[str, Any]:
+    return {
+        "speaker_id": segment.speaker_id,
+        "start": float(segment.start),
+        "end": float(segment.end),
+        "duration": float(segment.duration),
+        "confidence": float(segment.confidence),
+    }
+
+
+def _serialize_diarization_result(diarization: DiarizationResult) -> Dict[str, Any]:
+    return {
+        "num_speakers": int(diarization.num_speakers),
+        "audio_duration": float(diarization.audio_duration),
+        "segments": [_serialize_speaker_segment(segment) for segment in diarization.segments],
+        "speaker_embeddings": {
+            speaker_id: embedding.astype(np.float32).tolist()
+            for speaker_id, embedding in (diarization.speaker_embeddings or {}).items()
+        },
+    }
+
+
 class ConversionWorkflowManager:
     """Runs multi-step conversion intake workflows in the background."""
 
@@ -68,6 +114,8 @@ class ConversionWorkflowManager:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="conversion-workflow")
         self._lock = threading.RLock()
+        self._scheduled_workflows: set[str] = set()
+        self._recover_incomplete_workflows()
 
     def _profile_store(self) -> VoiceProfileStore:
         return VoiceProfileStore(
@@ -148,13 +196,16 @@ class ConversionWorkflowManager:
             "dominant_source_profile_override": dominant_source_profile_override,
             "training_readiness": {"ready": False, "reason": "workflow_incomplete"},
             "conversion_readiness": {"ready": False, "reason": "workflow_incomplete"},
+            "user_analysis": {"status": "pending"},
+            "artist_analysis": {"status": "pending"},
+            "recovery": {"resume_count": 0, "last_resume_at": None, "last_resume_reason": None},
             "current_training_job_id": None,
             "created_at": _utcnow_iso(),
             "updated_at": _utcnow_iso(),
             "error": None,
         }
         self.state_store.save_conversion_workflow(workflow)
-        self._executor.submit(self._run_workflow, workflow_id)
+        self._schedule_workflow_run(workflow_id, reason="created")
         return self.get_workflow(workflow_id) or workflow
 
     def resolve_review_item(
@@ -196,20 +247,43 @@ class ConversionWorkflowManager:
                 candidate,
                 forced_name=name,
                 role=role,
+                workflow_id=workflow_id,
             )
         else:
             raise ValueError("resolution must be one of: use_suggested, use_existing, create_new")
 
         candidate = matching_item.get("candidate") or {}
         if resolution in {"use_suggested", "use_existing"}:
-            self._attach_candidate_to_profile(store, candidate, resolved_profile_id)
+            self._attach_candidate_to_profile(store, candidate, resolved_profile_id, workflow_id=workflow_id)
 
         if candidate.get("role") == PROFILE_ROLE_TARGET_USER:
             workflow["resolved_target_profile_id"] = resolved_profile_id
+            user_analysis = dict(workflow.get("user_analysis") or {})
+            user_analysis["status"] = "resolved"
+            user_analysis["resolved_target_profile_id"] = resolved_profile_id
+            user_analysis["resolution"] = resolution
+            workflow["user_analysis"] = user_analysis
         else:
             resolved_sources = list(workflow.get("resolved_source_profiles") or [])
             resolved_sources.append(self._resolved_profile_entry(candidate, resolved_profile_id, store))
             workflow["resolved_source_profiles"] = resolved_sources
+            artist_analysis = dict(workflow.get("artist_analysis") or {})
+            speaker_assignments = list(artist_analysis.get("speaker_assignments") or [])
+            updated_assignment = False
+            for assignment in speaker_assignments:
+                if assignment.get("speaker_id") == candidate.get("speaker_id"):
+                    assignment["resolved_profile_id"] = resolved_profile_id
+                    assignment["resolution"] = resolution
+                    updated_assignment = True
+                    break
+            if not updated_assignment:
+                speaker_assignments.append({
+                    "speaker_id": candidate.get("speaker_id"),
+                    "resolved_profile_id": resolved_profile_id,
+                    "resolution": resolution,
+                })
+            artist_analysis["speaker_assignments"] = speaker_assignments
+            workflow["artist_analysis"] = artist_analysis
 
         workflow["review_items"] = [item for item in review_items if item.get("review_id") != review_id]
         workflow["updated_at"] = _utcnow_iso()
@@ -281,22 +355,92 @@ class ConversionWorkflowManager:
             "runtime_backend": "pytorch_full_model" if profile.get("active_model_type") == "full_model" else "pytorch",
         }
 
+    def _schedule_workflow_run(self, workflow_id: str, *, reason: str) -> None:
+        with self._lock:
+            if workflow_id in self._scheduled_workflows:
+                return
+            self._scheduled_workflows.add(workflow_id)
+        future = self._executor.submit(self._run_workflow, workflow_id)
+
+        def _clear(_future) -> None:
+            with self._lock:
+                self._scheduled_workflows.discard(workflow_id)
+
+        future.add_done_callback(_clear)
+
+    def _workflow_needs_recovery(self, workflow: Dict[str, Any]) -> bool:
+        status = str(workflow.get("status") or "")
+        stage = str(workflow.get("stage") or "")
+        if status in TERMINAL_WORKFLOW_STATUSES:
+            return False
+        if workflow.get("review_items"):
+            return False
+        if workflow.get("current_training_job_id"):
+            return False
+        return status in RECOVERABLE_WORKFLOW_STATUSES or stage in RECOVERABLE_WORKFLOW_STAGES
+
+    def _recover_incomplete_workflows(self) -> None:
+        for workflow in self.state_store.list_conversion_workflows():
+            if not self._workflow_needs_recovery(workflow):
+                continue
+            recovery = dict(workflow.get("recovery") or {})
+            recovery["resume_count"] = int(recovery.get("resume_count") or 0) + 1
+            recovery["last_resume_at"] = _utcnow_iso()
+            recovery["last_resume_reason"] = "startup_recovery"
+            workflow["recovery"] = recovery
+            workflow["status"] = "processing"
+            workflow["updated_at"] = _utcnow_iso()
+            self.state_store.save_conversion_workflow(workflow)
+            self._schedule_workflow_run(workflow["workflow_id"], reason="startup_recovery")
+
+    def _user_analysis_complete(self, workflow: Dict[str, Any]) -> bool:
+        status = str(((workflow.get("user_analysis") or {}).get("status")) or "")
+        return status in {"resolved", "awaiting_review"} or bool(workflow.get("resolved_target_profile_id"))
+
+    def _artist_analysis_complete(self, workflow: Dict[str, Any]) -> bool:
+        status = str(((workflow.get("artist_analysis") or {}).get("status")) or "")
+        return status in {"resolved", "awaiting_review"} and bool(workflow.get("diarization_id"))
+
     def _run_workflow(self, workflow_id: str) -> None:
         with self.app.app_context():
             try:
-                self._update_workflow(workflow_id, status="processing", stage="separating_artist_song", progress=10)
-                separation_result = self._separate_artist_song(workflow_id)
-                self._update_workflow(
-                    workflow_id,
-                    artist_vocals_path=separation_result["artist_vocals_path"],
-                    instrumental_path=separation_result["instrumental_path"],
-                    stage="analyzing_user_vocals",
-                    progress=30,
-                )
+                workflow = self.state_store.get_conversion_workflow(workflow_id) or {}
+                artist_vocals_path = workflow.get("artist_vocals_path")
+                instrumental_path = workflow.get("instrumental_path")
 
-                self._analyze_user_vocals(workflow_id)
-                self._update_workflow(workflow_id, stage="diarizing_artist_song", progress=55)
-                self._analyze_artist_song(workflow_id)
+                if not artist_vocals_path or not os.path.exists(str(artist_vocals_path)):
+                    self._update_workflow(
+                        workflow_id,
+                        status="processing",
+                        stage="separating_artist_song",
+                        progress=10,
+                    )
+                    separation_result = self._separate_artist_song(workflow_id)
+                    self._update_workflow(
+                        workflow_id,
+                        artist_vocals_path=separation_result["artist_vocals_path"],
+                        instrumental_path=separation_result["instrumental_path"],
+                        stage="analyzing_user_vocals",
+                        progress=30,
+                    )
+
+                workflow = self.state_store.get_conversion_workflow(workflow_id) or {}
+                if not self._user_analysis_complete(workflow):
+                    self._update_workflow(workflow_id, status="processing", stage="analyzing_user_vocals", progress=30)
+                    self._analyze_user_vocals(workflow_id)
+
+                workflow = self.state_store.get_conversion_workflow(workflow_id) or {}
+                if workflow.get("status") == "awaiting_review":
+                    return
+
+                if not self._artist_analysis_complete(workflow):
+                    self._update_workflow(workflow_id, status="processing", stage="diarizing_artist_song", progress=55)
+                    self._analyze_artist_song(workflow_id)
+
+                workflow = self.state_store.get_conversion_workflow(workflow_id) or {}
+                if workflow.get("status") == "awaiting_review":
+                    return
+
                 self._finalize_workflow(workflow_id)
             except Exception as exc:
                 logger.error("Conversion workflow %s failed: %s", workflow_id, exc, exc_info=True)
@@ -453,12 +597,34 @@ class ConversionWorkflowManager:
             profile_role=PROFILE_ROLE_TARGET_USER,
             limit=5,
         )
+        user_analysis = {
+            "status": "pending",
+            "aggregate_embedding": aggregate_embedding.astype(np.float32).tolist(),
+            "multi_speaker_detected": multi_speaker_detected,
+            "suggested_matches": [_serialize_match(match) for match in suggested_matches],
+        }
 
         if target_override:
-            self._attach_user_samples(store, target_override, user_vocals, aggregate_embedding)
+            attachment_summary = self._attach_user_samples(
+                store,
+                target_override,
+                user_vocals,
+                aggregate_embedding,
+                workflow_id=workflow_id,
+            )
+            user_analysis.update(
+                {
+                    "status": "resolved",
+                    "resolution": "target_override",
+                    "resolved_target_profile_id": target_override,
+                    "attachment_summary": attachment_summary,
+                }
+            )
             self._update_workflow(
                 workflow_id,
                 resolved_target_profile_id=target_override,
+                user_vocals=user_vocals,
+                user_analysis=user_analysis,
                 progress=45,
             )
             return
@@ -486,16 +652,32 @@ class ConversionWorkflowManager:
                 stage="awaiting_review",
                 progress=45,
                 review_items=review_items,
+                user_vocals=user_vocals,
+                user_analysis={**user_analysis, "status": "awaiting_review", "reason": "multiple_speakers_detected"},
             )
             return
 
         similarity = float(best_match.get("similarity") or 0.0) if best_match else 0.0
         if best_match and similarity >= AUTO_MATCH_THRESHOLD:
             resolved_profile_id = str(best_match["profile_id"])
-            self._attach_user_samples(store, resolved_profile_id, user_vocals, aggregate_embedding)
+            attachment_summary = self._attach_user_samples(
+                store,
+                resolved_profile_id,
+                user_vocals,
+                aggregate_embedding,
+                workflow_id=workflow_id,
+            )
             self._update_workflow(
                 workflow_id,
                 resolved_target_profile_id=resolved_profile_id,
+                user_vocals=user_vocals,
+                user_analysis={
+                    **user_analysis,
+                    "status": "resolved",
+                    "resolution": "auto_match",
+                    "resolved_target_profile_id": resolved_profile_id,
+                    "attachment_summary": attachment_summary,
+                },
                 progress=45,
             )
             return
@@ -522,6 +704,8 @@ class ConversionWorkflowManager:
                 stage="awaiting_review",
                 progress=45,
                 review_items=review_items,
+                user_vocals=user_vocals,
+                user_analysis={**user_analysis, "status": "awaiting_review", "reason": "ambiguous_match"},
             )
             return
 
@@ -529,10 +713,18 @@ class ConversionWorkflowManager:
             store,
             user_vocals=user_vocals,
             aggregate_embedding=aggregate_embedding,
+            workflow_id=workflow_id,
         )
         self._update_workflow(
             workflow_id,
             resolved_target_profile_id=profile_id,
+            user_vocals=user_vocals,
+            user_analysis={
+                **user_analysis,
+                "status": "resolved",
+                "resolution": "created_new",
+                "resolved_target_profile_id": profile_id,
+            },
             progress=45,
         )
 
@@ -548,6 +740,7 @@ class ConversionWorkflowManager:
         diarization_id = str(uuid.uuid4())
         resolved_profiles: List[Dict[str, Any]] = list(workflow.get("resolved_source_profiles") or [])
         review_items: List[Dict[str, Any]] = list(workflow.get("review_items") or [])
+        speaker_assignments: List[Dict[str, Any]] = []
         dominant_speaker_id = None
         dominant_duration = -1.0
 
@@ -594,8 +787,23 @@ class ConversionWorkflowManager:
 
             override_profile_id = workflow.get("dominant_source_profile_override")
             if override_profile_id and speaker_id == dominant_speaker_id:
-                self._attach_candidate_to_profile(store, candidate, override_profile_id)
+                self._attach_candidate_to_profile(
+                    store,
+                    candidate,
+                    override_profile_id,
+                    workflow_id=workflow_id,
+                )
                 resolved_profiles.append(self._resolved_profile_entry(candidate, override_profile_id, store))
+                speaker_assignments.append(
+                    {
+                        "speaker_id": speaker_id,
+                        "duration_seconds": float(duration),
+                        "segment_count": len(speaker_segments),
+                        "resolved_profile_id": override_profile_id,
+                        "resolution": "dominant_source_profile_override",
+                        "sample_paths": [str(extracted_path)],
+                    }
+                )
                 continue
 
             ranked_matches = store.rank_speaker_embedding_matches(
@@ -608,11 +816,37 @@ class ConversionWorkflowManager:
 
             if best_match and similarity >= AUTO_MATCH_THRESHOLD:
                 resolved_profile_id = str(best_match["profile_id"])
-                self._attach_candidate_to_profile(store, candidate, resolved_profile_id)
+                self._attach_candidate_to_profile(
+                    store,
+                    candidate,
+                    resolved_profile_id,
+                    workflow_id=workflow_id,
+                )
                 resolved_profiles.append(self._resolved_profile_entry(candidate, resolved_profile_id, store, suggested_match=best_match))
+                speaker_assignments.append(
+                    {
+                        "speaker_id": speaker_id,
+                        "duration_seconds": float(duration),
+                        "segment_count": len(speaker_segments),
+                        "resolved_profile_id": resolved_profile_id,
+                        "resolution": "auto_match",
+                        "suggested_match": _serialize_match(best_match),
+                        "sample_paths": [str(extracted_path)],
+                    }
+                )
                 continue
 
             if best_match and similarity >= REVIEW_MATCH_THRESHOLD:
+                speaker_assignments.append(
+                    {
+                        "speaker_id": speaker_id,
+                        "duration_seconds": float(duration),
+                        "segment_count": len(speaker_segments),
+                        "resolution": "awaiting_review",
+                        "suggested_match": _serialize_match(best_match),
+                        "sample_paths": [str(extracted_path)],
+                    }
+                )
                 review_items.append(
                     self._build_review_item(
                         role=PROFILE_ROLE_SOURCE_ARTIST,
@@ -627,8 +861,19 @@ class ConversionWorkflowManager:
                 store,
                 candidate,
                 role=PROFILE_ROLE_SOURCE_ARTIST,
+                workflow_id=workflow_id,
             )
             resolved_profiles.append(self._resolved_profile_entry(candidate, new_profile_id, store))
+            speaker_assignments.append(
+                {
+                    "speaker_id": speaker_id,
+                    "duration_seconds": float(duration),
+                    "segment_count": len(speaker_segments),
+                    "resolved_profile_id": new_profile_id,
+                    "resolution": "created_new",
+                    "sample_paths": [str(extracted_path)],
+                }
+            )
 
         next_status = "awaiting_review" if review_items else "processing"
         next_stage = "awaiting_review" if review_items else "matching_profiles"
@@ -637,6 +882,13 @@ class ConversionWorkflowManager:
             diarization_id=diarization_id,
             resolved_source_profiles=resolved_profiles,
             review_items=review_items,
+            artist_analysis={
+                "status": "awaiting_review" if review_items else "resolved",
+                "diarization": _serialize_diarization_result(diarization),
+                "diarization_id": diarization_id,
+                "dominant_speaker_id": dominant_speaker_id,
+                "speaker_assignments": speaker_assignments,
+            },
             status=next_status,
             stage=next_stage,
             progress=75 if review_items else 80,
@@ -648,11 +900,24 @@ class ConversionWorkflowManager:
         profile_id: str,
         user_vocals: List[Dict[str, Any]],
         aggregate_embedding: np.ndarray,
-    ) -> None:
+        *,
+        workflow_id: str,
+    ) -> Dict[str, int]:
         store.save_speaker_embedding(profile_id, aggregate_embedding)
+        attached = 0
+        skipped_existing = 0
         for item in user_vocals:
             audio_path = item.get("path")
             if not audio_path or not os.path.exists(audio_path):
+                continue
+            if self._workflow_sample_exists(
+                store,
+                profile_id=profile_id,
+                workflow_id=workflow_id,
+                sample_path=audio_path,
+                provenance="conversion_workflow_user_vocals",
+            ):
+                skipped_existing += 1
                 continue
             duration_seconds = self._duration_seconds(audio_path)
             store.add_training_sample(
@@ -662,9 +927,13 @@ class ConversionWorkflowManager:
                 source_file=item.get("filename") or os.path.basename(audio_path),
                 extra_metadata={
                     "provenance": "conversion_workflow_user_vocals",
+                    "workflow_id": workflow_id,
+                    "workflow_source_path": str(Path(audio_path).resolve()),
                     "workflow_auto_attached": True,
                 },
             )
+            attached += 1
+        return {"attached": attached, "skipped_existing": skipped_existing}
 
     def _create_target_profile_from_samples(
         self,
@@ -672,6 +941,7 @@ class ConversionWorkflowManager:
         *,
         user_vocals: List[Dict[str, Any]],
         aggregate_embedding: np.ndarray,
+        workflow_id: str,
     ) -> str:
         profile_name = _safe_name(user_vocals[0].get("filename") if user_vocals else None, "Target User")
         profile_id = store.save({
@@ -680,7 +950,13 @@ class ConversionWorkflowManager:
             "profile_role": PROFILE_ROLE_TARGET_USER,
             "user_id": "system",
         })
-        self._attach_user_samples(store, profile_id, user_vocals, aggregate_embedding)
+        self._attach_user_samples(
+            store,
+            profile_id,
+            user_vocals,
+            aggregate_embedding,
+            workflow_id=workflow_id,
+        )
         return profile_id
 
     def _resolved_profile_entry(
@@ -726,6 +1002,7 @@ class ConversionWorkflowManager:
         *,
         forced_name: Optional[str] = None,
         role: str,
+        workflow_id: str,
     ) -> str:
         profile_id = store.save({
             "name": forced_name or candidate.get("name") or "Auto-created profile",
@@ -733,7 +1010,7 @@ class ConversionWorkflowManager:
             "profile_role": role,
             "user_id": "system",
         })
-        self._attach_candidate_to_profile(store, candidate, profile_id)
+        self._attach_candidate_to_profile(store, candidate, profile_id, workflow_id=workflow_id)
         return profile_id
 
     def _attach_candidate_to_profile(
@@ -741,6 +1018,8 @@ class ConversionWorkflowManager:
         store: VoiceProfileStore,
         candidate: Dict[str, Any],
         profile_id: str,
+        *,
+        workflow_id: Optional[str] = None,
     ) -> None:
         embedding = np.asarray(candidate.get("embedding") or [], dtype=np.float32)
         if embedding.size:
@@ -751,6 +1030,15 @@ class ConversionWorkflowManager:
         ):
             if not sample_path or not os.path.exists(sample_path):
                 continue
+            if workflow_id and self._workflow_sample_exists(
+                store,
+                profile_id=profile_id,
+                workflow_id=workflow_id,
+                sample_path=sample_path,
+                provenance="conversion_workflow_candidate",
+                speaker_id=str(candidate.get("speaker_id") or ""),
+            ):
+                continue
             store.add_training_sample(
                 profile_id=profile_id,
                 vocals_path=sample_path,
@@ -758,10 +1046,36 @@ class ConversionWorkflowManager:
                 source_file=source_file or os.path.basename(sample_path),
                 extra_metadata={
                     "provenance": "conversion_workflow_candidate",
+                    "workflow_id": workflow_id,
+                    "workflow_source_path": str(Path(sample_path).resolve()),
                     "speaker_id": candidate.get("speaker_id"),
                     "workflow_auto_attached": True,
                 },
             )
+
+    def _workflow_sample_exists(
+        self,
+        store: VoiceProfileStore,
+        *,
+        profile_id: str,
+        workflow_id: str,
+        sample_path: str,
+        provenance: str,
+        speaker_id: Optional[str] = None,
+    ) -> bool:
+        resolved_path = str(Path(sample_path).resolve())
+        for sample in store.list_training_samples(profile_id):
+            metadata = dict(sample.extra_metadata or {})
+            if metadata.get("provenance") != provenance:
+                continue
+            if metadata.get("workflow_id") != workflow_id:
+                continue
+            if str(metadata.get("workflow_source_path") or "") != resolved_path:
+                continue
+            if speaker_id is not None and str(metadata.get("speaker_id") or "") != str(speaker_id):
+                continue
+            return True
+        return False
 
     def _duration_seconds(self, audio_path: str) -> float:
         if sf is None:
