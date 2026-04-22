@@ -70,6 +70,19 @@ The live AutoVoice app on this host is served behind Apache and the existing
 Apache serves the built frontend directly from `frontend/dist` and reverse
 proxies `/api`, `/socket.io`, and `/health` to the backend on `127.0.0.1:10600`.
 
+Because AutoVoice accepts large multipart audio uploads, Apache's ModSecurity
+request-body limit must be raised above the default `13,107,200` bytes on the
+live host. The current production host is configured with:
+
+- `SecRequestBodyLimit 262144000`
+
+If this limit is reset during a host rebuild, the upload APIs will fail before
+the app sees the request, typically as `413 Request Entity Too Large` on:
+
+- `/api/v1/convert/workflows`
+- `/api/v1/karaoke/upload`
+- profile sample/song upload endpoints
+
 The current vhost accepts both hostnames:
 
 - `autovoice.giggadev.com`
