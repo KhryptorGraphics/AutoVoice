@@ -7,6 +7,7 @@ for featured artist detection.
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import json
 import uuid
@@ -27,16 +28,37 @@ def _find_ytdlp() -> str:
     if ytdlp:
         return ytdlp
 
-    # Check common conda locations
-    common_paths = [
-        '/home/kp/anaconda3/bin/yt-dlp',
-        '/home/kp/anaconda3/envs/autovoice-thor/bin/yt-dlp',
-        '/usr/local/bin/yt-dlp',
-        '/usr/bin/yt-dlp',
-        os.path.expanduser('~/.local/bin/yt-dlp'),
-    ]
+    candidates = []
+    configured = os.environ.get("YT_DLP_BIN")
+    if configured:
+        candidates.append(configured)
 
-    for path in common_paths:
+    exe_path = Path(sys.executable).resolve()
+    candidates.extend(
+        [
+            str(exe_path.with_name("yt-dlp")),
+            str(Path(sys.prefix) / "bin" / "yt-dlp"),
+            str(Path(sys.exec_prefix) / "bin" / "yt-dlp"),
+        ]
+    )
+
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        candidates.append(str(Path(conda_prefix) / "bin" / "yt-dlp"))
+
+    candidates.extend(
+        [
+            os.path.expanduser('~/.local/bin/yt-dlp'),
+            '/usr/local/bin/yt-dlp',
+            '/usr/bin/yt-dlp',
+        ]
+    )
+
+    seen = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
 

@@ -119,6 +119,15 @@ EXPERIMENTAL_PIPELINES = {
     if pipeline.stability == "experimental"
 }
 
+REFERENCE_AUDIO_FIELDS = (
+    "path",
+    "source",
+    "sample_id",
+    "source_file",
+    "duration_seconds",
+    "created_at",
+)
+
 
 def get_pipeline_definition(pipeline_type: str) -> PipelineDefinition:
     """Return the canonical definition for one pipeline."""
@@ -166,6 +175,59 @@ def get_pipeline_status_template() -> Dict[str, Dict[str, Any]]:
             entry["features"] = list(pipeline.features)
         status[pipeline.pipeline_type] = entry
     return status
+
+
+def normalize_reference_audio_entries(
+    entries: Optional[Iterable[object]],
+    *,
+    require_exists: bool = False,
+) -> list[Dict[str, Any]]:
+    """Normalize reference-audio entries to one canonical list schema."""
+    normalized: list[Dict[str, Any]] = []
+    seen_paths: set[str] = set()
+
+    for entry in entries or ():
+        payload: Dict[str, Any]
+        if isinstance(entry, Mapping):
+            payload = dict(entry)
+        else:
+            payload = {"path": entry}
+
+        raw_path = payload.get("path") or payload.get("vocals_path")
+        if raw_path is None:
+            continue
+
+        path_text = str(Path(str(raw_path)))
+        if not path_text:
+            continue
+        if require_exists and not Path(path_text).exists():
+            continue
+        if path_text in seen_paths:
+            continue
+
+        duration = payload.get("duration_seconds", payload.get("duration"))
+        normalized_entry: Dict[str, Any] = {"path": path_text}
+        if payload.get("source"):
+            normalized_entry["source"] = str(payload["source"])
+        if payload.get("sample_id"):
+            normalized_entry["sample_id"] = str(payload["sample_id"])
+        if payload.get("source_file"):
+            normalized_entry["source_file"] = str(payload["source_file"])
+        if duration not in (None, ""):
+            normalized_entry["duration_seconds"] = float(duration)
+        if payload.get("created_at"):
+            normalized_entry["created_at"] = str(payload["created_at"])
+
+        for field_name in REFERENCE_AUDIO_FIELDS:
+            if field_name in normalized_entry:
+                continue
+            if field_name in payload and payload[field_name] not in (None, ""):
+                normalized_entry[field_name] = payload[field_name]
+
+        normalized.append(normalized_entry)
+        seen_paths.add(path_text)
+
+    return normalized
 
 
 @dataclass
@@ -267,6 +329,10 @@ def validate_packaged_artifact_manifest(payload: Mapping[str, Any]) -> Dict[str,
     normalized["artifacts"] = dict(payload["artifacts"])
     normalized["compatibility"] = dict(payload["compatibility"])
     normalized["metadata"] = dict(payload.get("metadata", {}))
+    if "reference_audio" in normalized["metadata"]:
+        normalized["metadata"]["reference_audio"] = normalize_reference_audio_entries(
+            normalized["metadata"]["reference_audio"]
+        )
     return normalized
 
 

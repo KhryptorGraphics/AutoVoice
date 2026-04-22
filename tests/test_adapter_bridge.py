@@ -11,15 +11,24 @@ Tests cover:
 - Error handling for missing/corrupt files
 """
 import json
-import os
-import tempfile
 from pathlib import Path
-from typing import Dict
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 import torch
+
+from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+
+def _write_wav(path: Path, frames: int = 1600) -> None:
+    import wave
+
+    with wave.open(str(path), "w") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\x00" * frames)
 
 
 class TestAdapterBridgeInit:
@@ -106,12 +115,12 @@ class TestAdapterBridgeInit:
         """AdapterBridge uses default directories when not specified."""
         from auto_voice.inference.adapter_bridge import AdapterBridge
 
-        with patch.object(Path, 'glob', return_value=[]):
+        with patch.object(VoiceProfileStore, "list_profiles", return_value=[]):
             bridge = AdapterBridge(device="cpu")
 
         assert "data/voice_profiles" in str(bridge.profiles_dir)
         assert "data/separated_youtube" in str(bridge.training_audio_dir)
-        assert "data/trained_models/hq" in str(bridge.lora_dir)
+        assert "data/trained_models" in str(bridge.lora_dir)
 
 
 class TestVoiceReferenceLoading:
@@ -123,39 +132,34 @@ class TestVoiceReferenceLoading:
         from auto_voice.inference.adapter_bridge import AdapterBridge
 
         profiles_dir = tmp_path / "profiles"
+        samples_dir = tmp_path / "samples"
         training_dir = tmp_path / "training"
         lora_dir = tmp_path / "loras"
 
-        profiles_dir.mkdir()
         training_dir.mkdir()
-        lora_dir.mkdir()
+        store = VoiceProfileStore(
+            profiles_dir=str(profiles_dir),
+            samples_dir=str(samples_dir),
+            trained_models_dir=str(lora_dir),
+        )
+        profile_id = store.save(
+            {
+                "profile_id": "profile-abc",
+                "name": "John Artist",
+                "embedding": np.random.randn(256).astype(np.float32),
+            }
+        )
 
-        # Create test profile
-        profile_data = {
-            "profile_id": "profile-abc",
-            "name": "John Artist"
-        }
-        with open(profiles_dir / "profile-abc.json", "w") as f:
-            json.dump(profile_data, f)
+        vocal_file = tmp_path / "source_vocals.wav"
+        _write_wav(vocal_file, frames=16000 * 12)
+        training_sample = store.add_training_sample(
+            profile_id=profile_id,
+            vocals_path=str(vocal_file),
+            duration=12.0,
+        )
 
-        # Create artist audio directory with vocals
-        artist_dir = training_dir / "john_artist"
-        artist_dir.mkdir()
-
-        # Create fake vocal files (with some content for size estimation)
-        for i in range(3):
-            vocal_file = artist_dir / f"song_{i}_vocals.wav"
-            # Write enough bytes to simulate ~10s of audio at 44.1kHz
-            with open(vocal_file, "wb") as f:
-                f.write(b"\x00" * (88200 * 10))  # ~10s
-
-        # Create speaker embedding
-        embedding = np.random.randn(256).astype(np.float32)
-        np.save(profiles_dir / "profile-abc.npy", embedding)
-
-        # Create LoRA checkpoint
         lora_state = {"layer1.weight": torch.randn(64, 64)}
-        torch.save({"lora_state": lora_state}, lora_dir / "profile-abc_hq_lora.pt")
+        torch.save({"lora_state": lora_state}, lora_dir / "profile-abc_adapter.pt")
 
         bridge = AdapterBridge(
             profiles_dir=str(profiles_dir),
@@ -164,13 +168,13 @@ class TestVoiceReferenceLoading:
             device="cpu"
         )
 
-        return bridge, profiles_dir, training_dir, lora_dir
+        return bridge, profiles_dir, training_dir, lora_dir, training_sample
 
     def test_get_voice_reference_returns_dataclass(self, bridge_setup):
         """get_voice_reference returns VoiceReference dataclass."""
         from auto_voice.inference.adapter_bridge import VoiceReference
 
-        bridge, _, _, _ = bridge_setup
+        bridge, _, _, _, _ = bridge_setup
         ref = bridge.get_voice_reference("profile-abc")
 
         assert isinstance(ref, VoiceReference)
@@ -179,16 +183,16 @@ class TestVoiceReferenceLoading:
 
     def test_get_voice_reference_finds_audio_files(self, bridge_setup):
         """get_voice_reference finds reference audio files."""
-        bridge, _, _, _ = bridge_setup
+        bridge, _, _, _, training_sample = bridge_setup
         ref = bridge.get_voice_reference("profile-abc")
 
-        assert len(ref.reference_paths) > 0
+        assert ref.reference_paths == [Path(training_sample.vocals_path)]
         assert all(p.suffix == ".wav" for p in ref.reference_paths)
         assert all("vocals" in p.name for p in ref.reference_paths)
 
     def test_get_voice_reference_loads_embedding(self, bridge_setup):
         """get_voice_reference loads pre-computed speaker embedding."""
-        bridge, _, _, _ = bridge_setup
+        bridge, _, _, _, _ = bridge_setup
         ref = bridge.get_voice_reference("profile-abc")
 
         assert ref.speaker_embedding is not None
@@ -196,31 +200,30 @@ class TestVoiceReferenceLoading:
 
     def test_get_voice_reference_finds_lora_path(self, bridge_setup):
         """get_voice_reference finds LoRA checkpoint path."""
-        bridge, _, _, lora_dir = bridge_setup
+        bridge, _, _, lora_dir, _ = bridge_setup
         ref = bridge.get_voice_reference("profile-abc")
 
         assert ref.lora_path is not None
         assert ref.lora_path.exists()
-        assert "hq_lora.pt" in str(ref.lora_path)
+        assert ref.lora_path == lora_dir / "profile-abc_adapter.pt"
 
     def test_get_voice_reference_estimates_duration(self, bridge_setup):
         """get_voice_reference estimates total audio duration."""
-        bridge, _, _, _ = bridge_setup
+        bridge, _, _, _, _ = bridge_setup
         ref = bridge.get_voice_reference("profile-abc")
 
-        # We created 3 files of ~10s each
-        assert ref.total_duration > 20.0  # At least 20s total
+        assert ref.total_duration == pytest.approx(12.0)
 
     def test_get_voice_reference_max_references(self, bridge_setup):
         """get_voice_reference respects max_references parameter."""
-        bridge, _, _, _ = bridge_setup
+        bridge, _, _, _, _ = bridge_setup
         ref = bridge.get_voice_reference("profile-abc", max_references=2)
 
         assert len(ref.reference_paths) <= 2
 
     def test_get_voice_reference_caching(self, bridge_setup):
         """get_voice_reference caches results."""
-        bridge, _, _, _ = bridge_setup
+        bridge, _, _, _, _ = bridge_setup
 
         ref1 = bridge.get_voice_reference("profile-abc")
         ref2 = bridge.get_voice_reference("profile-abc")
@@ -229,7 +232,7 @@ class TestVoiceReferenceLoading:
 
     def test_get_voice_reference_profile_not_found(self, bridge_setup):
         """get_voice_reference raises ValueError for missing profile."""
-        bridge, _, _, _ = bridge_setup
+        bridge, _, _, _, _ = bridge_setup
 
         with pytest.raises(ValueError, match="Profile not found"):
             bridge.get_voice_reference("nonexistent-profile")
@@ -308,14 +311,14 @@ class TestLoRALoading:
         from auto_voice.inference.adapter_bridge import AdapterBridge
 
         profiles_dir = tmp_path / "profiles"
+        samples_dir = tmp_path / "samples"
         lora_dir = tmp_path / "loras"
-        profiles_dir.mkdir()
-        lora_dir.mkdir()
-
-        # Create test profile
-        profile_data = {"profile_id": "lora-test", "name": "LoRA Test"}
-        with open(profiles_dir / "lora-test.json", "w") as f:
-            json.dump(profile_data, f)
+        store = VoiceProfileStore(
+            profiles_dir=str(profiles_dir),
+            samples_dir=str(samples_dir),
+            trained_models_dir=str(lora_dir),
+        )
+        store.save({"profile_id": "lora-test", "name": "LoRA Test"})
 
         # Create LoRA checkpoint with state dict
         lora_state = {
@@ -333,7 +336,7 @@ class TestLoRALoading:
             "status": "completed",
             "config": {"lr": 1e-4, "rank": 32},
         }
-        torch.save(checkpoint, lora_dir / "lora-test_hq_lora.pt")
+        torch.save(checkpoint, lora_dir / "lora-test_adapter.pt")
 
         bridge = AdapterBridge(
             profiles_dir=str(profiles_dir),
@@ -410,35 +413,30 @@ class TestProfileListing:
         from auto_voice.inference.adapter_bridge import AdapterBridge
 
         profiles_dir = tmp_path / "profiles"
+        samples_dir = tmp_path / "samples"
         training_dir = tmp_path / "training"
         lora_dir = tmp_path / "loras"
 
-        profiles_dir.mkdir()
         training_dir.mkdir()
-        lora_dir.mkdir()
+        store = VoiceProfileStore(
+            profiles_dir=str(profiles_dir),
+            samples_dir=str(samples_dir),
+            trained_models_dir=str(lora_dir),
+        )
 
-        # Profile 1: has both LoRA and reference audio
-        profile1 = {"profile_id": "profile-1", "name": "Alpha Singer"}
-        with open(profiles_dir / "profile-1.json", "w") as f:
-            json.dump(profile1, f)
-        (training_dir / "alpha_singer").mkdir()
-        with open(training_dir / "alpha_singer" / "song_vocals.wav", "wb") as f:
-            f.write(b"\x00" * 88200)
-        torch.save({}, lora_dir / "profile-1_hq_lora.pt")
+        store.save({"profile_id": "profile-1", "name": "Alpha Singer"})
+        sample_one = tmp_path / "alpha.wav"
+        _write_wav(sample_one)
+        store.add_training_sample("profile-1", str(sample_one), duration=1.0)
+        torch.save({}, lora_dir / "profile-1_adapter.pt")
 
-        # Profile 2: only LoRA, no reference audio (unique name to avoid fuzzy match)
-        profile2 = {"profile_id": "profile-2", "name": "Zeta Performer"}
-        with open(profiles_dir / "profile-2.json", "w") as f:
-            json.dump(profile2, f)
-        torch.save({}, lora_dir / "profile-2_hq_lora.pt")
+        store.save({"profile_id": "profile-2", "name": "Zeta Performer"})
+        torch.save({}, lora_dir / "profile-2_adapter.pt")
 
-        # Profile 3: only reference audio, no LoRA
-        profile3 = {"profile_id": "profile-3", "name": "Gamma Vocalist"}
-        with open(profiles_dir / "profile-3.json", "w") as f:
-            json.dump(profile3, f)
-        (training_dir / "gamma_vocalist").mkdir()
-        with open(training_dir / "gamma_vocalist" / "track_vocals.wav", "wb") as f:
-            f.write(b"\x00" * 88200)
+        store.save({"profile_id": "profile-3", "name": "Gamma Vocalist"})
+        sample_three = tmp_path / "gamma.wav"
+        _write_wav(sample_three)
+        store.add_training_sample("profile-3", str(sample_three), duration=1.0)
 
         return AdapterBridge(
             profiles_dir=str(profiles_dir),

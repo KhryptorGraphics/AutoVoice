@@ -9,7 +9,11 @@ from typing import Optional, List, Dict, Any
 import numpy as np
 import torch
 
-from auto_voice.runtime_contract import load_packaged_artifact_manifest, write_packaged_artifact_manifest
+from auto_voice.runtime_contract import (
+    load_packaged_artifact_manifest,
+    normalize_reference_audio_entries,
+    write_packaged_artifact_manifest,
+)
 from auto_voice.training.sample_quality import analyze_training_sample, summarize_training_samples
 
 from .paths import (
@@ -126,6 +130,9 @@ class VoiceProfileStore:
         has_full_model = False
         runtime_manifest = None
         manifest_path = None
+        reference_audio: list[Dict[str, Any]] = normalize_reference_audio_entries(
+            normalized.get("reference_audio")
+        )
 
         if profile_id:
             manifest_path = self._artifact_manifest_path(profile_id)
@@ -146,6 +153,11 @@ class VoiceProfileStore:
                 artifacts = runtime_manifest.get("artifacts", {})
                 has_adapter = has_adapter or bool(artifacts.get("adapter"))
                 has_full_model = has_full_model or bool(artifacts.get("full_model"))
+            reference_audio = self.get_reference_audio_entries(
+                profile_id,
+                profile_data=normalized,
+                runtime_manifest=runtime_manifest,
+            )
 
         sample_count = normalized.get("training_sample_count")
         total_training_duration = normalized.get("total_training_duration")
@@ -174,6 +186,15 @@ class VoiceProfileStore:
 
         normalized.setdefault("profile_role", PROFILE_ROLE_TARGET_USER)
         normalized.setdefault("created_from", "manual")
+        normalized["reference_audio"] = reference_audio
+        normalized["reference_audio_paths"] = [entry["path"] for entry in reference_audio]
+        normalized["reference_audio_count"] = len(reference_audio)
+        normalized["primary_reference_audio_path"] = (
+            reference_audio[0]["path"] if reference_audio else None
+        )
+        normalized["reference_audio_total_duration"] = float(
+            sum(float(entry.get("duration_seconds") or 0.0) for entry in reference_audio)
+        )
         normalized["training_sample_count"] = sample_count
         normalized["sample_count"] = sample_count
         normalized["total_training_duration"] = total_training_duration
@@ -303,8 +324,15 @@ class VoiceProfileStore:
         """Persist a runtime artifact manifest for a profile."""
         if not self.exists(profile_id):
             raise ValueError(f"Profile {profile_id} not found")
+        profile = self.load(profile_id)
+        payload = dict(manifest)
+        metadata = dict(payload.get("metadata", {}))
+        metadata.setdefault("profile_role", profile.get("profile_role", PROFILE_ROLE_TARGET_USER))
+        metadata.setdefault("created_from", profile.get("created_from", "manual"))
+        metadata["reference_audio"] = profile.get("reference_audio", [])
+        payload["metadata"] = metadata
         manifest_path = self._artifact_manifest_path(profile_id)
-        write_packaged_artifact_manifest(manifest_path, manifest)
+        write_packaged_artifact_manifest(manifest_path, payload)
         return manifest_path
 
     def load_runtime_artifact_manifest(self, profile_id: str) -> Optional[Dict[str, Any]]:
@@ -312,7 +340,61 @@ class VoiceProfileStore:
         manifest_path = self._artifact_manifest_path(profile_id)
         if not os.path.exists(manifest_path):
             return None
-        return load_packaged_artifact_manifest(manifest_path)
+        manifest = load_packaged_artifact_manifest(manifest_path)
+        metadata = dict(manifest.get("metadata", {}))
+        if "reference_audio" in metadata:
+            metadata["reference_audio"] = normalize_reference_audio_entries(
+                metadata["reference_audio"]
+            )
+            manifest["metadata"] = metadata
+        return manifest
+
+    def get_reference_audio_entries(
+        self,
+        profile_id: str,
+        *,
+        profile_data: Optional[Dict[str, Any]] = None,
+        runtime_manifest: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Resolve the canonical reference-audio contract for a profile."""
+        entries: List[Dict[str, Any]] = []
+
+        for sample in self.list_training_samples(profile_id):
+            entries.append(
+                {
+                    "path": sample.vocals_path,
+                    "source": "training_sample",
+                    "sample_id": sample.sample_id,
+                    "source_file": sample.source_file,
+                    "duration_seconds": sample.duration,
+                    "created_at": sample.created_at,
+                }
+            )
+
+        profile_payload = dict(profile_data or {})
+        if not entries:
+            entries.extend(profile_payload.get("reference_audio", []))
+
+        separated_tracks = profile_payload.get("separated_tracks", {})
+        if isinstance(separated_tracks, dict) and separated_tracks.get("vocals"):
+            entries.append(
+                {
+                    "path": separated_tracks["vocals"],
+                    "source": "separated_track",
+                    "created_at": profile_payload.get("created_at"),
+                }
+            )
+
+        manifest_payload = runtime_manifest
+        if manifest_payload is None:
+            manifest_payload = self.load_runtime_artifact_manifest(profile_id)
+        manifest_reference_audio = ((manifest_payload or {}).get("metadata") or {}).get(
+            "reference_audio"
+        )
+        if manifest_reference_audio:
+            entries.extend(manifest_reference_audio)
+
+        return normalize_reference_audio_entries(entries, require_exists=True)
 
     def save_lora_weights(
         self, profile_id: str, state_dict: Dict[str, torch.Tensor]

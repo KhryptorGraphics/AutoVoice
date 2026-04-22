@@ -73,13 +73,27 @@ class TestFindYtdlp:
     @patch('os.path.isfile')
     @patch('os.access')
     def test_find_ytdlp_common_locations(self, mock_access, mock_isfile, mock_which):
-        """Test finding yt-dlp in common locations."""
+        """Test finding yt-dlp in fallback runtime locations."""
         mock_which.return_value = None
         mock_isfile.return_value = True
         mock_access.return_value = True
 
         result = _find_ytdlp()
         assert result is not None
+
+    @patch.dict("os.environ", {"YT_DLP_BIN": "/custom/bin/yt-dlp"}, clear=False)
+    @patch('shutil.which')
+    @patch('os.path.isfile')
+    @patch('os.access')
+    def test_find_ytdlp_honors_env_override(self, mock_access, mock_isfile, mock_which):
+        """Configured executable path should win when PATH lookup misses."""
+        mock_which.return_value = None
+        mock_isfile.side_effect = lambda path: path == "/custom/bin/yt-dlp"
+        mock_access.return_value = True
+
+        result = _find_ytdlp()
+
+        assert result == "/custom/bin/yt-dlp"
 
     @patch('shutil.which')
     @patch('os.path.isfile')

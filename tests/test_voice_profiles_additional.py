@@ -2,10 +2,8 @@
 
 import json
 import os
-import sys
-import types
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -69,6 +67,30 @@ def test_load_marks_full_model_as_active(temp_store, saved_profile):
 
     assert profile["has_full_model"] is True
     assert profile["active_model_type"] == "full_model"
+
+
+def test_get_reference_audio_entries_prefers_training_samples(temp_store, saved_profile, tmp_path):
+    """Canonical reference audio should come from stored training samples first."""
+    vocals = tmp_path / "vocals.wav"
+    _write_wav(vocals)
+
+    sample = temp_store.add_training_sample(
+        profile_id=saved_profile,
+        vocals_path=str(vocals),
+        duration=2.5,
+    )
+    profile = temp_store.load(saved_profile)
+
+    assert profile["reference_audio"] == [
+        {
+            "path": sample.vocals_path,
+            "source": "training_sample",
+            "sample_id": sample.sample_id,
+            "duration_seconds": 2.5,
+            "created_at": sample.created_at,
+        }
+    ]
+    assert profile["reference_audio_count"] == 1
 
 
 def test_list_profiles_returns_empty_when_profiles_dir_missing(temp_store):
@@ -142,19 +164,17 @@ def test_update_sample_count_logs_warning_when_profile_refresh_fails(
 def test_match_speaker_embedding_delegates_to_diarization_matcher(
     temp_store, saved_profile
 ):
-    """Speaker matching should delegate with the collected profile embeddings."""
+    """Speaker matching should return the top ranked profile above the threshold."""
     temp_store.save_speaker_embedding(saved_profile, np.array([3.0, 4.0], dtype=np.float32))
-    matcher = Mock(return_value=saved_profile)
-    fake_module = types.SimpleNamespace(match_speaker_to_profile=matcher)
-
-    with patch.dict(sys.modules, {"auto_voice.audio.speaker_diarization": fake_module}):
+    with patch.object(
+        temp_store,
+        "rank_speaker_embedding_matches",
+        return_value=[{"profile_id": saved_profile, "similarity": 0.9}],
+    ) as rank_matches:
         result = temp_store.match_speaker_embedding(np.array([1.0, 0.0], dtype=np.float32), 0.85)
 
     assert result == saved_profile
-    matcher.assert_called_once()
-    _, profile_embeddings, threshold = matcher.call_args[0]
-    assert saved_profile in profile_embeddings
-    assert threshold == 0.85
+    rank_matches.assert_called_once()
 
 
 def test_create_profile_from_diarization_adds_metadata_and_segments(

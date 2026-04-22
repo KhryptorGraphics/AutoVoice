@@ -18,6 +18,9 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 
+from auto_voice.storage.paths import resolve_profiles_dir, resolve_samples_dir, resolve_trained_models_dir
+from auto_voice.storage.voice_profiles import VoiceProfileStore
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,9 +56,9 @@ class AdapterBridge:
 
     def __init__(
         self,
-        profiles_dir: Union[str, Path] = "data/voice_profiles",
-        training_audio_dir: Union[str, Path] = "data/separated_youtube",
-        lora_dir: Union[str, Path] = "data/trained_models/hq",
+        profiles_dir: Union[str, Path, None] = None,
+        training_audio_dir: Union[str, Path, None] = None,
+        lora_dir: Union[str, Path, None] = None,
         device: str = "cuda",
     ):
         """Initialize the adapter bridge with profile and LoRA storage locations.
@@ -70,10 +73,25 @@ class AdapterBridge:
             device: Device for loading tensors ('cuda' or 'cpu'). LoRA weights will be
                 moved to this device when loaded.
         """
-        self.profiles_dir = Path(profiles_dir)
-        self.training_audio_dir = Path(training_audio_dir)
-        self.lora_dir = Path(lora_dir)
+        self.profiles_dir = resolve_profiles_dir(
+            str(profiles_dir) if profiles_dir is not None else None
+        )
+        inferred_data_dir = self.profiles_dir.parent
+        self.training_audio_dir = (
+            Path(training_audio_dir)
+            if training_audio_dir is not None
+            else resolve_samples_dir(data_dir=str(inferred_data_dir)).parent / "separated_youtube"
+        )
+        self.lora_dir = resolve_trained_models_dir(
+            str(lora_dir) if lora_dir is not None else None,
+            data_dir=str(inferred_data_dir),
+        )
         self.device = torch.device(device)
+        self.profile_store = VoiceProfileStore(
+            profiles_dir=str(self.profiles_dir),
+            samples_dir=str(resolve_samples_dir(data_dir=str(inferred_data_dir))),
+            trained_models_dir=str(self.lora_dir),
+        )
 
         # Cache loaded references
         self._reference_cache: Dict[str, VoiceReference] = {}
@@ -93,16 +111,74 @@ class AdapterBridge:
         reference audio directories. Failures to read individual profiles are logged
         as warnings but do not stop the loading process.
         """
-        for profile_file in self.profiles_dir.glob("*.json"):
+        for profile in self.profile_store.list_profiles():
+            profile_id = profile.get("profile_id")
+            if not profile_id:
+                continue
+            name = str(profile.get("name") or "Unknown")
+            self._profile_to_artist[profile_id] = name
+            logger.debug(f"Loaded profile mapping: {profile_id} -> {name}")
+
+    def _load_profile(self, profile_id: str) -> Dict[str, object]:
+        """Load one normalized profile with a JSON fallback."""
+        try:
+            return self.profile_store.load(profile_id)
+        except Exception:
+            profile_file = self.profiles_dir / f"{profile_id}.json"
+            if not profile_file.exists():
+                raise ValueError(f"Profile not found: {profile_id}")
+            with open(profile_file) as f:
+                return json.load(f)
+
+    def _resolve_lora_path(
+        self,
+        profile_id: str,
+        profile_data: Optional[Dict[str, object]] = None,
+    ) -> Optional[Path]:
+        """Resolve canonical and legacy adapter locations for one profile."""
+        if profile_data is None:
             try:
-                with open(profile_file) as f:
-                    data = json.load(f)
-                profile_id = data.get("profile_id", profile_file.stem)
-                name = data.get("name", "Unknown")
-                self._profile_to_artist[profile_id] = name
-                logger.debug(f"Loaded profile mapping: {profile_id} -> {name}")
-            except Exception as e:
-                logger.warning(f"Failed to load profile {profile_file}: {e}")
+                profile_data = self._load_profile(profile_id)
+            except ValueError:
+                profile_data = {}
+
+        manifest_path = profile_data.get("runtime_artifact_manifest_path")
+        if manifest_path:
+            try:
+                manifest = self.profile_store.load_runtime_artifact_manifest(profile_id)
+            except Exception:
+                manifest = None
+            adapter_path = ((manifest or {}).get("artifacts") or {}).get("adapter")
+            if adapter_path:
+                candidate = Path(str(adapter_path))
+                if candidate.exists():
+                    return candidate
+
+        candidates = (
+            self.lora_dir / f"{profile_id}_adapter.pt",
+            self.lora_dir / f"{profile_id}_hq_lora.pt",
+            self.profiles_dir / f"{profile_id}_lora_weights.pt",
+        )
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _canonical_reference_paths(
+        self,
+        profile_id: str,
+        profile_data: Dict[str, object],
+        *,
+        max_references: int,
+    ) -> Tuple[List[Path], float]:
+        """Resolve reference audio from the canonical profile contract."""
+        reference_entries = self.profile_store.get_reference_audio_entries(
+            profile_id,
+            profile_data=dict(profile_data),
+        )
+        reference_paths = [Path(entry["path"]) for entry in reference_entries[:max_references]]
+        total_duration = sum(float(entry.get("duration_seconds") or 0.0) for entry in reference_entries)
+        return reference_paths, total_duration
 
     def _find_artist_audio_dir(self, profile_id: str) -> Optional[Path]:
         """Find the audio directory for a profile's artist using fuzzy matching.
@@ -209,19 +285,19 @@ class AdapterBridge:
             return self._reference_cache[profile_id]
 
         # Load profile metadata
-        profile_file = self.profiles_dir / f"{profile_id}.json"
-        if not profile_file.exists():
-            raise ValueError(f"Profile not found: {profile_id}")
-
-        with open(profile_file) as f:
-            profile_data = json.load(f)
-
+        profile_data = self._load_profile(profile_id)
         profile_name = profile_data.get("name", "Unknown")
 
-        # Find artist audio directory
-        audio_dir = self._find_artist_audio_dir(profile_id)
-        reference_paths = []
-        total_duration = 0.0
+        reference_paths, total_duration = self._canonical_reference_paths(
+            profile_id,
+            profile_data,
+            max_references=max_references,
+        )
+
+        if not reference_paths:
+            audio_dir = self._find_artist_audio_dir(profile_id)
+        else:
+            audio_dir = None
 
         if audio_dir:
             # Get vocal files sorted by size (larger = longer = better reference)
@@ -239,15 +315,13 @@ class AdapterBridge:
                 total_duration += estimated_duration
 
         # Load speaker embedding if available
-        embedding_file = self.profiles_dir / f"{profile_id}.npy"
-        speaker_embedding = None
-        if embedding_file.exists():
-            speaker_embedding = np.load(embedding_file)
+        speaker_embedding = profile_data.get("embedding")
+        if speaker_embedding is None:
+            embedding_file = self.profiles_dir / f"{profile_id}.npy"
+            if embedding_file.exists():
+                speaker_embedding = np.load(embedding_file)
 
-        # Find LoRA path
-        lora_path = self.lora_dir / f"{profile_id}_hq_lora.pt"
-        if not lora_path.exists():
-            lora_path = None
+        lora_path = self._resolve_lora_path(profile_id, profile_data)
 
         reference = VoiceReference(
             profile_id=profile_id,
@@ -287,8 +361,8 @@ class AdapterBridge:
         if use_cache and profile_id in self._lora_cache:
             return self._lora_cache[profile_id]
 
-        lora_path = self.lora_dir / f"{profile_id}_hq_lora.pt"
-        if not lora_path.exists():
+        lora_path = self._resolve_lora_path(profile_id)
+        if lora_path is None:
             raise FileNotFoundError(f"No LoRA found for profile: {profile_id}")
 
         checkpoint = torch.load(lora_path, map_location=self.device, weights_only=False)
@@ -323,8 +397,8 @@ class AdapterBridge:
             Metadata dict with fields: artist, epoch, loss, precision, status, config.
             Empty dict if checkpoint not found.
         """
-        lora_path = self.lora_dir / f"{profile_id}_hq_lora.pt"
-        if not lora_path.exists():
+        lora_path = self._resolve_lora_path(profile_id)
+        if lora_path is None:
             return {}
 
         checkpoint = torch.load(lora_path, map_location="cpu", weights_only=False)
@@ -356,11 +430,17 @@ class AdapterBridge:
         results = []
 
         for profile_id, name in self._profile_to_artist.items():
-            lora_path = self.lora_dir / f"{profile_id}_hq_lora.pt"
-            has_lora = lora_path.exists()
-
-            audio_dir = self._find_artist_audio_dir(profile_id)
-            has_reference = audio_dir is not None and any(audio_dir.glob("*_vocals.wav"))
+            has_lora = self._resolve_lora_path(profile_id) is not None
+            profile_data = self._load_profile(profile_id)
+            reference_paths, _ = self._canonical_reference_paths(
+                profile_id,
+                profile_data,
+                max_references=1,
+            )
+            has_reference = bool(reference_paths)
+            if not has_reference:
+                audio_dir = self._find_artist_audio_dir(profile_id)
+                has_reference = audio_dir is not None and any(audio_dir.glob("*_vocals.wav"))
 
             results.append((profile_id, name, has_lora, has_reference))
 
