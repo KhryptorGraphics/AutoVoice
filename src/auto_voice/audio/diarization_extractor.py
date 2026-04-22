@@ -28,6 +28,14 @@ import numpy as np
 import librosa
 import soundfile as sf
 
+from auto_voice.storage.paths import (
+    resolve_data_dir,
+    resolve_diarized_audio_dir,
+    resolve_profiles_dir,
+    resolve_separated_audio_dir,
+    resolve_training_vocals_dir,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,19 +90,28 @@ class DiarizationExtractor:
         min_segment_duration: float = 0.5,
         profiles_dir: Optional[Path] = None,
         training_vocals_dir: Optional[Path] = None,
+        data_dir: Optional[Path] = None,
     ):
         """Initialize the extractor.
 
         Args:
             fade_ms: Fade duration at segment boundaries (reduces clicks)
             min_segment_duration: Minimum segment duration to include
-            profiles_dir: Directory for voice profiles (default: data/voice_profiles)
-            training_vocals_dir: Directory for training vocals (default: data/training_vocals)
+            profiles_dir: Directory for voice profiles
+            training_vocals_dir: Directory for training vocals
+            data_dir: Base runtime data directory for canonical storage defaults
         """
         self.fade_ms = fade_ms
         self.min_segment_duration = min_segment_duration
-        self.profiles_dir = profiles_dir or Path('data/voice_profiles')
-        self.training_vocals_dir = training_vocals_dir or Path('data/training_vocals')
+        self.data_dir = resolve_data_dir(str(data_dir) if data_dir is not None else None)
+        self.profiles_dir = resolve_profiles_dir(
+            str(profiles_dir) if profiles_dir is not None else None,
+            data_dir=str(self.data_dir),
+        )
+        self.training_vocals_dir = resolve_training_vocals_dir(
+            str(training_vocals_dir) if training_vocals_dir is not None else None,
+            data_dir=str(self.data_dir),
+        )
 
     def load_diarization(self, json_path: Path) -> Tuple[str, List[SpeakerSegment]]:
         """Load diarization results from JSON file.
@@ -363,6 +380,7 @@ class DiarizationExtractor:
         artist_name: str,
         diarization_dir: Optional[Path] = None,
         separated_dir: Optional[Path] = None,
+        data_dir: Optional[Path] = None,
     ) -> Dict[str, any]:
         """Process all tracks for an artist.
 
@@ -370,14 +388,22 @@ class DiarizationExtractor:
             artist_name: Artist name (e.g., "conor_maynard")
             diarization_dir: Directory with diarization JSONs
             separated_dir: Directory with separated vocals WAVs
+            data_dir: Base runtime data directory override when using canonical defaults
 
         Returns:
             Statistics dictionary
         """
+        resolved_data_dir = str(data_dir) if data_dir is not None else str(self.data_dir)
         if diarization_dir is None:
-            diarization_dir = Path(f'data/diarized_youtube/{artist_name}')
+            diarization_dir = resolve_diarized_audio_dir(
+                data_dir=resolved_data_dir,
+                artist_name=artist_name,
+            )
         if separated_dir is None:
-            separated_dir = Path(f'data/separated_youtube/{artist_name}')
+            separated_dir = resolve_separated_audio_dir(
+                data_dir=resolved_data_dir,
+                artist_name=artist_name,
+            )
 
         if not diarization_dir.exists():
             raise FileNotFoundError(f"Diarization directory not found: {diarization_dir}")
@@ -443,12 +469,14 @@ class DiarizationExtractor:
 def run_extraction(
     artists: List[str] = None,
     output_dir: Optional[Path] = None,
+    data_dir: Optional[Path] = None,
 ) -> Dict[str, Dict]:
     """Run extraction for specified artists.
 
     Args:
         artists: List of artist names (default: both conor_maynard and william_singe)
         output_dir: Output directory for training vocals
+        data_dir: Base runtime data directory for canonical input/output defaults
 
     Returns:
         Dictionary mapping artist name to extraction stats
@@ -457,7 +485,8 @@ def run_extraction(
         artists = ['conor_maynard', 'william_singe']
 
     extractor = DiarizationExtractor(
-        training_vocals_dir=output_dir or Path('data/training_vocals'),
+        training_vocals_dir=output_dir,
+        data_dir=data_dir,
     )
 
     all_stats = {}
@@ -468,7 +497,7 @@ def run_extraction(
         logger.info('='*60)
 
         try:
-            stats = extractor.process_artist(artist)
+            stats = extractor.process_artist(artist, data_dir=data_dir)
             all_stats[artist] = stats
 
             # Print summary
@@ -509,9 +538,15 @@ if __name__ == '__main__':
         help='Artist to process'
     )
     parser.add_argument(
+        '--data-dir',
+        type=Path,
+        default=None,
+        help='Override the runtime data directory'
+    )
+    parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('data/training_vocals'),
+        default=None,
         help='Output directory'
     )
 
@@ -519,10 +554,17 @@ if __name__ == '__main__':
 
     artists = ['conor_maynard', 'william_singe'] if args.artist == 'all' else [args.artist]
 
-    stats = run_extraction(artists, args.output_dir)
+    stats = run_extraction(
+        artists,
+        output_dir=args.output_dir,
+        data_dir=args.data_dir,
+    )
 
     # Save stats
-    stats_file = args.output_dir / 'extraction_stats.json'
+    resolved_data_dir = resolve_data_dir(str(args.data_dir) if args.data_dir else None)
+    output_dir = args.output_dir or resolve_training_vocals_dir(data_dir=str(resolved_data_dir))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stats_file = output_dir / 'extraction_stats.json'
     with open(stats_file, 'w') as f:
         json.dump(stats, f, indent=2, default=str)
     logger.info(f"\nStats saved to: {stats_file}")

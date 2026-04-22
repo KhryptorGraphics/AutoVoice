@@ -34,47 +34,48 @@ class TestMainEntryPoint:
         test_args = [
             'diarization_extractor.py',
             '--artist', 'all',
+            '--data-dir', str(tmp_path / 'data'),
             '--output-dir', str(tmp_path / 'output')
         ]
 
         with patch('sys.argv', test_args):
-            with patch('auto_voice.audio.diarization_extractor.Path') as mock_path:
-                def path_constructor(path_str):
-                    if isinstance(path_str, str) and path_str.startswith('data/'):
-                        return tmp_path / path_str
-                    return Path(path_str)
+            # Import and run main
+            import auto_voice.audio.diarization_extractor as module
 
-                mock_path.side_effect = path_constructor
+            # Execute __main__ block via exec
+            with patch('auto_voice.audio.diarization_extractor.run_extraction') as mock_run:
+                mock_run.return_value = {'conor_maynard': {}, 'william_singe': {}}
 
-                # Import and run main
-                import auto_voice.audio.diarization_extractor as module
+                # Simulate running __main__
+                import argparse
+                parser = argparse.ArgumentParser(
+                    description='Extract speaker-isolated vocals from diarized audio'
+                )
+                parser.add_argument(
+                    '--artist',
+                    choices=['conor_maynard', 'william_singe', 'all'],
+                    default='all',
+                    help='Artist to process'
+                )
+                parser.add_argument(
+                    '--data-dir',
+                    type=Path,
+                    default=None,
+                    help='Override the runtime data directory'
+                )
+                parser.add_argument(
+                    '--output-dir',
+                    type=Path,
+                    default=None,
+                    help='Output directory'
+                )
 
-                # Execute __main__ block via exec
-                with patch('auto_voice.audio.diarization_extractor.run_extraction') as mock_run:
-                    mock_run.return_value = {'conor_maynard': {}, 'william_singe': {}}
+                args = parser.parse_args(test_args[1:])
+                artists = ['conor_maynard', 'william_singe'] if args.artist == 'all' else [args.artist]
 
-                    # Simulate running __main__
-                    import argparse
-                    parser = argparse.ArgumentParser(
-                        description='Extract speaker-isolated vocals from diarized audio'
-                    )
-                    parser.add_argument(
-                        '--artist',
-                        choices=['conor_maynard', 'william_singe', 'all'],
-                        default='all',
-                        help='Artist to process'
-                    )
-                    parser.add_argument(
-                        '--output-dir',
-                        type=Path,
-                        default=Path('data/training_vocals'),
-                        help='Output directory'
-                    )
-
-                    args = parser.parse_args(test_args[1:])
-                    artists = ['conor_maynard', 'william_singe'] if args.artist == 'all' else [args.artist]
-
-                    assert artists == ['conor_maynard', 'william_singe']
+                assert artists == ['conor_maynard', 'william_singe']
+                assert args.data_dir == tmp_path / 'data'
+                assert args.output_dir == tmp_path / 'output'
 
     def test_main_with_single_artist(self, tmp_path):
         """Test CLI with specific artist."""
@@ -83,6 +84,7 @@ class TestMainEntryPoint:
         test_args = [
             'diarization_extractor.py',
             '--artist', 'conor_maynard',
+            '--data-dir', str(tmp_path / 'data'),
             '--output-dir', str(tmp_path / 'output')
         ]
 
@@ -93,9 +95,14 @@ class TestMainEntryPoint:
             default='all',
         )
         parser.add_argument(
+            '--data-dir',
+            type=Path,
+            default=None,
+        )
+        parser.add_argument(
             '--output-dir',
             type=Path,
-            default=Path('data/training_vocals'),
+            default=None,
         )
 
         args = parser.parse_args(test_args[1:])
@@ -110,35 +117,28 @@ class TestRunExtractionErrorHandling:
     def test_run_extraction_with_artist_error(self, tmp_path):
         """Test that errors for individual artists are caught and logged."""
         artist_name = "error_artist"
+        data_dir = tmp_path / "data"
 
         # Create directory structure but make it unreadable to force error
-        diarized_dir = tmp_path / f'data/diarized_youtube/{artist_name}'
+        diarized_dir = data_dir / f'diarized_youtube/{artist_name}'
         diarized_dir.mkdir(parents=True)
 
-        # Create a file named like the directory to force an error
-        (tmp_path / f'data/diarized_youtube').touch()  # This will cause issues
+        # Create a file where the separated root directory should be to force an error
+        separated_root = data_dir / 'separated_youtube'
+        separated_root.parent.mkdir(parents=True, exist_ok=True)
+        separated_root.write_text("not a directory", encoding="utf-8")
 
-        with patch('auto_voice.audio.diarization_extractor.Path') as mock_path:
-            def path_constructor(path_str):
-                if isinstance(path_str, str) and path_str.startswith('data/'):
-                    # For separation, use parent which is a file (will cause error)
-                    if 'separated' in path_str:
-                        return tmp_path / 'data/diarized_youtube'
-                    return tmp_path / path_str
-                return Path(path_str)
+        # Run extraction - should handle error gracefully
+        stats = run_extraction(
+            artists=[artist_name],
+            output_dir=tmp_path / "training",
+            data_dir=data_dir,
+        )
 
-            mock_path.side_effect = path_constructor
-
-            # Run extraction - should handle error gracefully
-            stats = run_extraction(
-                artists=[artist_name],
-                output_dir=tmp_path / "training"
-            )
-
-            # Check that error was logged
-            assert artist_name in stats
-            # Either processed with errors or has 'error' key
-            assert ('error' in stats[artist_name]) or ('total_tracks' in stats[artist_name])
+        # Check that error was logged
+        assert artist_name in stats
+        # Either processed with errors or has 'error' key
+        assert ('error' in stats[artist_name]) or ('total_tracks' in stats[artist_name])
 
 
 class TestStatisticsSaving:

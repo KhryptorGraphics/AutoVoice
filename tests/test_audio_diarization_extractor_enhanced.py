@@ -387,51 +387,38 @@ class TestCLIAndStatistics:
     def test_run_extraction_default_artists(self, tmp_path):
         """Test run_extraction with default artist list."""
         # Mock the artist directories
+        data_dir = tmp_path / "data"
         for artist in ['conor_maynard', 'william_singe']:
-            diarized_dir = tmp_path / f'data/diarized_youtube/{artist}'
-            separated_dir = tmp_path / f'data/separated_youtube/{artist}'
+            diarized_dir = data_dir / f'diarized_youtube/{artist}'
+            separated_dir = data_dir / f'separated_youtube/{artist}'
             diarized_dir.mkdir(parents=True)
             separated_dir.mkdir(parents=True)
 
-        # Run with empty directories (no tracks to process)
-        with patch('auto_voice.audio.diarization_extractor.Path') as mock_path:
-            # Redirect to tmp_path
-            def path_constructor(path_str):
-                if path_str.startswith('data/'):
-                    return tmp_path / path_str
-                return Path(path_str)
+        stats = run_extraction(
+            output_dir=tmp_path / "training",
+            data_dir=data_dir,
+        )
 
-            mock_path.side_effect = path_constructor
-
-            # This will process but find no tracks
-            stats = run_extraction(output_dir=tmp_path / "training")
-
-            assert 'conor_maynard' in stats or 'william_singe' in stats
+        assert 'conor_maynard' in stats or 'william_singe' in stats
 
     def test_run_extraction_custom_artists(self, tmp_path):
         """Test run_extraction with custom artist list."""
         artist_name = "custom_artist"
+        data_dir = tmp_path / "data"
 
         # Create directories
-        diarized_dir = tmp_path / f'data/diarized_youtube/{artist_name}'
-        separated_dir = tmp_path / f'data/separated_youtube/{artist_name}'
+        diarized_dir = data_dir / f'diarized_youtube/{artist_name}'
+        separated_dir = data_dir / f'separated_youtube/{artist_name}'
         diarized_dir.mkdir(parents=True)
         separated_dir.mkdir(parents=True)
 
-        with patch('auto_voice.audio.diarization_extractor.Path') as mock_path:
-            def path_constructor(path_str):
-                if path_str.startswith('data/'):
-                    return tmp_path / path_str
-                return Path(path_str)
+        stats = run_extraction(
+            artists=[artist_name],
+            output_dir=tmp_path / "training",
+            data_dir=data_dir,
+        )
 
-            mock_path.side_effect = path_constructor
-
-            stats = run_extraction(
-                artists=[artist_name],
-                output_dir=tmp_path / "training"
-            )
-
-            assert artist_name in stats
+        assert artist_name in stats
 
 
 class TestProfileManagement:

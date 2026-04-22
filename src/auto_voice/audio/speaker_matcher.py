@@ -22,6 +22,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
+from auto_voice.storage.paths import (
+    resolve_data_dir,
+    resolve_diarized_audio_dir,
+    resolve_separated_audio_dir,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +43,7 @@ class SpeakerMatcher:
         similarity_threshold: float = 0.85,
         min_cluster_duration: float = 30.0,  # Minimum 30s total for a valid cluster
         device: str = 'cuda',
+        data_dir: Optional[Path] = None,
     ):
         """Initialize the speaker matcher.
 
@@ -44,10 +51,12 @@ class SpeakerMatcher:
             similarity_threshold: Cosine similarity threshold for clustering (0-1)
             min_cluster_duration: Minimum total duration for a valid cluster (seconds)
             device: Device for embedding extraction ('cuda' or 'cpu')
+            data_dir: Base runtime data directory for canonical input defaults
         """
         self.similarity_threshold = similarity_threshold
         self.min_cluster_duration = min_cluster_duration
         self.device = device
+        self.data_dir = resolve_data_dir(str(data_dir) if data_dir is not None else None)
         self._encoder = None
 
     def _get_encoder(self):
@@ -121,9 +130,15 @@ class SpeakerMatcher:
         )
 
         if separated_dir is None:
-            separated_dir = Path(f'data/separated_youtube/{artist_name}')
+            separated_dir = resolve_separated_audio_dir(
+                data_dir=str(self.data_dir),
+                artist_name=artist_name,
+            )
         if diarized_dir is None:
-            diarized_dir = Path(f'data/diarized_youtube/{artist_name}')
+            diarized_dir = resolve_diarized_audio_dir(
+                data_dir=str(self.data_dir),
+                artist_name=artist_name,
+            )
 
         stats = {
             'tracks_processed': 0,
@@ -459,11 +474,15 @@ class SpeakerMatcher:
         return audio[start:end], sr
 
 
-def run_speaker_matching(artists: Optional[List[str]] = None) -> Dict[str, Any]:
+def run_speaker_matching(
+    artists: Optional[List[str]] = None,
+    data_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
     """Run full speaker matching pipeline for specified artists.
 
     Args:
         artists: List of artist names (default: conor_maynard, william_singe)
+        data_dir: Base runtime data directory for canonical input defaults
 
     Returns:
         Combined statistics dict
@@ -471,7 +490,7 @@ def run_speaker_matching(artists: Optional[List[str]] = None) -> Dict[str, Any]:
     if artists is None:
         artists = ['conor_maynard', 'william_singe']
 
-    matcher = SpeakerMatcher()
+    matcher = SpeakerMatcher(data_dir=data_dir)
     stats = {
         'artists': {},
         'clustering': {},
@@ -520,10 +539,14 @@ if __name__ == '__main__':
     parser.add_argument('--cluster-only', action='store_true', help='Only run clustering')
     parser.add_argument('--match-only', action='store_true', help='Only run auto-matching')
     parser.add_argument('--threshold', type=float, default=0.85, help='Similarity threshold')
+    parser.add_argument('--data-dir', type=Path, default=None, help='Override the runtime data directory')
 
     args = parser.parse_args()
 
-    matcher = SpeakerMatcher(similarity_threshold=args.threshold)
+    matcher = SpeakerMatcher(
+        similarity_threshold=args.threshold,
+        data_dir=args.data_dir,
+    )
 
     if args.extract_only:
         artists = args.artist or ['conor_maynard', 'william_singe']
@@ -542,7 +565,7 @@ if __name__ == '__main__':
         print(f"\nMatching stats: {stats}")
 
     else:
-        stats = run_speaker_matching(args.artist)
+        stats = run_speaker_matching(args.artist, data_dir=args.data_dir)
         print(f"\nFull pipeline stats:")
         import json
         print(json.dumps(stats, indent=2, default=str))

@@ -23,7 +23,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = PROJECT_ROOT / 'data'
 sys.path.insert(0, str(PROJECT_ROOT / 'src'))
 
-from auto_voice.storage.paths import resolve_data_dir
+from auto_voice.storage.paths import (
+    resolve_data_dir,
+    resolve_diarized_audio_dir,
+    resolve_separated_audio_dir,
+    resolve_training_vocals_dir,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -43,9 +48,9 @@ def resolve_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
     )
     return {
         'data_dir': resolved_data_dir,
-        'diarized_root': resolved_data_dir / 'diarized_youtube',
-        'separated_root': resolved_data_dir / 'separated_youtube',
-        'training_vocals_dir': resolved_data_dir / 'training_vocals',
+        'diarized_root': resolve_diarized_audio_dir(data_dir=str(resolved_data_dir)),
+        'separated_root': resolve_separated_audio_dir(data_dir=str(resolved_data_dir)),
+        'training_vocals_dir': resolve_training_vocals_dir(data_dir=str(resolved_data_dir)),
     }
 
 

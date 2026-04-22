@@ -31,7 +31,13 @@ sys.path.insert(0, str(PROJECT_ROOT / 'src'))
 
 from auto_voice.youtube import download_artist_videos, scrape_artist_channel
 from auto_voice.audio.separation import VocalSeparator
-from auto_voice.storage.paths import resolve_data_dir
+from auto_voice.storage.paths import (
+    resolve_data_dir,
+    resolve_diarized_audio_dir,
+    resolve_separated_audio_dir,
+    resolve_training_vocals_dir,
+    resolve_youtube_audio_dir,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,10 +67,10 @@ def resolve_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
     )
     return {
         'data_dir': resolved_data_dir,
-        'audio_root': resolved_data_dir / 'youtube_audio',
-        'separated_root': resolved_data_dir / 'separated_youtube',
-        'diarized_root': resolved_data_dir / 'diarized_youtube',
-        'training_vocals_dir': resolved_data_dir / 'training_vocals',
+        'audio_root': resolve_youtube_audio_dir(data_dir=str(resolved_data_dir)),
+        'separated_root': resolve_separated_audio_dir(data_dir=str(resolved_data_dir)),
+        'diarized_root': resolve_diarized_audio_dir(data_dir=str(resolved_data_dir)),
+        'training_vocals_dir': resolve_training_vocals_dir(data_dir=str(resolved_data_dir)),
     }
 
 

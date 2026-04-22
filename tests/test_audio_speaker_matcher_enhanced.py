@@ -498,9 +498,10 @@ class TestRunSpeakerMatching:
     def test_run_speaker_matching_default_artists(self, tmp_path, mock_db_operations):
         """Test run_speaker_matching with default artists."""
         # Set up directories for both default artists
+        data_dir = tmp_path / "data"
         for artist in ['conor_maynard', 'william_singe']:
-            separated_dir = tmp_path / f"data/separated_youtube/{artist}"
-            diarized_dir = tmp_path / f"data/diarized_youtube/{artist}"
+            separated_dir = data_dir / f"separated_youtube/{artist}"
+            diarized_dir = data_dir / f"diarized_youtube/{artist}"
             separated_dir.mkdir(parents=True)
             diarized_dir.mkdir(parents=True)
 
@@ -508,43 +509,28 @@ class TestRunSpeakerMatching:
         mock_db_operations['find_unclustered_embeddings'].return_value = []
         mock_db_operations['get_all_clusters'].return_value = []
 
-        with patch('auto_voice.audio.speaker_matcher.Path') as mock_path:
-            def path_constructor(path_str):
-                if isinstance(path_str, str) and path_str.startswith('data/'):
-                    return tmp_path / path_str
-                return Path(path_str)
+        stats = run_speaker_matching(data_dir=data_dir)
 
-            mock_path.side_effect = path_constructor
-
-            stats = run_speaker_matching()
-
-            # Should have attempted both artists
-            assert 'artists' in stats
-            # At least tried to process (even if no files found)
+        # Should have attempted both artists
+        assert 'artists' in stats
+        # At least tried to process (even if no files found)
 
     def test_run_speaker_matching_custom_artists(self, tmp_path, mock_db_operations):
         """Test run_speaker_matching with custom artist list."""
         artist = "custom_artist"
+        data_dir = tmp_path / "data"
 
-        separated_dir = tmp_path / f"data/separated_youtube/{artist}"
-        diarized_dir = tmp_path / f"data/diarized_youtube/{artist}"
+        separated_dir = data_dir / f"separated_youtube/{artist}"
+        diarized_dir = data_dir / f"diarized_youtube/{artist}"
         separated_dir.mkdir(parents=True)
         diarized_dir.mkdir(parents=True)
 
         mock_db_operations['find_unclustered_embeddings'].return_value = []
         mock_db_operations['get_all_clusters'].return_value = []
 
-        with patch('auto_voice.audio.speaker_matcher.Path') as mock_path:
-            def path_constructor(path_str):
-                if isinstance(path_str, str) and path_str.startswith('data/'):
-                    return tmp_path / path_str
-                return Path(path_str)
+        stats = run_speaker_matching(artists=[artist], data_dir=data_dir)
 
-            mock_path.side_effect = path_constructor
-
-            stats = run_speaker_matching(artists=[artist])
-
-            assert artist in stats['artists']
+        assert artist in stats['artists']
 
 
 class TestCLIInterface:

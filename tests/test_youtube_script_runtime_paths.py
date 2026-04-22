@@ -50,8 +50,43 @@ def _install_youtube_pipeline_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "auto_voice.storage", fake_storage_pkg)
 
     fake_storage_paths = types.ModuleType("auto_voice.storage.paths")
-    fake_storage_paths.resolve_data_dir = lambda explicit_data_dir=None: Path(
-        explicit_data_dir or "data"
+    def resolve_data_dir(explicit_data_dir=None):
+        return Path(explicit_data_dir or "data")
+
+    fake_storage_paths.resolve_data_dir = resolve_data_dir
+    fake_storage_paths.resolve_youtube_audio_dir = (
+        lambda explicit_dir=None, *, data_dir=None, artist_name=None: (
+            Path(explicit_dir)
+            if explicit_dir
+            else resolve_data_dir(data_dir) / "youtube_audio" / artist_name
+            if artist_name
+            else resolve_data_dir(data_dir) / "youtube_audio"
+        )
+    )
+    fake_storage_paths.resolve_separated_audio_dir = (
+        lambda explicit_dir=None, *, data_dir=None, artist_name=None: (
+            Path(explicit_dir)
+            if explicit_dir
+            else resolve_data_dir(data_dir) / "separated_youtube" / artist_name
+            if artist_name
+            else resolve_data_dir(data_dir) / "separated_youtube"
+        )
+    )
+    fake_storage_paths.resolve_diarized_audio_dir = (
+        lambda explicit_dir=None, *, data_dir=None, artist_name=None: (
+            Path(explicit_dir)
+            if explicit_dir
+            else resolve_data_dir(data_dir) / "diarized_youtube" / artist_name
+            if artist_name
+            else resolve_data_dir(data_dir) / "diarized_youtube"
+        )
+    )
+    fake_storage_paths.resolve_training_vocals_dir = (
+        lambda explicit_dir=None, *, data_dir=None: (
+            Path(explicit_dir)
+            if explicit_dir
+            else resolve_data_dir(data_dir) / "training_vocals"
+        )
     )
     monkeypatch.setitem(sys.modules, "auto_voice.storage.paths", fake_storage_paths)
 
@@ -69,8 +104,34 @@ def _install_extract_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "auto_voice.storage", fake_storage_pkg)
 
     fake_storage_paths = types.ModuleType("auto_voice.storage.paths")
-    fake_storage_paths.resolve_data_dir = lambda explicit_data_dir=None: Path(
-        explicit_data_dir or "data"
+    def resolve_data_dir(explicit_data_dir=None):
+        return Path(explicit_data_dir or "data")
+
+    fake_storage_paths.resolve_data_dir = resolve_data_dir
+    fake_storage_paths.resolve_diarized_audio_dir = (
+        lambda explicit_dir=None, *, data_dir=None, artist_name=None: (
+            Path(explicit_dir)
+            if explicit_dir
+            else resolve_data_dir(data_dir) / "diarized_youtube" / artist_name
+            if artist_name
+            else resolve_data_dir(data_dir) / "diarized_youtube"
+        )
+    )
+    fake_storage_paths.resolve_separated_audio_dir = (
+        lambda explicit_dir=None, *, data_dir=None, artist_name=None: (
+            Path(explicit_dir)
+            if explicit_dir
+            else resolve_data_dir(data_dir) / "separated_youtube" / artist_name
+            if artist_name
+            else resolve_data_dir(data_dir) / "separated_youtube"
+        )
+    )
+    fake_storage_paths.resolve_training_vocals_dir = (
+        lambda explicit_dir=None, *, data_dir=None: (
+            Path(explicit_dir)
+            if explicit_dir
+            else resolve_data_dir(data_dir) / "training_vocals"
+        )
     )
     monkeypatch.setitem(sys.modules, "auto_voice.storage.paths", fake_storage_paths)
 
