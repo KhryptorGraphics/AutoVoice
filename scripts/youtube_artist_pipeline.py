@@ -16,17 +16,22 @@ import argparse
 import gc
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 import torch
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATA_DIR = PROJECT_ROOT / 'data'
+
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+sys.path.insert(0, str(PROJECT_ROOT / 'src'))
 
 from auto_voice.youtube import download_artist_videos, scrape_artist_channel
 from auto_voice.audio.separation import VocalSeparator
+from auto_voice.storage.paths import resolve_data_dir
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,18 +54,52 @@ ARTIST_PROFILES = {
 }
 
 
-def stage_download(artist_key: str, max_videos: int = 200, max_workers: int = 4):
+def resolve_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Resolve runtime directories for this script."""
+    resolved_data_dir = resolve_data_dir(
+        data_dir or os.environ.get('DATA_DIR') or str(DEFAULT_DATA_DIR)
+    )
+    return {
+        'data_dir': resolved_data_dir,
+        'audio_root': resolved_data_dir / 'youtube_audio',
+        'separated_root': resolved_data_dir / 'separated_youtube',
+        'diarized_root': resolved_data_dir / 'diarized_youtube',
+        'training_vocals_dir': resolved_data_dir / 'training_vocals',
+    }
+
+
+def resolve_artist_paths(artist_key: str, data_dir: str | None = None) -> dict[str, Path]:
+    """Resolve artist-specific runtime directories for this script."""
+    paths = resolve_runtime_paths(data_dir)
+    return {
+        **paths,
+        'audio_dir': paths['audio_root'] / artist_key,
+        'separated_dir': paths['separated_root'] / artist_key,
+        'diarized_dir': paths['diarized_root'] / artist_key,
+        'training_vocals_artist_dir': paths['training_vocals_dir'] / artist_key,
+    }
+
+
+def stage_download(
+    artist_key: str,
+    max_videos: int = 200,
+    max_workers: int = 4,
+    data_dir: str | None = None,
+):
     """Stage 1: Download audio from YouTube channel.
 
     Args:
         artist_key: Artist key from ARTIST_PROFILES
         max_videos: Maximum videos to download
         max_workers: Parallel download workers
+        data_dir: Optional runtime data directory override
     """
     logger.info(f"=== Stage 1: Download {artist_key} videos ===")
+    paths = resolve_artist_paths(artist_key, data_dir)
 
     results = download_artist_videos(
         artist_key,
+        output_subdir=str(paths['audio_dir'].resolve()),
         max_videos=max_videos,
         max_workers=max_workers
     )
@@ -71,19 +110,25 @@ def stage_download(artist_key: str, max_videos: int = 200, max_workers: int = 4)
     return results
 
 
-def stage_separate(artist_key: str, gpu_memory_limit_gb: float = 8.0):
+def stage_separate(
+    artist_key: str,
+    gpu_memory_limit_gb: float = 8.0,
+    data_dir: str | None = None,
+):
     """Stage 2: Separate vocals from downloaded audio.
 
     Args:
         artist_key: Artist key from ARTIST_PROFILES
         gpu_memory_limit_gb: Max GPU memory to use
+        data_dir: Optional runtime data directory override
     """
     logger.info(f"=== Stage 2: Separate vocals for {artist_key} ===")
     import librosa
     import soundfile as sf
 
-    audio_dir = Path(f'data/youtube_audio/{artist_key}')
-    output_dir = Path(f'data/separated_youtube/{artist_key}')
+    paths = resolve_artist_paths(artist_key, data_dir)
+    audio_dir = paths['audio_dir']
+    output_dir = paths['separated_dir']
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not audio_dir.exists():
@@ -137,19 +182,25 @@ def stage_separate(artist_key: str, gpu_memory_limit_gb: float = 8.0):
     return results
 
 
-def stage_diarize(artist_key: str, max_memory_gb: float = 4.0):
+def stage_diarize(
+    artist_key: str,
+    max_memory_gb: float = 4.0,
+    data_dir: str | None = None,
+):
     """Stage 3: Run speaker diarization to identify artist segments.
 
     Args:
         artist_key: Artist key from ARTIST_PROFILES
         max_memory_gb: Maximum memory per diarization chunk
+        data_dir: Optional runtime data directory override
     """
     logger.info(f"=== Stage 3: Diarize vocals for {artist_key} ===")
 
     from auto_voice.audio.speaker_diarization import SpeakerDiarizer
 
-    vocals_dir = Path(f'data/separated_youtube/{artist_key}')
-    output_dir = Path(f'data/diarized_youtube/{artist_key}')
+    paths = resolve_artist_paths(artist_key, data_dir)
+    vocals_dir = paths['separated_dir']
+    output_dir = paths['diarized_dir']
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not vocals_dir.exists():
@@ -210,7 +261,8 @@ def stage_diarize(artist_key: str, max_memory_gb: float = 4.0):
 
 
 def stage_train(artist_key: str, epochs: int = 50, lora_rank: int = 16,
-                lora_alpha: int = 32, gradient_checkpointing: bool = True):
+                lora_alpha: int = 32, gradient_checkpointing: bool = True,
+                data_dir: str | None = None):
     """Stage 4: Train LoRA adapter with OOM protection.
 
     Args:
@@ -219,6 +271,7 @@ def stage_train(artist_key: str, epochs: int = 50, lora_rank: int = 16,
         lora_rank: LoRA rank (higher = more capacity)
         lora_alpha: LoRA alpha scaling
         gradient_checkpointing: Enable gradient checkpointing for memory
+        data_dir: Optional runtime data directory override
     """
     logger.info(f"=== Stage 4: Train LoRA for {artist_key} ===")
 
@@ -229,12 +282,13 @@ def stage_train(artist_key: str, epochs: int = 50, lora_rank: int = 16,
     profile_id = profile['profile_id']
 
     # Collect training samples from diarized output
-    samples_dir = Path(f'data/diarized_youtube/{artist_key}')
+    paths = resolve_artist_paths(artist_key, data_dir)
+    samples_dir = paths['diarized_dir']
     if not samples_dir.exists():
         raise RuntimeError(f"Diarized data not found: {samples_dir}. Run diarize stage first.")
 
     # Create training job
-    job_manager = TrainingJobManager()
+    job_manager = TrainingJobManager(paths['data_dir'])
 
     job_id = job_manager.create_job(
         profile_id=profile_id,
@@ -289,8 +343,11 @@ def main():
                         help='LoRA rank')
     parser.add_argument('--memory-limit', type=float, default=4.0,
                         help='Max memory per diarization chunk (GB)')
+    parser.add_argument('--data-dir', type=Path, default=None,
+                        help='Override the runtime data directory')
 
     args = parser.parse_args()
+    data_dir = str(args.data_dir) if args.data_dir else None
 
     artists = ['conor_maynard', 'william_singe'] if args.artist == 'all' else [args.artist]
     stages = ['download', 'separate', 'diarize', 'train'] if args.stage == 'all' else [args.stage]
@@ -303,13 +360,13 @@ def main():
         for stage in stages:
             try:
                 if stage == 'download':
-                    stage_download(artist, args.max_videos, args.max_workers)
+                    stage_download(artist, args.max_videos, args.max_workers, data_dir=data_dir)
                 elif stage == 'separate':
-                    stage_separate(artist)
+                    stage_separate(artist, data_dir=data_dir)
                 elif stage == 'diarize':
-                    stage_diarize(artist, args.memory_limit)
+                    stage_diarize(artist, args.memory_limit, data_dir=data_dir)
                 elif stage == 'train':
-                    stage_train(artist, args.epochs, args.lora_rank)
+                    stage_train(artist, args.epochs, args.lora_rank, data_dir=data_dir)
             except Exception as e:
                 logger.error(f"Stage {stage} failed for {artist}: {e}")
                 if stage == 'train':
