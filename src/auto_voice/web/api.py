@@ -2726,10 +2726,6 @@ def set_device_config():
 # TRAINING JOB ENDPOINTS
 # =============================================================================
 
-# In-memory storage for training jobs (TODO: persist to database)
-_training_jobs: Dict[str, Dict[str, Any]] = {}
-
-
 def _sanitize_job(job: dict) -> dict:
     """Sanitize job dict to ensure valid JSON (no Infinity/NaN)."""
     import math
@@ -4081,7 +4077,8 @@ def auto_create_profile_from_diarization():
 # PRESET ENDPOINTS
 # =============================================================================
 
-# In-memory storage for presets (TODO: persist to database)
+# Legacy in-process preset mirror kept for compatibility tests and transient
+# runtime references. AppStateStore is the canonical source of truth.
 _presets: Dict[str, Dict[str, Any]] = {}
 
 
@@ -4489,7 +4486,8 @@ def update_audio_router_config():
 # CONVERSION HISTORY ENDPOINTS
 # =============================================================================
 
-# In-memory storage for conversion history (TODO: persist to database)
+# Legacy in-process conversion-history mirror kept for compatibility tests and
+# transient runtime references. AppStateStore is the canonical source of truth.
 _conversion_history: Dict[str, Dict[str, Any]] = {}
 
 

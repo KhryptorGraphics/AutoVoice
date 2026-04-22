@@ -6,6 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from auto_voice.swarm.memory import SwarmMemoryBackend
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -158,3 +162,45 @@ def test_swarm_cli_writes_memkraft_or_fallback_context(tmp_path: Path):
     else:
         fallback_path = tmp_path / "data" / "swarm_memory" / "fallback" / "autovoice-memory-run.json"
         assert fallback_path.exists()
+
+
+def test_swarm_memory_backend_uses_memkraft_when_available(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    events: list[tuple[str, object]] = []
+
+    class FakeMemKraft:
+        def __init__(self, *, base_dir: str):
+            self.base_dir = base_dir
+
+        def init(self, *, force: bool, verbose: bool) -> None:
+            events.append(("init", {"force": force, "verbose": verbose, "base_dir": self.base_dir}))
+
+        def channel_save(self, channel_id: str, payload: dict) -> None:
+            events.append(("channel_save", channel_id, payload))
+
+        def task_start(self, task_id: str, description: str, *, channel_id: str, agent: str) -> None:
+            events.append(("task_start", task_id, description, channel_id, agent))
+
+        def task_complete(self, task_id: str, note: str) -> None:
+            events.append(("task_complete", task_id, note))
+
+        def task_update(self, task_id: str, status: str, note: str) -> None:
+            events.append(("task_update", task_id, status, note))
+
+        def agent_save(self, agent_id: str, payload: dict) -> None:
+            events.append(("agent_save", agent_id, payload))
+
+    monkeypatch.setattr("auto_voice.swarm.memory.MemKraft", FakeMemKraft)
+
+    backend = SwarmMemoryBackend.create(
+        run_id="memkraft-direct",
+        run_root=tmp_path / "data" / "swarm_runs" / "memkraft-direct",
+        payload={"name": "mem-test", "issue_id": "AV-test"},
+        project_root=PROJECT_ROOT,
+    )
+
+    assert backend.available is True
+    assert backend.backend == "memkraft"
+    assert backend.channel_id == "autovoice-memkraft-direct"
+    assert events[0][0] == "init"
+    assert events[1][0] == "channel_save"
+    assert events[1][1] == "autovoice-memkraft-direct"

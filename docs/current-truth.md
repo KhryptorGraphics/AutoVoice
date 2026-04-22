@@ -19,6 +19,7 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
 - canonical swarm entrypoint: `autovoice swarm`
 - frontend entrypoint: `frontend/` Vite app
 - canonical REST base: `/api/v1`
+- canonical durable app-state store for training jobs, presets, and conversion history: `AppStateStore`
 - canonical profile routes: `/api/v1/voice/profiles/*`
 - compatibility helper routes: `/api/v1/profiles/*`
 - canonical non-karaoke Socket.IO namespace: `/`
