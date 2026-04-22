@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'models' / 'seed-vc'))
 import numpy as np
 import librosa
 
+from quality_sample_paths import resolve_quality_sample_runtime_paths
 from realtime_pipeline import RealtimeVoiceConverter, RealtimeConfig
 from quality_pipeline import QualityVoiceConverter, QualityConfig
 
@@ -32,8 +33,9 @@ def test_realtime_progress():
         print(f"  [{progress*100:5.1f}%] {status}")
 
     # Load test audio
-    test_audio = "data/separated_youtube/william_singe/2iVFx7f5MMU_vocals.wav"
-    audio, sr = librosa.load(test_audio, sr=None, mono=True, duration=10.0)
+    paths = resolve_quality_sample_runtime_paths()
+    test_audio = paths["william_test_audio"]
+    audio, sr = librosa.load(str(test_audio), sr=None, mono=True, duration=10.0)
     speaker_embedding = np.random.randn(256).astype(np.float32)
 
     # Initialize and convert
@@ -76,10 +78,15 @@ def test_quality_progress():
         print(f"  [{progress*100:5.1f}%] {status}")
 
     # Load test audio
-    test_audio = "data/separated_youtube/william_singe/2iVFx7f5MMU_vocals.wav"
-    audio, sr = librosa.load(test_audio, sr=None, mono=True, duration=5.0)
-    reference = librosa.load("data/separated_youtube/conor_maynard/08NWh97_DME_vocals.wav",
-                            sr=None, mono=True, duration=5.0)[0]
+    paths = resolve_quality_sample_runtime_paths()
+    test_audio = paths["william_test_audio"]
+    audio, sr = librosa.load(str(test_audio), sr=None, mono=True, duration=5.0)
+    reference = librosa.load(
+        str(paths["conor_reference_audio"]),
+        sr=None,
+        mono=True,
+        duration=5.0,
+    )[0]
 
     # Initialize and convert
     config = QualityConfig(sample_rate=44100, diffusion_steps=10, fp16=True, device="cuda")

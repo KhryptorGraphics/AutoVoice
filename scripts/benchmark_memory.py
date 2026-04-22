@@ -16,6 +16,7 @@ import torch
 import numpy as np
 import librosa
 
+from quality_sample_paths import resolve_quality_sample_runtime_paths
 from realtime_pipeline import RealtimeVoiceConverter, RealtimeConfig
 from quality_pipeline import QualityVoiceConverter, QualityConfig
 
@@ -55,8 +56,9 @@ def benchmark_realtime_memory():
     print(f"After initialization: {init_memory:.1f} MB (+{init_memory - baseline:.1f} MB)")
 
     # Load test audio
-    test_audio = "data/separated_youtube/william_singe/2iVFx7f5MMU_vocals.wav"
-    audio, sr = librosa.load(test_audio, sr=None, mono=True, duration=10.0)
+    paths = resolve_quality_sample_runtime_paths()
+    test_audio = paths["william_test_audio"]
+    audio, sr = librosa.load(str(test_audio), sr=None, mono=True, duration=10.0)
     speaker_embedding = np.random.randn(256).astype(np.float32)
 
     # Convert (this will load models)
@@ -110,10 +112,15 @@ def benchmark_quality_memory():
     print(f"After initialization: {init_memory:.1f} MB (+{init_memory - baseline:.1f} MB)")
 
     # Load test audio
-    test_audio = "data/separated_youtube/william_singe/2iVFx7f5MMU_vocals.wav"
-    audio, sr = librosa.load(test_audio, sr=None, mono=True, duration=10.0)
-    reference = librosa.load("data/separated_youtube/conor_maynard/08NWh97_DME_vocals.wav",
-                            sr=None, mono=True, duration=10.0)[0]
+    paths = resolve_quality_sample_runtime_paths()
+    test_audio = paths["william_test_audio"]
+    audio, sr = librosa.load(str(test_audio), sr=None, mono=True, duration=10.0)
+    reference = librosa.load(
+        str(paths["conor_reference_audio"]),
+        sr=None,
+        mono=True,
+        duration=10.0,
+    )[0]
 
     # Convert (this will load models)
     print("\nConverting...")

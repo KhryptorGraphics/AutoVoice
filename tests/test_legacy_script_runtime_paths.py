@@ -12,6 +12,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import convert_pillowtalk  # noqa: E402
 import sota_conversion_nvfp4  # noqa: E402
+import train_fp16_lora  # noqa: E402
+import train_nvfp4_lora  # noqa: E402
 import train_pillowtalk  # noqa: E402
 
 
@@ -79,3 +81,53 @@ def test_sota_load_speaker_embedding_supports_explicit_data_dir(tmp_path):
     loaded = sota_conversion_nvfp4.load_speaker_embedding(profile_id, data_dir=str(data_dir))
 
     assert np.array_equal(loaded, expected)
+
+
+def test_train_fp16_lora_runtime_paths_follow_data_dir(monkeypatch, tmp_path):
+    data_dir = tmp_path / "fp16-data"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+
+    paths = train_fp16_lora.resolve_runtime_paths()
+
+    assert paths["data_dir"] == data_dir
+    assert paths["separated_dir"] == data_dir / "separated_youtube"
+    assert paths["diarized_dir"] == data_dir / "diarized_youtube"
+    assert paths["adapters_dir"] == data_dir / "trained_models" / "fp16"
+    assert paths["checkpoints_dir"] == data_dir / "checkpoints" / "fp16"
+
+
+def test_train_fp16_lora_configure_runtime_paths_supports_explicit_data_dir(tmp_path):
+    data_dir = tmp_path / "fp16-explicit"
+
+    paths = train_fp16_lora.configure_runtime_paths(str(data_dir))
+
+    assert paths["data_dir"] == data_dir
+    assert train_fp16_lora.SEPARATED_DIR == data_dir / "separated_youtube"
+    assert train_fp16_lora.DIARIZED_DIR == data_dir / "diarized_youtube"
+    assert train_fp16_lora.ADAPTERS_DIR == data_dir / "trained_models" / "fp16"
+    assert train_fp16_lora.CHECKPOINTS_DIR == data_dir / "checkpoints" / "fp16"
+
+
+def test_train_nvfp4_lora_runtime_paths_follow_data_dir(monkeypatch, tmp_path):
+    data_dir = tmp_path / "nvfp4-data"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+
+    paths = train_nvfp4_lora.resolve_runtime_paths()
+
+    assert paths["data_dir"] == data_dir
+    assert paths["separated_dir"] == data_dir / "separated_youtube"
+    assert paths["diarized_dir"] == data_dir / "diarized_youtube"
+    assert paths["adapters_dir"] == data_dir / "trained_models" / "nvfp4"
+    assert paths["checkpoints_dir"] == data_dir / "checkpoints" / "nvfp4"
+
+
+def test_train_nvfp4_lora_configure_runtime_paths_supports_explicit_data_dir(tmp_path):
+    data_dir = tmp_path / "nvfp4-explicit"
+
+    paths = train_nvfp4_lora.configure_runtime_paths(str(data_dir))
+
+    assert paths["data_dir"] == data_dir
+    assert train_nvfp4_lora.SEPARATED_DIR == data_dir / "separated_youtube"
+    assert train_nvfp4_lora.DIARIZED_DIR == data_dir / "diarized_youtube"
+    assert train_nvfp4_lora.ADAPTERS_DIR == data_dir / "trained_models" / "nvfp4"
+    assert train_nvfp4_lora.CHECKPOINTS_DIR == data_dir / "checkpoints" / "nvfp4"

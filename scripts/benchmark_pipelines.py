@@ -29,6 +29,8 @@ import numpy as np
 import librosa
 import soundfile as sf
 
+from quality_sample_paths import resolve_quality_sample_runtime_paths
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -135,10 +137,16 @@ def main():
     print("=" * 70 + "\n")
 
     os.chdir(Path(__file__).parent.parent)
+    paths = resolve_quality_sample_runtime_paths()
 
     # Load reference (target speaker audio for similarity comparison)
-    reference_path = "data/separated_youtube/conor_maynard/08NWh97_DME_vocals.wav"
-    reference_audio, reference_sr = librosa.load(reference_path, sr=None, mono=True, duration=30.0)
+    reference_path = paths["conor_reference_audio"]
+    reference_audio, reference_sr = librosa.load(
+        str(reference_path),
+        sr=None,
+        mono=True,
+        duration=30.0,
+    )
 
     # Benchmark results from existing outputs
     results: List[BenchmarkResult] = []

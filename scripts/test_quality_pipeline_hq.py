@@ -19,6 +19,7 @@ import numpy as np
 import librosa
 import soundfile as sf
 
+from quality_sample_paths import resolve_quality_sample_runtime_paths
 from quality_pipeline import QualityVoiceConverter, QualityConfig
 
 logging.basicConfig(
@@ -37,33 +38,39 @@ def main():
 
     # Change to repo root
     os.chdir(Path(__file__).parent.parent)
+    paths = resolve_quality_sample_runtime_paths()
 
     # Profile IDs from spec
     WILLIAM_ID = "7da05140-1303-40c6-95d9-5b6e2c3624df"
     CONOR_ID = "c572d02c-c687-4bed-8676-6ad253cf1c91"
 
     # Test audio: Same as realtime test for comparison
-    test_audio = "data/separated_youtube/william_singe/2iVFx7f5MMU_vocals.wav"
+    test_audio = paths["william_test_audio"]
 
-    if not Path(test_audio).exists():
+    if not test_audio.exists():
         print(f"ERROR: Test audio not found: {test_audio}")
         return 1
 
     # Load source audio (first 30s for direct comparison)
     print(f"Loading source audio: {test_audio}")
-    source_audio, source_sr = librosa.load(test_audio, sr=None, mono=True, duration=30.0)
+    source_audio, source_sr = librosa.load(str(test_audio), sr=None, mono=True, duration=30.0)
     print(f"  Duration: {len(source_audio)/source_sr:.1f}s")
     print(f"  Sample rate: {source_sr}Hz")
     print(f"  Shape: {source_audio.shape}")
 
     # Load reference audio (Conor vocals for style)
     print(f"\nLoading reference speaker: Conor")
-    reference_audio_path = "data/separated_youtube/conor_maynard/08NWh97_DME_vocals.wav"
-    if not Path(reference_audio_path).exists():
+    reference_audio_path = paths["conor_reference_audio"]
+    if not reference_audio_path.exists():
         print(f"ERROR: Reference audio not found: {reference_audio_path}")
         return 1
 
-    reference_audio, reference_sr = librosa.load(reference_audio_path, sr=None, mono=True, duration=25.0)
+    reference_audio, reference_sr = librosa.load(
+        str(reference_audio_path),
+        sr=None,
+        mono=True,
+        duration=25.0,
+    )
     print(f"  Reference: {reference_audio_path}")
     print(f"  Duration: {len(reference_audio)/reference_sr:.1f}s")
     print(f"  Sample rate: {reference_sr}Hz")
@@ -111,9 +118,9 @@ def main():
         return 1
 
     # Save output
-    output_dir = Path("tests/quality_samples/outputs")
+    output_dir = paths["quality_outputs_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "william_as_conor_quality_30s.wav"
+    output_path = paths["quality_output"]
 
     print(f"\nSaving output: {output_path}")
     sf.write(str(output_path), converted, out_sr)

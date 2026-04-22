@@ -18,6 +18,7 @@ import numpy as np
 import librosa
 import soundfile as sf
 
+from quality_sample_paths import resolve_quality_sample_runtime_paths
 from realtime_pipeline import RealtimeVoiceConverter, RealtimeConfig, load_speaker_embedding
 
 logging.basicConfig(
@@ -36,21 +37,22 @@ def main():
 
     # Change to repo root
     os.chdir(Path(__file__).parent.parent)
+    paths = resolve_quality_sample_runtime_paths()
 
     # Profile IDs from spec
     WILLIAM_ID = "7da05140-1303-40c6-95d9-5b6e2c3624df"
     CONOR_ID = "c572d02c-c687-4bed-8676-6ad253cf1c91"
 
     # Test audio: Use a short William vocals file (first 30s for testing)
-    test_audio = "data/separated_youtube/william_singe/2iVFx7f5MMU_vocals.wav"
+    test_audio = paths["william_test_audio"]
 
-    if not Path(test_audio).exists():
+    if not test_audio.exists():
         print(f"ERROR: Test audio not found: {test_audio}")
         return 1
 
     # Load source audio (first 30s only)
     print(f"Loading source audio: {test_audio}")
-    audio, sr = librosa.load(test_audio, sr=None, mono=True, duration=30.0)
+    audio, sr = librosa.load(str(test_audio), sr=None, mono=True, duration=30.0)
     print(f"  Duration: {len(audio)/sr:.1f}s")
     print(f"  Sample rate: {sr}Hz")
     print(f"  Shape: {audio.shape}")
@@ -58,7 +60,7 @@ def main():
     # Load target speaker embedding (Conor)
     print(f"\nLoading target speaker: Conor (ID: {CONOR_ID})")
     try:
-        target_embedding = load_speaker_embedding(CONOR_ID)
+        target_embedding = load_speaker_embedding(CONOR_ID, data_dir=str(paths["data_dir"]))
         print(f"  Embedding shape: {target_embedding.shape}")
         print(f"  Embedding dtype: {target_embedding.dtype}")
     except FileNotFoundError as e:
@@ -106,9 +108,9 @@ def main():
         return 1
 
     # Save output
-    output_dir = Path("tests/quality_samples/outputs")
+    output_dir = paths["quality_outputs_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "william_as_conor_realtime_30s.wav"
+    output_path = paths["realtime_output"]
 
     print(f"\nSaving output: {output_path}")
     sf.write(str(output_path), converted, out_sr)

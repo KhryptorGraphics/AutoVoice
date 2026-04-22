@@ -16,6 +16,7 @@ import torch
 import numpy as np
 import librosa
 
+from quality_sample_paths import resolve_quality_sample_runtime_paths
 from realtime_pipeline import RealtimeVoiceConverter, RealtimeConfig
 from quality_pipeline import QualityVoiceConverter, QualityConfig
 
@@ -34,6 +35,7 @@ def main():
     print("=" * 70)
 
     os.chdir(Path(__file__).parent.parent)
+    paths = resolve_quality_sample_runtime_paths()
 
     if not torch.cuda.is_available():
         print("\n⚠ CUDA not available - cannot test GPU memory recovery")
@@ -41,8 +43,8 @@ def main():
         return 0
 
     # Prepare test data
-    test_audio = "data/separated_youtube/william_singe/2iVFx7f5MMU_vocals.wav"
-    audio, sr = librosa.load(test_audio, sr=None, mono=True, duration=5.0)
+    test_audio = paths["william_test_audio"]
+    audio, sr = librosa.load(str(test_audio), sr=None, mono=True, duration=5.0)
     speaker_embedding = np.random.randn(256).astype(np.float32)
     reference_audio = audio.copy()
 

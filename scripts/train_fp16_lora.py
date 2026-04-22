@@ -34,6 +34,14 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
+from auto_voice.storage.paths import (
+    resolve_checkpoints_dir,
+    resolve_data_dir,
+    resolve_diarized_audio_dir,
+    resolve_separated_audio_dir,
+    resolve_trained_models_dir,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -56,11 +64,33 @@ ARTIST_PROFILES = {
     },
 }
 
-# Directories - fp16 versions go to separate folder
-SEPARATED_DIR = Path('data/separated_youtube')
-DIARIZED_DIR = Path('data/diarized_youtube')
-ADAPTERS_DIR = Path('data/trained_models/fp16')
-CHECKPOINTS_DIR = Path('data/checkpoints/fp16')
+def resolve_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Resolve runtime paths without relying on cwd-sensitive data/* literals."""
+
+    resolved_data_dir = resolve_data_dir(data_dir)
+    return {
+        "data_dir": resolved_data_dir,
+        "separated_dir": resolve_separated_audio_dir(data_dir=str(resolved_data_dir)),
+        "diarized_dir": resolve_diarized_audio_dir(data_dir=str(resolved_data_dir)),
+        "adapters_dir": resolve_trained_models_dir(data_dir=str(resolved_data_dir)) / "fp16",
+        "checkpoints_dir": resolve_checkpoints_dir(data_dir=str(resolved_data_dir)) / "fp16",
+    }
+
+
+def configure_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Update legacy module globals to match the resolved runtime paths."""
+
+    global SEPARATED_DIR, DIARIZED_DIR, ADAPTERS_DIR, CHECKPOINTS_DIR
+
+    paths = resolve_runtime_paths(data_dir)
+    SEPARATED_DIR = paths["separated_dir"]
+    DIARIZED_DIR = paths["diarized_dir"]
+    ADAPTERS_DIR = paths["adapters_dir"]
+    CHECKPOINTS_DIR = paths["checkpoints_dir"]
+    return paths
+
+
+configure_runtime_paths()
 
 
 def print_banner(text: str):
@@ -219,18 +249,20 @@ class DiarizedVocalsDataset(Dataset):
         segment_duration: float = 3.0,
         sample_rate: int = 16000,
         max_segments_per_file: int = 10,
+        data_dir: str | None = None,
     ):
         self.artist_key = artist_key
         self.segment_duration = segment_duration
         self.sample_rate = sample_rate
         self.max_segments_per_file = max_segments_per_file
+        self.runtime_paths = resolve_runtime_paths(data_dir)
 
         self.segments = []
         self._load_segments()
 
     def _load_segments(self):
-        diarized_dir = DIARIZED_DIR / self.artist_key
-        separated_dir = SEPARATED_DIR / self.artist_key
+        diarized_dir = self.runtime_paths["diarized_dir"] / self.artist_key
+        separated_dir = self.runtime_paths["separated_dir"] / self.artist_key
 
         if not diarized_dir.exists():
             raise RuntimeError(f"Diarization directory not found: {diarized_dir}")
@@ -452,15 +484,18 @@ def train_artist_lora(
     lora_alpha: float = 32.0,
     learning_rate: float = 1e-4,
     save_every: int = 10,
+    data_dir: str | None = None,
 ) -> Path:
     profile = ARTIST_PROFILES[artist_key]
     profile_id = profile['profile_id']
+    runtime_paths = configure_runtime_paths(data_dir)
 
     print_banner(f"Training fp16 LoRA for {profile['name']}")
     print(f"  Profile ID: {profile_id}")
     print(f"  LoRA rank: {lora_rank}, alpha: {lora_alpha}")
     print(f"  Epochs: {epochs}, batch size: {batch_size}")
     print(f"  Mode: Full fp16 (no quantization)")
+    print(f"  Data dir: {runtime_paths['data_dir']}")
     print_gpu_memory()
 
     if not torch.cuda.is_available():
@@ -470,7 +505,7 @@ def train_artist_lora(
     print(f"  Device: {torch.cuda.get_device_name()}")
 
     print("\n  Loading dataset...")
-    dataset = DiarizedVocalsDataset(artist_key)
+    dataset = DiarizedVocalsDataset(artist_key, data_dir=data_dir)
 
     if len(dataset) == 0:
         raise RuntimeError(f"No training data for {artist_key}")
@@ -508,7 +543,7 @@ def train_artist_lora(
         use_amp=True,
     )
 
-    checkpoint_path = CHECKPOINTS_DIR / f"{profile_id}_lora.pt"
+    checkpoint_path = runtime_paths["checkpoints_dir"] / f"{profile_id}_lora.pt"
     start_epoch = trainer.load_checkpoint(checkpoint_path)
     if start_epoch > 0:
         print(f"  Resuming from epoch {start_epoch}")
@@ -534,14 +569,14 @@ def train_artist_lora(
         torch.cuda.empty_cache()
 
     print("\n  Saving final adapter (fp16, no quantization)...")
-    ADAPTERS_DIR.mkdir(parents=True, exist_ok=True)
+    runtime_paths["adapters_dir"].mkdir(parents=True, exist_ok=True)
 
     model.to(device)
     model.requires_grad_(False)
     model = model.merge_lora_weights()  # Merge but don't quantize
     model = model.to_fp16()  # Convert to fp16 for efficient inference
 
-    adapter_path = ADAPTERS_DIR / f"{profile_id}_fp16_lora.pt"
+    adapter_path = runtime_paths["adapters_dir"] / f"{profile_id}_fp16_lora.pt"
     torch.save({
         'profile_id': profile_id,
         'artist': artist_key,
@@ -575,6 +610,8 @@ def main():
                         help='LoRA alpha')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='Learning rate')
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Override root data directory (defaults to DATA_DIR or data)')
 
     args = parser.parse_args()
 
@@ -600,6 +637,7 @@ def main():
                 lora_rank=args.lora_rank,
                 lora_alpha=args.lora_alpha,
                 learning_rate=args.lr,
+                data_dir=args.data_dir,
             )
             results.append((artist, adapter_path, True))
         except Exception as e:
