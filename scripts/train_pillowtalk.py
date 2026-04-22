@@ -19,6 +19,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 import torch
 import numpy as np
+from auto_voice.storage.paths import (
+    resolve_data_dir,
+    resolve_profiles_dir,
+    resolve_trained_models_dir,
+)
 
 # Configure logging with live output
 logging.basicConfig(
@@ -32,15 +37,24 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WILLIAM_PROFILE_ID = "7da05140-1303-40c6-95d9-5b6e2c3624df"
 CONOR_PROFILE_ID = "9679a6ec-e6e2-43c4-b64e-1f004fed34f9"
 
 PILLOWTALK_WILLIAM = "tests/quality_samples/william_singe_pillowtalk.wav"
 PILLOWTALK_CONOR = "tests/quality_samples/conor_maynard_pillowtalk.wav"
 
-PROFILES_DIR = "data/voice_profiles"
-SEPARATED_DIR = "data/separated"
-MODELS_DIR = "data/trained_models"
+
+def resolve_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Resolve runtime paths without relying on cwd-sensitive data/* literals."""
+
+    resolved_data_dir = resolve_data_dir(data_dir)
+    return {
+        "data_dir": resolved_data_dir,
+        "profiles_dir": resolve_profiles_dir(data_dir=str(resolved_data_dir)),
+        "separated_dir": resolved_data_dir / "separated",
+        "models_dir": resolve_trained_models_dir(data_dir=str(resolved_data_dir)),
+    }
 
 # Training config
 TRAINING_CONFIG = {
@@ -70,7 +84,13 @@ def print_progress(epoch: int, step: int, loss: float, progress: int, profile_na
         print()  # Newline at completion
 
 
-def separate_vocals(audio_path: str, profile_id: str, profile_name: str) -> dict:
+def separate_vocals(
+    audio_path: str,
+    profile_id: str,
+    profile_name: str,
+    *,
+    data_dir: str | None = None,
+) -> dict:
     """Separate vocals from audio using Demucs."""
     from auto_voice.audio.separation import VocalSeparator
     import librosa
@@ -79,13 +99,14 @@ def separate_vocals(audio_path: str, profile_id: str, profile_name: str) -> dict
     print(f"  🎵 Separating vocals from: {os.path.basename(audio_path)}")
 
     # Check if already separated
-    separated_dir = os.path.join(SEPARATED_DIR, profile_id)
-    vocals_path = os.path.join(separated_dir, "vocals.wav")
-    instrumental_path = os.path.join(separated_dir, "instrumental.wav")
+    paths = resolve_runtime_paths(data_dir)
+    separated_dir = paths["separated_dir"] / profile_id
+    vocals_path = separated_dir / "vocals.wav"
+    instrumental_path = separated_dir / "instrumental.wav"
 
-    if os.path.exists(vocals_path) and os.path.exists(instrumental_path):
+    if vocals_path.exists() and instrumental_path.exists():
         print(f"  ✅ Using cached separated files")
-        return {'vocals': vocals_path, 'instrumental': instrumental_path}
+        return {'vocals': str(vocals_path), 'instrumental': str(instrumental_path)}
 
     # Load audio
     audio, sr = librosa.load(audio_path, sr=None, mono=False)
@@ -103,13 +124,13 @@ def separate_vocals(audio_path: str, profile_id: str, profile_name: str) -> dict
     print(f"  ⏱️  Separation completed in {elapsed:.1f}s")
 
     # Save files
-    os.makedirs(separated_dir, exist_ok=True)
-    sf.write(vocals_path, separated['vocals'], sr)
-    sf.write(instrumental_path, separated['instrumental'], sr)
+    separated_dir.mkdir(parents=True, exist_ok=True)
+    sf.write(str(vocals_path), separated['vocals'], sr)
+    sf.write(str(instrumental_path), separated['instrumental'], sr)
     print(f"  💾 Saved: {vocals_path}")
     print(f"  💾 Saved: {instrumental_path}")
 
-    return {'vocals': vocals_path, 'instrumental': instrumental_path}
+    return {'vocals': str(vocals_path), 'instrumental': str(instrumental_path)}
 
 
 def extract_mel_features(audio_path: str, device: torch.device) -> torch.Tensor:
@@ -304,7 +325,8 @@ def main():
     print()
 
     # Change to project root
-    os.chdir(Path(__file__).parent.parent)
+    os.chdir(PROJECT_ROOT)
+    paths = resolve_runtime_paths()
 
     results = {}
 
@@ -315,7 +337,8 @@ def main():
     william_separated = separate_vocals(
         PILLOWTALK_WILLIAM,
         WILLIAM_PROFILE_ID,
-        "William Singe"
+        "William Singe",
+        data_dir=str(paths["data_dir"]),
     )
 
     # ========================================================================
@@ -325,19 +348,20 @@ def main():
     conor_separated = separate_vocals(
         PILLOWTALK_CONOR,
         CONOR_PROFILE_ID,
-        "Conor Maynard"
+        "Conor Maynard",
+        data_dir=str(paths["data_dir"]),
     )
 
     # ========================================================================
     # Step 3: Train William Singe model
     # ========================================================================
-    os.makedirs(MODELS_DIR, exist_ok=True)
+    paths["models_dir"].mkdir(parents=True, exist_ok=True)
 
     results['william'] = train_voice_model(
         profile_id=WILLIAM_PROFILE_ID,
         profile_name="William Singe",
         vocals_path=william_separated['vocals'],
-        output_dir=MODELS_DIR,
+        output_dir=str(paths["models_dir"]),
         config=TRAINING_CONFIG,
     )
 
@@ -348,7 +372,7 @@ def main():
         profile_id=CONOR_PROFILE_ID,
         profile_name="Conor Maynard",
         vocals_path=conor_separated['vocals'],
-        output_dir=MODELS_DIR,
+        output_dir=str(paths["models_dir"]),
         config=TRAINING_CONFIG,
     )
 

@@ -21,6 +21,11 @@ import torch
 import numpy as np
 import librosa
 import soundfile as sf
+from auto_voice.storage.paths import (
+    resolve_data_dir,
+    resolve_profiles_dir,
+    resolve_trained_models_dir,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -34,12 +39,22 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WILLIAM_PROFILE_ID = "7da05140-1303-40c6-95d9-5b6e2c3624df"
 CONOR_PROFILE_ID = "9679a6ec-e6e2-43c4-b64e-1f004fed34f9"
 
-SEPARATED_DIR = "data/separated"
-MODELS_DIR = "data/trained_models"
-OUTPUT_DIR = "data/conversions"
+
+def resolve_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Resolve runtime paths without assuming the current working directory."""
+
+    resolved_data_dir = resolve_data_dir(data_dir)
+    return {
+        "data_dir": resolved_data_dir,
+        "profiles_dir": resolve_profiles_dir(data_dir=str(resolved_data_dir)),
+        "models_dir": resolve_trained_models_dir(data_dir=str(resolved_data_dir)),
+        "separated_dir": resolved_data_dir / "separated",
+        "output_dir": resolved_data_dir / "conversions",
+    }
 
 
 def print_banner(text: str):
@@ -50,9 +65,9 @@ def print_banner(text: str):
     print("=" * width + "\n")
 
 
-def load_speaker_embedding(profile_id: str) -> np.ndarray:
+def load_speaker_embedding(profile_id: str, data_dir: str | None = None) -> np.ndarray:
     """Load speaker embedding from profile."""
-    embedding_path = f"data/voice_profiles/{profile_id}.npy"
+    embedding_path = resolve_runtime_paths(data_dir)["profiles_dir"] / f"{profile_id}.npy"
     return np.load(embedding_path)
 
 
@@ -209,30 +224,33 @@ def run_conversion(
     target_name: str,
     source_profile_id: str,
     target_profile_id: str,
+    *,
+    data_dir: str | None = None,
 ) -> dict:
     """Run a single voice conversion."""
     print(f"\n  🎤 Converting: {source_name} → {target_name} voice")
+    paths = resolve_runtime_paths(data_dir)
 
     # Load source vocals
-    source_vocals_path = f"{SEPARATED_DIR}/{source_profile_id}/vocals.wav"
-    source_vocals, source_sr = librosa.load(source_vocals_path, sr=None, mono=True)
+    source_vocals_path = paths["separated_dir"] / source_profile_id / "vocals.wav"
+    source_vocals, source_sr = librosa.load(str(source_vocals_path), sr=None, mono=True)
     print(f"  📊 Source vocals: {len(source_vocals)/source_sr:.1f}s @ {source_sr}Hz")
 
     # Load target instrumental
-    target_inst_path = f"{SEPARATED_DIR}/{target_profile_id}/instrumental.wav"
-    target_inst, inst_sr = librosa.load(target_inst_path, sr=None, mono=True)
+    target_inst_path = paths["separated_dir"] / target_profile_id / "instrumental.wav"
+    target_inst, inst_sr = librosa.load(str(target_inst_path), sr=None, mono=True)
     print(f"  🎸 Target instrumental: {len(target_inst)/inst_sr:.1f}s @ {inst_sr}Hz")
 
     # Load target speaker embedding
-    target_embedding = load_speaker_embedding(target_profile_id)
+    target_embedding = load_speaker_embedding(target_profile_id, data_dir=data_dir)
     print(f"  🧬 Target embedding: {target_embedding.shape}")
 
     # Load target reference vocals (for quality comparison)
-    target_vocals_path = f"{SEPARATED_DIR}/{target_profile_id}/vocals.wav"
-    target_vocals, target_sr = librosa.load(target_vocals_path, sr=None, mono=True)
+    target_vocals_path = paths["separated_dir"] / target_profile_id / "vocals.wav"
+    target_vocals, target_sr = librosa.load(str(target_vocals_path), sr=None, mono=True)
 
     # Estimate pitch shift from embeddings
-    source_embedding = load_speaker_embedding(source_profile_id)
+    source_embedding = load_speaker_embedding(source_profile_id, data_dir=data_dir)
     # Use mean frequency from vocal range stored in embedding
     source_mean_freq = abs(source_embedding[64])  # Middle of embedding
     target_mean_freq = abs(target_embedding[64])
@@ -273,10 +291,10 @@ def run_conversion(
     )
 
     # Save output
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    paths["output_dir"].mkdir(parents=True, exist_ok=True)
     output_filename = f"{source_name.lower().replace(' ', '_')}_as_{target_name.lower().replace(' ', '_')}.wav"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    sf.write(output_path, mixed, output_sr)
+    output_path = paths["output_dir"] / output_filename
+    sf.write(str(output_path), mixed, output_sr)
     print(f"  💾 Saved: {output_path}")
 
     # Compute quality metrics
@@ -295,7 +313,7 @@ def run_conversion(
     return {
         'source': source_name,
         'target': target_name,
-        'output_path': output_path,
+        'output_path': str(output_path),
         'duration': len(mixed) / output_sr,
         'conversion_time': conversion_time,
         'metrics': metrics,
@@ -311,7 +329,8 @@ def main():
     print()
 
     # Change to project root
-    os.chdir(Path(__file__).parent.parent)
+    os.chdir(PROJECT_ROOT)
+    paths = resolve_runtime_paths()
 
     results = []
 
@@ -324,6 +343,7 @@ def main():
         target_name="Conor Maynard",
         source_profile_id=WILLIAM_PROFILE_ID,
         target_profile_id=CONOR_PROFILE_ID,
+        data_dir=str(paths["data_dir"]),
     )
     results.append(result1)
 
@@ -336,6 +356,7 @@ def main():
         target_name="William Singe",
         source_profile_id=CONOR_PROFILE_ID,
         target_profile_id=WILLIAM_PROFILE_ID,
+        data_dir=str(paths["data_dir"]),
     )
     results.append(result2)
 
@@ -353,7 +374,7 @@ def main():
         print()
 
     print(f"📅 Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("\n📂 Output files are in: data/conversions/")
+    print(f"\n📂 Output files are in: {paths['output_dir']}/")
     print("🎧 Please listen and provide feedback on quality!")
     print()
 

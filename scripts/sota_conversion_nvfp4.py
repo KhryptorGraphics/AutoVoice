@@ -19,6 +19,7 @@ import torch.nn as nn
 import numpy as np
 import librosa
 import soundfile as sf
+from auto_voice.storage.paths import resolve_data_dir, resolve_profiles_dir
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,12 +32,23 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WILLIAM_PROFILE_ID = "7da05140-1303-40c6-95d9-5b6e2c3624df"
 CONOR_PROFILE_ID = "9679a6ec-e6e2-43c4-b64e-1f004fed34f9"
 
-SEPARATED_DIR = "data/separated"
-MODELS_DIR = "models/pretrained"
-OUTPUT_DIR = "data/conversions"
+
+def resolve_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Resolve runtime paths without depending on cwd-sensitive literals."""
+
+    resolved_data_dir = resolve_data_dir(data_dir)
+    pretrained_override = os.environ.get("AUTOVOICE_PRETRAINED_DIR")
+    return {
+        "data_dir": resolved_data_dir,
+        "profiles_dir": resolve_profiles_dir(data_dir=str(resolved_data_dir)),
+        "separated_dir": resolved_data_dir / "separated",
+        "output_dir": resolved_data_dir / "conversions",
+        "pretrained_dir": Path(pretrained_override) if pretrained_override else PROJECT_ROOT / "models" / "pretrained",
+    }
 
 
 def print_banner(text: str):
@@ -125,7 +137,7 @@ class SOTAVoiceConverter:
         print("\n  Loading RMVPE pitch extractor...")
         from auto_voice.models.pitch import RMVPEPitchExtractor
 
-        rmvpe_path = Path(MODELS_DIR) / "rmvpe.pt"
+        rmvpe_path = resolve_runtime_paths()["pretrained_dir"] / "rmvpe.pt"
 
         self._rmvpe = RMVPEPitchExtractor(
             pretrained=str(rmvpe_path) if rmvpe_path.exists() else None,
@@ -152,7 +164,7 @@ class SOTAVoiceConverter:
         self._vocoder = BigVGANVocoder(device=self.device)
 
         # Try to load pretrained weights
-        bigvgan_path = Path(MODELS_DIR) / "bigvgan_generator.pt"
+        bigvgan_path = resolve_runtime_paths()["pretrained_dir"] / "bigvgan_generator.pt"
         if bigvgan_path.exists():
             try:
                 self._vocoder.load_checkpoint(str(bigvgan_path))
@@ -317,9 +329,9 @@ class SOTAVoiceConverter:
         print_memory_usage()
 
 
-def load_speaker_embedding(profile_id: str) -> np.ndarray:
+def load_speaker_embedding(profile_id: str, data_dir: str | None = None) -> np.ndarray:
     """Load speaker embedding from profile."""
-    embedding_path = f"data/voice_profiles/{profile_id}.npy"
+    embedding_path = resolve_runtime_paths(data_dir)["profiles_dir"] / f"{profile_id}.npy"
     return np.load(embedding_path)
 
 
@@ -369,8 +381,9 @@ def main():
         total_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
         print(f"🖥️  GPU Memory: {total_mem:.1f} GB")
 
-    os.chdir(Path(__file__).parent.parent)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.chdir(PROJECT_ROOT)
+    paths = resolve_runtime_paths()
+    paths["output_dir"].mkdir(parents=True, exist_ok=True)
 
     # Initialize converter with quantization
     print_banner("Initializing SOTA Converter")
@@ -385,13 +398,13 @@ def main():
 
     # Load source vocals
     william_vocals, william_sr = librosa.load(
-        f"{SEPARATED_DIR}/{WILLIAM_PROFILE_ID}/vocals.wav",
+        str(paths["separated_dir"] / WILLIAM_PROFILE_ID / "vocals.wav"),
         sr=None, mono=True
     )
     print(f"  Source: William vocals ({len(william_vocals)/william_sr:.1f}s @ {william_sr}Hz)")
 
     # Load target embedding
-    conor_embedding = load_speaker_embedding(CONOR_PROFILE_ID)
+    conor_embedding = load_speaker_embedding(CONOR_PROFILE_ID, data_dir=str(paths["data_dir"]))
     print(f"  Target: Conor embedding {conor_embedding.shape}")
 
     # Convert
@@ -404,7 +417,7 @@ def main():
 
     # Load instrumental and mix
     conor_inst, inst_sr = librosa.load(
-        f"{SEPARATED_DIR}/{CONOR_PROFILE_ID}/instrumental.wav",
+        str(paths["separated_dir"] / CONOR_PROFILE_ID / "instrumental.wav"),
         sr=output_sr, mono=True
     )
 
@@ -414,13 +427,13 @@ def main():
     mixed = mixed / np.max(np.abs(mixed)) * 0.95  # Normalize
 
     # Save
-    output_path = f"{OUTPUT_DIR}/william_as_conor_SOTA.wav"
-    sf.write(output_path, mixed, output_sr)
+    output_path = paths["output_dir"] / "william_as_conor_SOTA.wav"
+    sf.write(str(output_path), mixed, output_sr)
     print(f"  💾 Saved: {output_path}")
 
     # Quality metrics
     conor_vocals, _ = librosa.load(
-        f"{SEPARATED_DIR}/{CONOR_PROFILE_ID}/vocals.wav",
+        str(paths["separated_dir"] / CONOR_PROFILE_ID / "vocals.wav"),
         sr=output_sr, mono=True
     )
     metrics1 = compute_quality_metrics(converted_audio, conor_vocals, output_sr)
@@ -429,7 +442,7 @@ def main():
 
     results.append({
         'conversion': 'William → Conor',
-        'output': output_path,
+        'output': str(output_path),
         'metrics': metrics1
     })
 
@@ -440,13 +453,13 @@ def main():
 
     # Load source vocals
     conor_vocals_src, conor_sr = librosa.load(
-        f"{SEPARATED_DIR}/{CONOR_PROFILE_ID}/vocals.wav",
+        str(paths["separated_dir"] / CONOR_PROFILE_ID / "vocals.wav"),
         sr=None, mono=True
     )
     print(f"  Source: Conor vocals ({len(conor_vocals_src)/conor_sr:.1f}s @ {conor_sr}Hz)")
 
     # Load target embedding
-    william_embedding = load_speaker_embedding(WILLIAM_PROFILE_ID)
+    william_embedding = load_speaker_embedding(WILLIAM_PROFILE_ID, data_dir=str(paths["data_dir"]))
     print(f"  Target: William embedding {william_embedding.shape}")
 
     # Convert
@@ -459,7 +472,7 @@ def main():
 
     # Load instrumental and mix
     william_inst, inst_sr2 = librosa.load(
-        f"{SEPARATED_DIR}/{WILLIAM_PROFILE_ID}/instrumental.wav",
+        str(paths["separated_dir"] / WILLIAM_PROFILE_ID / "instrumental.wav"),
         sr=output_sr2, mono=True
     )
 
@@ -468,13 +481,13 @@ def main():
     mixed2 = mixed2 / np.max(np.abs(mixed2)) * 0.95
 
     # Save
-    output_path2 = f"{OUTPUT_DIR}/conor_as_william_SOTA.wav"
-    sf.write(output_path2, mixed2, output_sr2)
+    output_path2 = paths["output_dir"] / "conor_as_william_SOTA.wav"
+    sf.write(str(output_path2), mixed2, output_sr2)
     print(f"  💾 Saved: {output_path2}")
 
     # Quality metrics
     william_ref, _ = librosa.load(
-        f"{SEPARATED_DIR}/{WILLIAM_PROFILE_ID}/vocals.wav",
+        str(paths["separated_dir"] / WILLIAM_PROFILE_ID / "vocals.wav"),
         sr=output_sr2, mono=True
     )
     metrics2 = compute_quality_metrics(converted_audio2, william_ref, output_sr2)
@@ -483,7 +496,7 @@ def main():
 
     results.append({
         'conversion': 'Conor → William',
-        'output': output_path2,
+        'output': str(output_path2),
         'metrics': metrics2
     })
 
@@ -509,7 +522,7 @@ def main():
     converter.unload_models()
 
     print(f"\n📅 Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("\n🎧 Listen to files in data/conversions/ and provide feedback!")
+    print(f"\n🎧 Listen to files in {paths['output_dir']}/ and provide feedback!")
 
 
 if __name__ == "__main__":
