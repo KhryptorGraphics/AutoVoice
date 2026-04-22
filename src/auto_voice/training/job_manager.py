@@ -33,7 +33,10 @@ from auto_voice.storage.voice_profiles import (
     FULL_MODEL_TRAINING_UNLOCK_SECONDS,
     PROFILE_ROLE_TARGET_USER,
 )
-from auto_voice.training.artifacts import build_lora_checkpoint_payload
+from auto_voice.training.artifacts import (
+    build_lora_checkpoint_payload,
+    extract_lora_state_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,7 @@ class TrainingConfig:
     """
 
     training_mode: str = "lora"
+    initialization_mode: str = "scratch"
 
     # LoRA configuration
     lora_rank: int = 8
@@ -403,6 +407,140 @@ class TrainingJobManager:
         )
 
         return job
+
+    def _resolve_profile_artifact_path(self, profile_id: str, training_mode: str) -> Optional[Path]:
+        """Return the canonical artifact path for a profile/mode when present."""
+        store = self._get_profile_store()
+
+        if training_mode == "full":
+            candidate = Path(store._full_model_path(profile_id))
+            return candidate if candidate.exists() else None
+
+        for candidate_path in (
+            Path(store._lora_weights_path(profile_id)),
+            Path(store._legacy_lora_weights_path(profile_id)),
+        ):
+            if candidate_path.exists():
+                return candidate_path
+        return None
+
+    def _find_latest_checkpoint(
+        self,
+        profile_id: str,
+        training_mode: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Find the latest checkpoint compatible with the requested training mode."""
+        checkpoint_dir = self._resolve_checkpoints_dir(profile_id)
+        if not checkpoint_dir.exists():
+            return None
+
+        preferred_names = ["latest.pth", "final.pth", "best.pth"]
+        candidates: List[Path] = []
+
+        for name in preferred_names:
+            candidate = checkpoint_dir / name
+            if candidate.exists():
+                candidates.append(candidate)
+
+        extra_candidates = sorted(
+            checkpoint_dir.glob("checkpoint_*.pth"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        candidates.extend(extra_candidates)
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            if str(candidate) in seen:
+                continue
+            seen.add(str(candidate))
+            try:
+                payload = torch.load(str(candidate), map_location="cpu", weights_only=False)
+            except Exception as exc:
+                logger.warning("Failed to inspect checkpoint %s: %s", candidate, exc)
+                continue
+
+            is_lora = bool(payload.get("is_lora", False))
+            if training_mode == "lora" and not is_lora:
+                continue
+            if training_mode == "full" and is_lora:
+                continue
+
+            return {
+                "path": str(candidate),
+                "current_epoch": int(payload.get("current_epoch", 0) or 0),
+                "global_step": int(payload.get("global_step", 0) or 0),
+                "is_lora": is_lora,
+            }
+
+        return None
+
+    def _resolve_initialization_state(
+        self,
+        profile_id: str,
+        training_mode: str,
+        initialization_mode: str,
+    ) -> Dict[str, Any]:
+        """Resolve whether a job should start from scratch or continue existing artifacts."""
+        if initialization_mode not in {"scratch", "continue"}:
+            initialization_mode = "scratch"
+
+        if initialization_mode == "scratch":
+            return {
+                "initialization_mode": "scratch",
+                "resume_checkpoint": None,
+                "resume_epoch": 0,
+                "artifact_path": None,
+                "source": "scratch",
+            }
+
+        checkpoint_info = self._find_latest_checkpoint(profile_id, training_mode)
+        if checkpoint_info:
+            return {
+                "initialization_mode": "continue",
+                "resume_checkpoint": checkpoint_info["path"],
+                "resume_epoch": checkpoint_info["current_epoch"],
+                "artifact_path": None,
+                "source": "checkpoint",
+            }
+
+        artifact_path = self._resolve_profile_artifact_path(profile_id, training_mode)
+        if artifact_path is not None:
+            return {
+                "initialization_mode": "continue",
+                "resume_checkpoint": None,
+                "resume_epoch": 0,
+                "artifact_path": str(artifact_path),
+                "source": "artifact",
+            }
+
+        raise ValueError(
+            f"No existing {training_mode} artifact or checkpoint is available to continue training"
+        )
+
+    def _load_existing_training_state(
+        self,
+        *,
+        model: Any,
+        artifact_path: str,
+        training_mode: str,
+        device: torch.device,
+    ) -> None:
+        """Load the current artifact into a fresh training model for continuation jobs."""
+        payload = torch.load(artifact_path, map_location=device, weights_only=False)
+
+        if training_mode == "lora":
+            state_dict = extract_lora_state_dict(payload)
+            model.load_lora_state_dict(state_dict)
+            logger.info("Loaded LoRA continuation artifact from %s", artifact_path)
+            return
+
+        if isinstance(payload, dict) and "model" in payload:
+            model_state = payload["model"]
+        else:
+            model_state = payload
+        model.load_state_dict(model_state, strict=False)
+        logger.info("Loaded full-model continuation artifact from %s", artifact_path)
 
     def get_job(self, job_id: str) -> Optional[TrainingJob]:
         """Get job by ID.
@@ -907,11 +1045,24 @@ class TrainingJobManager:
                     training_mode = job.config.training_mode if job.config else "lora"
                     if training_mode not in {"lora", "full"}:
                         training_mode = "lora"
+                    job_type = "full_model" if training_mode == "full" else "lora"
+                    initialization_mode = (
+                        job.config.initialization_mode if job.config else "scratch"
+                    )
+                    if initialization_mode not in {"scratch", "continue"}:
+                        initialization_mode = "scratch"
+                    initialization_state = self._resolve_initialization_state(
+                        job.profile_id,
+                        training_mode,
+                        initialization_mode,
+                    )
 
                     default_epochs = 500 if training_mode == "full" else 100
                     default_lr = 5e-5 if training_mode == "full" else 1e-4
                     batch_size = job.config.batch_size if job.config else 4
-                    epochs = job.config.epochs if job.config else default_epochs
+                    requested_epochs = job.config.epochs if job.config else default_epochs
+                    resume_epoch = int(initialization_state.get("resume_epoch", 0) or 0)
+                    epochs = requested_epochs + resume_epoch if initialization_state["resume_checkpoint"] else requested_epochs
                     learning_rate = job.config.learning_rate if job.config else default_lr
 
                     config = {
@@ -938,6 +1089,14 @@ class TrainingJobManager:
                         lora_alpha = job.config.lora_alpha if job.config else 16
                         lora_dropout = job.config.lora_dropout if job.config else 0.1
                         model.inject_lora(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
+
+                    if initialization_state["artifact_path"]:
+                        self._load_existing_training_state(
+                            model=model,
+                            artifact_path=initialization_state["artifact_path"],
+                            training_mode=training_mode,
+                            device=device,
+                        )
 
                     trainer = Trainer(model=model, config=config, device=device)
                     trainer.resume_event = resume_event
@@ -969,7 +1128,7 @@ class TrainingJobManager:
                             'current_loss': batch_metrics['loss'],
                             'current_epoch': batch_metrics['epoch'],
                             'current_step': batch_metrics['global_step'],
-                            'job_type': training_mode,
+                            'job_type': job_type,
                             'quality_metrics': quality_metrics,
                             'gpu_metrics': gpu_metrics,
                         })
@@ -995,7 +1154,10 @@ class TrainingJobManager:
                     trainer.set_speaker_embedding(str(train_dir))
 
                     # Run training
-                    trainer.train(str(train_dir))
+                    trainer.train(
+                        str(train_dir),
+                        resume_from=initialization_state["resume_checkpoint"],
+                    )
 
                     # Save adapter and speaker embedding to correct location
                     # Task 3.1: Verify training output format matches adapter spec
@@ -1011,12 +1173,18 @@ class TrainingJobManager:
                         'final_loss': trainer.train_losses[-1] if trainer.train_losses else 0,
                         'best_loss': trainer.best_loss,
                         'epochs_completed': config['epochs'],
+                        'requested_epochs': requested_epochs,
                         'checkpoint_path': str(trainer.checkpoint_dir / 'final.pth'),
-                        'job_type': training_mode,
+                        'job_type': job_type,
                         'adapter_path': adapter_saved.get('adapter_path') if adapter_saved else None,
                         'embedding_path': adapter_saved.get('embedding_path') if adapter_saved else None,
                         'manifest_path': adapter_saved.get('manifest_path') if adapter_saved else None,
                         'artifact_type': adapter_saved.get('artifact_type') if adapter_saved else None,
+                        'initialization_mode': initialization_mode,
+                        'resume_source': initialization_state["source"],
+                        'resume_checkpoint': initialization_state["resume_checkpoint"],
+                        'resumed_from_epoch': resume_epoch if initialization_state["resume_checkpoint"] else None,
+                        'artifact_reused': initialization_state["artifact_path"],
                     }
 
                     # Mark as completed
@@ -1816,6 +1984,7 @@ class TrainingJobManager:
         self,
         profile_id: str,
         config: Optional[TrainingConfig] = None,
+        initialization_mode: str = "scratch",
     ) -> TrainingJob:
         """Create a full model training job (not LoRA).
 
@@ -1833,17 +2002,27 @@ class TrainingJobManager:
         Raises:
             ValueError: If insufficient clean vocals for full model
         """
+        if initialization_mode not in {"scratch", "continue"}:
+            initialization_mode = "scratch"
+
         # Check if eligible
         check = self.check_needs_full_model(profile_id)
 
         if not check["needs_full_model"]:
-            if check["clean_vocal_seconds"] < self.FULL_MODEL_UNLOCK_SECONDS:
+            if check["reason"] == "already_full_model":
+                logger.info(
+                    "Profile %s already has a full model; allowing manual %s training",
+                    profile_id,
+                    initialization_mode,
+                )
+            elif check["clean_vocal_seconds"] < self.FULL_MODEL_UNLOCK_SECONDS:
                 raise ValueError(
                     f"Profile {profile_id} has only {check['clean_vocal_seconds']:.1f}s "
                     f"of clean vocals. Need at least "
                     f"{self.FULL_MODEL_UNLOCK_SECONDS:.1f}s for full model training."
                 )
-            raise ValueError(check["reason"])
+            else:
+                raise ValueError(check["reason"])
 
         store = self._get_profile_store()
         samples = store.list_training_samples(profile_id)
@@ -1853,6 +2032,7 @@ class TrainingJobManager:
         if config is None:
             config = TrainingConfig(
                 training_mode="full",
+                initialization_mode=initialization_mode,
                 # Full model uses more epochs and lower LR
                 epochs=50,
                 learning_rate=5e-5,
@@ -1867,6 +2047,7 @@ class TrainingJobManager:
         else:
             # Override LoRA settings for full model
             config.training_mode = "full"
+            config.initialization_mode = initialization_mode
             config.lora_rank = 0
             config.lora_alpha = 0
 

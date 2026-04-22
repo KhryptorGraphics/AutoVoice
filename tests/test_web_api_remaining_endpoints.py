@@ -76,6 +76,17 @@ def _add_training_sample(app, profile_id: str, source_path: Path, duration: floa
     )
 
 
+def _materialize_trained_artifact(app, profile_id: str, artifact_type: str) -> Path:
+    trained_models_dir = Path(app.voice_cloner.store.trained_models_dir)
+    trained_models_dir.mkdir(parents=True, exist_ok=True)
+    if artifact_type == "adapter":
+        artifact_path = trained_models_dir / f"{profile_id}_adapter.pt"
+    else:
+        artifact_path = trained_models_dir / f"{profile_id}_full_model.pt"
+    artifact_path.write_bytes(b"artifact")
+    return artifact_path
+
+
 @dataclass
 class _FakeSegment:
     start: float
@@ -224,7 +235,7 @@ class _FakeTrainingJobManager:
         self.jobs[job.job_id] = job
         return job
 
-    def create_full_model_job(self, *, profile_id, config):
+    def create_full_model_job(self, *, profile_id, config, initialization_mode="scratch"):
         job = self.create_job(profile_id=profile_id, sample_ids=["sample_001"], config=config)
         job.to_dict()["results"] = {"job_type": "full_model"}
         return job
@@ -279,6 +290,39 @@ class TestTrainingEndpoints:
         assert response.status_code == 400
         assert "training_mode" in response.get_json()["error"]
 
+    def test_create_training_job_rejects_invalid_initialization_mode(self, client_remaining, app_remaining, tmp_path):
+        profile_id = "00000000-0000-0000-0000-000000000302b"
+        _create_profile(app_remaining, profile_id=profile_id)
+        sample_path = tmp_path / "sample.wav"
+        _write_wav(sample_path)
+        _add_training_sample(app_remaining, profile_id, sample_path)
+
+        response = client_remaining.post(
+            "/api/v1/training/jobs",
+            json={"profile_id": profile_id, "config": {"initialization_mode": "resume"}},
+        )
+
+        assert response.status_code == 400
+        assert "initialization_mode" in response.get_json()["error"]
+
+    def test_create_training_job_rejects_continue_lora_without_existing_adapter(self, client_remaining, app_remaining, tmp_path):
+        profile_id = "00000000-0000-0000-0000-000000000302c"
+        _create_profile(app_remaining, profile_id=profile_id)
+        sample_path = tmp_path / "sample.wav"
+        _write_wav(sample_path)
+        _add_training_sample(app_remaining, profile_id, sample_path)
+
+        response = client_remaining.post(
+            "/api/v1/training/jobs",
+            json={
+                "profile_id": profile_id,
+                "config": {"training_mode": "lora", "initialization_mode": "continue"},
+            },
+        )
+
+        assert response.status_code == 400
+        assert "No existing LoRA adapter" in response.get_json()["error"]
+
     def test_create_training_job_full_mode_uses_canonical_manager(self, client_remaining, app_remaining, tmp_path):
         profile_id = "00000000-0000-0000-0000-000000000303"
         _create_profile(app_remaining, profile_id=profile_id, clean_vocal_seconds=3600.0)
@@ -287,6 +331,12 @@ class TestTrainingEndpoints:
         _add_training_sample(app_remaining, profile_id, sample_path)
 
         manager = _FakeTrainingJobManager()
+        manager.full_model_check = {
+            "needs_full_model": False,
+            "reason": "already_full_model",
+            "clean_vocal_seconds": 3600.0,
+            "remaining_seconds": 0.0,
+        }
         app_remaining._training_job_manager = manager
 
         response = client_remaining.post(
@@ -298,6 +348,30 @@ class TestTrainingEndpoints:
         data = response.get_json()
         assert data["job_id"] == "job-1"
         assert manager.executed == ["job-1"]
+
+    def test_create_training_job_continue_full_allows_existing_full_model(self, client_remaining, app_remaining, tmp_path):
+        profile_id = "00000000-0000-0000-0000-000000000303b"
+        _create_profile(app_remaining, profile_id=profile_id, clean_vocal_seconds=3600.0)
+        _materialize_trained_artifact(app_remaining, profile_id, "full_model")
+        sample_path = tmp_path / "full.wav"
+        _write_wav(sample_path)
+        _add_training_sample(app_remaining, profile_id, sample_path)
+
+        manager = _FakeTrainingJobManager()
+        app_remaining._training_job_manager = manager
+
+        response = client_remaining.post(
+            "/api/v1/training/jobs",
+            json={
+                "profile_id": profile_id,
+                "config": {"training_mode": "full", "initialization_mode": "continue"},
+            },
+        )
+
+        assert response.status_code == 201
+        payload = response.get_json()
+        assert payload["config"]["training_mode"] == "full"
+        assert payload["config"]["initialization_mode"] == "continue"
 
     def test_cancel_training_job_success(self, client_remaining, app_remaining):
         manager = _FakeTrainingJobManager()

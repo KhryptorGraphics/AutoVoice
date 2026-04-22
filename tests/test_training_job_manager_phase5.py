@@ -20,6 +20,7 @@ from auto_voice.training.job_manager import (
     TrainingJob,
     TrainingJobManager,
 )
+from auto_voice.training.artifacts import build_lora_checkpoint_payload
 
 
 def _sample(sample_id: str, path: Path) -> types.SimpleNamespace:
@@ -47,6 +48,8 @@ def _fake_training_modules(*, fail_in_train: bool = False):
             self.kwargs = kwargs
             self._lora_injected = False
             self.lora_calls = []
+            self.loaded_lora_state = None
+            self.loaded_model_state = None
 
         def inject_lora(self, rank, alpha, dropout):
             self._lora_injected = True
@@ -61,6 +64,12 @@ def _fake_training_modules(*, fail_in_train: bool = False):
                 "layer.lora_B": torch.ones(1),
             }
 
+        def load_lora_state_dict(self, state):
+            self.loaded_lora_state = state
+
+        def load_state_dict(self, state, strict=True):
+            self.loaded_model_state = state
+
     class FakeTrainer:
         def __init__(self, model, config, device):
             self.model = model
@@ -73,13 +82,15 @@ def _fake_training_modules(*, fail_in_train: bool = False):
             self.best_loss = float("inf")
             self.speaker_embedding = torch.nn.functional.normalize(torch.ones(256), dim=0)
             self.embedding_dir = None
+            self.resume_from = None
             self._train_epoch = lambda _loader, epoch: 0.5 - (epoch * 0.1)
             trainer_instances.append(self)
 
         def set_speaker_embedding(self, training_dir):
             self.embedding_dir = training_dir
 
-        def train(self, training_dir):
+        def train(self, training_dir, resume_from=None):
+            self.resume_from = resume_from
             if fail_in_train:
                 raise RuntimeError("train failed")
             for epoch in range(self.config["epochs"]):
@@ -201,6 +212,52 @@ class TestTrainingJobHelpers:
             profiles_dir=str(manager._resolve_profiles_dir()),
             samples_dir=str(manager._resolve_samples_dir()),
         )
+
+    def test_resolve_initialization_state_prefers_matching_checkpoint(self, manager, tmp_path):
+        checkpoint_dir = manager._resolve_checkpoints_dir("profile-1")
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "lora_state": {"layer.lora_A": torch.ones(1)},
+                "current_epoch": 7,
+                "is_lora": True,
+            },
+            checkpoint_dir / "final.pth",
+        )
+
+        state = manager._resolve_initialization_state("profile-1", "lora", "continue")
+
+        assert state["source"] == "checkpoint"
+        assert state["resume_epoch"] == 7
+        assert state["resume_checkpoint"].endswith("final.pth")
+
+    def test_resolve_initialization_state_falls_back_to_artifact(self, manager, tmp_path):
+        store = Mock()
+        artifact_path = tmp_path / "profile-1_adapter.pt"
+        torch.save(
+            build_lora_checkpoint_payload(
+                {"layer.lora_A": torch.ones(1), "layer.lora_B": torch.ones(1)}
+            ),
+            artifact_path,
+        )
+        store._lora_weights_path.return_value = str(artifact_path)
+        store._legacy_lora_weights_path.return_value = str(tmp_path / "missing.pt")
+
+        with patch.object(manager, "_get_profile_store", return_value=store):
+            state = manager._resolve_initialization_state("profile-1", "lora", "continue")
+
+        assert state["source"] == "artifact"
+        assert state["artifact_path"] == str(artifact_path)
+
+    def test_resolve_initialization_state_raises_when_continue_has_no_existing_state(self, manager):
+        store = Mock()
+        store._lora_weights_path.return_value = "/tmp/missing-a.pt"
+        store._legacy_lora_weights_path.return_value = "/tmp/missing-b.pt"
+        store._full_model_path.return_value = "/tmp/missing-full.pt"
+
+        with patch.object(manager, "_get_profile_store", return_value=store), \
+             pytest.raises(ValueError, match="No existing lora artifact or checkpoint"):
+            manager._resolve_initialization_state("profile-1", "lora", "continue")
 
 
 class TestSaveTrainedAdapter:
@@ -375,6 +432,114 @@ class TestExecuteJobPaths:
         )
         assert emit_started.call_count == 1
         assert emit_completed.call_count == 1
+
+    def test_execute_job_continue_lora_loads_existing_adapter_artifact(self, manager, tmp_path):
+        source = tmp_path / "sample.wav"
+        source.write_bytes(b"wav")
+        job = manager.create_job(
+            profile_id="profile-continue-lora",
+            sample_ids=["sample-1"],
+            config=TrainingConfig(
+                training_mode="lora",
+                initialization_mode="continue",
+                epochs=2,
+            ),
+        )
+        store = Mock()
+        store.list_training_samples.return_value = [_sample("sample-1", source)]
+        fake_modules, trainer_instances = _fake_training_modules()
+        adapter_path = tmp_path / "profile-continue-lora_adapter.pt"
+        adapter_path.write_bytes(b"adapter")
+        saved_artifacts = {
+            "adapter_path": str(adapter_path),
+            "embedding_path": str(tmp_path / "profile-continue-lora.npy"),
+            "artifact_type": "adapter",
+        }
+
+        with patch.object(manager, "_get_profile_store", return_value=store), \
+             patch.object(manager, "_resolve_initialization_state", return_value={
+                 "initialization_mode": "continue",
+                 "resume_checkpoint": None,
+                 "resume_epoch": 0,
+                 "artifact_path": str(adapter_path),
+                 "source": "artifact",
+             }), \
+             patch.object(manager, "_load_existing_training_state") as load_existing_state, \
+             patch.object(manager, "_save_trained_adapter", return_value=saved_artifacts), \
+             patch.object(manager, "_update_profile_training_state"), \
+             patch.object(manager, "_emit_started_event"), \
+             patch.object(manager, "_emit_completed_event"), \
+             patch("tempfile.mkdtemp", return_value=str(tmp_path / "training")), \
+             patch("threading.Thread", _ImmediateThread), \
+             patch("torch.cuda.is_available", return_value=True), \
+             patch.dict(sys.modules, fake_modules):
+            (tmp_path / "training").mkdir(exist_ok=True)
+            manager.execute_job(job.job_id)
+
+        trainer = trainer_instances[0]
+        load_existing_state.assert_called_once()
+        assert trainer.resume_from is None
+        assert job.results["initialization_mode"] == "continue"
+        assert job.results["resume_source"] == "artifact"
+
+    def test_execute_job_continue_full_resumes_from_checkpoint_and_extends_epochs(self, manager, tmp_path):
+        source = tmp_path / "sample.wav"
+        source.write_bytes(b"wav")
+        job = manager.create_job(
+            profile_id="profile-continue-full",
+            sample_ids=["sample-1"],
+            config=TrainingConfig(
+                training_mode="full",
+                initialization_mode="continue",
+                epochs=5,
+                learning_rate=5e-5,
+            ),
+        )
+        store = Mock()
+        store.list_training_samples.return_value = [_sample("sample-1", source)]
+        fake_modules, trainer_instances = _fake_training_modules()
+        checkpoint_path = tmp_path / "resume-final.pth"
+        torch.save(
+            {
+                "model": {"weights": torch.tensor([2.0])},
+                "current_epoch": 9,
+                "global_step": 123,
+                "is_lora": False,
+            },
+            checkpoint_path,
+        )
+        saved_artifacts = {
+            "adapter_path": str(tmp_path / "profile-continue-full_full_model.pt"),
+            "embedding_path": str(tmp_path / "profile-continue-full.npy"),
+            "artifact_type": "full_model",
+        }
+
+        with patch.object(manager, "_get_profile_store", return_value=store), \
+             patch.object(manager, "_resolve_initialization_state", return_value={
+                 "initialization_mode": "continue",
+                 "resume_checkpoint": str(checkpoint_path),
+                 "resume_epoch": 9,
+                 "artifact_path": None,
+                 "source": "checkpoint",
+             }), \
+             patch.object(manager, "_save_trained_adapter", return_value=saved_artifacts), \
+             patch.object(manager, "_update_profile_training_state"), \
+             patch.object(manager, "_emit_started_event"), \
+             patch.object(manager, "_emit_completed_event"), \
+             patch("tempfile.mkdtemp", return_value=str(tmp_path / "training")), \
+             patch("threading.Thread", _ImmediateThread), \
+             patch("torch.cuda.is_available", return_value=True), \
+             patch.dict(sys.modules, fake_modules):
+            (tmp_path / "training").mkdir(exist_ok=True)
+            manager.execute_job(job.job_id)
+
+        trainer = trainer_instances[0]
+        assert trainer.resume_from == str(checkpoint_path)
+        assert trainer.config["epochs"] == 14
+        assert job.results["job_type"] == "full_model"
+        assert job.results["requested_epochs"] == 5
+        assert job.results["resumed_from_epoch"] == 9
+        assert job.results["resume_source"] == "checkpoint"
 
     def test_execute_job_fails_when_no_training_samples_exist(self, manager):
         job = manager.create_job(profile_id="profile-1", sample_ids=["s1"])

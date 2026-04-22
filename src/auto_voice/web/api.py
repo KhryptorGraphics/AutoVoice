@@ -2831,14 +2831,24 @@ def create_training_job():
         training_mode = config_payload.get('training_mode', 'lora')
         if training_mode not in {'lora', 'full'}:
             return validation_error_response('training_mode must be "lora" or "full"')
+        initialization_mode = config_payload.get('initialization_mode', 'scratch')
+        if initialization_mode not in {'scratch', 'continue'}:
+            return validation_error_response(
+                'initialization_mode must be "scratch" or "continue"'
+            )
 
         normalized_config = dict(config_payload)
         normalized_config['training_mode'] = training_mode
+        normalized_config['initialization_mode'] = initialization_mode
         job_manager = _get_training_job_manager()
 
         if training_mode == 'full':
             eligibility = job_manager.check_needs_full_model(profile_id)
-            if not eligibility['needs_full_model']:
+            allow_existing_full_model = (
+                eligibility.get('reason') == 'already_full_model'
+                and initialization_mode in {'scratch', 'continue'}
+            )
+            if not eligibility['needs_full_model'] and not allow_existing_full_model:
                 minutes = eligibility.get('clean_vocal_seconds', 0.0) / 60.0
                 needed_minutes = eligibility.get('remaining_seconds', 0.0) / 60.0
                 return validation_error_response(
@@ -2851,11 +2861,28 @@ def create_training_job():
             normalized_config['lora_rank'] = 0
             normalized_config['lora_alpha'] = 0
 
+        if initialization_mode == 'continue':
+            has_resume_checkpoint = bool(
+                getattr(job_manager, '_find_latest_checkpoint', lambda *_args, **_kwargs: None)(
+                    profile_id,
+                    training_mode,
+                )
+            )
+            if training_mode == 'full' and not (profile.get('has_full_model') or has_resume_checkpoint):
+                return validation_error_response(
+                    'No existing full model is available to continue training for this profile'
+                )
+            if training_mode == 'lora' and not (profile.get('has_adapter_model') or has_resume_checkpoint):
+                return validation_error_response(
+                    'No existing LoRA adapter is available to continue training for this profile'
+                )
+
         training_config = TrainingConfig.from_dict(normalized_config)
         if training_mode == 'full':
             job = job_manager.create_full_model_job(
                 profile_id=profile_id,
                 config=training_config,
+                initialization_mode=initialization_mode,
             )
         else:
             job = job_manager.create_job(

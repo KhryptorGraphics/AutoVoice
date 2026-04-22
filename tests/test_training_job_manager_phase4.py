@@ -493,10 +493,10 @@ class TestFullModelUpgradeLogic:
             return_value={
                 "needs_full_model": False,
                 "clean_vocal_seconds": 2400.0,
-                "reason": "already_full_model",
+                "reason": "unsupported_profile_role (source_artist)",
             },
         ):
-            with pytest.raises(ValueError, match="already_full_model"):
+            with pytest.raises(ValueError, match="unsupported_profile_role"):
                 manager.create_full_model_job("profile-1")
 
     def test_create_full_model_job_uses_default_full_training_config(self, manager):
@@ -541,6 +541,27 @@ class TestFullModelUpgradeLogic:
         assert job.config.training_mode == "full"
         assert job.config.lora_rank == 0
         assert job.config.lora_alpha == 0
+
+    def test_create_full_model_job_allows_manual_retraining_when_full_model_exists(self, manager):
+        store = Mock()
+        store.list_training_samples.return_value = [_sample("s1")]
+
+        with patch.object(
+            manager,
+            "check_needs_full_model",
+            return_value={
+                "needs_full_model": False,
+                "clean_vocal_seconds": 2400.0,
+                "reason": "already_full_model",
+            },
+        ), patch.object(manager, "_get_profile_store", return_value=store):
+            job = manager.create_full_model_job(
+                "profile-1",
+                initialization_mode="continue",
+            )
+
+        assert job.config.training_mode == "full"
+        assert job.config.initialization_mode == "continue"
 
     def test_auto_queue_full_model_training_skips_when_not_needed(self, manager):
         with patch.object(

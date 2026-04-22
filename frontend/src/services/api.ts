@@ -232,6 +232,12 @@ export interface TrainingJob {
     loss_curve?: number[]
     artifact_type?: 'adapter' | 'full_model'
     job_type?: 'lora' | 'full_model'
+    initialization_mode?: 'scratch' | 'continue'
+    resume_source?: 'scratch' | 'artifact' | 'checkpoint'
+    resume_checkpoint?: string | null
+    artifact_reused?: string | null
+    requested_epochs?: number
+    resumed_from_epoch?: number | null
     current_loss?: number
     current_epoch?: number
     current_step?: number
@@ -293,6 +299,8 @@ export interface TrainingTelemetryResponse {
 export interface TrainingConfig {
   // Training mode: 'lora' by default, 'full' unlocks after 30 minutes of clean user vocals
   training_mode: 'lora' | 'full'
+  // Initialization mode for the chosen training type
+  initialization_mode: 'scratch' | 'continue'
   // LoRA configuration (only used when training_mode='lora')
   lora_rank: number
   lora_alpha: number
@@ -315,6 +323,7 @@ export interface TrainingConfig {
 // Default training config matching backend defaults
 export const DEFAULT_TRAINING_CONFIG: TrainingConfig = {
   training_mode: 'lora',
+  initialization_mode: 'scratch',
   lora_rank: 8,
   lora_alpha: 16,
   lora_dropout: 0.1,

@@ -73,9 +73,22 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const cleanVocalMinutes = detailProfile.clean_vocal_minutes ?? ((detailProfile.clean_vocal_seconds ?? 0) / 60)
   const remainingMinutes = detailProfile.full_model_remaining_minutes ?? ((detailProfile.full_model_remaining_seconds ?? 0) / 60)
   const allowFullTraining = Boolean(detailProfile.full_model_eligible)
+  const allowContinueLora = Boolean(detailProfile.has_adapter_model)
+  const allowContinueFull = Boolean(detailProfile.has_full_model)
   const fullTrainingHint = allowFullTraining
     ? 'Full-model training is unlocked for this target profile.'
     : `Full-model training unlocks after 30 minutes of clean user vocals. ${Math.max(remainingMinutes, 0).toFixed(1)} minutes remaining.`
+  const continuationHint = trainingConfig.training_mode === 'full'
+    ? (
+      allowContinueFull
+        ? 'Continue training will reuse the latest full-model checkpoint or active full-model artifact.'
+        : 'Continue training becomes available after this target profile has a trained full model.'
+    )
+    : (
+      allowContinueLora
+        ? 'Continue training will reuse the latest LoRA checkpoint or active adapter artifact.'
+        : 'Continue training becomes available after this target profile has a trained LoRA adapter.'
+    )
 
   const refreshProfile = useCallback(async () => {
     try {
@@ -481,7 +494,10 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                 config={trainingConfig}
                 onChange={setTrainingConfig}
                 allowFullTraining={allowFullTraining}
+                allowContinueLora={allowContinueLora}
+                allowContinueFull={allowContinueFull}
                 fullTrainingHint={fullTrainingHint}
+                continuationHint={continuationHint}
               />
               <button
                 onClick={handleStartTraining}
@@ -494,7 +510,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                 ) : (
                   <Play size={16} />
                 )}
-                Start {trainingConfig.training_mode === 'full' ? 'Full Model' : 'LoRA'} Training ({samples.length} samples)
+                {trainingConfig.initialization_mode === 'continue' ? 'Continue' : 'Start'} {trainingConfig.training_mode === 'full' ? 'Full Model' : 'LoRA'} Training ({samples.length} samples)
               </button>
             </>
           )}

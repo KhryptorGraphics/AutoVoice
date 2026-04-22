@@ -8,7 +8,10 @@ interface TrainingConfigPanelProps {
   onChange: (config: TrainingConfig) => void
   disabled?: boolean
   allowFullTraining?: boolean
+  allowContinueLora?: boolean
+  allowContinueFull?: boolean
   fullTrainingHint?: string
+  continuationHint?: string
 }
 
 interface SliderInputProps {
@@ -151,7 +154,10 @@ export function TrainingConfigPanel({
   onChange,
   disabled,
   allowFullTraining = true,
+  allowContinueLora = false,
+  allowContinueFull = false,
   fullTrainingHint,
+  continuationHint,
 }: TrainingConfigPanelProps) {
   const [expanded, setExpanded] = useState(false)
 
@@ -164,13 +170,26 @@ export function TrainingConfigPanel({
       onChange({
         ...config,
         training_mode: 'lora',
+        initialization_mode: allowContinueLora ? config.initialization_mode : 'scratch',
         epochs: Math.min(config.epochs, 100),
         learning_rate: 1e-4,
         lora_rank: config.lora_rank || DEFAULT_TRAINING_CONFIG.lora_rank,
         lora_alpha: config.lora_alpha || DEFAULT_TRAINING_CONFIG.lora_alpha,
       })
     }
-  }, [allowFullTraining, config, onChange])
+  }, [allowContinueLora, allowFullTraining, config, onChange])
+
+  useEffect(() => {
+    const canContinueCurrent =
+      config.training_mode === 'full' ? allowContinueFull : allowContinueLora
+
+    if (!canContinueCurrent && config.initialization_mode === 'continue') {
+      onChange({
+        ...config,
+        initialization_mode: 'scratch',
+      })
+    }
+  }, [allowContinueFull, allowContinueLora, config, onChange])
 
   const resetToDefaults = () => {
     onChange(DEFAULT_TRAINING_CONFIG)
@@ -249,6 +268,64 @@ export function TrainingConfigPanel({
         {!allowFullTraining && (
           <p className="text-xs text-yellow-400">
             {fullTrainingHint || 'Full training is locked until this target profile reaches 30 minutes of clean vocals.'}
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <label className="text-sm text-gray-400 flex items-center gap-1">
+          Training Initialization
+          <span
+            title="Train from scratch starts a fresh run for the selected mode. Continue existing reuses the latest checkpoint when available, otherwise it warm-starts from the current trained artifact."
+            className="cursor-help"
+          >
+            <Info size={12} className="text-gray-500" />
+          </span>
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => update('initialization_mode', 'scratch')}
+            disabled={disabled}
+            className={clsx(
+              'p-3 rounded-lg border-2 transition-all text-left',
+              config.initialization_mode === 'scratch'
+                ? 'border-emerald-500 bg-emerald-500/10'
+                : 'border-gray-600 hover:border-gray-500',
+              disabled && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            <div className="font-medium">Train From Scratch</div>
+            <div className="text-xs text-gray-400 mt-1">Fresh weights for the selected mode</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const canContinue = config.training_mode === 'full' ? allowContinueFull : allowContinueLora
+              if (!canContinue) return
+              update('initialization_mode', 'continue')
+            }}
+            disabled={disabled}
+            className={clsx(
+              'p-3 rounded-lg border-2 transition-all text-left',
+              config.initialization_mode === 'continue'
+                ? 'border-amber-500 bg-amber-500/10'
+                : 'border-gray-600 hover:border-gray-500',
+              !(config.training_mode === 'full' ? allowContinueFull : allowContinueLora) && 'opacity-50',
+              disabled && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            <div className="font-medium">Continue Existing</div>
+            <div className="text-xs text-gray-400 mt-1">Resume from the latest checkpoint or current trained artifact</div>
+          </button>
+        </div>
+        {!(config.training_mode === 'full' ? allowContinueFull : allowContinueLora) && (
+          <p className="text-xs text-yellow-400">
+            {continuationHint || (
+              config.training_mode === 'full'
+                ? 'Continue training is available after this profile has a trained full model.'
+                : 'Continue training is available after this profile has a trained LoRA adapter.'
+            )}
           </p>
         )}
       </div>
