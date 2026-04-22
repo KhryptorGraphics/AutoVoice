@@ -8,12 +8,12 @@ import logging
 import os
 import uuid
 import threading
-from pathlib import Path
 from flask import Blueprint, current_app, request, jsonify, send_file
 from typing import Dict, Any, Optional
 import tempfile
 from datetime import datetime, timezone
 
+from ..storage.paths import resolve_data_dir, resolve_separated_audio_dir
 from .utils import validation_error_response, not_found_response, error_response
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,10 @@ def _utcnow_iso() -> str:
 
 def _get_state_store():
     return getattr(current_app, "state_store", None)
+
+
+def _get_data_dir():
+    return resolve_data_dir(current_app.config.get("DATA_DIR"))
 
 
 def _save_extraction_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -82,7 +86,7 @@ def _run_extraction_job(app, job_id: str, artist_name: str, run_clustering: bool
 
             from ..audio.speaker_matcher import SpeakerMatcher
 
-            matcher = SpeakerMatcher()
+            matcher = SpeakerMatcher(data_dir=_get_data_dir())
             stats = matcher.extract_embeddings_for_artist(artist_name)
             result = dict(stats or {})
 
@@ -302,27 +306,40 @@ def fetch_metadata():
     artist_name = data.get('artist_name')
 
     try:
-        from ..audio.youtube_metadata import (
-            YouTubeMetadataFetcher, populate_database_from_files
-        )
+        from ..audio.youtube_metadata import populate_database_from_files
+
+        data_dir = _get_data_dir()
 
         if artist_name:
             # Fetch for specific artist
-            stats = populate_database_from_files(
-                Path(f'data/separated_youtube/{artist_name}'),
+            artist_dir = resolve_separated_audio_dir(
+                data_dir=str(data_dir),
                 artist_name=artist_name,
+            )
+            stats = populate_database_from_files(
+                artist_name=artist_name,
+                separated_dir=artist_dir,
+                data_dir=data_dir,
             )
         else:
             # Fetch for all artists
             stats = {'total_tracks': 0, 'total_featured': 0}
             for artist in ['conor_maynard', 'william_singe']:
-                artist_dir = Path(f'data/separated_youtube/{artist}')
+                artist_dir = resolve_separated_audio_dir(
+                    data_dir=str(data_dir),
+                    artist_name=artist,
+                )
                 if artist_dir.exists():
                     artist_stats = populate_database_from_files(
-                        artist_dir, artist_name=artist
+                        artist_name=artist,
+                        separated_dir=artist_dir,
+                        data_dir=data_dir,
                     )
                     stats['total_tracks'] += artist_stats.get('tracks_processed', 0)
-                    stats['total_featured'] += artist_stats.get('featured_found', 0)
+                    stats['total_featured'] += artist_stats.get(
+                        'featured_artists_found',
+                        artist_stats.get('featured_found', 0),
+                    )
 
         return jsonify({
             'success': True,
@@ -578,6 +595,7 @@ def run_speaker_identification():
         matcher = SpeakerMatcher(
             similarity_threshold=threshold,
             min_cluster_duration=min_duration,
+            data_dir=_get_data_dir(),
         )
 
         stats = {

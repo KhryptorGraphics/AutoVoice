@@ -152,3 +152,58 @@ class TestPopulateDatabaseFromFiles:
         assert stats['errors'] == ['Could not fetch metadata for abcdefghijk']
         assert mock_upsert.called
         mock_add_featured.assert_not_called()
+
+    def test_populate_database_from_files_resolves_from_explicit_data_dir(self, tmp_path):
+        data_dir = tmp_path / 'runtime-data'
+        separated_dir = data_dir / 'separated_youtube' / 'main_artist'
+        separated_dir.mkdir(parents=True)
+        diarized_dir = data_dir / 'diarized_youtube' / 'main_artist'
+        diarized_dir.mkdir(parents=True)
+
+        vocal_file = separated_dir / 'abcdefghijk_vocals.wav'
+        vocal_file.touch()
+        diarization_file = diarized_dir / 'abcdefghijk_diarization.json'
+        diarization_file.write_text('{}')
+
+        with patch('auto_voice.audio.youtube_metadata.YouTubeMetadataFetcher.fetch_metadata', return_value=None), \
+             patch('auto_voice.db.operations.upsert_track') as mock_upsert, \
+             patch('auto_voice.db.operations.add_featured_artist') as mock_add_featured:
+            stats = populate_database_from_files('main_artist', data_dir=data_dir)
+
+        assert stats['tracks_processed'] == 1
+        assert stats['errors'] == ['Could not fetch metadata for abcdefghijk']
+        mock_upsert.assert_called_once_with(
+            track_id='abcdefghijk',
+            artist_name='main_artist',
+            vocals_path=str(vocal_file),
+            diarization_path=str(diarization_file),
+        )
+        mock_add_featured.assert_not_called()
+
+    def test_populate_database_from_files_resolves_from_data_dir_env(self, tmp_path, monkeypatch):
+        data_dir = tmp_path / 'env-data'
+        separated_dir = data_dir / 'separated_youtube' / 'main_artist'
+        separated_dir.mkdir(parents=True)
+        diarized_dir = data_dir / 'diarized_youtube' / 'main_artist'
+        diarized_dir.mkdir(parents=True)
+
+        vocal_file = separated_dir / 'abcdefghijk_vocals.wav'
+        vocal_file.touch()
+        diarization_file = diarized_dir / 'abcdefghijk_diarization.json'
+        diarization_file.write_text('{}')
+        monkeypatch.setenv('DATA_DIR', str(data_dir))
+
+        with patch('auto_voice.audio.youtube_metadata.YouTubeMetadataFetcher.fetch_metadata', return_value=None), \
+             patch('auto_voice.db.operations.upsert_track') as mock_upsert, \
+             patch('auto_voice.db.operations.add_featured_artist') as mock_add_featured:
+            stats = populate_database_from_files('main_artist')
+
+        assert stats['tracks_processed'] == 1
+        assert stats['errors'] == ['Could not fetch metadata for abcdefghijk']
+        mock_upsert.assert_called_once_with(
+            track_id='abcdefghijk',
+            artist_name='main_artist',
+            vocals_path=str(vocal_file),
+            diarization_path=str(diarization_file),
+        )
+        mock_add_featured.assert_not_called()

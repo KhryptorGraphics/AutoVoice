@@ -33,13 +33,14 @@ import pytest
 # =============================================================================
 
 @pytest.fixture
-def app_with_db():
+def app_with_db(tmp_path):
     """Create Flask app with speaker API blueprint."""
     from flask import Flask
     from auto_voice.web.speaker_api import speaker_bp
 
     app = Flask(__name__)
     app.config['TESTING'] = True
+    app.config['DATA_DIR'] = str(tmp_path / 'data')
     app.register_blueprint(speaker_bp)
 
     return app
@@ -184,6 +185,9 @@ class TestRunExtraction:
         assert 'job_id' in data
         assert 'status' in data
         assert data['status'] == 'queued'
+        mock_matcher_class.assert_called_once_with(
+            data_dir=Path(client.application.config['DATA_DIR']),
+        )
 
     @patch('auto_voice.audio.speaker_matcher.SpeakerMatcher')
     def test_run_extraction_without_clustering(self, mock_matcher_class, client, monkeypatch):
@@ -211,6 +215,9 @@ class TestRunExtraction:
 
         assert response.status_code == 202
         mock_matcher.cluster_speakers.assert_not_called()
+        mock_matcher_class.assert_called_once_with(
+            data_dir=Path(client.application.config['DATA_DIR']),
+        )
 
     @patch('auto_voice.audio.speaker_matcher.SpeakerMatcher')
     def test_run_extraction_handles_extraction_error(self, mock_matcher_class, client, monkeypatch):
@@ -365,23 +372,40 @@ class TestFetchMetadata:
     @patch('auto_voice.audio.youtube_metadata.populate_database_from_files')
     def test_fetch_metadata_for_all_artists(self, mock_populate, client):
         """Fetches metadata for all artists."""
-        mock_populate.return_value = {
-            'tracks_processed': 10,
-            'featured_found': 5,
-        }
+        mock_populate.side_effect = [
+            {'tracks_processed': 10, 'featured_artists_found': 5},
+            {'tracks_processed': 4, 'featured_artists_found': 2},
+        ]
+        data_dir = Path(client.application.config['DATA_DIR'])
+        for artist in ['conor_maynard', 'william_singe']:
+            (data_dir / 'separated_youtube' / artist).mkdir(parents=True, exist_ok=True)
 
-        with patch('pathlib.Path.exists', return_value=True):
-            response = client.post('/api/v1/speakers/tracks/fetch-metadata', json={})
+        response = client.post('/api/v1/speakers/tracks/fetch-metadata', json={})
 
         assert response.status_code == 200
         data = json.loads(response.data)
         assert data['success'] is True
         assert 'stats' in data
+        assert data['stats']['total_tracks'] == 14
+        assert data['stats']['total_featured'] == 7
+        assert mock_populate.call_args_list == [
+            call(
+                artist_name='conor_maynard',
+                separated_dir=data_dir / 'separated_youtube' / 'conor_maynard',
+                data_dir=data_dir,
+            ),
+            call(
+                artist_name='william_singe',
+                separated_dir=data_dir / 'separated_youtube' / 'william_singe',
+                data_dir=data_dir,
+            ),
+        ]
 
     @patch('auto_voice.audio.youtube_metadata.populate_database_from_files')
     def test_fetch_metadata_for_specific_artist(self, mock_populate, client):
         """Fetches metadata for specific artist."""
         mock_populate.return_value = {'tracks_processed': 5}
+        data_dir = Path(client.application.config['DATA_DIR'])
 
         response = client.post(
             '/api/v1/speakers/tracks/fetch-metadata',
@@ -391,11 +415,18 @@ class TestFetchMetadata:
         assert response.status_code == 200
         data = json.loads(response.data)
         assert data['success'] is True
+        mock_populate.assert_called_once_with(
+            artist_name='conor_maynard',
+            separated_dir=data_dir / 'separated_youtube' / 'conor_maynard',
+            data_dir=data_dir,
+        )
 
     @patch('auto_voice.audio.youtube_metadata.populate_database_from_files')
     def test_fetch_metadata_handles_errors(self, mock_populate, client):
         """Returns 500 on fetch errors."""
         mock_populate.side_effect = Exception("Network error")
+        data_dir = Path(client.application.config['DATA_DIR'])
+        (data_dir / 'separated_youtube' / 'conor_maynard').mkdir(parents=True, exist_ok=True)
 
         response = client.post('/api/v1/speakers/tracks/fetch-metadata', json={})
 
@@ -735,6 +766,11 @@ class TestRunSpeakerIdentification:
         assert 'artists' in data['stats']
         assert 'clustering' in data['stats']
         assert 'matching' in data['stats']
+        mock_matcher_class.assert_called_once_with(
+            similarity_threshold=0.85,
+            min_cluster_duration=30.0,
+            data_dir=Path(client.application.config['DATA_DIR']),
+        )
 
     @patch('auto_voice.audio.speaker_matcher.SpeakerMatcher')
     def test_identify_specific_artists(self, mock_matcher_class, client):
@@ -774,6 +810,7 @@ class TestRunSpeakerIdentification:
         mock_matcher_class.assert_called_once_with(
             similarity_threshold=0.90,
             min_cluster_duration=60.0,
+            data_dir=Path(client.application.config['DATA_DIR']),
         )
 
     @patch('auto_voice.audio.speaker_matcher.SpeakerMatcher')

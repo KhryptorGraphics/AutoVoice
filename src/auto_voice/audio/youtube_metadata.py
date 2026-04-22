@@ -23,6 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+from auto_voice.storage.paths import (
+    resolve_data_dir,
+    resolve_diarized_audio_dir,
+    resolve_separated_audio_dir,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -453,8 +459,9 @@ class YouTubeMetadataFetcher:
 
 def populate_database_from_files(
     artist_name: str,
-    separated_dir: Path,
+    separated_dir: Optional[Path] = None,
     diarized_dir: Optional[Path] = None,
+    data_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Populate the database with track metadata from extracted files.
 
@@ -462,6 +469,7 @@ def populate_database_from_files(
         artist_name: Artist name (e.g., "conor_maynard")
         separated_dir: Directory with separated vocals
         diarized_dir: Directory with diarization JSONs
+        data_dir: Base runtime data directory for canonical storage defaults
 
     Returns:
         Statistics dict
@@ -469,15 +477,23 @@ def populate_database_from_files(
     from ..db.operations import upsert_track, add_featured_artist
 
     fetcher = YouTubeMetadataFetcher()
+    resolved_data_dir = resolve_data_dir(str(data_dir) if data_dir is not None else None)
+    separated_dir = resolve_separated_audio_dir(
+        str(separated_dir) if separated_dir is not None else None,
+        data_dir=str(resolved_data_dir),
+        artist_name=artist_name,
+    )
+    diarized_dir = resolve_diarized_audio_dir(
+        str(diarized_dir) if diarized_dir is not None else None,
+        data_dir=str(resolved_data_dir),
+        artist_name=artist_name,
+    )
     stats = {
         'tracks_processed': 0,
         'tracks_with_metadata': 0,
         'featured_artists_found': 0,
         'errors': [],
     }
-
-    if diarized_dir is None:
-        diarized_dir = Path(f'data/diarized_youtube/{artist_name}')
 
     # Find all vocal files
     vocal_files = list(separated_dir.glob('*_vocals.wav')) + list(separated_dir.glob('*.wav'))
@@ -547,6 +563,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Fetch YouTube metadata for tracks')
     parser.add_argument('--artist', help='Artist name')
+    parser.add_argument('--data-dir', type=Path, help='Base data directory for canonical storage defaults')
     parser.add_argument('--separated-dir', type=Path, help='Directory with separated vocals')
     parser.add_argument('--test-id', help='Test with a single video ID')
     parser.add_argument('--test-title', help='Test parsing a title')
@@ -567,6 +584,9 @@ if __name__ == '__main__':
         featured = parse_featured_artists(args.test_title)
         print(f"Featured artists: {featured}")
     elif args.artist:
-        separated_dir = args.separated_dir or Path(f'data/separated_youtube/{args.artist}')
-        stats = populate_database_from_files(args.artist, separated_dir)
+        stats = populate_database_from_files(
+            args.artist,
+            args.separated_dir,
+            data_dir=args.data_dir,
+        )
         print(f"\nStats: {stats}")
