@@ -22,6 +22,15 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
+from .speaker_pipeline_contract import (
+    DEFAULT_SPEAKER_PIPELINE_ARTISTS,
+    build_speaker_auto_match_stats,
+    build_speaker_clustering_stats,
+    build_speaker_extraction_stats,
+    build_speaker_pipeline_run_stats,
+    get_default_speaker_pipeline_artists,
+    normalize_speaker_auto_match_stats,
+)
 from auto_voice.storage.paths import (
     resolve_data_dir,
     resolve_diarized_audio_dir,
@@ -140,13 +149,7 @@ class SpeakerMatcher:
                 artist_name=artist_name,
             )
 
-        stats = {
-            'tracks_processed': 0,
-            'embeddings_extracted': 0,
-            'primary_speakers': 0,
-            'featured_speakers': 0,
-            'errors': [],
-        }
+        stats = build_speaker_extraction_stats()
 
         # Find all diarization files
         diarization_files = list(diarized_dir.glob('*_diarization.json'))
@@ -364,11 +367,7 @@ class SpeakerMatcher:
             update_cluster_name
         )
 
-        stats = {
-            'clusters_processed': 0,
-            'matches_found': 0,
-            'matches_made': [],
-        }
+        stats = build_speaker_auto_match_stats()
 
         clusters = get_all_clusters()
         logger.info(f"Processing {len(clusters)} clusters for auto-matching")
@@ -488,14 +487,10 @@ def run_speaker_matching(
         Combined statistics dict
     """
     if artists is None:
-        artists = ['conor_maynard', 'william_singe']
+        artists = get_default_speaker_pipeline_artists()
 
     matcher = SpeakerMatcher(data_dir=data_dir)
-    stats = {
-        'artists': {},
-        'clustering': {},
-        'matching': {},
-    }
+    stats = build_speaker_pipeline_run_stats()
 
     # Extract embeddings for each artist
     for artist in artists:
@@ -508,22 +503,12 @@ def run_speaker_matching(
     # Cluster all embeddings
     logger.info("\nClustering speakers across all tracks...")
     clusters = matcher.cluster_speakers()
-    stats['clustering'] = {
-        'clusters_created': len(clusters),
-        'clusters': [
-            {
-                'cluster_id': c['cluster_id'],
-                'member_count': c['member_count'],
-                'duration_sec': c['total_duration_sec'],
-            }
-            for c in clusters
-        ]
-    }
+    stats['clustering'] = build_speaker_clustering_stats(clusters)
 
     # Auto-match to featured artists
     logger.info("\nAuto-matching clusters to featured artists...")
     match_stats = matcher.auto_match_clusters_to_artists()
-    stats['matching'] = match_stats
+    stats['matching'] = normalize_speaker_auto_match_stats(match_stats)
 
     return stats
 
@@ -534,7 +519,12 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
     parser = argparse.ArgumentParser(description='Cross-track speaker matching')
-    parser.add_argument('--artist', nargs='+', help='Artist names to process')
+    parser.add_argument(
+        '--artist',
+        nargs='+',
+        help='Artist names to process '
+             f"(default: {', '.join(DEFAULT_SPEAKER_PIPELINE_ARTISTS)})",
+    )
     parser.add_argument('--extract-only', action='store_true', help='Only extract embeddings')
     parser.add_argument('--cluster-only', action='store_true', help='Only run clustering')
     parser.add_argument('--match-only', action='store_true', help='Only run auto-matching')
@@ -549,7 +539,7 @@ if __name__ == '__main__':
     )
 
     if args.extract_only:
-        artists = args.artist or ['conor_maynard', 'william_singe']
+        artists = args.artist or get_default_speaker_pipeline_artists()
         for artist in artists:
             stats = matcher.extract_embeddings_for_artist(artist)
             print(f"\n{artist}: {stats}")

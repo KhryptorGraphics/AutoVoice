@@ -13,6 +13,14 @@ from typing import Dict, Any, Optional
 import tempfile
 from datetime import datetime, timezone
 
+from ..audio.speaker_pipeline_contract import (
+    build_speaker_clustering_stats,
+    build_speaker_pipeline_run_stats,
+    get_default_speaker_pipeline_artists,
+    normalize_speaker_auto_match_stats,
+    normalize_speaker_extraction_job_result,
+    normalize_speaker_metadata_stats,
+)
 from ..storage.paths import resolve_data_dir, resolve_separated_audio_dir
 from .utils import validation_error_response, not_found_response, error_response
 
@@ -97,20 +105,19 @@ def _run_extraction_job(app, job_id: str, artist_name: str, run_clustering: bool
                 clusters = matcher.cluster_speakers()
                 _update_extraction_job(job_id, progress=85, message="Auto-matching clusters to artists...")
                 match_stats = matcher.auto_match_clusters_to_artists()
-                result["clustering"] = {"clusters_created": len(clusters)}
-                result["matching"] = match_stats
+                result["clustering"] = build_speaker_clustering_stats(clusters)
+                result["matching"] = normalize_speaker_auto_match_stats(match_stats)
 
-            tracks_processed = int(result.get("tracks_processed") or result.get("tracks") or 0)
-            speakers_detected = result.get("speakers_detected") or []
+            result = normalize_speaker_extraction_job_result(result)
             _update_extraction_job(
                 job_id,
                 status="completed",
                 progress=100,
                 message="Extraction complete",
                 completed_at=_utcnow_iso(),
-                tracks_processed=tracks_processed,
-                tracks_total=max(tracks_processed, int(result.get("tracks_total") or tracks_processed)),
-                speakers_detected=speakers_detected,
+                tracks_processed=result["tracks_processed"],
+                tracks_total=result["tracks_total"],
+                speakers_detected=result["speakers_detected"],
                 result=result,
             )
         except Exception as exc:
@@ -316,30 +323,27 @@ def fetch_metadata():
                 data_dir=str(data_dir),
                 artist_name=artist_name,
             )
-            stats = populate_database_from_files(
+            stats = normalize_speaker_metadata_stats(populate_database_from_files(
                 artist_name=artist_name,
                 separated_dir=artist_dir,
                 data_dir=data_dir,
-            )
+            ))
         else:
             # Fetch for all artists
             stats = {'total_tracks': 0, 'total_featured': 0}
-            for artist in ['conor_maynard', 'william_singe']:
+            for artist in get_default_speaker_pipeline_artists():
                 artist_dir = resolve_separated_audio_dir(
                     data_dir=str(data_dir),
                     artist_name=artist,
                 )
                 if artist_dir.exists():
-                    artist_stats = populate_database_from_files(
+                    artist_stats = normalize_speaker_metadata_stats(populate_database_from_files(
                         artist_name=artist,
                         separated_dir=artist_dir,
                         data_dir=data_dir,
-                    )
+                    ))
                     stats['total_tracks'] += artist_stats.get('tracks_processed', 0)
-                    stats['total_featured'] += artist_stats.get(
-                        'featured_artists_found',
-                        artist_stats.get('featured_found', 0),
-                    )
+                    stats['total_featured'] += artist_stats['featured_artists_found']
 
         return jsonify({
             'success': True,
@@ -598,15 +602,11 @@ def run_speaker_identification():
             data_dir=_get_data_dir(),
         )
 
-        stats = {
-            'artists': {},
-            'clustering': {},
-            'matching': {},
-        }
+        stats = build_speaker_pipeline_run_stats()
 
         # Extract embeddings for each artist
         if artists is None:
-            artists = ['conor_maynard', 'william_singe']
+            artists = get_default_speaker_pipeline_artists()
 
         for artist in artists:
             artist_stats = matcher.extract_embeddings_for_artist(artist)
@@ -614,21 +614,11 @@ def run_speaker_identification():
 
         # Cluster speakers
         clusters = matcher.cluster_speakers()
-        stats['clustering'] = {
-            'clusters_created': len(clusters),
-            'clusters': [
-                {
-                    'cluster_id': c['cluster_id'],
-                    'member_count': c['member_count'],
-                    'duration_sec': c['total_duration_sec'],
-                }
-                for c in clusters
-            ],
-        }
+        stats['clustering'] = build_speaker_clustering_stats(clusters)
 
         # Auto-match to featured artists
         match_stats = matcher.auto_match_clusters_to_artists()
-        stats['matching'] = match_stats
+        stats['matching'] = normalize_speaker_auto_match_stats(match_stats)
 
         return jsonify({
             'success': True,

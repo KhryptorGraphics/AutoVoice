@@ -21,6 +21,10 @@ from auto_voice.audio.speaker_matcher import (
     SpeakerMatcher,
     run_speaker_matching,
 )
+from auto_voice.audio.speaker_pipeline_contract import (
+    DEFAULT_SPEAKER_PIPELINE_ARTISTS,
+    get_default_speaker_pipeline_artists,
+)
 
 
 @pytest.fixture
@@ -499,7 +503,7 @@ class TestRunSpeakerMatching:
         """Test run_speaker_matching with default artists."""
         # Set up directories for both default artists
         data_dir = tmp_path / "data"
-        for artist in ['conor_maynard', 'william_singe']:
+        for artist in DEFAULT_SPEAKER_PIPELINE_ARTISTS:
             separated_dir = data_dir / f"separated_youtube/{artist}"
             diarized_dir = data_dir / f"diarized_youtube/{artist}"
             separated_dir.mkdir(parents=True)
@@ -513,7 +517,16 @@ class TestRunSpeakerMatching:
 
         # Should have attempted both artists
         assert 'artists' in stats
-        # At least tried to process (even if no files found)
+        assert list(stats['artists']) == get_default_speaker_pipeline_artists()
+        assert stats['clustering'] == {
+            'clusters_created': 0,
+            'clusters': [],
+        }
+        assert stats['matching'] == {
+            'clusters_processed': 0,
+            'matches_found': 0,
+            'matches_made': [],
+        }
 
     def test_run_speaker_matching_custom_artists(self, tmp_path, mock_db_operations):
         """Test run_speaker_matching with custom artist list."""
@@ -531,6 +544,15 @@ class TestRunSpeakerMatching:
         stats = run_speaker_matching(artists=[artist], data_dir=data_dir)
 
         assert artist in stats['artists']
+        assert stats['clustering'] == {
+            'clusters_created': 0,
+            'clusters': [],
+        }
+        assert stats['matching'] == {
+            'clusters_processed': 0,
+            'matches_found': 0,
+            'matches_made': [],
+        }
 
 
 class TestCLIInterface:
@@ -582,6 +604,16 @@ class TestCLIInterface:
         args = parser.parse_args(['--threshold', '0.92'])
 
         assert args.threshold == 0.92
+
+    def test_default_artist_helper_returns_copy(self):
+        """Test default artist helper returns a mutable copy of the contract constant."""
+        artists = get_default_speaker_pipeline_artists()
+
+        assert artists == list(DEFAULT_SPEAKER_PIPELINE_ARTISTS)
+
+        artists.append('new_artist')
+
+        assert list(DEFAULT_SPEAKER_PIPELINE_ARTISTS) == ['conor_maynard', 'william_singe']
 
 
 class TestEmbeddingExtractionEdgeCases:

@@ -27,6 +27,8 @@ from unittest.mock import MagicMock, patch, call
 import numpy as np
 import pytest
 
+from auto_voice.audio.speaker_pipeline_contract import get_default_speaker_pipeline_artists
+
 
 # =============================================================================
 # Fixtures
@@ -291,6 +293,9 @@ class TestGetExtractionStatus:
         assert 'progress' in data
         assert 'message' in data
         assert data['status'] == 'completed'
+        assert data['tracks_processed'] == 5
+        assert data['tracks_total'] == 5
+        assert data['speakers_detected'] == []
 
 
 # =============================================================================
@@ -374,10 +379,11 @@ class TestFetchMetadata:
         """Fetches metadata for all artists."""
         mock_populate.side_effect = [
             {'tracks_processed': 10, 'featured_artists_found': 5},
-            {'tracks_processed': 4, 'featured_artists_found': 2},
+            {'tracks_processed': 4, 'featured_found': 2},
         ]
         data_dir = Path(client.application.config['DATA_DIR'])
-        for artist in ['conor_maynard', 'william_singe']:
+        default_artists = get_default_speaker_pipeline_artists()
+        for artist in default_artists:
             (data_dir / 'separated_youtube' / artist).mkdir(parents=True, exist_ok=True)
 
         response = client.post('/api/v1/speakers/tracks/fetch-metadata', json={})
@@ -390,13 +396,13 @@ class TestFetchMetadata:
         assert data['stats']['total_featured'] == 7
         assert mock_populate.call_args_list == [
             call(
-                artist_name='conor_maynard',
-                separated_dir=data_dir / 'separated_youtube' / 'conor_maynard',
+                artist_name=default_artists[0],
+                separated_dir=data_dir / 'separated_youtube' / default_artists[0],
                 data_dir=data_dir,
             ),
             call(
-                artist_name='william_singe',
-                separated_dir=data_dir / 'separated_youtube' / 'william_singe',
+                artist_name=default_artists[1],
+                separated_dir=data_dir / 'separated_youtube' / default_artists[1],
                 data_dir=data_dir,
             ),
         ]
@@ -766,6 +772,9 @@ class TestRunSpeakerIdentification:
         assert 'artists' in data['stats']
         assert 'clustering' in data['stats']
         assert 'matching' in data['stats']
+        assert [call.args[0] for call in mock_matcher.extract_embeddings_for_artist.call_args_list] == (
+            get_default_speaker_pipeline_artists()
+        )
         mock_matcher_class.assert_called_once_with(
             similarity_threshold=0.85,
             min_cluster_duration=30.0,

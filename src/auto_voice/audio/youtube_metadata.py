@@ -28,6 +28,7 @@ from auto_voice.storage.paths import (
     resolve_diarized_audio_dir,
     resolve_separated_audio_dir,
 )
+from .speaker_pipeline_contract import build_speaker_metadata_stats
 
 logger = logging.getLogger(__name__)
 
@@ -488,12 +489,7 @@ def populate_database_from_files(
         data_dir=str(resolved_data_dir),
         artist_name=artist_name,
     )
-    stats = {
-        'tracks_processed': 0,
-        'tracks_with_metadata': 0,
-        'featured_artists_found': 0,
-        'errors': [],
-    }
+    stats = build_speaker_metadata_stats()
 
     # Find all vocal files
     vocal_files = list(separated_dir.glob('*_vocals.wav')) + list(separated_dir.glob('*.wav'))
