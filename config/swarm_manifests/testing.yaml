@@ -1,6 +1,10 @@
 version: 1
 name: autovoice-testing
-issue_id: AV-jg6
+issue_id: AV-fys
+program: next-phase-perfection
+phase: hardening
+sprint: sprint-0
+lane: testing
 parallelism: 2
 tasks:
   - id: platform-scripts

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -18,12 +19,22 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _slug(value: str) -> str:
+    lowered = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+    return lowered.strip("-") or "unknown"
+
+
 @dataclass
 class SwarmMemoryBackend:
     backend: str
     available: bool
     base_dir: Path
     channel_id: str
+    data_dir: Path
+    taxonomy: Dict[str, str]
+    task_prefix: str
+    agent_prefix: str
+    artifact_prefix: str
     _memkraft: Optional[Any] = None
 
     @classmethod
@@ -34,9 +45,28 @@ class SwarmMemoryBackend:
         run_root: Path,
         payload: Dict[str, Any],
         project_root: Path,
+        parent_run_id: Optional[str] = None,
     ) -> "SwarmMemoryBackend":
         base_dir = run_root.parent / "swarm_memory"
-        channel_id = f"autovoice-{run_id}"
+        data_dir = run_root.parent
+        taxonomy = {
+            "program": str(payload.get("program") or project_root.name),
+            "phase": str(payload.get("phase") or "default"),
+            "sprint": str(payload.get("sprint") or "ad-hoc"),
+            "lane": str(payload.get("lane") or "run"),
+        }
+        channel_id = "-".join(
+            [
+                "autovoice",
+                _slug(taxonomy["program"]),
+                _slug(taxonomy["phase"]),
+                _slug(taxonomy["sprint"]),
+                _slug(run_id),
+            ]
+        )
+        task_prefix = f"{run_id}:{taxonomy['lane']}"
+        agent_prefix = f"{run_id}:{taxonomy['lane']}:agent"
+        artifact_prefix = f"{run_id}:{taxonomy['lane']}:artifact"
 
         if MemKraft is None:
             fallback = cls(
@@ -44,15 +74,22 @@ class SwarmMemoryBackend:
                 available=False,
                 base_dir=base_dir,
                 channel_id=channel_id,
+                data_dir=data_dir,
+                taxonomy=taxonomy,
+                task_prefix=task_prefix,
+                agent_prefix=agent_prefix,
+                artifact_prefix=artifact_prefix,
             )
             fallback._write_fallback(
                 channel_id,
                 {
                     "run_id": run_id,
+                    "parent_run_id": parent_run_id,
                     "manifest_name": payload.get("name"),
                     "project_root": str(project_root),
                     "backend": "file_fallback",
                     "reason": "memkraft_import_unavailable",
+                    "taxonomy": taxonomy,
                 },
             )
             return fallback
@@ -64,14 +101,24 @@ class SwarmMemoryBackend:
             available=True,
             base_dir=base_dir,
             channel_id=channel_id,
+            data_dir=data_dir,
+            taxonomy=taxonomy,
+            task_prefix=task_prefix,
+            agent_prefix=agent_prefix,
+            artifact_prefix=artifact_prefix,
             _memkraft=memory,
         )
         backend.channel_save(
             {
                 "run_id": run_id,
+                "parent_run_id": parent_run_id,
                 "manifest_name": payload.get("name"),
                 "issue_id": payload.get("issue_id"),
                 "project_root": str(project_root),
+                "taxonomy": taxonomy,
+                "task_prefix": task_prefix,
+                "agent_prefix": agent_prefix,
+                "artifact_prefix": artifact_prefix,
             }
         )
         return backend
@@ -81,11 +128,17 @@ class SwarmMemoryBackend:
             "backend": self.backend,
             "available": self.available,
             "base_dir": str(self.base_dir),
+            "data_dir": str(self.data_dir),
             "channel_id": self.channel_id,
+            "taxonomy": self.taxonomy,
+            "task_prefix": self.task_prefix,
+            "agent_prefix": self.agent_prefix,
+            "artifact_prefix": self.artifact_prefix,
         }
 
     def _write_fallback(self, name: str, payload: Dict[str, Any]) -> None:
-        _write_json(self.base_dir / "fallback" / f"{name}.json", payload)
+        safe_name = _slug(name)
+        _write_json(self.base_dir / "fallback" / f"{safe_name}.json", payload)
 
     def channel_save(self, payload: Dict[str, Any]) -> None:
         if self._memkraft is not None:
@@ -102,6 +155,8 @@ class SwarmMemoryBackend:
                 "issue_id": payload.get("issue_id"),
                 "context_sources": payload.get("context_sources", {}),
                 "parallelism": payload.get("parallelism", 1),
+                "taxonomy": payload.get("taxonomy", self.taxonomy),
+                "required_memory_writes": payload.get("required_memory_writes", []),
             }
         )
 

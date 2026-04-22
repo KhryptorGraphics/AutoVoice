@@ -8,6 +8,7 @@ These documents describe the current MVP behavior and should be treated as the s
 
 - [../README.md](../README.md): runtime entrypoints, repo map, and current MVP scope
 - [current-truth.md](./current-truth.md): canonical product boundary, runtime, docs, and historical artifact notes
+- [swarm-operator-contract.md](./swarm-operator-contract.md): canonical `autovoice swarm` operating model, run taxonomy, GitNexus inputs, MemKraft writes, and lane completion rules
 - [user-guide-voice-profiles.md](./user-guide-voice-profiles.md): source-artist and target-user workflow, training lifecycle, conversion, and karaoke usage
 - [frontend-persistence-boundaries.md](./frontend-persistence-boundaries.md): what lives in browser `localStorage` versus what is owned by backend storage
 - [api/README.md](./api/README.md): REST and WebSocket API entrypoint

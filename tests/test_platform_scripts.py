@@ -71,3 +71,26 @@ def test_validate_cuda_stack_dry_run(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "dependency-audit.json" in result.stdout
     assert "all-latency-report.md" in result.stdout
+
+
+def test_swarm_orchestrator_supports_custom_data_dir(tmp_path):
+    result = subprocess.run(
+        [
+            "python",
+            "scripts/swarm_orchestrator.py",
+            "--swarm",
+            "research",
+            "--run-id",
+            "wrapper-run",
+            "--dry-run",
+            "--data-dir",
+            str(tmp_path / "swarm-data"),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    completion_path = tmp_path / "swarm-data" / "swarm_runs" / "wrapper-run" / "completion.json"
+    assert completion_path.exists()

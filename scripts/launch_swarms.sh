@@ -12,12 +12,12 @@ autovoice_activate_env
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [all|research|development|review|testing] [--dry-run] [--run-id ID]
+Usage: $(basename "$0") [all|research|development|review|testing] [--dry-run] [--run-id ID] [--data-dir DIR]
        $(basename "$0") status <run-id>
 
 Examples:
   ./scripts/launch_swarms.sh
-  ./scripts/launch_swarms.sh research --dry-run
+  ./scripts/launch_swarms.sh research --dry-run --data-dir tmp/swarm-data
   ./scripts/launch_swarms.sh status run-123
 EOF
 }

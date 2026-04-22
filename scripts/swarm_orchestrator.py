@@ -26,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--swarm", default="all", choices=sorted(MANIFESTS), help="Named swarm manifest to run")
     parser.add_argument("--status", metavar="RUN_ID", help="Print status for an existing run id")
     parser.add_argument("--run-id", default=None, help="Explicit run identifier")
+    parser.add_argument("--data-dir", default=None, help="Override the durable swarm data directory")
     parser.add_argument("--dry-run", action="store_true", help="Write the run ledger without executing tasks")
     return parser
 
@@ -38,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     env["PYTHONPATH"] = (
         f"{PROJECT_ROOT / 'src'}:{current_pythonpath}" if current_pythonpath else str(PROJECT_ROOT / "src")
     )
+    if args.data_dir:
+        command.extend(["--data-dir", args.data_dir])
     if args.status:
         command.extend(["status", "--run-id", args.status])
     else:

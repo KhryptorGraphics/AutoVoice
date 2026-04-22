@@ -5,22 +5,26 @@ profiles:
     inputs:
       - bd ready
       - gitnexus://repo/autovoice/context
+      - docs/swarm-operator-contract.md
       - docs/current-truth.md
   development:
     description: Build and implementation context pack
     inputs:
+      - docs/swarm-operator-contract.md
       - src/
       - tests/
       - config/gpu_config.yaml
   review:
     description: Review and contract validation context pack
     inputs:
+      - docs/swarm-operator-contract.md
       - docs/api/
       - tests/test_api_docs_contract.py
       - tests/test_websocket_contract.py
   testing:
     description: Regression and release verification context pack
     inputs:
+      - docs/swarm-operator-contract.md
       - run_tests.sh
       - tests/test_platform_scripts.py
       - frontend/e2e/

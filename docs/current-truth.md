@@ -72,6 +72,7 @@ Read these first:
 
 - [../README.md](../README.md)
 - [README.md](./README.md)
+- [swarm-operator-contract.md](./swarm-operator-contract.md)
 - [api/README.md](./api/README.md)
 - [user-guide-voice-profiles.md](./user-guide-voice-profiles.md)
 - [troubleshooting.md](./troubleshooting.md)
@@ -82,6 +83,8 @@ Read these first:
 - GitNexus is the canonical code-intelligence layer for repo exploration and impact analysis.
 - `config/swarm_config.yaml`, `config/agent_contexts.yaml`, `config/swarm_manifests/*.yaml`, and
   `autovoice swarm ...` define the canonical DAG-based swarm runner.
+- `docs/swarm-operator-contract.md` is the canonical operator contract for run taxonomy, required
+  GitNexus inputs, required MemKraft writes, artifact paths, and lane completion rules.
 - `scripts/launch_swarms.sh` and `scripts/swarm_orchestrator.py` are compatibility wrappers around
   the repo-native swarm runner, not separate orchestration systems.
 - MemKraft is now the preferred durable swarm memory backend for `autovoice swarm` runs when the

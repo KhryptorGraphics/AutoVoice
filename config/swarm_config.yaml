@@ -1,15 +1,28 @@
 version: 1
 runner:
   command: autovoice swarm
+  program: next-phase-perfection
+  phase: hardening
+  sprint: sprint-0
+  lane: orchestration
   runs_dir: data/swarm_runs
   artifacts_dir: data/swarm_runs
   context_sources:
     backlog: bd
     code_intelligence: gitnexus
     memory: memkraft
+  required_memory_writes:
+    - sprint_brief
+    - assumptions_and_decisions
+    - findings
+    - artifacts_produced
+    - test_outcomes
+    - handoff_summary
   notes:
     - This file is the canonical repo-native swarm runner config.
     - MemKraft is the preferred durable swarm memory backend when the package is installed.
+    - Run taxonomy is program -> phase -> sprint -> lane -> artifact.
+    - Nested swarm runs must propagate --data-dir and derive child run ids from the parent run id.
     - Historical claude-flow/hive/cipher settings have been retired.
 manifests:
   all: config/swarm_manifests/full.yaml

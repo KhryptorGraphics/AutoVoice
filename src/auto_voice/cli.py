@@ -171,6 +171,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 dry_run=bool(args.dry_run),
                 run_root=run_root,
                 project_root=Path.cwd(),
+                parent_run_id=os.environ.get("AUTOVOICE_SWARM_RUN_ID"),
             )
         raise SystemExit(f"Unsupported swarm command: {args.swarm_command}")
 

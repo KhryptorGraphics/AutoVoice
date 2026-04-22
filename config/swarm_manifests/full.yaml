@@ -1,6 +1,10 @@
 version: 1
 name: autovoice-full-swarm
-issue_id: AV-jg6
+issue_id: AV-fys
+program: next-phase-perfection
+phase: hardening
+sprint: sprint-0
+lane: orchestration
 parallelism: 1
 tasks:
   - id: research
@@ -8,25 +12,25 @@ tasks:
     lane: research
     role: research_conductor
     cwd: .
-    command: "python -m auto_voice.cli swarm run --manifest config/swarm_manifests/research.yaml --run-id full-research --dry-run"
+    command: "python -m auto_voice.cli swarm --data-dir \"$AUTOVOICE_SWARM_DATA_DIR\" run --manifest config/swarm_manifests/research.yaml --run-id \"${AUTOVOICE_SWARM_RUN_ID}-research\" --dry-run"
   - id: development
     description: Execute the development swarm lane
     lane: development
     role: development_conductor
     cwd: .
     deps: [research]
-    command: "python -m auto_voice.cli swarm run --manifest config/swarm_manifests/development.yaml --run-id full-development"
+    command: "python -m auto_voice.cli swarm --data-dir \"$AUTOVOICE_SWARM_DATA_DIR\" run --manifest config/swarm_manifests/development.yaml --run-id \"${AUTOVOICE_SWARM_RUN_ID}-development\""
   - id: review
     description: Execute the review swarm lane
     lane: review
     role: review_conductor
     cwd: .
     deps: [development]
-    command: "python -m auto_voice.cli swarm run --manifest config/swarm_manifests/review.yaml --run-id full-review"
+    command: "python -m auto_voice.cli swarm --data-dir \"$AUTOVOICE_SWARM_DATA_DIR\" run --manifest config/swarm_manifests/review.yaml --run-id \"${AUTOVOICE_SWARM_RUN_ID}-review\""
   - id: testing
     description: Execute the testing swarm lane
     lane: testing
     role: testing_conductor
     cwd: .
     deps: [review]
-    command: "python -m auto_voice.cli swarm run --manifest config/swarm_manifests/testing.yaml --run-id full-testing"
+    command: "python -m auto_voice.cli swarm --data-dir \"$AUTOVOICE_SWARM_DATA_DIR\" run --manifest config/swarm_manifests/testing.yaml --run-id \"${AUTOVOICE_SWARM_RUN_ID}-testing\""
