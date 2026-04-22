@@ -39,6 +39,14 @@ import librosa
 import soundfile as sf
 from tqdm import tqdm
 
+from auto_voice.storage.paths import (
+    resolve_checkpoints_dir,
+    resolve_data_dir,
+    resolve_diarized_audio_dir,
+    resolve_separated_audio_dir,
+    resolve_trained_models_dir,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -61,13 +69,36 @@ ARTIST_PROFILES = {
     },
 }
 
-BASE_DIR = Path(__file__).parent.parent
-DATA_DIR = BASE_DIR / 'data'
-DIARIZED_DIR = DATA_DIR / 'diarized_youtube'
-SEPARATED_DIR = DATA_DIR / 'separated_youtube'
-FEATURES_DIR = DATA_DIR / 'features_cache'
-CHECKPOINTS_DIR = DATA_DIR / 'checkpoints' / 'hq'
-OUTPUT_DIR = DATA_DIR / 'trained_models' / 'hq'
+def resolve_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Resolve runtime paths without relying on cwd-sensitive data/* literals."""
+
+    resolved_data_dir = resolve_data_dir(data_dir)
+    return {
+        "data_dir": resolved_data_dir,
+        "diarized_dir": resolve_diarized_audio_dir(data_dir=str(resolved_data_dir)),
+        "separated_dir": resolve_separated_audio_dir(data_dir=str(resolved_data_dir)),
+        "features_dir": resolved_data_dir / "features_cache",
+        "checkpoints_dir": resolve_checkpoints_dir(data_dir=str(resolved_data_dir)) / "hq",
+        "output_dir": resolve_trained_models_dir(data_dir=str(resolved_data_dir)) / "hq",
+    }
+
+
+def configure_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Update legacy module globals to match the resolved runtime paths."""
+
+    global DATA_DIR, DIARIZED_DIR, SEPARATED_DIR, FEATURES_DIR, CHECKPOINTS_DIR, OUTPUT_DIR
+
+    paths = resolve_runtime_paths(data_dir)
+    DATA_DIR = paths["data_dir"]
+    DIARIZED_DIR = paths["diarized_dir"]
+    SEPARATED_DIR = paths["separated_dir"]
+    FEATURES_DIR = paths["features_dir"]
+    CHECKPOINTS_DIR = paths["checkpoints_dir"]
+    OUTPUT_DIR = paths["output_dir"]
+    return paths
+
+
+configure_runtime_paths()
 
 # HQ Model Configuration
 HQ_CONFIG = {
@@ -192,17 +223,22 @@ class HQVoiceLoRAAdapter(nn.Module):
 # Feature Pre-extraction
 # ============================================================================
 
-def extract_and_cache_features(artist_key: str, device: torch.device) -> Path:
+def extract_and_cache_features(
+    artist_key: str,
+    device: torch.device,
+    data_dir: str | None = None,
+) -> Path:
     """Pre-extract all ContentVec features and cache to disk."""
 
-    cache_path = FEATURES_DIR / "{}_features.pt".format(artist_key)
+    runtime_paths = resolve_runtime_paths(data_dir)
+    cache_path = runtime_paths["features_dir"] / "{}_features.pt".format(artist_key)
 
     if cache_path.exists():
         logger.info("Loading cached features from {}".format(cache_path))
         return cache_path
 
     logger.info("Extracting features for {}...".format(artist_key))
-    FEATURES_DIR.mkdir(parents=True, exist_ok=True)
+    runtime_paths["features_dir"].mkdir(parents=True, exist_ok=True)
 
     # Load ContentVec encoder once
     from auto_voice.models.encoder import ContentVecEncoder
@@ -211,8 +247,8 @@ def extract_and_cache_features(artist_key: str, device: torch.device) -> Path:
     for param in encoder.parameters():
         param.requires_grad = False
 
-    diarized_dir = DIARIZED_DIR / artist_key
-    separated_dir = SEPARATED_DIR / artist_key
+    diarized_dir = runtime_paths["diarized_dir"] / artist_key
+    separated_dir = runtime_paths["separated_dir"] / artist_key
 
     all_features = []
     segment_duration = 4.0
@@ -319,16 +355,19 @@ def train_artist_optimized(
     artist_key: str,
     epochs: int = 200,
     save_every: int = 20,
+    data_dir: str | None = None,
 ) -> Path:
     """Train HQ LoRA with full GPU utilization."""
 
     profile = ARTIST_PROFILES[artist_key]
     profile_id = profile['profile_id']
+    runtime_paths = configure_runtime_paths(data_dir)
 
     print_banner("Optimized HQ LoRA Training: {}".format(profile['name']))
     print("  Profile ID: {}".format(profile_id))
     print("  Model config: {}".format(HQ_CONFIG))
     print("  Train config: {}".format(TRAIN_CONFIG))
+    print("  Data dir: {}".format(runtime_paths["data_dir"]))
 
     device = torch.device('cuda')
     print("  Device: {}".format(torch.cuda.get_device_name()))
@@ -336,7 +375,7 @@ def train_artist_optimized(
 
     # Phase 1: Extract/load features
     print("\n  Phase 1: Loading features...")
-    cache_path = extract_and_cache_features(artist_key, device)
+    cache_path = extract_and_cache_features(artist_key, device, data_dir=data_dir)
     features = torch.load(cache_path, map_location='cpu', weights_only=True)
     print("  Loaded {} feature sequences".format(features.shape[0]))
 
@@ -358,8 +397,8 @@ def train_artist_optimized(
 
     # Phase 2: Create model
     print("\n  Phase 2: Creating model...")
-    CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    runtime_paths["checkpoints_dir"].mkdir(parents=True, exist_ok=True)
+    runtime_paths["output_dir"].mkdir(parents=True, exist_ok=True)
 
     model = HQVoiceLoRAAdapter(**HQ_CONFIG).to(device)
 
@@ -382,7 +421,7 @@ def train_artist_optimized(
     l1_loss = nn.L1Loss()
 
     # Load checkpoint if exists
-    checkpoint_path = CHECKPOINTS_DIR / "{}_hq_lora.pt".format(profile_id)
+    checkpoint_path = runtime_paths["checkpoints_dir"] / "{}_hq_lora.pt".format(profile_id)
     start_epoch = 0
     global_step = 0
 
@@ -500,7 +539,7 @@ def train_artist_optimized(
             print("    -> Checkpoint saved")
 
     # Final save
-    final_path = OUTPUT_DIR / "{}_hq_lora.pt".format(profile_id)
+    final_path = runtime_paths["output_dir"] / "{}_hq_lora.pt".format(profile_id)
     torch.save({
         'profile_id': profile_id,
         'artist': profile['name'],
@@ -525,6 +564,8 @@ def main():
                         choices=['conor_maynard', 'william_singe', 'both'])
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Override root data directory (defaults to DATA_DIR or data)')
 
     args = parser.parse_args()
 
@@ -537,9 +578,9 @@ def main():
 
     if args.artist == 'both':
         for artist in ['conor_maynard', 'william_singe']:
-            train_artist_optimized(artist, epochs=args.epochs)
+            train_artist_optimized(artist, epochs=args.epochs, data_dir=args.data_dir)
     else:
-        train_artist_optimized(args.artist, epochs=args.epochs)
+        train_artist_optimized(args.artist, epochs=args.epochs, data_dir=args.data_dir)
 
 
 if __name__ == '__main__':

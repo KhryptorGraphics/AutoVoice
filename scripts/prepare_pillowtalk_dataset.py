@@ -24,6 +24,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from aligned_conversion import align_with_dtw
 from auto_voice.models.ecapa2_encoder import ECAPA2SpeakerEncoder
 from auto_voice.storage.voice_profiles import VoiceProfileStore
+from pillowtalk_release_paths import (
+    resolve_pillowtalk_release_paths,
+    resolve_profile_separated_dir,
+)
 
 
 @dataclass(frozen=True)
@@ -33,13 +37,11 @@ class ArtistSpec:
     profile_id: str
     raw_audio: Path
 
-    @property
-    def separated_vocals(self) -> Path:
-        return PROJECT_ROOT / "data" / "separated" / self.profile_id / "vocals.wav"
+    def separated_vocals(self, data_dir: str | None = None) -> Path:
+        return resolve_profile_separated_dir(self.profile_id, data_dir) / "vocals.wav"
 
-    @property
-    def separated_instrumental(self) -> Path:
-        return PROJECT_ROOT / "data" / "separated" / self.profile_id / "instrumental.wav"
+    def separated_instrumental(self, data_dir: str | None = None) -> Path:
+        return resolve_profile_separated_dir(self.profile_id, data_dir) / "instrumental.wav"
 
 
 ARTISTS: Dict[str, ArtistSpec] = {
@@ -189,6 +191,7 @@ def build_manifest(
     embeddings: Dict[str, Dict[str, object]],
     training_samples: Dict[str, Dict[str, Any]],
     alignment_artifacts: Dict[str, Dict[str, Any]],
+    data_dir: str | None = None,
 ) -> Dict[str, object]:
     william = ARTISTS["william_singe"]
     conor = ARTISTS["conor_maynard"]
@@ -211,7 +214,7 @@ def build_manifest(
                 Path(training_samples[artist.key]["instrumental_path"]).resolve()
             ),
             "provenance": "tests/quality_samples fixtures + data/separated cache",
-            "audio_info": audio_info(artist.separated_vocals),
+            "audio_info": audio_info(artist.separated_vocals(data_dir)),
         }
 
     samples = [
@@ -318,6 +321,7 @@ def prepare_dataset(
     device: str,
     profiles_dir: Path,
     samples_dir: Path,
+    data_dir: str | None = None,
 ) -> Path:
     dataset_root = output_dir.resolve()
     raw_dir = dataset_root / "raw"
@@ -339,16 +343,16 @@ def prepare_dataset(
 
     for artist in ARTISTS.values():
         ensure_relative_symlink(artist.raw_audio, raw_dir / artist.key / "pillowtalk.wav")
-        ensure_relative_symlink(artist.separated_vocals, vocals_dir / artist.key / "pillowtalk.wav")
+        ensure_relative_symlink(artist.separated_vocals(data_dir), vocals_dir / artist.key / "pillowtalk.wav")
         ensure_relative_symlink(
-            artist.separated_instrumental,
+            artist.separated_instrumental(data_dir),
             instrumentals_dir / artist.key / "pillowtalk.wav",
         )
 
         embeddings[artist.key] = compute_embedding(artist.raw_audio, device=device)
         np.save(speakers_dir / f"{artist.key}.npy", embeddings[artist.key]["embedding"])
 
-        track_info = audio_info(artist.separated_vocals)
+        track_info = audio_info(artist.separated_vocals(data_dir))
         ensure_profile(
             store=store,
             artist=artist,
@@ -358,8 +362,8 @@ def prepare_dataset(
         training_samples[artist.key] = ensure_training_sample(
             store=store,
             artist=artist,
-            vocals_path=artist.separated_vocals,
-            instrumental_path=artist.separated_instrumental,
+            vocals_path=artist.separated_vocals(data_dir),
+            instrumental_path=artist.separated_instrumental(data_dir),
             duration_seconds=track_info["duration_seconds"],
         )
 
@@ -374,16 +378,16 @@ def prepare_dataset(
     alignment_artifacts = {
         "william_to_conor": write_aligned_pair(
             pair_id="william_to_conor",
-            source_vocals=william.separated_vocals,
-            target_vocals=conor.separated_vocals,
-            target_instrumental=conor.separated_instrumental,
+            source_vocals=william.separated_vocals(data_dir),
+            target_vocals=conor.separated_vocals(data_dir),
+            target_instrumental=conor.separated_instrumental(data_dir),
             destination_dir=aligned_dir / "william_to_conor",
         ),
         "conor_to_william": write_aligned_pair(
             pair_id="conor_to_william",
-            source_vocals=conor.separated_vocals,
-            target_vocals=william.separated_vocals,
-            target_instrumental=william.separated_instrumental,
+            source_vocals=conor.separated_vocals(data_dir),
+            target_vocals=william.separated_vocals(data_dir),
+            target_instrumental=william.separated_instrumental(data_dir),
             destination_dir=aligned_dir / "conor_to_william",
         ),
     }
@@ -393,6 +397,7 @@ def prepare_dataset(
         embeddings=embeddings,
         training_samples=training_samples,
         alignment_artifacts=alignment_artifacts,
+        data_dir=data_dir,
     )
 
     metadata_path = dataset_root / "metadata.json"
@@ -401,20 +406,26 @@ def prepare_dataset(
 
 
 def main() -> int:
+    runtime_paths = resolve_pillowtalk_release_paths()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Override root data directory (defaults to DATA_DIR or data).",
+    )
+    parser.add_argument(
         "--output-dir",
-        default=str(PROJECT_ROOT / "data/training/pillowtalk"),
+        default=str(runtime_paths["pillowtalk_training_dir"]),
         help="Canonical dataset output directory.",
     )
     parser.add_argument(
         "--profiles-dir",
-        default=str(PROJECT_ROOT / "data/voice_profiles"),
+        default=str(runtime_paths["profiles_dir"]),
         help="VoiceProfileStore profiles directory.",
     )
     parser.add_argument(
         "--samples-dir",
-        default=str(PROJECT_ROOT / "data/samples"),
+        default=str(runtime_paths["samples_dir"]),
         help="VoiceProfileStore samples directory.",
     )
     parser.add_argument(
@@ -429,6 +440,7 @@ def main() -> int:
         device=args.device,
         profiles_dir=Path(args.profiles_dir),
         samples_dir=Path(args.samples_dir),
+        data_dir=args.data_dir,
     )
     print(f"Wrote manifest: {metadata_path}")
     return 0

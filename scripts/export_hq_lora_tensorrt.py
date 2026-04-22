@@ -18,10 +18,10 @@ import torch
 import torch.nn as nn
 
 from auto_voice.export.tensorrt_engine import ShapeProfile, TRTEngineBuilder
+from pillowtalk_release_paths import resolve_pillowtalk_release_paths
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = PROJECT_ROOT / "models"
 
 
@@ -127,12 +127,13 @@ def _find_artist(artist_key: str) -> ArtistSpec:
     raise KeyError(f"Unknown artist key: {artist_key}")
 
 
-def _checkpoint_path(spec: ArtistSpec) -> Path:
-    return DATA_DIR / "checkpoints" / "hq" / f"{spec.checkpoint_profile_id}_hq_lora.pt"
+def _checkpoint_path(spec: ArtistSpec, data_dir: str | None = None) -> Path:
+    paths = resolve_pillowtalk_release_paths(data_dir)
+    return paths["checkpoints_dir"] / "hq" / f"{spec.checkpoint_profile_id}_hq_lora.pt"
 
 
-def _load_adapter(spec: ArtistSpec) -> tuple[HQVoiceLoRAAdapter, dict]:
-    checkpoint_path = _checkpoint_path(spec)
+def _load_adapter(spec: ArtistSpec, data_dir: str | None = None) -> tuple[HQVoiceLoRAAdapter, dict]:
+    checkpoint_path = _checkpoint_path(spec, data_dir)
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = payload.get("config", {})
     model = HQVoiceLoRAAdapter(**config)
@@ -160,7 +161,11 @@ def _export_onnx(model: HQVoiceLoRAAdapter, output_path: Path) -> None:
     )
 
 
-def export_artist(spec: ArtistSpec, workspace_size_gb: float = 2.0) -> dict:
+def export_artist(
+    spec: ArtistSpec,
+    workspace_size_gb: float = 2.0,
+    data_dir: str | None = None,
+) -> dict:
     release_dir = MODELS_DIR / spec.artist_key
     tensorrt_dir = release_dir / "artifacts" / "tensorrt"
     tensorrt_dir.mkdir(parents=True, exist_ok=True)
@@ -169,7 +174,7 @@ def export_artist(spec: ArtistSpec, workspace_size_gb: float = 2.0) -> dict:
     engine_path = tensorrt_dir / "hq_voice_lora.engine"
     metadata_path = tensorrt_dir / "engine_metadata.json"
 
-    model, payload = _load_adapter(spec)
+    model, payload = _load_adapter(spec, data_dir=data_dir)
     _export_onnx(model, onnx_path)
 
     builder = TRTEngineBuilder(workspace_size_gb=workspace_size_gb)
@@ -187,7 +192,7 @@ def export_artist(spec: ArtistSpec, workspace_size_gb: float = 2.0) -> dict:
         "display_name": spec.display_name,
         "canonical_profile_id": spec.canonical_profile_id,
         "checkpoint_profile_id": spec.checkpoint_profile_id,
-        "checkpoint_path": str(_checkpoint_path(spec)),
+        "checkpoint_path": str(_checkpoint_path(spec, data_dir=data_dir)),
         "onnx_path": str(onnx_path),
         "engine_path": str(engine_path),
         "precision": "fp16",
@@ -214,13 +219,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=2.0,
         help="TensorRT workspace size in GB.",
     )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Override root data directory (defaults to DATA_DIR or data).",
+    )
     return parser
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     targets = ARTISTS if args.artist == "all" else (_find_artist(args.artist),)
-    exported = [export_artist(spec, workspace_size_gb=args.workspace_size_gb) for spec in targets]
+    exported = [
+        export_artist(
+            spec,
+            workspace_size_gb=args.workspace_size_gb,
+            data_dir=args.data_dir,
+        )
+        for spec in targets
+    ]
     print(json.dumps({"exported": exported}, indent=2))
     return 0
 

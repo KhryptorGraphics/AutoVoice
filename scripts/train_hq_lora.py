@@ -29,6 +29,14 @@ import numpy as np
 import librosa
 import soundfile as sf
 
+from auto_voice.storage.paths import (
+    resolve_checkpoints_dir,
+    resolve_data_dir,
+    resolve_diarized_audio_dir,
+    resolve_separated_audio_dir,
+    resolve_trained_models_dir,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -52,13 +60,34 @@ ARTIST_PROFILES = {
     },
 }
 
-# Data directories
-BASE_DIR = Path(__file__).parent.parent
-DATA_DIR = BASE_DIR / 'data'
-DIARIZED_DIR = DATA_DIR / 'diarized_youtube'
-SEPARATED_DIR = DATA_DIR / 'separated_youtube'
-CHECKPOINTS_DIR = DATA_DIR / 'checkpoints' / 'hq'
-OUTPUT_DIR = DATA_DIR / 'trained_models' / 'hq'
+def resolve_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Resolve runtime paths without relying on cwd-sensitive data/* literals."""
+
+    resolved_data_dir = resolve_data_dir(data_dir)
+    return {
+        "data_dir": resolved_data_dir,
+        "diarized_dir": resolve_diarized_audio_dir(data_dir=str(resolved_data_dir)),
+        "separated_dir": resolve_separated_audio_dir(data_dir=str(resolved_data_dir)),
+        "checkpoints_dir": resolve_checkpoints_dir(data_dir=str(resolved_data_dir)) / "hq",
+        "output_dir": resolve_trained_models_dir(data_dir=str(resolved_data_dir)) / "hq",
+    }
+
+
+def configure_runtime_paths(data_dir: str | None = None) -> dict[str, Path]:
+    """Update legacy module globals to match the resolved runtime paths."""
+
+    global DATA_DIR, DIARIZED_DIR, SEPARATED_DIR, CHECKPOINTS_DIR, OUTPUT_DIR
+
+    paths = resolve_runtime_paths(data_dir)
+    DATA_DIR = paths["data_dir"]
+    DIARIZED_DIR = paths["diarized_dir"]
+    SEPARATED_DIR = paths["separated_dir"]
+    CHECKPOINTS_DIR = paths["checkpoints_dir"]
+    OUTPUT_DIR = paths["output_dir"]
+    return paths
+
+
+configure_runtime_paths()
 
 # HQ Model Configuration (optimized for Thor)
 HQ_CONFIG = {
@@ -262,19 +291,21 @@ class DiarizedVocalsDataset(Dataset):
         sample_rate: int = 16000,
         max_segments_per_file: int = 20,  # More segments per file
         min_segment_duration: float = 2.0,
+        data_dir: str | None = None,
     ):
         self.artist_key = artist_key
         self.segment_duration = segment_duration
         self.sample_rate = sample_rate
         self.max_segments_per_file = max_segments_per_file
         self.min_segment_duration = min_segment_duration
+        self.runtime_paths = resolve_runtime_paths(data_dir)
 
         self.segments = []
         self._load_segments()
 
     def _load_segments(self):
-        diarized_dir = DIARIZED_DIR / self.artist_key
-        separated_dir = SEPARATED_DIR / self.artist_key
+        diarized_dir = self.runtime_paths["diarized_dir"] / self.artist_key
+        separated_dir = self.runtime_paths["separated_dir"] / self.artist_key
 
         if not diarized_dir.exists():
             raise RuntimeError(f"Diarization directory not found: {diarized_dir}")
@@ -501,16 +532,19 @@ def train_artist_hq_lora(
     batch_size: int = 4,  # Smaller batch for larger model
     learning_rate: float = 5e-5,
     save_every: int = 20,
+    data_dir: str | None = None,
 ) -> Path:
     """Train HQ LoRA for an artist."""
 
     profile = ARTIST_PROFILES[artist_key]
     profile_id = profile['profile_id']
+    runtime_paths = configure_runtime_paths(data_dir)
 
     print_banner(f"Training HQ LoRA for {profile['name']}")
     print(f"  Profile ID: {profile_id}")
     print(f"  Config: {HQ_CONFIG}")
     print(f"  Epochs: {epochs}, batch size: {batch_size}")
+    print(f"  Data dir: {runtime_paths['data_dir']}")
     print_gpu_memory()
 
     if not torch.cuda.is_available():
@@ -520,11 +554,11 @@ def train_artist_hq_lora(
     print(f"  Device: {torch.cuda.get_device_name()}")
 
     # Ensure directories exist
-    CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    runtime_paths["checkpoints_dir"].mkdir(parents=True, exist_ok=True)
+    runtime_paths["output_dir"].mkdir(parents=True, exist_ok=True)
 
     print("\n  Loading dataset...")
-    dataset = DiarizedVocalsDataset(artist_key)
+    dataset = DiarizedVocalsDataset(artist_key, data_dir=data_dir)
 
     if len(dataset) == 0:
         raise RuntimeError(f"No training data for {artist_key}")
@@ -556,7 +590,7 @@ def train_artist_hq_lora(
         use_amp=True,
     )
 
-    checkpoint_path = CHECKPOINTS_DIR / f"{profile_id}_hq_lora.pt"
+    checkpoint_path = runtime_paths["checkpoints_dir"] / f"{profile_id}_hq_lora.pt"
     start_epoch = trainer.load_checkpoint(checkpoint_path)
     if start_epoch > 0:
         print(f"\n  Resuming from epoch {start_epoch}")
@@ -588,7 +622,7 @@ def train_artist_hq_lora(
     trainer.save_checkpoint(checkpoint_path, epochs - 1, best_loss)
 
     # Save final model
-    final_path = OUTPUT_DIR / f"{profile_id}_hq_lora.pt"
+    final_path = runtime_paths["output_dir"] / f"{profile_id}_hq_lora.pt"
     torch.save({
         'profile_id': profile_id,
         'artist': profile['name'],
@@ -613,6 +647,8 @@ def main():
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--batch-size', type=int, default=4)
     parser.add_argument('--lr', type=float, default=5e-5)
+    parser.add_argument('--data-dir', type=str, default=None,
+                        help='Override root data directory (defaults to DATA_DIR or data)')
 
     args = parser.parse_args()
 
@@ -628,6 +664,7 @@ def main():
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
+                data_dir=args.data_dir,
             )
     else:
         train_artist_hq_lora(
@@ -635,6 +672,7 @@ def main():
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.lr,
+            data_dir=args.data_dir,
         )
 
 

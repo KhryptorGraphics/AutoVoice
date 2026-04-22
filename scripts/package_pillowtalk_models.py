@@ -22,14 +22,10 @@ from typing import Any, Dict, Optional
 import torch
 
 from auto_voice.runtime_contract import build_packaged_artifact_manifest, write_packaged_artifact_manifest
+from pillowtalk_release_paths import resolve_pillowtalk_release_paths
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-MODELS_DIR = PROJECT_ROOT / "models"
-TRAINED_MODELS_DIR = DATA_DIR / "trained_models"
-VOICE_PROFILES_DIR = DATA_DIR / "voice_profiles"
-DATASET_MANIFEST = DATA_DIR / "training" / "pillowtalk" / "metadata.json"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
 
@@ -74,13 +70,13 @@ EVALUATION_ARTIFACTS = {
 
 TRAINING_ARTIFACTS = {
     "william_singe": {
-        "hq_checkpoint": DATA_DIR / "checkpoints" / "hq" / "7da05140-1303-40c6-95d9-5b6e2c3624df_hq_lora.pt",
-        "nvfp4_checkpoint": DATA_DIR / "checkpoints" / "nvfp4" / "7da05140-1303-40c6-95d9-5b6e2c3624df_lora.pt",
+        "hq_checkpoint": Path("checkpoints") / "hq" / "7da05140-1303-40c6-95d9-5b6e2c3624df_hq_lora.pt",
+        "nvfp4_checkpoint": Path("checkpoints") / "nvfp4" / "7da05140-1303-40c6-95d9-5b6e2c3624df_lora.pt",
         "log_path": PROJECT_ROOT / "logs" / "training_william_optimal_20260131_020725.log",
     },
     "conor_maynard": {
-        "hq_checkpoint": DATA_DIR / "checkpoints" / "hq" / "c572d02c-c687-4bed-8676-6ad253cf1c91_hq_lora.pt",
-        "nvfp4_checkpoint": DATA_DIR / "checkpoints" / "nvfp4" / "c572d02c-c687-4bed-8676-6ad253cf1c91_lora.pt",
+        "hq_checkpoint": Path("checkpoints") / "hq" / "c572d02c-c687-4bed-8676-6ad253cf1c91_hq_lora.pt",
+        "nvfp4_checkpoint": Path("checkpoints") / "nvfp4" / "c572d02c-c687-4bed-8676-6ad253cf1c91_lora.pt",
         "log_path": PROJECT_ROOT / "logs" / "training_tuned_30k_20260131_015654.log",
     },
 }
@@ -165,22 +161,31 @@ def _existing_path_str(path: Optional[Path]) -> Optional[str]:
     return str(path)
 
 
-def _package_release(spec: ReleaseSpec, mirror_alias_artifacts: bool = True) -> Dict[str, Any]:
-    canonical_profile_json = VOICE_PROFILES_DIR / f"{spec.canonical_profile_id}.json"
-    canonical_profile_npy = VOICE_PROFILES_DIR / f"{spec.canonical_profile_id}.npy"
+def _package_release(
+    spec: ReleaseSpec,
+    mirror_alias_artifacts: bool = True,
+    data_dir: str | None = None,
+) -> Dict[str, Any]:
+    runtime_paths = resolve_pillowtalk_release_paths(data_dir)
+    models_dir = runtime_paths["models_dir"]
+    trained_models_dir = runtime_paths["trained_models_dir"]
+    profiles_dir = runtime_paths["profiles_dir"]
+    dataset_manifest_path = runtime_paths["pillowtalk_dataset_manifest"]
+    canonical_profile_json = profiles_dir / f"{spec.canonical_profile_id}.json"
+    canonical_profile_npy = profiles_dir / f"{spec.canonical_profile_id}.npy"
     canonical_profile = _load_json(canonical_profile_json)
 
     base_adapter = _find_first_existing(
-        [TRAINED_MODELS_DIR / f"{profile_id}_adapter.pt" for profile_id in spec.artifact_profile_ids]
+        [trained_models_dir / f"{profile_id}_adapter.pt" for profile_id in spec.artifact_profile_ids]
     )
     hq_adapter = _find_first_existing(
-        [TRAINED_MODELS_DIR / "hq" / f"{profile_id}_hq_lora.pt" for profile_id in spec.artifact_profile_ids]
+        [trained_models_dir / "hq" / f"{profile_id}_hq_lora.pt" for profile_id in spec.artifact_profile_ids]
     )
     nvfp4_adapter = _find_first_existing(
-        [TRAINED_MODELS_DIR / "nvfp4" / f"{profile_id}_nvfp4_lora.pt" for profile_id in spec.artifact_profile_ids]
+        [trained_models_dir / "nvfp4" / f"{profile_id}_nvfp4_lora.pt" for profile_id in spec.artifact_profile_ids]
     )
 
-    release_dir = MODELS_DIR / spec.artist_key
+    release_dir = models_dir / spec.artist_key
     artifacts_dir = release_dir / "artifacts"
     release_dir.mkdir(parents=True, exist_ok=True)
 
@@ -197,18 +202,18 @@ def _package_release(spec: ReleaseSpec, mirror_alias_artifacts: bool = True) -> 
 
     if mirror_alias_artifacts:
         if hq_adapter is not None and hq_adapter.stem != f"{spec.canonical_profile_id}_hq_lora":
-            canonical_hq = TRAINED_MODELS_DIR / "hq" / f"{spec.canonical_profile_id}_hq_lora.pt"
+            canonical_hq = trained_models_dir / "hq" / f"{spec.canonical_profile_id}_hq_lora.pt"
             canonical_hq.parent.mkdir(parents=True, exist_ok=True)
             if not canonical_hq.exists():
                 shutil.copy2(hq_adapter, canonical_hq)
 
         if nvfp4_adapter is not None and nvfp4_adapter.stem != f"{spec.canonical_profile_id}_nvfp4_lora":
-            canonical_nvfp4 = TRAINED_MODELS_DIR / "nvfp4" / f"{spec.canonical_profile_id}_nvfp4_lora.pt"
+            canonical_nvfp4 = trained_models_dir / "nvfp4" / f"{spec.canonical_profile_id}_nvfp4_lora.pt"
             canonical_nvfp4.parent.mkdir(parents=True, exist_ok=True)
             if not canonical_nvfp4.exists():
                 shutil.copy2(nvfp4_adapter, canonical_nvfp4)
 
-    dataset_manifest = _load_json(DATASET_MANIFEST)
+    dataset_manifest = _load_json(dataset_manifest_path)
     speaker_backend = dataset_manifest.get("speaker_backends", {}).get(spec.artist_key)
     evaluation_paths = EVALUATION_ARTIFACTS.get(spec.artist_key, {})
     report_dir = evaluation_paths.get("report_dir")
@@ -218,8 +223,8 @@ def _package_release(spec: ReleaseSpec, mirror_alias_artifacts: bool = True) -> 
     report_metrics = report_data.get("summary", {}) if isinstance(report_data, dict) else {}
 
     training_paths = TRAINING_ARTIFACTS.get(spec.artist_key, {})
-    hq_checkpoint = training_paths.get("hq_checkpoint")
-    nvfp4_checkpoint = training_paths.get("nvfp4_checkpoint")
+    hq_checkpoint = runtime_paths["data_dir"] / training_paths["hq_checkpoint"]
+    nvfp4_checkpoint = runtime_paths["data_dir"] / training_paths["nvfp4_checkpoint"]
     log_path = training_paths.get("log_path")
     hq_checkpoint_metadata = _extract_checkpoint_metadata(hq_checkpoint)
     nvfp4_checkpoint_metadata = _extract_checkpoint_metadata(nvfp4_checkpoint)
@@ -250,7 +255,7 @@ def _package_release(spec: ReleaseSpec, mirror_alias_artifacts: bool = True) -> 
         "artifact_profile_ids": list(spec.artifact_profile_ids),
         "packaged_at": datetime.now(timezone.utc).isoformat(),
         "speaker_embedding_backend": speaker_backend,
-        "dataset_manifest": str(DATASET_MANIFEST),
+        "dataset_manifest": str(dataset_manifest_path),
         "profile": {
             "json": copied_profile_json,
             "embedding": copied_profile_embedding,
@@ -310,7 +315,7 @@ def _package_release(spec: ReleaseSpec, mirror_alias_artifacts: bool = True) -> 
             "artist_key": spec.artist_key,
             "artifact_profile_ids": list(spec.artifact_profile_ids),
             "speaker_embedding_backend": speaker_backend,
-            "dataset_manifest": str(DATASET_MANIFEST),
+            "dataset_manifest": str(dataset_manifest_path),
             "evaluation": registry_entry["evaluation"],
             "training_metadata": training_metadata,
             "profile_metadata": canonical_profile,
@@ -328,7 +333,7 @@ def _package_release(spec: ReleaseSpec, mirror_alias_artifacts: bool = True) -> 
                 "",
                 f"- Canonical profile ID: `{spec.canonical_profile_id}`",
                 f"- Speaker embedding backend: `{speaker_backend}`",
-                f"- Dataset manifest: `{DATASET_MANIFEST}`",
+                f"- Dataset manifest: `{dataset_manifest_path}`",
                 "",
                 "## Artifacts",
                 "",
@@ -366,6 +371,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not copy legacy optimized adapters onto the canonical profile IDs.",
     )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Override root data directory (defaults to DATA_DIR or data).",
+    )
     return parser
 
 
@@ -379,6 +389,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             _package_release(
                 spec,
                 mirror_alias_artifacts=not args.no_mirror_alias_artifacts,
+                data_dir=args.data_dir,
             )
         )
 

@@ -3,15 +3,17 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+
+from pillowtalk_release_paths import resolve_pillowtalk_release_paths
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MODELS_DIR = PROJECT_ROOT / "models"
-DATASET_MANIFEST = PROJECT_ROOT / "data" / "training" / "pillowtalk" / "metadata.json"
 
 
 def _load_json(path: Path) -> dict:
@@ -52,13 +54,24 @@ def _collect_swap(name: str, mix_name: str, similarity_gate: float) -> dict:
     }
 
 
-def main() -> int:
-    dataset = _load_json(DATASET_MANIFEST)
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Override root data directory (defaults to DATA_DIR or data).",
+    )
+    args = parser.parse_args(argv)
+
+    data_dir = args.data_dir
+    runtime_paths = resolve_pillowtalk_release_paths(data_dir)
+    dataset_manifest = runtime_paths["pillowtalk_dataset_manifest"]
+    dataset = _load_json(dataset_manifest)
     manifest = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "dataset": {
-            "manifest_path": str(DATASET_MANIFEST),
-            "exists": DATASET_MANIFEST.exists(),
+            "manifest_path": str(dataset_manifest),
+            "exists": dataset_manifest.exists(),
             "speaker_backends": dataset.get("speaker_backends", {}),
             "artists": dataset.get("artists", {}),
             "aligned_pairs": dataset.get("aligned_pairs", {}),

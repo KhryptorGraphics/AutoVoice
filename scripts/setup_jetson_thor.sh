@@ -209,8 +209,8 @@ echo "Setup log: $SETUP_LOG_PATH"
 
 log_section "Directory Preparation"
 for path in \
-    "$AUTOVOICE_PROJECT_ROOT/data" \
-    "$AUTOVOICE_PROJECT_ROOT/data/app_state" \
+    "$AUTOVOICE_DATA_DIR" \
+    "$AUTOVOICE_DATA_DIR/app_state" \
     "$AUTOVOICE_PROJECT_ROOT/models/pretrained" \
     "$AUTOVOICE_PROJECT_ROOT/logs" \
     "$AUTOVOICE_PROJECT_ROOT/output" \

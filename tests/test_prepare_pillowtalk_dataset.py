@@ -56,16 +56,14 @@ def test_prepare_dataset_builds_manifest_profiles_and_samples(tmp_path, monkeypa
     monkeypatch.setattr(
         type(artists["william_singe"]),
         "separated_vocals",
-        property(lambda self: william_vocals if self.key == "william_singe" else conor_vocals),
+        lambda self, data_dir=None: william_vocals if self.key == "william_singe" else conor_vocals,
     )
     monkeypatch.setattr(
         type(artists["william_singe"]),
         "separated_instrumental",
-        property(
-            lambda self: william_instrumental
+        lambda self, data_dir=None: william_instrumental
             if self.key == "william_singe"
-            else conor_instrumental
-        ),
+            else conor_instrumental,
     )
 
     monkeypatch.setattr(
@@ -105,6 +103,7 @@ def test_prepare_dataset_builds_manifest_profiles_and_samples(tmp_path, monkeypa
         device="cpu",
         profiles_dir=profiles_dir,
         samples_dir=samples_dir,
+        data_dir=str(tmp_path / "data-root"),
     )
 
     manifest = json.loads(metadata_path.read_text())
@@ -119,3 +118,30 @@ def test_prepare_dataset_builds_manifest_profiles_and_samples(tmp_path, monkeypa
     assert (profiles_dir / "profile-conor.json").exists()
     assert any((samples_dir / "profile-william").rglob("vocals.wav"))
     assert any((samples_dir / "profile-conor").rglob("vocals.wav"))
+
+
+def test_main_defaults_follow_data_dir_env(monkeypatch, tmp_path):
+    data_dir = tmp_path / "runtime-data"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+
+    captured = {}
+
+    def fake_prepare_dataset(output_dir, device, profiles_dir, samples_dir, data_dir=None):
+        captured["output_dir"] = output_dir
+        captured["profiles_dir"] = profiles_dir
+        captured["samples_dir"] = samples_dir
+        captured["device"] = device
+        captured["data_dir"] = data_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text("{}")
+        return metadata_path
+
+    monkeypatch.setattr(dataset_script, "prepare_dataset", fake_prepare_dataset)
+    monkeypatch.setattr(sys, "argv", ["prepare_pillowtalk_dataset.py"])
+
+    assert dataset_script.main() == 0
+    assert captured["output_dir"] == data_dir / "training" / "pillowtalk"
+    assert captured["profiles_dir"] == data_dir / "voice_profiles"
+    assert captured["samples_dir"] == data_dir / "samples"
+    assert captured["data_dir"] is None
