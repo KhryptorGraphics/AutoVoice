@@ -162,6 +162,62 @@ def test_conversion_workflow_create_requires_dual_uploads(client_workflow, app_w
     assert missing_user.status_code == 400
 
 
+def test_attach_training_job_route_persists_real_workflow_state(client_workflow, app_workflow, tmp_path):
+    workflow_id = "wf-persist"
+    app_workflow.state_store.save_conversion_workflow(
+        {
+            "workflow_id": workflow_id,
+            "status": "ready_for_training",
+            "stage": "ready_for_training",
+            "progress": 100,
+            "artist_song": {
+                "filename": "artist.wav",
+                "path": str(tmp_path / "artist.wav"),
+            },
+            "user_vocals": [],
+            "artist_vocals_path": None,
+            "instrumental_path": None,
+            "diarization_id": None,
+            "resolved_source_profiles": [],
+            "resolved_target_profile_id": "target-1",
+            "review_items": [],
+            "target_profile_override": None,
+            "dominant_source_profile_override": None,
+            "training_readiness": {"ready": True, "reason": "ready"},
+            "conversion_readiness": {"ready": False, "reason": "target_profile_not_trained"},
+            "user_analysis": {"status": "resolved", "resolved_target_profile_id": "target-1"},
+            "artist_analysis": {"status": "resolved"},
+            "recovery": {"resume_count": 0, "last_resume_at": None, "last_resume_reason": None},
+            "current_training_job_id": None,
+            "created_at": "2026-04-22T00:00:00Z",
+            "updated_at": "2026-04-22T00:00:00Z",
+            "error": None,
+        }
+    )
+    app_workflow.state_store.save_training_job(
+        {
+            "job_id": "train-persist",
+            "profile_id": "target-1",
+            "status": "pending",
+            "sample_ids": [],
+            "progress": 0,
+        }
+    )
+
+    response = client_workflow.post(
+        f"/api/v1/convert/workflows/{workflow_id}/training-job",
+        json={"job_id": "train-persist"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["current_training_job_id"] == "train-persist"
+    persisted = app_workflow.state_store.get_conversion_workflow(workflow_id)
+    assert persisted is not None
+    assert persisted["current_training_job_id"] == "train-persist"
+    assert persisted["status"] == "training_in_progress"
+    assert persisted["stage"] == "training_in_progress"
+
+
 def test_rank_speaker_embedding_matches_filters_by_profile_role(tmp_path):
     store = VoiceProfileStore(
         profiles_dir=str(tmp_path / "profiles"),

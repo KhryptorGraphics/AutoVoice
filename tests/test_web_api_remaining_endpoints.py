@@ -1077,10 +1077,35 @@ class TestStateAndModelRoutes:
                 "epoch": 5,
                 "version": "v1",
                 "active_model_type": "adapter",
-                "profile_snapshot": {"selected_adapter": "unified"},
+                "selected_adapter": "unified",
+                "profile_snapshot": {"selected_adapter": "unified", "has_adapter_model": True},
+            },
+        )
+        app_remaining.state_store.save_checkpoint(
+            "profile-a",
+            {
+                "id": "checkpoint-2",
+                "created_at": "2026-04-18T00:00:00Z",
+                "epoch": 8,
+                "version": "v2",
+                "active_model_type": "full_model",
+                "selected_adapter": "hq",
+                "is_active": True,
+                "profile_snapshot": {"selected_adapter": "hq", "has_full_model": True},
             },
         )
         _create_profile(app_remaining, profile_id="profile-a")
+        profile_store = app_remaining.voice_cloner.store
+        _materialize_trained_artifact(app_remaining, "profile-a", "adapter")
+        profile = profile_store.load("profile-a")
+        profile.update(
+            {
+                "selected_adapter": "hq",
+                "active_model_type": "full_model",
+                "model_version": "v2",
+            }
+        )
+        profile_store.save(profile)
         app_remaining.state_store.save_loaded_model(
             "adapter",
             {
@@ -1089,12 +1114,38 @@ class TestStateAndModelRoutes:
                 "loaded": True,
             },
         )
+        app_remaining.state_store.save_loaded_model(
+            "quality_seedvc",
+            {
+                "model_type": "quality_seedvc",
+                "profile_id": "profile-b",
+                "loaded": True,
+            },
+        )
         assert client_remaining.get("/api/v1/profiles/profile-a/checkpoints").status_code == 200
         rollback = client_remaining.post("/api/v1/profiles/profile-a/checkpoints/checkpoint-1/rollback")
         assert rollback.status_code == 200
         assert rollback.get_json()["status"] == "rolled_back"
         assert rollback.get_json()["checkpoint"]["is_active"] is True
-        assert app_remaining.state_store.list_loaded_models() == []
+        assert rollback.get_json()["active_model_type"] == "adapter"
+        assert rollback.get_json()["model_version"] == "v1"
+        rolled_back_profile = profile_store.load("profile-a")
+        assert rolled_back_profile["selected_adapter"] == "unified"
+        assert rolled_back_profile["active_model_type"] == "adapter"
+        assert rolled_back_profile["model_version"] == "v1"
+        checkpoints = {
+            entry["id"]: entry
+            for entry in app_remaining.state_store.list_checkpoints("profile-a")
+        }
+        assert checkpoints["checkpoint-1"]["is_active"] is True
+        assert checkpoints["checkpoint-2"]["is_active"] is False
+        assert app_remaining.state_store.list_loaded_models() == [
+            {
+                "model_type": "quality_seedvc",
+                "profile_id": "profile-b",
+                "loaded": True,
+            }
+        ]
         assert client_remaining.delete("/api/v1/profiles/profile-a/checkpoints/checkpoint-1").status_code == 204
 
         with patch.object(web_api, "_submit_background_job", lambda *args, **kwargs: None), \

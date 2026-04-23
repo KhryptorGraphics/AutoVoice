@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import wave
 
 import numpy as np
 import pytest
@@ -29,6 +30,24 @@ def workflow_app(tmp_path):
 def _touch(path: Path, content: bytes = b"audio") -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
+    return str(path)
+
+
+def _write_wav(path: Path, *, sample_rate: int = 22050, duration_seconds: float = 0.5) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = int(sample_rate * duration_seconds)
+    samples = bytearray()
+    amplitude = int(0.25 * 32767)
+    frequency_hz = 220.0
+    for index in range(frames):
+        t = index / sample_rate
+        value = int(amplitude * np.sin(2.0 * np.pi * frequency_hz * t))
+        samples.extend(int(value).to_bytes(2, byteorder="little", signed=True))
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(bytes(samples))
     return str(path)
 
 
@@ -298,3 +317,280 @@ def test_artist_analysis_persists_serialized_diarization_and_assignments(workflo
     assert samples[0].extra_metadata["provenance"] == "conversion_workflow_candidate"
     assert samples[0].extra_metadata["workflow_id"] == workflow_id
     assert samples[0].extra_metadata["speaker_id"] == "SPEAKER_00"
+
+
+def test_restart_preserves_attached_training_job_without_rescheduling(workflow_app, monkeypatch, tmp_path):
+    manager = ConversionWorkflowManager(workflow_app)
+    store = manager._profile_store()
+    profile_id = store.save(
+        {
+            "name": "Target User",
+            "created_from": "manual",
+            "profile_role": PROFILE_ROLE_TARGET_USER,
+        }
+    )
+    sample_path = _write_wav(tmp_path / "attached-training" / "user.wav")
+    store.add_training_sample(
+        profile_id=profile_id,
+        vocals_path=sample_path,
+        duration=1.0,
+        source_file=Path(sample_path).name,
+    )
+
+    workflow_id = "wf-training-attached"
+    workflow_app.state_store.save_conversion_workflow(
+        _workflow_payload(
+            workflow_id,
+            artist_song_path=_touch(tmp_path / "attached-training" / "artist.wav"),
+            status="ready_for_training",
+            stage="ready_for_training",
+            resolved_target_profile_id=profile_id,
+            user_analysis={"status": "resolved", "resolved_target_profile_id": profile_id},
+            artist_analysis={"status": "resolved"},
+        )
+    )
+    manager.attach_training_job(workflow_id, "job-running")
+    workflow_app.state_store.save_training_job(
+        {
+            "job_id": "job-running",
+            "profile_id": profile_id,
+            "status": "running",
+            "sample_ids": [],
+            "progress": 35,
+        }
+    )
+
+    scheduled: list[tuple[str, str]] = []
+
+    def fake_schedule(self, resumed_workflow_id: str, *, reason: str) -> None:
+        scheduled.append((resumed_workflow_id, reason))
+
+    monkeypatch.setattr(ConversionWorkflowManager, "_schedule_workflow_run", fake_schedule)
+
+    restarted_manager = ConversionWorkflowManager(workflow_app)
+    hydrated = restarted_manager.get_workflow(workflow_id)
+    persisted = workflow_app.state_store.get_conversion_workflow(workflow_id)
+
+    assert hydrated is not None
+    assert hydrated["status"] == "training_in_progress"
+    assert hydrated["stage"] == "training_in_progress"
+    assert hydrated["current_training_job_id"] == "job-running"
+    assert hydrated["training_readiness"]["ready"] is True
+    assert scheduled == []
+    assert persisted is not None
+    assert persisted["recovery"]["resume_count"] == 0
+
+
+def test_restart_hydrates_active_training_job_from_profile_when_pointer_missing(workflow_app, tmp_path):
+    manager = ConversionWorkflowManager(workflow_app)
+    store = manager._profile_store()
+    profile_id = store.save(
+        {
+            "name": "Target User",
+            "created_from": "manual",
+            "profile_role": PROFILE_ROLE_TARGET_USER,
+        }
+    )
+    sample_path = _write_wav(tmp_path / "hydrate-training" / "user.wav")
+    store.add_training_sample(
+        profile_id=profile_id,
+        vocals_path=sample_path,
+        duration=1.0,
+        source_file=Path(sample_path).name,
+    )
+
+    workflow_id = "wf-hydrate-training"
+    workflow_app.state_store.save_conversion_workflow(
+        _workflow_payload(
+            workflow_id,
+            artist_song_path=_touch(tmp_path / "hydrate-training" / "artist.wav"),
+            status="ready_for_training",
+            stage="ready_for_training",
+            resolved_target_profile_id=profile_id,
+            user_analysis={"status": "resolved", "resolved_target_profile_id": profile_id},
+            artist_analysis={"status": "resolved"},
+        )
+    )
+    workflow_app.state_store.save_training_job(
+        {
+            "job_id": "job-pending",
+            "profile_id": profile_id,
+            "status": "pending",
+            "sample_ids": [],
+            "progress": 0,
+        }
+    )
+
+    restarted_manager = ConversionWorkflowManager(workflow_app)
+    hydrated = restarted_manager.get_workflow(workflow_id)
+
+    assert hydrated is not None
+    assert hydrated["status"] == "training_in_progress"
+    assert hydrated["stage"] == "training_in_progress"
+    assert hydrated["current_training_job_id"] == "job-pending"
+    assert hydrated["training_readiness"]["ready"] is True
+
+
+def test_restart_clears_completed_training_job_and_enables_conversion(workflow_app, tmp_path):
+    manager = ConversionWorkflowManager(workflow_app)
+    store = manager._profile_store()
+    profile_id = store.save(
+        {
+            "name": "Target User",
+            "created_from": "manual",
+            "profile_role": PROFILE_ROLE_TARGET_USER,
+            "has_trained_model": True,
+            "has_adapter_model": True,
+            "active_model_type": "adapter",
+        }
+    )
+    sample_path = _write_wav(tmp_path / "completed-training" / "user.wav")
+    store.add_training_sample(
+        profile_id=profile_id,
+        vocals_path=sample_path,
+        duration=1.0,
+        source_file=Path(sample_path).name,
+    )
+
+    workflow_id = "wf-completed-training"
+    workflow_app.state_store.save_conversion_workflow(
+        _workflow_payload(
+            workflow_id,
+            artist_song_path=_touch(tmp_path / "completed-training" / "artist.wav"),
+            status="training_in_progress",
+            stage="training_in_progress",
+            resolved_target_profile_id=profile_id,
+            current_training_job_id="job-complete",
+            user_analysis={"status": "resolved", "resolved_target_profile_id": profile_id},
+            artist_analysis={"status": "resolved"},
+        )
+    )
+    workflow_app.state_store.save_training_job(
+        {
+            "job_id": "job-complete",
+            "profile_id": profile_id,
+            "status": "completed",
+            "sample_ids": [],
+            "progress": 100,
+            "results": {"artifact": "adapter"},
+        }
+    )
+
+    restarted_manager = ConversionWorkflowManager(workflow_app)
+    hydrated = restarted_manager.get_workflow(workflow_id)
+
+    assert hydrated is not None
+    assert hydrated["current_training_job_id"] is None
+    assert hydrated["status"] == "ready_for_conversion"
+    assert hydrated["stage"] == "ready_for_conversion"
+    assert hydrated["conversion_readiness"]["ready"] is True
+    assert hydrated["conversion_readiness"]["reason"] == "ready"
+
+
+def test_restart_recovers_processing_workflows_without_disturbing_parallel_training_workflows(
+    workflow_app,
+    monkeypatch,
+    tmp_path,
+):
+    manager = ConversionWorkflowManager(workflow_app)
+    store = manager._profile_store()
+
+    profile_a = store.save(
+        {
+            "name": "Target A",
+            "created_from": "manual",
+            "profile_role": PROFILE_ROLE_TARGET_USER,
+        }
+    )
+    profile_b = store.save(
+        {
+            "name": "Target B",
+            "created_from": "manual",
+            "profile_role": PROFILE_ROLE_TARGET_USER,
+        }
+    )
+    for profile_id, stem in [(profile_a, "a"), (profile_b, "b")]:
+        sample_path = _write_wav(tmp_path / "parallel-training" / f"{stem}.wav")
+        store.add_training_sample(
+            profile_id=profile_id,
+            vocals_path=sample_path,
+            duration=1.0,
+            source_file=Path(sample_path).name,
+        )
+
+    workflow_app.state_store.save_conversion_workflow(
+        _workflow_payload(
+            "wf-a",
+            artist_song_path=_touch(tmp_path / "parallel-training" / "artist-a.wav"),
+            status="ready_for_training",
+            stage="ready_for_training",
+            resolved_target_profile_id=profile_a,
+            user_analysis={"status": "resolved", "resolved_target_profile_id": profile_a},
+            artist_analysis={"status": "resolved"},
+        )
+    )
+    workflow_app.state_store.save_conversion_workflow(
+        _workflow_payload(
+            "wf-b",
+            artist_song_path=_touch(tmp_path / "parallel-training" / "artist-b.wav"),
+            status="ready_for_training",
+            stage="ready_for_training",
+            resolved_target_profile_id=profile_b,
+            user_analysis={"status": "resolved", "resolved_target_profile_id": profile_b},
+            artist_analysis={"status": "resolved"},
+        )
+    )
+    workflow_app.state_store.save_conversion_workflow(
+        _workflow_payload(
+            "wf-recover",
+            artist_song_path=_touch(tmp_path / "parallel-training" / "artist-recover.wav"),
+            status="processing",
+            stage="analyzing_user_vocals",
+        )
+    )
+    workflow_app.state_store.save_training_job(
+        {
+            "job_id": "job-a",
+            "profile_id": profile_a,
+            "status": "running",
+            "sample_ids": [],
+            "progress": 42,
+        }
+    )
+    workflow_app.state_store.save_training_job(
+        {
+            "job_id": "job-b",
+            "profile_id": profile_b,
+            "status": "pending",
+            "sample_ids": [],
+            "progress": 0,
+        }
+    )
+
+    scheduled: list[tuple[str, str]] = []
+
+    def fake_schedule(self, workflow_id: str, *, reason: str) -> None:
+        scheduled.append((workflow_id, reason))
+
+    monkeypatch.setattr(ConversionWorkflowManager, "_schedule_workflow_run", fake_schedule)
+
+    restarted_manager = ConversionWorkflowManager(workflow_app)
+
+    workflow_a = restarted_manager.get_workflow("wf-a")
+    workflow_b = restarted_manager.get_workflow("wf-b")
+    recoverable = workflow_app.state_store.get_conversion_workflow("wf-recover")
+
+    assert workflow_a is not None
+    assert workflow_a["current_training_job_id"] == "job-a"
+    assert workflow_a["status"] == "training_in_progress"
+    assert workflow_a["stage"] == "training_in_progress"
+
+    assert workflow_b is not None
+    assert workflow_b["current_training_job_id"] == "job-b"
+    assert workflow_b["status"] == "training_in_progress"
+    assert workflow_b["stage"] == "training_in_progress"
+
+    assert recoverable is not None
+    assert recoverable["status"] == "processing"
+    assert recoverable["recovery"]["resume_count"] == 1
+    assert scheduled == [("wf-recover", "startup_recovery")]
