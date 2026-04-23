@@ -98,7 +98,7 @@ external prerequisites outside the repo:
 
 The repo now ships two executable validation lanes:
 
-- GitHub Actions `release-candidate`: build frontend, validate compose config, boot the deterministic backend harness, and run `scripts/validate_release_candidate.py`
+- GitHub Actions `release-candidate`: on a self-hosted Jetson runner, validate compose config, boot the real `docker-compose.yaml` backend/frontend stack, and run `scripts/validate_release_candidate.py`
 - GitHub Actions `jetson-nightly`: run `scripts/validate_cuda_stack.sh --pipeline all` on a self-hosted Jetson runner
 
 Rollback criteria for a release candidate are simple:

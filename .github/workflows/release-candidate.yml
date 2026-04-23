@@ -5,7 +5,7 @@ on:
 
 jobs:
   validate-release-candidate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, arm64, jetson]
 
     steps:
       - uses: actions/checkout@v4
@@ -14,46 +14,48 @@ jobs:
         with:
           python-version: '3.11'
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e .[dev]
 
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
+      - name: Prepare release-candidate environment
+        run: |
+          : > .env
+          echo "SECRET_KEY=release-candidate-secret-key" >> .env
+          echo "HOST_PORT=10001" >> .env
+          echo "FRONTEND_PORT=13000" >> .env
+          echo "LOG_LEVEL=info" >> .env
 
       - name: Validate compose config
         run: docker compose -f docker-compose.yaml config -q
 
-      - name: Start live backend harness
+      - name: Start real compose stack
+        env:
+          AUTOVOICE_RC_PROJECT: autovoice-rc-${{ github.run_id }}
         run: |
-          python tests/live_backend_server.py --port 5050 > /tmp/autovoice-rc.log 2>&1 &
-          echo $! > /tmp/autovoice-rc.pid
-          sleep 5
+          docker compose -p "$AUTOVOICE_RC_PROJECT" -f docker-compose.yaml up -d --build backend frontend
 
       - name: Validate release candidate endpoints
-        run: python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5050 --skip-compose --report-dir reports/platform
+        run: python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --report-dir reports/platform --wait-seconds 180
 
       - name: Validate experimental evidence registry
         run: python scripts/validate_experimental_evidence.py
 
-      - name: Stop live backend harness
+      - name: Capture compose logs
         if: always()
+        env:
+          AUTOVOICE_RC_PROJECT: autovoice-rc-${{ github.run_id }}
         run: |
-          if [ -f /tmp/autovoice-rc.pid ]; then
-            kill "$(cat /tmp/autovoice-rc.pid)" || true
-          fi
+          mkdir -p reports/platform
+          docker compose -p "$AUTOVOICE_RC_PROJECT" -f docker-compose.yaml ps > reports/platform/release-candidate-compose-ps.txt || true
+          docker compose -p "$AUTOVOICE_RC_PROJECT" -f docker-compose.yaml logs backend frontend > reports/platform/release-candidate-compose.log || true
+
+      - name: Stop real compose stack
+        if: always()
+        env:
+          AUTOVOICE_RC_PROJECT: autovoice-rc-${{ github.run_id }}
+        run: docker compose -p "$AUTOVOICE_RC_PROJECT" -f docker-compose.yaml down --remove-orphans || true
 
       - name: Upload RC artifacts
         if: always()
@@ -62,5 +64,4 @@ jobs:
           name: release-candidate-artifacts
           path: |
             reports/platform
-            /tmp/autovoice-rc.log
           if-no-files-found: ignore

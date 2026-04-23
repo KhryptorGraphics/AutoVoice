@@ -112,6 +112,6 @@ Use those only after validating against the canonical docs and live code paths.
 - canonical local test entrypoint: `./run_tests.sh`
 - generated API docs: `/api/v1/openapi.json`, `/api/v1/openapi.yaml`, `/docs`
 - frontend build: `cd frontend && npm run build`
-- release-candidate validation: `python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5000`
+- release-candidate validation: `python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --wait-seconds 180`
 - experimental evidence validation: `python scripts/validate_experimental_evidence.py`
 - Jetson/TensorRT validation: `bash scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform`

@@ -29,11 +29,36 @@ def _fetch_json(url: str) -> dict:
 def _check_url(url: str) -> dict:
     try:
         payload = _fetch_json(url)
-        return {"url": url, "ok": True, "payload": payload}
+        ok = True
+        error = None
+        if url.endswith("/health"):
+            ok = payload.get("status") == "healthy"
+            if not ok:
+                error = f"unexpected health status: {payload.get('status')!r}"
+        elif url.endswith("/ready"):
+            ok = bool(payload.get("ready"))
+            if not ok:
+                error = f"unexpected readiness payload: {payload!r}"
+        elif url.endswith("/api/v1/metrics"):
+            ok = isinstance(payload, dict) and "error" not in payload
+            if not ok:
+                error = f"unexpected metrics payload: {payload!r}"
+        return {"url": url, "ok": ok, "payload": payload, "error": error}
     except HTTPError as exc:
         return {"url": url, "ok": False, "error": f"http {exc.code}"}
     except URLError as exc:
         return {"url": url, "ok": False, "error": str(exc.reason)}
+
+
+def _check_url_with_retry(url: str, wait_seconds: float, poll_interval: float) -> dict:
+    deadline = datetime.now(timezone.utc).timestamp() + max(0.0, wait_seconds)
+    last_result = _check_url(url)
+    while not last_result["ok"] and datetime.now(timezone.utc).timestamp() < deadline:
+        import time
+
+        time.sleep(max(0.1, poll_interval))
+        last_result = _check_url(url)
+    return last_result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,6 +67,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compose-file", default="docker-compose.yaml", help="Compose file to validate")
     parser.add_argument("--report-dir", default="reports/platform", help="Output directory for validation artifacts")
     parser.add_argument("--skip-compose", action="store_true", help="Skip docker compose config validation")
+    parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=0.0,
+        help="How long to wait for the release candidate endpoints to become healthy",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=2.0,
+        help="Polling interval in seconds while waiting for the release candidate endpoints",
+    )
     args = parser.parse_args(argv)
 
     report_dir = Path(args.report_dir)
@@ -73,7 +110,13 @@ def main(argv: list[str] | None = None) -> int:
         results["compose"] = {"ok": True, "skipped": True}
 
     for path in ("/health", "/api/v1/ready", "/api/v1/metrics"):
-        results["checks"].append(_check_url(f"{results['base_url']}{path}"))
+        results["checks"].append(
+            _check_url_with_retry(
+                f"{results['base_url']}{path}",
+                wait_seconds=args.wait_seconds,
+                poll_interval=args.poll_interval,
+            )
+        )
 
     for name, relative_path in {
         "benchmark_dashboard": Path("reports/benchmarks/latest/benchmark_dashboard.json"),
