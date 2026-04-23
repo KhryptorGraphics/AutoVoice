@@ -19,6 +19,7 @@ SYSTEMD_UNIT_DEST="/etc/systemd/system/autovoice.service"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 SETUP_LOG_DIR="${AUTOVOICE_PROJECT_ROOT}/logs/setup"
 SETUP_LOG_PATH="${SETUP_LOG_DIR}/jetson-thor-setup-${TIMESTAMP}.log"
+export AUTOVOICE_PRETRAINED_DIR="${AUTOVOICE_PRETRAINED_DIR:-${AUTOVOICE_PROJECT_ROOT}/models/pretrained}"
 
 MYSQL_CONTAINER_NAME="${MYSQL_CONTAINER_NAME:-autovoice-mysql}"
 POSTGRES_CONTAINER_NAME="${POSTGRES_CONTAINER_NAME:-autovoice-postgres}"
@@ -205,13 +206,14 @@ echo "Python: $PYTHON"
 echo "Env: ${AUTOVOICE_ENV_NAME}"
 echo "CUDA_HOME: ${CUDA_HOME}"
 echo "Output dir: $OUTPUT_DIR"
+echo "Pretrained bootstrap dir: $AUTOVOICE_PRETRAINED_DIR"
 echo "Setup log: $SETUP_LOG_PATH"
 
 log_section "Directory Preparation"
 for path in \
     "$AUTOVOICE_DATA_DIR" \
     "$AUTOVOICE_DATA_DIR/app_state" \
-    "$AUTOVOICE_PROJECT_ROOT/models/pretrained" \
+    "$AUTOVOICE_PRETRAINED_DIR" \
     "$AUTOVOICE_PROJECT_ROOT/logs" \
     "$AUTOVOICE_PROJECT_ROOT/output" \
     "$OUTPUT_DIR"

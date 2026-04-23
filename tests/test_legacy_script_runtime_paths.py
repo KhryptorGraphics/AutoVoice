@@ -11,6 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import convert_pillowtalk  # noqa: E402
+import download_pretrained_models  # noqa: E402
 import sota_conversion_nvfp4  # noqa: E402
 import train_fp16_lora  # noqa: E402
 import train_nvfp4_lora  # noqa: E402
@@ -81,6 +82,21 @@ def test_sota_load_speaker_embedding_supports_explicit_data_dir(tmp_path):
     loaded = sota_conversion_nvfp4.load_speaker_embedding(profile_id, data_dir=str(data_dir))
 
     assert np.array_equal(loaded, expected)
+
+
+def test_download_pretrained_models_supports_explicit_pretrained_override(monkeypatch, tmp_path):
+    pretrained_dir = tmp_path / "pretrained-bootstrap"
+    monkeypatch.setenv("AUTOVOICE_PRETRAINED_DIR", str(pretrained_dir))
+
+    assert download_pretrained_models.resolve_models_dir() == pretrained_dir
+
+
+def test_download_pretrained_models_defaults_to_repo_bootstrap_dir(monkeypatch):
+    monkeypatch.delenv("AUTOVOICE_PRETRAINED_DIR", raising=False)
+
+    assert download_pretrained_models.resolve_models_dir() == (
+        download_pretrained_models.PROJECT_ROOT / "models" / "pretrained"
+    )
 
 
 def test_train_fp16_lora_runtime_paths_follow_data_dir(monkeypatch, tmp_path):

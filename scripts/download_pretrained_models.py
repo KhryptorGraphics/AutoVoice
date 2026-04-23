@@ -13,7 +13,8 @@ from pathlib import Path
 from urllib.request import urlretrieve, Request, urlopen
 import shutil
 
-MODELS_DIR = Path(__file__).parent.parent / 'models' / 'pretrained'
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODELS_DIR = PROJECT_ROOT / 'models' / 'pretrained'
 
 MODELS = {
     'hubert-soft-35d9f29f.pt': {
@@ -27,6 +28,17 @@ MODELS = {
         'description': 'HiFiGAN universal vocoder (mel → audio)',
     },
 }
+
+
+def resolve_models_dir() -> Path:
+    """Resolve the bootstrap download target for pretrained checkpoints.
+
+    Runtime consumers may use their own path helpers, but this bootstrap script
+    writes into the canonical repo-hosted pretrained directory unless an
+    explicit AUTOVOICE_PRETRAINED_DIR override is provided.
+    """
+    override = os.environ.get('AUTOVOICE_PRETRAINED_DIR')
+    return Path(override).expanduser() if override else DEFAULT_MODELS_DIR
 
 
 def download_gdrive(file_id: str, dest: Path):
@@ -98,14 +110,16 @@ def verify_model(path: Path) -> bool:
 def main():
     print("=== AutoVoice Pretrained Model Downloader ===\n")
 
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Models directory: {MODELS_DIR}\n")
+    models_dir = resolve_models_dir()
+
+    models_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Models directory: {models_dir}\n")
 
     success = 0
     failed = 0
 
     for filename, info in MODELS.items():
-        dest = MODELS_DIR / filename
+        dest = models_dir / filename
         print(f"[{filename}] {info['description']}")
         if download_file(info['url'], dest, info['size_mb']):
             if verify_model(dest):
@@ -122,10 +136,10 @@ def main():
     if failed > 0:
         print("\nFor models that failed to download, try:")
         print("  1. Check internet connectivity")
-        print("  2. Download manually and place in:", MODELS_DIR)
+        print("  2. Download manually and place in:", models_dir)
         print("  3. Required files:")
         for name in MODELS:
-            if not (MODELS_DIR / name).exists():
+            if not (models_dir / name).exists():
                 print(f"     - {name}")
 
     return 0 if failed == 0 else 1
