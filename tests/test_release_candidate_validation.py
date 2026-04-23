@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -41,8 +42,44 @@ class _Handler(BaseHTTPRequestHandler):
 def _seed_evidence_files() -> None:
     evidence_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    (evidence_dir / "benchmark_dashboard.json").write_text("{}", encoding="utf-8")
-    (evidence_dir / "release_evidence.json").write_text("{}", encoding="utf-8")
+    generated_at = datetime.now(timezone.utc).isoformat()
+    provenance = {
+        "schema_version": 1,
+        "generator": "tests.test_release_candidate_validation",
+        "git_sha": subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip(),
+        "source_bundles": ["reports/benchmarks/run-001/summary.json"],
+    }
+    dashboard = {
+        "generated_at": generated_at,
+        "provenance": provenance,
+        "target_hardware": "NVIDIA Thor",
+        "canonical_pipelines": {"offline": "quality_seedvc", "live": "realtime"},
+        "pipelines": {
+            "quality_seedvc": {"summary": {}, "sample_count": 1},
+            "realtime": {"summary": {}, "sample_count": 1},
+        },
+        "comparisons": {},
+        "promotable_candidates": [],
+    }
+    release_evidence = {
+        "generated_at": generated_at,
+        "provenance": provenance,
+        "target_hardware": "NVIDIA Thor",
+        "health_url": "/api/v1/health",
+        "canonical_pipelines": {"offline": "quality_seedvc", "live": "realtime"},
+        "pipeline_count": 2,
+        "comparison_count": 0,
+        "promotable_candidates": [],
+        "quality_gate_passed": True,
+    }
+    (evidence_dir / "benchmark_dashboard.json").write_text(json.dumps(dashboard), encoding="utf-8")
+    (evidence_dir / "release_evidence.json").write_text(json.dumps(release_evidence), encoding="utf-8")
 
 
 def test_validate_release_candidate_script(tmp_path: Path):
@@ -165,6 +202,52 @@ def test_validate_release_candidate_supports_smoke_report_mode(tmp_path: Path):
         report = json.loads(report_path.read_text(encoding="utf-8"))
         assert report["evidence_files"] == {"skipped": True}
         assert all(check["ok"] for check in report["checks"])
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_validate_release_candidate_rejects_mismatched_evidence_git_sha(tmp_path: Path):
+    _seed_evidence_files()
+    evidence_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
+    dashboard_path = evidence_dir / "benchmark_dashboard.json"
+    release_path = evidence_dir / "release_evidence.json"
+    dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+    release_evidence = json.loads(release_path.read_text(encoding="utf-8"))
+    dashboard["provenance"]["git_sha"] = "deadbeef"
+    release_evidence["provenance"]["git_sha"] = "deadbeef"
+    dashboard_path.write_text(json.dumps(dashboard), encoding="utf-8")
+    release_path.write_text(json.dumps(release_evidence), encoding="utf-8")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        report_dir = tmp_path / "reports"
+        env = os.environ.copy()
+        pythonpath = str(PROJECT_ROOT / "src")
+        if env.get("PYTHONPATH"):
+            pythonpath = f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
+        env["PYTHONPATH"] = pythonpath
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/validate_release_candidate.py",
+                "--base-url",
+                f"http://127.0.0.1:{server.server_port}",
+                "--skip-compose",
+                "--report-dir",
+                str(report_dir),
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 1
+        report = json.loads(Path(result.stdout.strip()).read_text(encoding="utf-8"))
+        assert "does not match expected" in report["evidence_files"]["error"]
     finally:
         server.shutdown()
         server.server_close()

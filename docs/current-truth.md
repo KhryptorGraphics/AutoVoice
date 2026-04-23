@@ -113,5 +113,6 @@ Use those only after validating against the canonical docs and live code paths.
 - generated API docs: `/api/v1/openapi.json`, `/api/v1/openapi.yaml`, `/docs`
 - frontend build: `cd frontend && npm run build`
 - release-candidate validation: `python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --wait-seconds 180`
+  This now verifies benchmark evidence schema/provenance against `HEAD` or `GITHUB_SHA`, not just file existence.
 - experimental evidence validation: `python scripts/validate_experimental_evidence.py`
 - Jetson/TensorRT validation: `bash scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform`

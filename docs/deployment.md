@@ -101,6 +101,11 @@ The repo now ships two executable validation lanes:
 - GitHub Actions `release-candidate`: on a self-hosted Jetson runner, validate compose config, boot the real `docker-compose.yaml` backend/frontend stack, and run `scripts/validate_release_candidate.py`
 - GitHub Actions `jetson-nightly`: run `scripts/validate_cuda_stack.sh --pipeline all` on a self-hosted Jetson runner
 
+Release-candidate validation now requires benchmark evidence artifacts under
+`reports/benchmarks/latest/` to be structurally valid and to carry provenance
+for the candidate commit being validated. A stale dashboard or release-evidence
+pair from another git SHA no longer satisfies the RC gate.
+
 Rollback criteria for a release candidate are simple:
 
 - `/health` is not healthy

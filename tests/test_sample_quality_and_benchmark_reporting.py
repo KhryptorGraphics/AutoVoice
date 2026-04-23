@@ -95,6 +95,9 @@ def test_benchmark_dashboard_and_release_evidence_round_trip(tmp_path):
 
     assert dashboard["comparisons"]["hq_svc"]["meets_or_beats_canonical"] is True
     assert release["quality_gate_passed"] is True
+    assert dashboard["provenance"]["schema_version"] == 1
+    assert dashboard["provenance"]["generator"]
+    assert release["provenance"] == dashboard["provenance"]
 
 
 def test_experimental_registry_benchmark_gate_requires_candidate_to_win(tmp_path):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Mapping
@@ -29,6 +30,8 @@ DEFAULT_TARGETS = {
     "mcd_mean": 5.0,
     "f0_rmse_mean": 20.0,
 }
+REPORT_SCHEMA_VERSION = 1
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def load_benchmark_bundle(path: str | Path) -> Dict[str, Any]:
@@ -55,6 +58,38 @@ def _comparison_status(metric: str, candidate: float, canonical: float) -> bool:
     if metric in LOWER_IS_BETTER:
         return candidate <= canonical
     return False
+
+
+def _resolve_git_sha() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def _build_report_provenance(
+    bundles: Mapping[str, Mapping[str, Any]],
+    *,
+    generator: str,
+) -> Dict[str, Any]:
+    source_bundles = sorted(
+        str(payload.get("source_bundle"))
+        for payload in bundles.values()
+        if payload.get("source_bundle")
+    )
+    return {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "generator": generator,
+        "git_sha": _resolve_git_sha(),
+        "source_bundles": source_bundles,
+    }
 
 
 def build_benchmark_dashboard(
@@ -117,6 +152,10 @@ def build_benchmark_dashboard(
     ]
     return {
         "generated_at": generated_at,
+        "provenance": _build_report_provenance(
+            bundles,
+            generator="auto_voice.evaluation.benchmark_reporting.build_benchmark_dashboard",
+        ),
         "target_hardware": target_hardware,
         "canonical_pipelines": {
             "offline": canonical_offline,
@@ -138,6 +177,7 @@ def build_release_evidence(
     comparisons = dashboard.get("comparisons", {})
     return {
         "generated_at": dashboard.get("generated_at"),
+        "provenance": dashboard.get("provenance", {}),
         "target_hardware": dashboard.get("target_hardware"),
         "health_url": health_url,
         "canonical_pipelines": dashboard.get("canonical_pipelines", {}),
