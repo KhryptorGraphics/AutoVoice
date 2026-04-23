@@ -121,29 +121,35 @@ jobs:
       - name: Run deployment script validation lane
         run: AUTOVOICE_DB_PASS=ci-dry-run-password PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_platform_scripts.py -q
 
-      - name: Start live backend harness
+      - name: Start deterministic backend harness
         run: |
           python tests/live_backend_server.py --port 5050 > /tmp/autovoice-live-backend.log 2>&1 &
           echo $! > /tmp/autovoice-live-backend.pid
           sleep 5
 
-      - name: Run release candidate validation
-        run: python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5050 --report-dir reports/platform --skip-compose
+      - name: Run backend harness smoke validation
+        run: |
+          python scripts/validate_release_candidate.py \
+            --base-url http://127.0.0.1:5050 \
+            --report-dir reports/platform \
+            --report-name backend-harness-smoke.json \
+            --skip-compose \
+            --skip-evidence
 
-      - name: Stop live backend harness
+      - name: Stop deterministic backend harness
         if: always()
         run: |
           if [ -f /tmp/autovoice-live-backend.pid ]; then
             kill "$(cat /tmp/autovoice-live-backend.pid)" || true
           fi
 
-      - name: Upload deployment validation artifacts
+      - name: Upload backend harness smoke artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: deployment-validation-artifacts
+          name: backend-harness-smoke-artifacts
           path: |
-            reports/platform/release-candidate-validation.json
+            reports/platform/backend-harness-smoke.json
             /tmp/autovoice-live-backend.log
           if-no-files-found: ignore
 

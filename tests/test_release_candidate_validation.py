@@ -127,3 +127,44 @@ def test_validate_release_candidate_waits_for_endpoints(tmp_path: Path):
         env=env,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_validate_release_candidate_supports_smoke_report_mode(tmp_path: Path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        report_dir = tmp_path / "reports"
+        env = os.environ.copy()
+        pythonpath = str(PROJECT_ROOT / "src")
+        if env.get("PYTHONPATH"):
+            pythonpath = f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
+        env["PYTHONPATH"] = pythonpath
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/validate_release_candidate.py",
+                "--base-url",
+                f"http://127.0.0.1:{server.server_port}",
+                "--skip-compose",
+                "--skip-evidence",
+                "--report-dir",
+                str(report_dir),
+                "--report-name",
+                "backend-harness-smoke.json",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        report_path = Path(result.stdout.strip())
+        assert report_path.name == "backend-harness-smoke.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["evidence_files"] == {"skipped": True}
+        assert all(check["ok"] for check in report["checks"])
+    finally:
+        server.shutdown()
+        server.server_close()

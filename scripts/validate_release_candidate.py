@@ -66,7 +66,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="Base AutoVoice URL")
     parser.add_argument("--compose-file", default="docker-compose.yaml", help="Compose file to validate")
     parser.add_argument("--report-dir", default="reports/platform", help="Output directory for validation artifacts")
+    parser.add_argument(
+        "--report-name",
+        default="release-candidate-validation.json",
+        help="Validation report filename written under --report-dir",
+    )
     parser.add_argument("--skip-compose", action="store_true", help="Skip docker compose config validation")
+    parser.add_argument(
+        "--skip-evidence",
+        action="store_true",
+        help="Skip benchmark/release evidence checks for non-release smoke lanes",
+    )
     parser.add_argument(
         "--wait-seconds",
         type=float,
@@ -118,23 +128,29 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
-    for name, relative_path in {
-        "benchmark_dashboard": Path("reports/benchmarks/latest/benchmark_dashboard.json"),
-        "release_evidence": Path("reports/benchmarks/latest/release_evidence.json"),
-    }.items():
-        file_path = PROJECT_ROOT / relative_path
-        results["evidence_files"][name] = {
-            "path": str(file_path),
-            "ok": file_path.exists(),
-        }
+    if args.skip_evidence:
+        results["evidence_files"] = {"skipped": True}
+    else:
+        for name, relative_path in {
+            "benchmark_dashboard": Path("reports/benchmarks/latest/benchmark_dashboard.json"),
+            "release_evidence": Path("reports/benchmarks/latest/release_evidence.json"),
+        }.items():
+            file_path = PROJECT_ROOT / relative_path
+            results["evidence_files"][name] = {
+                "path": str(file_path),
+                "ok": file_path.exists(),
+            }
 
-    report_path = report_dir / "release-candidate-validation.json"
+    report_path = report_dir / args.report_name
     report_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
     all_ok = (
         bool(results["compose"]["ok"])
         and bool(results["repo_boundaries"]["ok"])
-        and all(item["ok"] for item in results["evidence_files"].values())
+        and (
+            args.skip_evidence
+            or all(item["ok"] for item in results["evidence_files"].values())
+        )
         and all(check["ok"] for check in results["checks"])
     )
     print(report_path)
