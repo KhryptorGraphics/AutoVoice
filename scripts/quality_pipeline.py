@@ -13,7 +13,6 @@ Design choices for quality:
 """
 
 import argparse
-import os
 import sys
 import time
 import logging
@@ -21,9 +20,17 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Tuple, Callable, Any
 
-# Add paths for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
-sys.path.insert(0, str(Path(__file__).parent.parent / 'models' / 'seed-vc'))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SRC_DIR = PROJECT_ROOT / "src"
+SEED_VC_DIR = PROJECT_ROOT / "models" / "seed-vc"
+SEED_VC_CHECKPOINTS_DIR = SEED_VC_DIR / "checkpoints"
+
+# Archaeology-only: the vendored Seed-VC tree is not packaged, so these source
+# path shims remain until the dependency is wrapped behind a real module.
+for import_path in (SRC_DIR, SEED_VC_DIR):
+    import_path_str = str(import_path)
+    if import_path_str not in sys.path:
+        sys.path.insert(0, import_path_str)
 
 import torch
 import torch.nn.functional as F
@@ -39,6 +46,55 @@ logging.basicConfig(
     datefmt='%H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+
+def resolve_runtime_paths() -> dict[str, Path]:
+    """Return stable runtime roots anchored to this script instead of cwd."""
+
+    return {
+        "project_root": PROJECT_ROOT,
+        "src_dir": SRC_DIR,
+        "seed_vc_dir": SEED_VC_DIR,
+        "seed_vc_checkpoints_dir": SEED_VC_CHECKPOINTS_DIR,
+    }
+
+
+def resolve_cli_path(path: str | Path, *, base_dir: Path = PROJECT_ROOT) -> Path:
+    """Resolve CLI-style paths relative to the repo root to preserve legacy semantics."""
+
+    candidate = Path(path).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (base_dir / candidate).resolve()
+
+
+def _download_seed_vc_model_from_hf(
+    repo_id: str,
+    model_filename: str = "pytorch_model.bin",
+    config_filename: Optional[str] = None,
+):
+    """Download Seed-VC artifacts into the repo-local cache without cwd changes."""
+
+    from huggingface_hub import hf_hub_download
+
+    runtime_paths = resolve_runtime_paths()
+    cache_dir = runtime_paths["seed_vc_checkpoints_dir"]
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    model_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=model_filename,
+        cache_dir=str(cache_dir),
+    )
+    if config_filename is None:
+        return model_path
+
+    config_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=config_filename,
+        cache_dir=str(cache_dir),
+    )
+    return model_path, config_path
 
 
 @dataclass
@@ -116,130 +172,125 @@ class QualityVoiceConverter:
             return
 
         logger.info("Loading Seed-VC models...")
-        original_dir = os.getcwd()
-        os.chdir(Path(__file__).parent.parent / 'models' / 'seed-vc')
+        from modules.commons import recursive_munch, build_model, load_checkpoint
 
-        try:
-            from modules.commons import recursive_munch, build_model, load_checkpoint
-            from hf_utils import load_custom_model_from_hf
-
-            # Load DiT model (F0-conditioned for singing)
-            if self.config.f0_condition:
-                dit_checkpoint_path, dit_config_path = load_custom_model_from_hf(
-                    "Plachta/Seed-VC",
-                    "DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth",
-                    "config_dit_mel_seed_uvit_whisper_base_f0_44k.yml"
-                )
-            else:
-                dit_checkpoint_path, dit_config_path = load_custom_model_from_hf(
-                    "Plachta/Seed-VC",
-                    "DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth",
-                    "config_dit_mel_seed_uvit_whisper_small_wavenet.yml"
-                )
-
-            config = yaml.safe_load(open(dit_config_path, "r"))
-            model_params = recursive_munch(config["model_params"])
-            model_params.dit_type = 'DiT'
-            self._model = build_model(model_params, stage="DiT")
-
-            self._model, _, _, _ = load_checkpoint(
-                self._model,
-                None,
-                dit_checkpoint_path,
-                load_only_params=True,
-                ignore_modules=[],
-                is_distributed=False,
+        # Load DiT model (F0-conditioned for singing)
+        if self.config.f0_condition:
+            dit_checkpoint_path, dit_config_path = _download_seed_vc_model_from_hf(
+                "Plachta/Seed-VC",
+                "DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth",
+                "config_dit_mel_seed_uvit_whisper_base_f0_44k.yml"
+            )
+        else:
+            dit_checkpoint_path, dit_config_path = _download_seed_vc_model_from_hf(
+                "Plachta/Seed-VC",
+                "DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth",
+                "config_dit_mel_seed_uvit_whisper_small_wavenet.yml"
             )
 
-            for key in self._model:
-                self._model[key].to(self.device)
-                self._model[key].eval()
+        with Path(dit_config_path).open("r", encoding="utf-8") as config_file:
+            config = yaml.safe_load(config_file)
 
-            self._model.cfm.estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
+        model_params = recursive_munch(config["model_params"])
+        model_params.dit_type = 'DiT'
+        self._model = build_model(model_params, stage="DiT")
 
-            # Load Whisper for semantic extraction
-            logger.info("Loading Whisper encoder...")
-            from transformers import AutoFeatureExtractor, WhisperModel
-            whisper_name = model_params.speech_tokenizer.name
-            whisper_model = WhisperModel.from_pretrained(
-                whisper_name, torch_dtype=torch.float16
+        self._model, _, _, _ = load_checkpoint(
+            self._model,
+            None,
+            dit_checkpoint_path,
+            load_only_params=True,
+            ignore_modules=[],
+            is_distributed=False,
+        )
+
+        for key in self._model:
+            self._model[key].to(self.device)
+            self._model[key].eval()
+
+        self._model.cfm.estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
+
+        # Load Whisper for semantic extraction
+        logger.info("Loading Whisper encoder...")
+        from transformers import AutoFeatureExtractor, WhisperModel
+        whisper_name = model_params.speech_tokenizer.name
+        whisper_model = WhisperModel.from_pretrained(
+            whisper_name, torch_dtype=torch.float16
+        ).to(self.device)
+        del whisper_model.decoder
+        whisper_feature_extractor = AutoFeatureExtractor.from_pretrained(whisper_name)
+
+        def semantic_fn(waves_16k):
+            ori_inputs = whisper_feature_extractor(
+                [waves_16k.squeeze(0).cpu().numpy()],
+                return_tensors="pt",
+                return_attention_mask=True
+            )
+            ori_input_features = whisper_model._mask_input_features(
+                ori_inputs.input_features, attention_mask=ori_inputs.attention_mask
             ).to(self.device)
-            del whisper_model.decoder
-            whisper_feature_extractor = AutoFeatureExtractor.from_pretrained(whisper_name)
-
-            def semantic_fn(waves_16k):
-                ori_inputs = whisper_feature_extractor(
-                    [waves_16k.squeeze(0).cpu().numpy()],
-                    return_tensors="pt",
-                    return_attention_mask=True
+            with torch.no_grad():
+                ori_outputs = whisper_model.encoder(
+                    ori_input_features.to(whisper_model.encoder.dtype),
+                    head_mask=None,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                    return_dict=True,
                 )
-                ori_input_features = whisper_model._mask_input_features(
-                    ori_inputs.input_features, attention_mask=ori_inputs.attention_mask
-                ).to(self.device)
-                with torch.no_grad():
-                    ori_outputs = whisper_model.encoder(
-                        ori_input_features.to(whisper_model.encoder.dtype),
-                        head_mask=None,
-                        output_attentions=False,
-                        output_hidden_states=False,
-                        return_dict=True,
-                    )
-                S_ori = ori_outputs.last_hidden_state.to(torch.float32)
-                S_ori = S_ori[:, :waves_16k.size(-1) // 320 + 1]
-                return S_ori
+            S_ori = ori_outputs.last_hidden_state.to(torch.float32)
+            S_ori = S_ori[:, :waves_16k.size(-1) // 320 + 1]
+            return S_ori
 
-            self._semantic_fn = semantic_fn
-            self._whisper_model = whisper_model
+        self._semantic_fn = semantic_fn
+        self._whisper_model = whisper_model
 
-            # Load F0 extractor
-            if self.config.f0_condition:
-                logger.info("Loading RMVPE pitch extractor...")
-                from modules.rmvpe import RMVPE
-                model_path = load_custom_model_from_hf("lj1995/VoiceConversionWebUI", "rmvpe.pt", None)
-                f0_extractor = RMVPE(model_path, is_half=False, device=self.device)
-                self._f0_fn = f0_extractor.infer_from_audio
+        # Load F0 extractor
+        if self.config.f0_condition:
+            logger.info("Loading RMVPE pitch extractor...")
+            from modules.rmvpe import RMVPE
+            model_path = _download_seed_vc_model_from_hf("lj1995/VoiceConversionWebUI", "rmvpe.pt", None)
+            f0_extractor = RMVPE(model_path, is_half=False, device=self.device)
+            self._f0_fn = f0_extractor.infer_from_audio
 
-            # Load CAMPPlus speaker encoder
-            logger.info("Loading CAMPPlus speaker encoder...")
-            from modules.campplus.DTDNN import CAMPPlus
-            campplus_ckpt_path = load_custom_model_from_hf(
-                "funasr/campplus", "campplus_cn_common.bin", config_filename=None
-            )
-            self._campplus = CAMPPlus(feat_dim=80, embedding_size=192)
-            self._campplus.load_state_dict(torch.load(campplus_ckpt_path, map_location="cpu"))
-            self._campplus.to(self.device)
-            self._campplus.eval()
+        # Load CAMPPlus speaker encoder
+        logger.info("Loading CAMPPlus speaker encoder...")
+        from modules.campplus.DTDNN import CAMPPlus
+        campplus_ckpt_path = _download_seed_vc_model_from_hf(
+            "funasr/campplus", "campplus_cn_common.bin", config_filename=None
+        )
+        self._campplus = CAMPPlus(feat_dim=80, embedding_size=192)
+        self._campplus.load_state_dict(torch.load(campplus_ckpt_path, map_location="cpu"))
+        self._campplus.to(self.device)
+        self._campplus.eval()
 
-            # Load BigVGAN vocoder
-            logger.info("Loading BigVGAN vocoder...")
-            from modules.bigvgan import bigvgan
-            bigvgan_name = model_params.vocoder.name
-            self._vocoder = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=False)
-            self._vocoder.remove_weight_norm()
-            self._vocoder = self._vocoder.to(self.device)
-            self._vocoder.eval()
+        # Load BigVGAN vocoder
+        logger.info("Loading BigVGAN vocoder...")
+        from modules.bigvgan import bigvgan
+        bigvgan_name = model_params.vocoder.name
+        self._vocoder = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=False)
+        self._vocoder.remove_weight_norm()
+        self._vocoder = self._vocoder.to(self.device)
+        self._vocoder.eval()
 
-            # Mel spectrogram function
-            self._mel_fn_args = {
-                "n_fft": config['preprocess_params']['spect_params']['n_fft'],
-                "win_size": config['preprocess_params']['spect_params']['win_length'],
-                "hop_size": config['preprocess_params']['spect_params']['hop_length'],
-                "num_mels": config['preprocess_params']['spect_params']['n_mels'],
-                "sampling_rate": config['preprocess_params']['sr'],
-                "fmin": config['preprocess_params']['spect_params'].get('fmin', 0),
-                "fmax": None if config['preprocess_params']['spect_params'].get('fmax', "None") == "None" else 8000,
-                "center": False
-            }
-            from modules.audio import mel_spectrogram
-            self._mel_fn = lambda x: mel_spectrogram(x, **self._mel_fn_args)
+        # Mel spectrogram function
+        self._mel_fn_args = {
+            "n_fft": config['preprocess_params']['spect_params']['n_fft'],
+            "win_size": config['preprocess_params']['spect_params']['win_length'],
+            "hop_size": config['preprocess_params']['spect_params']['hop_length'],
+            "num_mels": config['preprocess_params']['spect_params']['n_mels'],
+            "sampling_rate": config['preprocess_params']['sr'],
+            "fmin": config['preprocess_params']['spect_params'].get('fmin', 0),
+            "fmax": None if config['preprocess_params']['spect_params'].get('fmax', "None") == "None" else 8000,
+            "center": False
+        }
+        from modules.audio import mel_spectrogram
+        self._mel_fn = lambda x: mel_spectrogram(x, **self._mel_fn_args)
 
-            # Update sample rate from config
-            self.config.sample_rate = config['preprocess_params']['sr']
-            self.config.hop_length = config['preprocess_params']['spect_params']['hop_length']
+        # Update sample rate from config
+        self.config.sample_rate = config['preprocess_params']['sr']
+        self.config.hop_length = config['preprocess_params']['spect_params']['hop_length']
 
-            logger.info(f"Models loaded. SR={self.config.sample_rate}, hop={self.config.hop_length}")
-        finally:
-            os.chdir(original_dir)
+        logger.info(f"Models loaded. SR={self.config.sample_rate}, hop={self.config.hop_length}")
 
     def extract_speaker_style(self, reference_audio: torch.Tensor, sr: int) -> torch.Tensor:
         """Extract speaker style embedding from reference audio using CAMPPlus."""
@@ -644,9 +695,11 @@ def load_audio_file(path: Path) -> Tuple[np.ndarray, int]:
 def resolve_reference_audio(
     reference_audio: Optional[str],
     target_profile_id: Optional[str],
+    *,
+    base_dir: Path = PROJECT_ROOT,
 ) -> Tuple[np.ndarray, int, Path]:
     if reference_audio:
-        reference_path = Path(reference_audio).resolve()
+        reference_path = resolve_cli_path(reference_audio, base_dir=base_dir)
         audio, sample_rate = load_audio_file(reference_path)
         return audio, sample_rate, reference_path
 
@@ -654,12 +707,15 @@ def resolve_reference_audio(
         from auto_voice.storage.voice_profiles import VoiceProfileStore
 
         store = VoiceProfileStore()
-        candidate_paths = [Path(path) for path in store.get_all_vocals_paths(target_profile_id)]
+        candidate_paths = [
+            resolve_cli_path(path, base_dir=base_dir)
+            for path in store.get_all_vocals_paths(target_profile_id)
+        ]
         if not candidate_paths:
             raise FileNotFoundError(
                 f"No training vocals found for target profile: {target_profile_id}"
             )
-        reference_path = candidate_paths[0].resolve()
+        reference_path = candidate_paths[0]
         audio, sample_rate = load_audio_file(reference_path)
         return audio, sample_rate, reference_path
 
@@ -837,15 +893,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    os.chdir(Path(__file__).parent.parent)
-
-    source_path = Path(args.source_audio).resolve()
-    output_path = Path(args.output).resolve()
+    runtime_paths = resolve_runtime_paths()
+    source_path = resolve_cli_path(args.source_audio, base_dir=runtime_paths["project_root"])
+    output_path = resolve_cli_path(args.output, base_dir=runtime_paths["project_root"])
 
     source_audio, source_sr = load_audio_file(source_path)
     reference_audio, reference_sr, reference_path = resolve_reference_audio(
         args.reference_audio,
         args.target_profile_id,
+        base_dir=runtime_paths["project_root"],
     )
 
     config = QualityConfig(
@@ -892,7 +948,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"Elapsed: {elapsed_seconds:.2f}s")
 
         if args.report_dir:
-            report_dir = Path(args.report_dir).resolve()
+            report_dir = resolve_cli_path(args.report_dir, base_dir=runtime_paths["project_root"])
             report_dir.mkdir(parents=True, exist_ok=True)
             reference_report_audio = reference_audio
             if reference_sr != output_sample_rate:
