@@ -1081,11 +1081,20 @@ class TestStateAndModelRoutes:
             },
         )
         _create_profile(app_remaining, profile_id="profile-a")
+        app_remaining.state_store.save_loaded_model(
+            "adapter",
+            {
+                "model_type": "adapter",
+                "profile_id": "profile-a",
+                "loaded": True,
+            },
+        )
         assert client_remaining.get("/api/v1/profiles/profile-a/checkpoints").status_code == 200
         rollback = client_remaining.post("/api/v1/profiles/profile-a/checkpoints/checkpoint-1/rollback")
         assert rollback.status_code == 200
         assert rollback.get_json()["status"] == "rolled_back"
         assert rollback.get_json()["checkpoint"]["is_active"] is True
+        assert app_remaining.state_store.list_loaded_models() == []
         assert client_remaining.delete("/api/v1/profiles/profile-a/checkpoints/checkpoint-1").status_code == 204
 
         with patch.object(web_api, "_submit_background_job", lambda *args, **kwargs: None), \
