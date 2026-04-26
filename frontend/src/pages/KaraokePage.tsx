@@ -41,6 +41,7 @@ import {
 import { AdapterDropdown } from '../components/AdapterSelector';
 import { AdapterType } from '../services/api';
 import { KaraokeSessionInfo } from '../components/KaraokeSessionInfo';
+import { StatusBanner } from '../components/StatusBanner';
 
 type Stage = 'upload' | 'separating' | 'ready' | 'performing';
 
@@ -555,11 +556,13 @@ export function KaraokePage() {
               </p>
             </div>
             {uploadError && (
-              <div
-                className="mt-4 p-3 bg-red-500/20 border border-red-500 rounded text-red-400"
-                data-testid="karaoke-upload-error"
-              >
-                {uploadError}
+              <div className="mt-4">
+                <StatusBanner
+                  tone="danger"
+                  title="Upload failed"
+                  message={uploadError}
+                  testId="karaoke-upload-error"
+                />
               </div>
             )}
           </div>
@@ -847,37 +850,20 @@ export function KaraokePage() {
           />
 
           {(preflightIssues.length > 0 || preflightWarnings.length > 0) && (
-            <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-4 text-sm text-yellow-100 lg:col-span-2">
-              {preflightIssues.length > 0 && (
-                <div>
-                  <div className="font-semibold text-yellow-200">Preflight issues</div>
-                  <ul className="mt-1 list-disc pl-5">
-                    {preflightIssues.map((issue) => (
-                      <li key={issue}>{issue}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {preflightWarnings.length > 0 && (
-                <div className={clsx(preflightIssues.length > 0 && 'mt-3')}>
-                  <div className="font-semibold text-yellow-200">Warnings</div>
-                  <ul className="mt-1 list-disc pl-5">
-                    {preflightWarnings.map((warning) => (
-                      <li key={warning}>{warning}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
+            <StatusBanner
+              tone={preflightIssues.length > 0 ? 'warning' : 'info'}
+              title={preflightIssues.length > 0 ? 'Preflight attention required' : 'Preflight warnings'}
+              details={[...preflightIssues, ...preflightWarnings]}
+            />
           )}
 
           {sessionError && (
-            <div
-              className="rounded-lg border border-red-500 bg-red-500/10 p-4 text-sm text-red-300 lg:col-span-2"
-              data-testid="karaoke-session-error"
-            >
-              {sessionError}
-            </div>
+            <StatusBanner
+              tone="danger"
+              title="Live karaoke session error"
+              message={sessionError}
+              testId="karaoke-session-error"
+            />
           )}
         </div>
       )}

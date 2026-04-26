@@ -152,6 +152,37 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       type: 'pretrained',
     },
   ]
+  const loadedModels = [
+    {
+      type: 'encoder',
+      model_type: 'encoder',
+      name: 'HuBERT Encoder',
+      loaded: true,
+      runtime_backend: 'pytorch',
+      device: 'cuda:0',
+      memory_usage: 805306368,
+      loaded_at: '2026-04-18T00:00:00Z',
+      source: 'registry',
+    },
+    {
+      type: 'vocoder',
+      model_type: 'vocoder',
+      name: 'BigVGAN Vocoder',
+      loaded: true,
+      runtime_backend: 'tensorrt',
+      device: 'cuda:0',
+      memory_usage: 536870912,
+      loaded_at: '2026-04-18T00:00:00Z',
+      source: 'registry',
+    },
+  ]
+  const builtEngines = [
+    {
+      name: 'encoder',
+      precision: 'fp16',
+      built_at: '2026-04-18T00:00:00Z',
+    },
+  ]
 
   let preferredPipeline: 'realtime' | 'quality' = options.preferredPipeline ?? 'quality'
   let preferredOfflinePipeline: 'realtime' | 'quality' | 'quality_seedvc' | 'quality_shortcut' = preferredPipeline
@@ -160,6 +191,38 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   let separationPollCount = 0
   let speakerDevice = 0
   let headphoneDevice = 1
+  let deviceConfig = {
+    input_device_id: 'input-1',
+    output_device_id: 'output-1',
+    sample_rate: 48000,
+  }
+  let separationConfig = {
+    model: 'htdemucs',
+    stems: ['vocals'],
+    shifts: 1,
+    overlap: 0.25,
+    segment_length: null,
+    device: 'cuda',
+  }
+  let pitchConfig = {
+    method: 'rmvpe',
+    hop_length: 160,
+    f0_min: 50,
+    f0_max: 1100,
+    threshold: 0.3,
+    use_gpu: true,
+  }
+  let audioRouterConfig = {
+    speaker_gain: 1.0,
+    headphone_gain: 1.0,
+    voice_gain: 1.0,
+    instrumental_gain: 0.8,
+    speaker_enabled: true,
+    headphone_enabled: true,
+    speaker_device: speakerDevice,
+    headphone_device: headphoneDevice,
+    sample_rate: 24000,
+  }
 
   await page.route('**/api/v1/health', async (route) => {
     return jsonResponse(route, {
@@ -169,6 +232,21 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       components: {
         torch: { status: 'up', details: 'cuda' },
         singing_pipeline: { status: 'up' },
+      },
+    })
+  })
+
+  await page.route('**/api/v1/system/info', async (route) => {
+    return jsonResponse(route, {
+      system: {
+        platform: 'Jetson Thor',
+        python_version: '3.11.9',
+      },
+      torch: {
+        cuda_available: true,
+        device_count: 1,
+        device_name: 'NVIDIA Thor',
+        version: '2.6.0',
       },
     })
   })
@@ -219,8 +297,161 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
           memory_gb: 2.8,
           latency_target_ms: 3000,
         },
+        quality_seedvc: {
+          loaded: true,
+          memory_gb: 3.6,
+          latency_target_ms: 1800,
+        },
+        realtime_meanvc: {
+          loaded: false,
+          memory_gb: 1.4,
+          latency_target_ms: 80,
+        },
       },
     })
+  })
+
+  await page.route('**/api/v1/devices/list', async (route) => {
+    return jsonResponse(route, [
+      {
+        device_id: 'input-1',
+        name: 'Studio Mic',
+        type: 'input',
+        sample_rate: 48000,
+        channels: 1,
+        is_default: true,
+      },
+      {
+        device_id: 'output-1',
+        name: 'Main Speakers',
+        type: 'output',
+        sample_rate: 48000,
+        channels: 2,
+        is_default: true,
+      },
+      {
+        device_id: 'output-2',
+        name: 'Control Headphones',
+        type: 'output',
+        sample_rate: 48000,
+        channels: 2,
+        is_default: false,
+      },
+    ])
+  })
+
+  await page.route('**/api/v1/devices/config', async (route) => {
+    if (route.request().method() === 'POST') {
+      deviceConfig = {
+        ...deviceConfig,
+        ...(route.request().postDataJSON() as Record<string, string | number | undefined>),
+      }
+    }
+    return jsonResponse(route, deviceConfig)
+  })
+
+  await page.route('**/api/v1/models/loaded', async (route) => {
+    return jsonResponse(route, { models: loadedModels })
+  })
+
+  await page.route('**/api/v1/models/load', async (route) => {
+    const body = route.request().postDataJSON() as { model_type: string }
+    const existing = loadedModels.find((model) => model.type === body.model_type)
+    if (!existing) {
+      loadedModels.push({
+        type: body.model_type,
+        model_type: body.model_type,
+        name: `${body.model_type.toUpperCase()} Model`,
+        loaded: true,
+        runtime_backend: 'pytorch',
+        device: 'cuda:0',
+        memory_usage: 268435456,
+        loaded_at: '2026-04-18T00:00:00Z',
+        source: 'registry',
+      })
+    }
+    return jsonResponse(route, loadedModels.find((model) => model.type === body.model_type) ?? loadedModels[0])
+  })
+
+  await page.route('**/api/v1/models/unload', async (route) => {
+    const body = route.request().postDataJSON() as { model_type: string }
+    const index = loadedModels.findIndex((model) => model.type === body.model_type)
+    if (index >= 0) {
+      loadedModels.splice(index, 1)
+    }
+    return route.fulfill({ status: 204 })
+  })
+
+  await page.route('**/api/v1/models/tensorrt/status', async (route) => {
+    return jsonResponse(route, {
+      available: true,
+      version: '10.0',
+      engines: builtEngines,
+      build_in_progress: false,
+    })
+  })
+
+  await page.route('**/api/v1/models/tensorrt/build', async (route) => {
+    const body = route.request().postDataJSON() as { models: string[]; precision: 'fp32' | 'fp16' | 'int8' }
+    for (const model of body.models) {
+      const existing = builtEngines.find((engine) => engine.name === model)
+      if (existing) {
+        existing.precision = body.precision
+      } else {
+        builtEngines.push({
+          name: model,
+          precision: body.precision,
+          built_at: '2026-04-18T00:00:00Z',
+        })
+      }
+    }
+    return jsonResponse(route, {
+      status: 'ok',
+      engines_built: body.models,
+    })
+  })
+
+  await page.route('**/api/v1/models/tensorrt/rebuild', async (route) => {
+    const body = route.request().postDataJSON() as { precision: 'fp32' | 'fp16' | 'int8' }
+    builtEngines.splice(0, builtEngines.length, {
+      name: 'encoder',
+      precision: body.precision,
+      built_at: '2026-04-18T00:00:00Z',
+    })
+    return jsonResponse(route, {
+      status: 'ok',
+      duration_seconds: 12.3,
+    })
+  })
+
+  await page.route('**/api/v1/config/separation', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      separationConfig = {
+        ...separationConfig,
+        ...(route.request().postDataJSON() as Record<string, unknown>),
+      }
+    }
+    return jsonResponse(route, separationConfig)
+  })
+
+  await page.route('**/api/v1/config/pitch', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      pitchConfig = {
+        ...pitchConfig,
+        ...(route.request().postDataJSON() as Record<string, unknown>),
+      }
+    }
+    return jsonResponse(route, pitchConfig)
+  })
+
+  await page.route('**/api/v1/audio/router/config', async (route) => {
+    if (route.request().method() === 'PATCH') {
+      audioRouterConfig = {
+        ...audioRouterConfig,
+        ...(route.request().postDataJSON() as Record<string, unknown>),
+      }
+    }
+    return jsonResponse(route, audioRouterConfig)
   })
 
   await page.route('**/api/v1/voice/profiles', async (route) => {
@@ -482,6 +713,11 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       if (typeof body.headphone_device === 'number') {
         headphoneDevice = body.headphone_device
       }
+      audioRouterConfig = {
+        ...audioRouterConfig,
+        speaker_device: speakerDevice,
+        headphone_device: headphoneDevice,
+      }
     }
 
     return jsonResponse(route, {
@@ -543,9 +779,13 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
 
   return {
     getPreferredPipeline: () => preferredOfflinePipeline,
+    getPreferredLivePipeline: () => preferredLivePipeline,
     isPaused: () => paused,
     getSpeakerDevice: () => speakerDevice,
     getHeadphoneDevice: () => headphoneDevice,
     getProfileCount: () => profiles.length,
+    getLoadedModelCount: () => loadedModels.length,
+    getLoadedModelTypes: () => loadedModels.map((model) => model.type),
+    getBuiltTensorRTEngines: () => builtEngines.map((engine) => `${engine.name}:${engine.precision}`),
   }
 }

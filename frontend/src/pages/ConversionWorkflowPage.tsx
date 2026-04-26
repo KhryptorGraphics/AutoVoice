@@ -6,6 +6,7 @@ import { AdapterSelector, AdapterBadge } from '../components/AdapterSelector'
 import { ConversionHistoryTable } from '../components/ConversionHistoryTable'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { PresetManager } from '../components/PresetManager'
+import { StatusBanner } from '../components/StatusBanner'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { PipelineBadge, PipelineSelector, getPreferredPipeline, isOfflinePipeline, type PipelineType } from '../components/PipelineSelector'
 import { useToastContext } from '../contexts/ToastContext'
@@ -507,9 +508,11 @@ export function ConversionWorkflowPage() {
       </div>
 
       {workflowError && (
-        <div className="rounded-lg border border-red-500 bg-red-500/10 p-4 text-red-200">
-          {workflowError}
-        </div>
+        <StatusBanner
+          tone="danger"
+          title="Workflow error"
+          message={workflowError}
+        />
       )}
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">

@@ -1,8 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Clock, Download, Play, Trash2, Music, Star, Search, Filter, FileText } from 'lucide-react'
 import { apiService, ConversionRecord } from '../services/api'
 import { PipelineBadge, type PipelineType } from '../components/PipelineSelector'
 import { AdapterBadge } from '../components/AdapterSelector'
+import { useToastContext } from '../contexts/ToastContext'
+import { ConfirmActionButton } from '../components/ConfirmActionButton'
+import { StatusBanner } from '../components/StatusBanner'
 
 interface FilterOptions {
   timeRange: 'all' | 'today' | 'week' | 'month'
@@ -13,6 +16,8 @@ interface FilterOptions {
 
 export function ConversionHistoryPage() {
   const [history, setHistory] = useState<ConversionRecord[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [pageError, setPageError] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const [filters, setFilters] = useState<FilterOptions>({
@@ -23,24 +28,40 @@ export function ConversionHistoryPage() {
   })
   const [editingNotes, setEditingNotes] = useState<string | null>(null)
   const [notesText, setNotesText] = useState('')
+  const toast = useToastContext()
+
+  const loadHistory = useCallback(async () => {
+    setIsLoading(true)
+    setPageError(null)
+    try {
+      const records = await apiService.getConversionHistory()
+      setHistory(records.map((item) => ({
+        ...item,
+        timestamp: new Date(String(item.timestamp ?? item.completed_at ?? item.created_at)),
+        quality: item.quality ?? item.preset,
+        resultUrl: item.resultUrl ?? item.output_url ?? item.download_url,
+      })))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load conversion history'
+      setPageError(message)
+      toast.error(message)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [toast])
 
   useEffect(() => {
     void loadHistory()
-  }, [])
-
-  const loadHistory = async () => {
-    const records = await apiService.getConversionHistory()
-    setHistory(records.map((item) => ({
-      ...item,
-      timestamp: new Date(String(item.timestamp ?? item.completed_at ?? item.created_at)),
-      quality: item.quality ?? item.preset,
-      resultUrl: item.resultUrl ?? item.output_url ?? item.download_url,
-    })))
-  }
+  }, [loadHistory])
 
   const handleDelete = async (id: string) => {
-    await apiService.deleteConversionRecord(id)
-    setHistory((prev) => prev.filter((item) => item.id !== id))
+    try {
+      await apiService.deleteConversionRecord(id)
+      setHistory((prev) => prev.filter((item) => item.id !== id))
+      toast.success('Conversion record deleted')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete conversion record')
+    }
   }
 
   const handleToggleFavorite = async (id: string) => {
@@ -52,6 +73,7 @@ export function ConversionHistoryPage() {
     setHistory((prev) => prev.map((entry) => (
       entry.id === id ? { ...entry, ...updatedRecord, timestamp: new Date(String(updatedRecord.timestamp ?? updatedRecord.completed_at ?? updatedRecord.created_at)) } : entry
     )))
+    toast.success(updatedRecord.isFavorite ? 'Marked as favorite' : 'Removed from favorites')
   }
 
   const handleSaveNotes = async (id: string) => {
@@ -60,12 +82,16 @@ export function ConversionHistoryPage() {
       item.id === id ? { ...item, ...updatedRecord, timestamp: new Date(String(updatedRecord.timestamp ?? updatedRecord.completed_at ?? updatedRecord.created_at)) } : item
     )))
     setEditingNotes(null)
+    toast.success('Notes saved')
   }
 
   const handleClearAll = async () => {
-    if (confirm('Are you sure you want to clear all history?')) {
+    try {
       await Promise.all(history.map((item) => apiService.deleteConversionRecord(item.id)))
       setHistory([])
+      toast.success('Conversion history cleared')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to clear conversion history')
     }
   }
 
@@ -151,6 +177,16 @@ export function ConversionHistoryPage() {
       </div>
 
       <div className="bg-white rounded-lg shadow-lg p-6">
+        {pageError && (
+          <div className="mb-6">
+            <StatusBanner
+              tone="danger"
+              title="History unavailable"
+              message={pageError}
+            />
+          </div>
+        )}
+
         {/* Search Bar */}
         <div className="mb-6">
           <div className="relative">
@@ -205,12 +241,14 @@ export function ConversionHistoryPage() {
             </button>
 
             {history.length > 0 && (
-              <button
-                onClick={handleClearAll}
-                className="text-red-600 hover:text-red-700 font-medium"
-              >
-                Clear All
-              </button>
+              <ConfirmActionButton
+                label="Clear all"
+                confirmLabel="Clear history"
+                confirmMessage="Delete every conversion record from the local history list?"
+                onConfirm={handleClearAll}
+                variant="danger"
+                testId="history-clear-all"
+              />
             )}
           </div>
         </div>
@@ -255,7 +293,9 @@ export function ConversionHistoryPage() {
         )}
 
         {/* History List */}
-        {filteredHistory.length === 0 ? (
+        {isLoading ? (
+          <div className="py-12 text-center text-gray-500">Loading history...</div>
+        ) : filteredHistory.length === 0 ? (
           <div className="text-center py-12">
             <Music className="w-16 h-16 text-gray-300 mx-auto mb-4" />
             <p className="text-gray-500 text-lg">

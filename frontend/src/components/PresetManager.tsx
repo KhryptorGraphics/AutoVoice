@@ -1,10 +1,13 @@
 import { useState } from 'react'
 import {
-  Bookmark, Plus, Trash2, Download, Upload, Edit2, Check, X,
+  Bookmark, Plus, Download, Upload, Edit2, Check, X,
   Loader2, AlertCircle, CheckCircle, MoreVertical
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiService, UserPreset, ConversionConfig } from '../services/api'
+import { useToastContext } from '../contexts/ToastContext'
+import { ConfirmActionButton } from './ConfirmActionButton'
+import { StatusBanner } from './StatusBanner'
 
 interface PresetManagerProps {
   currentConfig: Partial<ConversionConfig>
@@ -18,7 +21,9 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
   const queryClient = useQueryClient()
+  const toast = useToastContext()
 
   const { data: presets, isLoading } = useQuery({
     queryKey: ['presets'],
@@ -31,6 +36,10 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
       queryClient.invalidateQueries({ queryKey: ['presets'] })
       setShowSaveDialog(false)
       setNewPresetName('')
+      toast.success('Preset saved')
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to save preset')
     },
   })
 
@@ -38,6 +47,10 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
     mutationFn: (id: string) => apiService.deletePreset(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['presets'] })
+      toast.success('Preset deleted')
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete preset')
     },
   })
 
@@ -47,6 +60,10 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['presets'] })
       setEditingId(null)
+      toast.success('Preset renamed')
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to rename preset')
     },
   })
 
@@ -58,13 +75,12 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
   const handleLoad = (preset: UserPreset) => {
     onLoadPreset(preset.config)
     setMenuOpenId(null)
+    toast.info(`Loaded preset ${preset.name}`)
   }
 
   const handleDelete = (id: string) => {
-    if (confirm('Delete this preset?')) {
-      deleteMutation.mutate(id)
-    }
     setMenuOpenId(null)
+    deleteMutation.mutate(id)
   }
 
   const handleExport = () => {
@@ -80,6 +96,7 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
   }
 
   const handleImport = () => {
+    setImportError(null)
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = '.json'
@@ -94,8 +111,11 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
           await apiService.savePreset(preset.name, preset.config)
         }
         queryClient.invalidateQueries({ queryKey: ['presets'] })
-      } catch {
-        alert('Failed to import presets. Invalid file format.')
+        toast.success(`Imported ${imported.length} preset${imported.length === 1 ? '' : 's'}`)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to import presets. Invalid file format.'
+        setImportError(message)
+        toast.error(message)
       }
     }
     input.click()
@@ -172,6 +192,15 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
         </div>
       </div>
 
+      {importError && (
+        <StatusBanner
+          tone="danger"
+          title="Preset import failed"
+          message={importError}
+          compact
+        />
+      )}
+
       {/* Preset List */}
       {isLoading ? (
         <div className="flex items-center justify-center py-4">
@@ -246,12 +275,17 @@ export function PresetManager({ currentConfig, onLoadPreset, compact = false }: 
                         >
                           <Edit2 size={12} /> Rename
                         </button>
-                        <button
-                          onClick={() => handleDelete(preset.id)}
-                          className="w-full px-3 py-1.5 text-left text-sm hover:bg-gray-600 text-red-400 flex items-center gap-2"
-                        >
-                          <Trash2 size={12} /> Delete
-                        </button>
+                        <div className="px-2 py-1">
+                          <ConfirmActionButton
+                            label="Delete"
+                            confirmLabel="Delete preset"
+                            confirmMessage={`Remove ${preset.name} from saved presets?`}
+                            onConfirm={async () => handleDelete(preset.id)}
+                            pending={deleteMutation.isPending && deleteMutation.variables === preset.id}
+                            className="w-full justify-center px-3 py-1.5 text-left text-sm"
+                            testId={`preset-delete-${preset.id}`}
+                          />
+                        </div>
                       </div>
                     )}
                   </div>

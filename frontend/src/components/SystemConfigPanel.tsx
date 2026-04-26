@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import {
-  Settings, Download, Upload, RotateCcw,
-  AlertCircle, Loader2, ChevronDown, ChevronUp
+  Settings, Download, Upload, Loader2, ChevronDown, ChevronUp
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -19,6 +18,9 @@ import {
 } from '../services/api'
 import clsx from 'clsx'
 import { STORAGE_KEYS, usePersistedState } from '../hooks/usePersistedState'
+import { useToastContext } from '../contexts/ToastContext'
+import { ConfirmActionButton } from './ConfirmActionButton'
+import { StatusBanner } from './StatusBanner'
 
 interface SystemConfigPanelProps {
   onConfigChange?: () => void
@@ -54,6 +56,7 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
   const [hasChanges, setHasChanges] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const queryClient = useQueryClient()
+  const toast = useToastContext()
 
   // Load UI config from localStorage
   const [uiConfig, setUIConfig] = usePersistedState<UIConfig>(
@@ -83,6 +86,10 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['separationConfig'] })
       onConfigChange?.()
+      toast.success('Separation config updated')
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to update separation config')
     },
   })
 
@@ -91,6 +98,10 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pitchConfig'] })
       onConfigChange?.()
+      toast.success('Pitch config updated')
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to update pitch config')
     },
   })
 
@@ -99,6 +110,10 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['audioRouterConfig'] })
       onConfigChange?.()
+      toast.success('Audio router config updated')
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to update audio router config')
     },
   })
 
@@ -174,8 +189,11 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
         }
 
         setHasChanges(false)
+        toast.success('System configuration imported')
       } catch (err) {
-        setImportError((err as Error).message || 'Failed to import configuration')
+        const message = (err as Error).message || 'Failed to import configuration'
+        setImportError(message)
+        toast.error(message)
       }
     }
     input.click()
@@ -183,8 +201,6 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
 
   // Reset all to defaults
   const resetToDefaults = async () => {
-    if (!confirm('Reset all settings to defaults? This cannot be undone.')) return
-
     try {
       await Promise.all([
         updateSeparationMutation.mutateAsync(DEFAULT_SEPARATION_CONFIG),
@@ -193,8 +209,10 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
       ])
       saveUIConfig(DEFAULT_UI_CONFIG)
       setHasChanges(false)
+      toast.success('System configuration reset to defaults')
     } catch (err) {
       console.error('Failed to reset config:', err)
+      toast.error(err instanceof Error ? err.message : 'Failed to reset configuration')
     }
   }
 
@@ -240,20 +258,26 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
             <Upload size={14} />
             Import
           </button>
-          <button
-            onClick={resetToDefaults}
-            disabled={isSaving}
-            className="flex items-center gap-2 px-3 py-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded text-sm ml-auto"
-          >
-            <RotateCcw size={14} />
-            Reset All
-          </button>
+          <div className="ml-auto">
+            <ConfirmActionButton
+              label="Reset all"
+              confirmLabel="Reset settings"
+              confirmMessage="Reset separation, pitch, audio router, and UI defaults back to the canonical baseline?"
+              onConfirm={resetToDefaults}
+              pending={isSaving}
+              testId="system-config-reset"
+            />
+          </div>
         </div>
 
         {importError && (
-          <div className="mt-3 flex items-center gap-2 text-red-400 text-sm">
-            <AlertCircle size={14} />
-            {importError}
+          <div className="mt-3">
+            <StatusBanner
+              tone="danger"
+              title="Config import failed"
+              message={importError}
+              compact
+            />
           </div>
         )}
       </div>

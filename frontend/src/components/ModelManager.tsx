@@ -1,6 +1,9 @@
-import { Box, Upload, Trash2, RefreshCw, Loader2, AlertCircle, CheckCircle, HardDrive } from 'lucide-react'
+import { Box, Upload, RefreshCw, Loader2, AlertCircle, CheckCircle, HardDrive } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiService } from '../services/api'
+import { useToastContext } from '../contexts/ToastContext'
+import { ConfirmActionButton } from './ConfirmActionButton'
+import { StatusBanner } from './StatusBanner'
 
 interface ModelManagerProps {
   compact?: boolean
@@ -27,6 +30,7 @@ function formatDate(dateStr: string | undefined): string {
 
 export function ModelManager({ compact = false }: ModelManagerProps) {
   const queryClient = useQueryClient()
+  const toast = useToastContext()
 
   const { data: models, isLoading, error, refetch } = useQuery({
     queryKey: ['loadedModels'],
@@ -39,6 +43,10 @@ export function ModelManager({ compact = false }: ModelManagerProps) {
       apiService.loadModel(type, path),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['loadedModels'] })
+      toast.success('Model loaded')
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to load model')
     },
   })
 
@@ -46,6 +54,10 @@ export function ModelManager({ compact = false }: ModelManagerProps) {
     mutationFn: (type: string) => apiService.unloadModel(type),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['loadedModels'] })
+      toast.success('Model unloaded')
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to unload model')
     },
   })
 
@@ -57,9 +69,7 @@ export function ModelManager({ compact = false }: ModelManagerProps) {
   }
 
   const handleUnload = (type: string) => {
-    if (confirm(`Unload ${type} model? This will free GPU memory.`)) {
-      unloadMutation.mutate(type)
-    }
+    unloadMutation.mutate(type)
   }
 
   if (isLoading) {
@@ -129,18 +139,15 @@ export function ModelManager({ compact = false }: ModelManagerProps) {
                   </div>
                 </div>
               </div>
-              <button
-                onClick={() => handleUnload(model.type)}
-                disabled={unloadMutation.isPending}
-                className="p-2 text-gray-400 hover:text-red-400 hover:bg-gray-700 rounded transition-colors disabled:opacity-50"
-                title="Unload model"
-              >
-                {unloadMutation.isPending && unloadMutation.variables === model.type ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Trash2 size={14} />
-                )}
-              </button>
+              <ConfirmActionButton
+                label="Unload"
+                confirmLabel="Unload model"
+                confirmMessage={`Unload ${model.name || model.type} and free its GPU memory reservation?`}
+                onConfirm={async () => handleUnload(model.type)}
+                pending={unloadMutation.isPending && unloadMutation.variables === model.type}
+                className="px-2 py-1 text-xs"
+                testId={`unload-model-${model.type}`}
+              />
             </div>
           ))}
         </div>
@@ -191,10 +198,12 @@ export function ModelManager({ compact = false }: ModelManagerProps) {
 
       {/* Error Display */}
       {(loadMutation.error || unloadMutation.error) && (
-        <div className="flex items-center gap-2 p-2 bg-red-900/30 border border-red-800 rounded text-sm text-red-400">
-          <AlertCircle size={14} />
-          {(loadMutation.error as Error)?.message || (unloadMutation.error as Error)?.message}
-        </div>
+        <StatusBanner
+          tone="danger"
+          title="Model action failed"
+          message={(loadMutation.error as Error)?.message || (unloadMutation.error as Error)?.message}
+          compact
+        />
       )}
     </div>
   )
