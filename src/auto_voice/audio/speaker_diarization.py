@@ -118,19 +118,29 @@ class SpeakerDiarizer:
         # Lazy load model
         self._model = None
         self._feature_extractor = None
+        self._model_load_failed = False
 
         logger.info(f"SpeakerDiarizer initialized on {self.device}")
 
     def _load_model(self):
         """Lazy load the speaker embedding model."""
-        if self._model is None:
+        if self._model is None and not self._model_load_failed:
             from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector
 
             logger.info(f"Loading speaker embedding model: {self.model_name}")
-            self._feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(self.model_name)
-            self._model = WavLMForXVector.from_pretrained(self.model_name).to(self.device)
-            self._model.eval()
-            logger.info("Speaker embedding model loaded")
+            try:
+                self._feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(self.model_name)
+                self._model = WavLMForXVector.from_pretrained(self.model_name).to(self.device)
+                self._model.eval()
+                logger.info("Speaker embedding model loaded")
+            except Exception as exc:
+                logger.warning(
+                    "Speaker embedding model unavailable; using deterministic fallback embeddings: %s",
+                    exc,
+                )
+                self._feature_extractor = None
+                self._model = None
+                self._model_load_failed = True
 
     def _fallback_embedding_from_waveform(
         self,

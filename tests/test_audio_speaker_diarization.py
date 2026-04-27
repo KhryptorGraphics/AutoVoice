@@ -7,7 +7,10 @@ Task 2.7: Test speaker_diarization.py
 """
 import numpy as np
 import pytest
+import sys
+import soundfile as sf
 import torch
+import types
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
@@ -174,6 +177,42 @@ class TestSpeakerDiarizerInit:
 
         assert diarizer._model is None
         assert diarizer._feature_extractor is None
+
+    def test_model_load_failure_uses_fallback_embeddings(self, monkeypatch, tmp_path):
+        """WavLM load failures must not kill production diarization workflows."""
+
+        class FakeFeatureExtractor:
+            @classmethod
+            def from_pretrained(cls, model_name):
+                return cls()
+
+        class FakeModel:
+            @classmethod
+            def from_pretrained(cls, model_name):
+                return cls()
+
+            def to(self, device):
+                raise NotImplementedError("Cannot copy out of meta tensor; no data!")
+
+        fake_transformers = types.SimpleNamespace(
+            Wav2Vec2FeatureExtractor=FakeFeatureExtractor,
+            WavLMForXVector=FakeModel,
+        )
+        monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+        sample_rate = 16000
+        audio = torch.sin(torch.linspace(0, 2 * torch.pi * 440, sample_rate)).numpy()
+        audio_path = tmp_path / "sample.wav"
+        sf.write(audio_path, audio, sample_rate)
+
+        diarizer = SpeakerDiarizer(device="cpu")
+        embedding = diarizer.extract_speaker_embedding(audio_path)
+
+        assert diarizer._model is None
+        assert diarizer._feature_extractor is None
+        assert diarizer._model_load_failed is True
+        assert embedding.shape == (512,)
+        assert np.isfinite(embedding).all()
 
 
 class TestMemoryManagement:
