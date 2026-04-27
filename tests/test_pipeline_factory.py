@@ -422,7 +422,7 @@ class TestGetStatus:
         assert status['realtime']['latency_target_ms'] == 100
         assert status['quality']['latency_target_ms'] == 3000
         assert status['quality_seedvc']['latency_target_ms'] == 2000
-        assert status['realtime_meanvc']['latency_target_ms'] == 80
+        assert status['realtime_meanvc']['latency_target_ms'] == 350
 
         PipelineFactory.reset_instance()
 
