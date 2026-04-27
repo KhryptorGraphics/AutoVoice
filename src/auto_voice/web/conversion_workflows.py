@@ -503,6 +503,14 @@ class ConversionWorkflowManager:
                     "ready": conversion_ready,
                     "reason": "ready" if conversion_ready else "target_profile_not_trained",
                 }
+                hydrated["readiness"] = {
+                    "training": dict(hydrated["training_readiness"]),
+                    "conversion": dict(hydrated["conversion_readiness"]),
+                    "live_conversion": {
+                        "ready": conversion_ready,
+                        "reason": "ready" if conversion_ready else "target_profile_not_trained",
+                    },
+                }
                 if not hydrated.get("current_training_job_id"):
                     training_jobs = self.state_store.list_training_jobs(profile_id=target_profile_id)
                     active_job = next(
@@ -1123,6 +1131,14 @@ class ConversionWorkflowManager:
             "ready": conversion_ready,
             "reason": "ready" if conversion_ready else "target_profile_not_trained",
         }
+        readiness = {
+            "training": dict(training_readiness),
+            "conversion": dict(conversion_readiness),
+            "live_conversion": {
+                "ready": conversion_ready,
+                "reason": "ready" if conversion_ready else "target_profile_not_trained",
+            },
+        }
         next_status = "ready_for_conversion" if conversion_ready else "ready_for_training"
         self._update_workflow(
             workflow_id,
@@ -1131,4 +1147,5 @@ class ConversionWorkflowManager:
             progress=100,
             training_readiness=training_readiness,
             conversion_readiness=conversion_readiness,
+            readiness=readiness,
         )

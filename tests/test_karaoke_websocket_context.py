@@ -163,6 +163,51 @@ def test_on_start_session_with_profile_and_sample_collection(ws_app):
     assert payload['active_model_type'] == 'full_model'
 
 
+def test_on_start_session_with_full_model_profile_prefers_full_model_artifact(ws_app, tmp_path):
+    from auto_voice.web.karaoke_events import KaraokeNamespace
+
+    ns = KaraokeNamespace()
+    mock_session = MagicMock()
+    store = MagicMock()
+    profile_id = 'profile-full'
+    store.load.return_value = {
+        'profile_id': profile_id,
+        'active_model_type': 'full_model',
+    }
+    store.load_speaker_embedding.return_value = np.ones(256, dtype=np.float32)
+    store.profiles_dir = str(tmp_path / 'profiles')
+    store.trained_models_dir = str(tmp_path / 'trained')
+    Path = tmp_path / 'trained'
+    Path.mkdir(parents=True, exist_ok=True)
+    (Path / f'{profile_id}_full_model.pt').write_bytes(b'full-model')
+    ws_app.voice_cloner = types.SimpleNamespace(store=store)
+
+    with ws_app.test_request_context('/socket.io'):
+        request.sid = 'client-full'
+        with patch('auto_voice.web.karaoke_events.KaraokeSession', return_value=mock_session):
+            with patch('auto_voice.web.karaoke_events.register_session'):
+                with patch('auto_voice.web.karaoke_events.emit') as mock_emit:
+                    ns.on_start_session({
+                        'session_id': 'session-full',
+                        'song_id': 'song-full',
+                        'profile_id': profile_id,
+                        'pipeline_type': 'realtime_meanvc',
+                    })
+
+    assert mock_session._target_model_type == 'full_model'
+    assert mock_session._target_profile_id == profile_id
+    assert mock_session._full_model_path == str(Path / f'{profile_id}_full_model.pt')
+    assert mock_session._user_pipeline_preference == 'realtime_meanvc'
+    started_calls = [c for c in mock_emit.call_args_list if c[0][0] == 'session_started']
+    assert len(started_calls) == 1
+    payload = started_calls[0][0][1]
+    assert payload['session_id'] == 'session-full'
+    assert payload['target_profile_id'] == profile_id
+    assert payload['active_model_type'] == 'full_model'
+    assert payload['requested_pipeline'] == 'realtime_meanvc'
+    assert payload['resolved_pipeline'] == 'realtime_meanvc'
+
+
 def test_on_start_session_persists_snapshot_and_uses_recovery_defaults(ws_app, tmp_path):
     from auto_voice.web.karaoke_events import KaraokeNamespace
     from auto_voice.web.persistence import AppStateStore

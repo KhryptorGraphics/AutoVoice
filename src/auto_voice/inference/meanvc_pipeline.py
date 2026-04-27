@@ -18,6 +18,7 @@ GitHub: https://github.com/ASLP-lab/MeanVC
 import logging
 import sys
 import time
+import types
 from collections import deque
 from pathlib import Path
 from typing import Callable, Dict, Optional, Any, Union
@@ -38,6 +39,35 @@ if str(MEANVC_DIR) not in sys.path:
     sys.path.insert(0, str(MEANVC_DIR))
 if str(MEANVC_SRC) not in sys.path:
     sys.path.insert(0, str(MEANVC_SRC))
+
+
+def _install_torchaudio_sox_effects_compat() -> None:
+    """Provide the removed torchaudio.sox_effects API expected by upstream MeanVC."""
+    try:
+        import torchaudio.sox_effects  # type: ignore[attr-defined]  # noqa: F401
+        return
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    import torchaudio
+
+    module = types.ModuleType("torchaudio.sox_effects")
+
+    def apply_effects_tensor(waveform, sample_rate, effects=None, channels_first=True):
+        return waveform, sample_rate
+
+    def apply_effects_file(path, effects=None, normalize=True, channels_first=True, format=None):
+        return torchaudio.load(
+            path,
+            normalize=normalize,
+            channels_first=channels_first,
+            format=format,
+        )
+
+    module.apply_effects_tensor = apply_effects_tensor
+    module.apply_effects_file = apply_effects_file
+    sys.modules["torchaudio.sox_effects"] = module
+    setattr(torchaudio, "sox_effects", module)
 
 
 def _amp_to_db(x: torch.Tensor, min_level_db: float) -> torch.Tensor:
@@ -388,6 +418,7 @@ class MeanVCPipeline:
         self._vocoder = torch.jit.load(self._vocoder_path).to(self.device)
 
         logger.info("Loading speaker verification model...")
+        _install_torchaudio_sox_effects_compat()
         from runtime.speaker_verification.verification import init_model as init_sv_model
         self._sv_model = init_sv_model('wavlm_large', str(sv_ckpt))
         self._sv_model = self._sv_model.to(self.device)

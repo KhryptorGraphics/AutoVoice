@@ -46,14 +46,14 @@ function formatWorkflowStage(stage: string): string {
 
 function WorkflowProgressRail({ workflow }: { workflow: ConversionWorkflow | null }) {
   const currentIndex = workflow
-    ? Math.max(WORKFLOW_STEPS.findIndex((step) => step.key === workflow.stage), 0)
+    ? WORKFLOW_STEPS.findIndex((step) => step.key === workflow.stage)
     : -1
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
       {WORKFLOW_STEPS.map((step, index) => {
         const isActive = workflow?.stage === step.key
-        const isComplete = currentIndex > index || workflow?.status === 'ready_for_conversion'
+        const isComplete = currentIndex >= 0 && (currentIndex > index || workflow?.status === 'ready_for_conversion')
         return (
           <div
             key={step.key}
@@ -73,6 +73,62 @@ function WorkflowProgressRail({ workflow }: { workflow: ConversionWorkflow | nul
           </div>
         )
       })}
+    </div>
+  )
+}
+
+function formatReason(reason?: string): string {
+  return reason ? reason.replace(/_/g, ' ') : 'unknown'
+}
+
+function readinessLines(readiness?: { reason?: string; blockers?: string[]; warnings?: string[] }): string[] {
+  if (!readiness) return []
+  const lines = [formatReason(readiness.reason)]
+  lines.push(...(readiness.blockers ?? []).map(formatReason))
+  lines.push(...(readiness.warnings ?? []).map(formatReason))
+  return Array.from(new Set(lines.filter(Boolean)))
+}
+
+function WorkflowDetails({ workflow }: { workflow: ConversionWorkflow }) {
+  const artistAnalysis = workflow.artist_analysis as {
+    status?: string
+    dominant_speaker_id?: string | null
+    speaker_assignments?: Array<{ speaker_id: string; resolution?: string; duration_seconds?: number }>
+    diarization?: { num_speakers?: number }
+  } | undefined
+  const speakerCount = artistAnalysis?.diarization?.num_speakers ?? artistAnalysis?.speaker_assignments?.length ?? workflow.resolved_source_profiles.length
+  const trainingLines = readinessLines(workflow.readiness?.training ?? workflow.training_readiness)
+  const conversionLines = readinessLines(workflow.readiness?.conversion ?? workflow.conversion_readiness)
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-sm">
+      <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3">
+        <div className="text-xs uppercase tracking-wide text-gray-500">Artist Diarization</div>
+        <div className="mt-1 text-gray-100">
+          {workflow.diarization_id ? `${speakerCount} speaker${speakerCount === 1 ? '' : 's'} detected` : 'Waiting for artist vocal analysis'}
+        </div>
+        {artistAnalysis?.dominant_speaker_id && (
+          <div className="mt-1 text-xs text-gray-400">Dominant speaker: {artistAnalysis.dominant_speaker_id}</div>
+        )}
+      </div>
+      <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3">
+        <div className="text-xs uppercase tracking-wide text-gray-500">Training Readiness</div>
+        <div className={clsx('mt-1', workflow.training_readiness.ready ? 'text-green-200' : 'text-yellow-100')}>
+          {workflow.training_readiness.ready ? 'Ready' : trainingLines[0] ?? 'Not ready'}
+        </div>
+        {trainingLines.slice(1).map((line) => (
+          <div key={line} className="mt-1 text-xs text-gray-400">{line}</div>
+        ))}
+      </div>
+      <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3">
+        <div className="text-xs uppercase tracking-wide text-gray-500">Conversion Readiness</div>
+        <div className={clsx('mt-1', workflow.conversion_readiness.ready ? 'text-green-200' : 'text-yellow-100')}>
+          {workflow.conversion_readiness.ready ? 'Ready' : conversionLines[0] ?? 'Not ready'}
+        </div>
+        {conversionLines.slice(1).map((line) => (
+          <div key={line} className="mt-1 text-xs text-gray-400">{line}</div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -605,11 +661,14 @@ export function ConversionWorkflowPage() {
         </div>
         <WorkflowProgressRail workflow={workflow} />
         {workflow && (
-          <div className="text-sm text-gray-400">
-            Status: <span className="text-white">{workflow.status}</span>
-            {' · '}
-            Progress: <span className="text-white">{workflow.progress}%</span>
-          </div>
+          <>
+            <div className="text-sm text-gray-400">
+              Status: <span className="text-white">{workflow.status}</span>
+              {' · '}
+              Progress: <span className="text-white">{workflow.progress}%</span>
+            </div>
+            <WorkflowDetails workflow={workflow} />
+          </>
         )}
       </div>
 
@@ -630,7 +689,7 @@ export function ConversionWorkflowPage() {
               <div key={item.review_id} className="rounded-lg border border-yellow-700 bg-yellow-500/5 p-4 space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full bg-yellow-500/20 px-2 py-1 text-xs text-yellow-100">{item.role}</span>
-                  <span className="text-sm text-yellow-50">{item.reason.replace(/_/g, ' ')}</span>
+                  <span className="text-sm text-yellow-50">{formatReason(item.reason)}</span>
                 </div>
                 {item.suggested_match && (
                   <div className="text-sm text-yellow-100">
@@ -794,7 +853,7 @@ export function ConversionWorkflowPage() {
               </span>
             ) : (
               <span className="rounded-full bg-yellow-500/20 px-3 py-1 text-sm text-yellow-100">
-                {workflow.training_readiness.reason.replace(/_/g, ' ')}
+                {formatReason(workflow.training_readiness.reason)}
               </span>
             )}
           </div>
@@ -927,8 +986,8 @@ export function ConversionWorkflowPage() {
             <div className="space-y-4">
               <PresetManager currentConfig={config} onLoadPreset={handlePresetLoad} />
               <div className="rounded-lg border border-gray-700 p-4 space-y-2 text-sm text-gray-300">
-                <div>Training readiness: <strong>{workflow.training_readiness.reason.replace(/_/g, ' ')}</strong></div>
-                <div>Conversion readiness: <strong>{workflow.conversion_readiness.reason.replace(/_/g, ' ')}</strong></div>
+                <div>Training readiness: <strong>{formatReason(workflow.training_readiness.reason)}</strong></div>
+                <div>Conversion readiness: <strong>{formatReason(workflow.conversion_readiness.reason)}</strong></div>
                 {conversionStatus?.pipeline_type && (
                   <div className="flex items-center gap-2">
                     Last conversion pipeline

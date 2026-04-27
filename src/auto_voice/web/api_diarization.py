@@ -32,6 +32,59 @@ _diarization_results: Dict[str, Dict[str, Any]] = {}
 _segment_assignments: Dict[str, Dict[str, str]] = {}
 
 
+def _state_store():
+    getter = _deps.get('get_state_store')
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except Exception:
+        return None
+
+
+def _save_diarization_result(diarization_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist a diarization result while keeping the legacy module cache warm."""
+    diarization_id = diarization_data['diarization_id']
+    payload = dict(diarization_data)
+    store = _state_store()
+    if store is not None:
+        store.save_diarization_result(payload)
+    _diarization_results[diarization_id] = payload
+    return payload
+
+
+def _get_diarization_result(diarization_id: str) -> Optional[Dict[str, Any]]:
+    store = _state_store()
+    if store is not None:
+        result = store.get_diarization_result(diarization_id)
+        if result:
+            _diarization_results[diarization_id] = result
+            return result
+    return _diarization_results.get(diarization_id)
+
+
+def _save_segment_assignment(profile_id: str, segment_key: str, audio_path: str) -> Dict[str, str]:
+    store = _state_store()
+    if store is not None:
+        assignments = store.save_diarization_segment_assignment(profile_id, segment_key, audio_path)
+    else:
+        assignments = dict(_segment_assignments.get(profile_id, {}))
+        assignments[segment_key] = audio_path
+    _segment_assignments[profile_id] = dict(assignments)
+    return dict(assignments)
+
+
+def _get_segment_assignments(profile_id: str) -> Dict[str, str]:
+    assignments: Dict[str, str] = {}
+    store = _state_store()
+    if store is not None:
+        assignments.update(store.get_diarization_segment_assignments(profile_id))
+    assignments.update(_segment_assignments.get(profile_id, {}))
+    if assignments:
+        _segment_assignments[profile_id] = dict(assignments)
+    return assignments
+
+
 def _parse_legacy_segment_key(segment_key: Optional[str]) -> tuple[Optional[str], Optional[int]]:
     """Parse legacy `<diarization_id>_<segment_index>` keys."""
     if not segment_key:
@@ -218,7 +271,7 @@ def diarize_audio():
         if segments:
             response['segment_key'] = f'{diarization_id}_0'
 
-        _diarization_results[diarization_id] = {
+        _save_diarization_result({
             'diarization_id': diarization_id,
             'audio_path': audio_path,
             'audio_duration': result.audio_duration,
@@ -226,7 +279,7 @@ def diarize_audio():
             'segments': segments,
             'speakers': response['speakers'],
             'created_at': time.time(),
-        }
+        })
 
         logger.info(f"Diarization {diarization_id} complete: {result.num_speakers} speakers detected")
         return jsonify(response)
@@ -366,7 +419,7 @@ def assign_diarization_segment():
         if not all([diarization_id, segment_index is not None, profile_id]):
             return _dep('validation_error_response')('Required: diarization_id, segment_index, profile_id')
 
-        diarization_data = _diarization_results.get(diarization_id)
+        diarization_data = _get_diarization_result(diarization_id)
         if not diarization_data:
             return _dep('not_found_response')('Diarization result not found or expired')
 
@@ -413,9 +466,7 @@ def assign_diarization_segment():
                     )
 
         segment_key = f"{diarization_id}_{segment_index}"
-        if profile_id not in _segment_assignments:
-            _segment_assignments[profile_id] = {}
-        _segment_assignments[profile_id][segment_key] = str(extracted_path) if extracted_path else ""
+        _save_segment_assignment(profile_id, segment_key, str(extracted_path) if extracted_path else "")
 
         logger.info(f"Assigned segment {segment_index} from {diarization_id} to profile {profile_id}")
         return jsonify({
@@ -451,7 +502,7 @@ def get_profile_segments(profile_id: str):
             for s in samples
         ]
 
-        assignments = _segment_assignments.get(profile_id, {})
+        assignments = _get_segment_assignments(profile_id)
         assignment_segments = [
             {'type': 'diarization_assignment', 'segment_key': key, 'audio_path': path}
             for key, path in assignments.items()
@@ -483,15 +534,18 @@ def auto_create_profile_from_diarization():
         speaker_id = data.get('speaker_id')
         name = data.get('name')
         artist_names = data.get('artist_names')
+        create_all = bool(data.get('create_all'))
 
         if not diarization_id and legacy_segment_key:
             diarization_id, _ = _parse_legacy_segment_key(legacy_segment_key)
         if not diarization_id:
             return _dep('validation_error_response')('Required: diarization_id')
-        if not artist_names and not all([speaker_id, name]):
-            return _dep('validation_error_response')('Required: diarization_id, speaker_id, name')
+        if not create_all and not artist_names and not all([speaker_id, name]):
+            return _dep('validation_error_response')(
+                'Required: diarization_id plus speaker_id/name, artist_names, or create_all'
+            )
 
-        diarization_data = _diarization_results.get(diarization_id)
+        diarization_data = _get_diarization_result(diarization_id)
         if not diarization_data:
             return _dep('not_found_response')('Diarization result not found or expired')
 
@@ -500,11 +554,17 @@ def auto_create_profile_from_diarization():
         request_metadata = data.get('metadata') or {}
         extract_segments = data.get('extract_segments', True)
 
-        if artist_names:
+        if artist_names or create_all:
             segments = diarization_data.get('segments', [])
             speaker_ids = sorted({segment['speaker_id'] for segment in segments})
             profiles = []
-            for speaker_name, current_speaker_id in zip(artist_names, speaker_ids):
+            names = list(artist_names or [])
+            for index, current_speaker_id in enumerate(speaker_ids, start=1):
+                speaker_name = (
+                    names[index - 1]
+                    if index - 1 < len(names) and names[index - 1]
+                    else f"Artist {current_speaker_id.replace('_', ' ').title()}"
+                )
                 profiles.append(
                     _create_profile_from_diarized_speaker(
                         diarization_data=diarization_data,

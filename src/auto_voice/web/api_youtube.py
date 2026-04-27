@@ -220,7 +220,8 @@ def youtube_download():
                         'duration': seg.duration,
                     })
 
-                root._diarization_results[diarization_id] = {
+                root._save_diarization_result({
+                    'diarization_id': diarization_id,
                     'audio_path': result.audio_path,
                     'audio_duration': result.duration or 0.0,
                     'num_speakers': diarization_result.num_speakers,
@@ -236,7 +237,7 @@ def youtube_download():
                         'original_artist': result.original_artist,
                         'thumbnail_url': result.thumbnail_url,
                     },
-                }
+                })
 
                 response['diarization_result'] = {
                     'diarization_id': diarization_id,

@@ -350,6 +350,32 @@ class TestTrainingEndpoints:
         assert data["job_id"] == "job-1"
         assert manager.executed == ["job-1"]
 
+    def test_create_training_job_full_mode_rejects_when_full_model_not_unlocked(self, client_remaining, app_remaining, tmp_path):
+        profile_id = "00000000-0000-0000-0000-000000000303a"
+        _create_profile(app_remaining, profile_id=profile_id, clean_vocal_seconds=120.0)
+        sample_path = tmp_path / "full.wav"
+        _write_wav(sample_path)
+        _add_training_sample(app_remaining, profile_id, sample_path)
+
+        manager = _FakeTrainingJobManager()
+        manager.full_model_check = {
+            "needs_full_model": False,
+            "reason": "insufficient_clean_vocals",
+            "clean_vocal_seconds": 120.0,
+            "remaining_seconds": 1680.0,
+        }
+        app_remaining._training_job_manager = manager
+
+        response = client_remaining.post(
+            "/api/v1/training/jobs",
+            json={"profile_id": profile_id, "config": {"training_mode": "full"}},
+        )
+
+        assert response.status_code == 400
+        payload = response.get_json()
+        assert "Full model training is locked" in payload["error"]
+        assert manager.executed == []
+
     def test_create_training_job_continue_full_allows_existing_full_model(self, client_remaining, app_remaining, tmp_path):
         profile_id = "00000000-0000-0000-0000-000000000303b"
         _create_profile(app_remaining, profile_id=profile_id, clean_vocal_seconds=3600.0)

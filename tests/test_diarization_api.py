@@ -35,6 +35,28 @@ def client(app):
 
 
 @pytest.fixture
+def durable_app(tmp_path):
+    """Create an app with an isolated durable DATA_DIR."""
+    from auto_voice.web.app import create_app
+
+    app, _socketio = create_app(
+        config={
+            'TESTING': True,
+            'DATA_DIR': str(tmp_path),
+            'singing_conversion_enabled': False,
+            'voice_cloning_enabled': False,
+        }
+    )
+    return app
+
+
+@pytest.fixture
+def durable_client(durable_app):
+    """Create a test client backed by isolated durable state."""
+    return durable_app.test_client()
+
+
+@pytest.fixture
 def test_audio_file():
     """Create a test audio file."""
     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
@@ -119,6 +141,34 @@ class TestDiarizeAudioEndpoint:
             assert response.status_code == 200
             data = response.get_json()
             assert 'diarization_id' in data
+
+    def test_diarize_persists_result_to_state_store(
+        self,
+        durable_app,
+        durable_client,
+        test_audio_file,
+        mock_diarization_result,
+    ):
+        """Diarization results should survive outside the legacy module cache."""
+        with patch('auto_voice.audio.speaker_diarization.SpeakerDiarizer') as MockDiarizer:
+            mock_instance = MagicMock()
+            mock_instance.diarize.return_value = mock_diarization_result
+            MockDiarizer.return_value = mock_instance
+
+            response = durable_client.post(
+                '/api/v1/audio/diarize',
+                json={'audio_path': test_audio_file},
+                content_type='application/json',
+            )
+
+        assert response.status_code == 200
+        data = response.get_json()
+        persisted = durable_app.state_store.get_diarization_result(data['diarization_id'])
+
+        assert persisted is not None
+        assert persisted['diarization_id'] == data['diarization_id']
+        assert persisted['num_speakers'] == 2
+        assert persisted['segments'][0]['speaker_id'] == 'speaker_0'
 
     def test_diarize_missing_audio(self, client):
         """Test error when no audio provided."""
@@ -211,6 +261,50 @@ class TestAssignSegmentEndpoint:
         )
 
         assert response.status_code == 400
+
+    def test_assign_segment_reads_persisted_diarization_and_persists_assignment(
+        self,
+        durable_app,
+        durable_client,
+        test_audio_file,
+    ):
+        """Segment assignment should work after in-memory diarization cache loss."""
+        from auto_voice.web import api
+
+        with durable_app.app_context():
+            store = api._get_profile_store()
+            profile_id = store.save({'name': 'Target User', 'profile_role': 'target_user'})
+        diarization_id = 'persisted-diarization-assign'
+        durable_app.state_store.save_diarization_result({
+            'diarization_id': diarization_id,
+            'audio_path': test_audio_file,
+            'audio_duration': 3.0,
+            'sample_rate': 16000,
+            'num_speakers': 1,
+            'segments': [
+                {'start': 0.0, 'end': 1.5, 'speaker_id': 'speaker_0', 'confidence': 0.95},
+            ],
+        })
+        api._diarization_results.clear()
+        api._segment_assignments.clear()
+
+        with patch('auto_voice.audio.speaker_diarization.SpeakerDiarizer') as MockDiarizer:
+            mock_diarizer = MagicMock()
+            mock_diarizer.extract_speaker_audio.return_value = Path(test_audio_file)
+            MockDiarizer.return_value = mock_diarizer
+
+            response = durable_client.post(
+                '/api/v1/audio/diarize/assign',
+                json={
+                    'diarization_id': diarization_id,
+                    'segment_index': 0,
+                    'profile_id': profile_id,
+                },
+            )
+
+        assert response.status_code == 200
+        assignments = durable_app.state_store.get_diarization_segment_assignments(profile_id)
+        assert assignments[f'{diarization_id}_0'] == test_audio_file
 
 
 class TestProfileSegmentsEndpoint:
@@ -367,6 +461,50 @@ class TestAutoCreateProfileEndpoint:
         )
 
         assert response.status_code == 400
+
+    def test_auto_create_all_profiles_with_generated_artist_names(self, client, test_audio_file):
+        """Standalone profile creation can create one source artist per speaker."""
+        from auto_voice.web import api
+
+        diarization_id = 'test-diarization-create-all'
+        api._diarization_results[diarization_id] = {
+            'diarization_id': diarization_id,
+            'audio_path': test_audio_file,
+            'audio_duration': 3.0,
+            'sample_rate': 16000,
+            'num_speakers': 2,
+            'segments': [
+                {'start': 0.0, 'end': 1.5, 'speaker_id': 'speaker_0', 'confidence': 0.95},
+                {'start': 1.5, 'end': 3.0, 'speaker_id': 'speaker_1', 'confidence': 0.90},
+            ],
+        }
+
+        with patch('auto_voice.audio.speaker_diarization.SpeakerDiarizer') as MockDiarizer:
+            mock_diarizer = MagicMock()
+            mock_diarizer.extract_speaker_embedding.return_value = np.random.randn(512).astype(np.float32)
+            mock_diarizer.extract_speaker_audio.return_value = Path(test_audio_file)
+            MockDiarizer.return_value = mock_diarizer
+
+            with patch('auto_voice.storage.voice_profiles.VoiceProfileStore') as MockStore:
+                mock_store = MagicMock()
+                mock_store.create_profile_from_diarization.side_effect = ['profile-0', 'profile-1']
+                MockStore.return_value = mock_store
+
+                response = client.post(
+                    '/api/v1/profiles/auto-create',
+                    json={
+                        'diarization_id': diarization_id,
+                        'create_all': True,
+                    },
+                )
+
+        assert response.status_code == 201
+        data = response.get_json()
+        assert data['status'] == 'success'
+        assert [profile['profile_id'] for profile in data['profiles']] == ['profile-0', 'profile-1']
+        assert [profile['name'] for profile in data['profiles']] == ['Artist Speaker 0', 'Artist Speaker 1']
+
+        del api._diarization_results[diarization_id]
 
 
 class TestYouTubeDownloadBootstrap:

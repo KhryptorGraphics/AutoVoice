@@ -297,6 +297,8 @@ class AppStateStore:
             "audio_router_config": self.base_dir / "audio_router_config.json",
             "device_config": self.base_dir / "device_config.json",
             "karaoke_sessions": self.base_dir / "karaoke_sessions.json",
+            "diarization_results": self.base_dir / "diarization_results.json",
+            "diarization_segment_assignments": self.base_dir / "diarization_segment_assignments.json",
         }
 
     def _read(self, name: str, default: Any) -> Any:
@@ -421,6 +423,53 @@ class AppStateStore:
             return False
         del workflows[workflow_id]
         self._write("conversion_workflows", workflows)
+        return True
+
+    def list_diarization_results(self) -> List[Dict[str, Any]]:
+        results = list(self._read("diarization_results", {}).values())
+        results.sort(key=lambda item: item.get("created_at", 0), reverse=True)
+        return results
+
+    def get_diarization_result(self, diarization_id: str) -> Optional[Dict[str, Any]]:
+        return self._read("diarization_results", {}).get(diarization_id)
+
+    def save_diarization_result(self, diarization: Dict[str, Any]) -> Dict[str, Any]:
+        results = self._read("diarization_results", {})
+        results[diarization["diarization_id"]] = deepcopy(diarization)
+        self._write("diarization_results", results)
+        return diarization
+
+    def delete_diarization_result(self, diarization_id: str) -> bool:
+        results = self._read("diarization_results", {})
+        if diarization_id not in results:
+            return False
+        del results[diarization_id]
+        self._write("diarization_results", results)
+        return True
+
+    def get_diarization_segment_assignments(self, profile_id: str) -> Dict[str, str]:
+        assignments = self._read("diarization_segment_assignments", {})
+        return dict(assignments.get(profile_id, {}))
+
+    def save_diarization_segment_assignment(
+        self,
+        profile_id: str,
+        segment_key: str,
+        audio_path: str,
+    ) -> Dict[str, str]:
+        assignments = self._read("diarization_segment_assignments", {})
+        profile_assignments = dict(assignments.get(profile_id, {}))
+        profile_assignments[segment_key] = audio_path
+        assignments[profile_id] = profile_assignments
+        self._write("diarization_segment_assignments", assignments)
+        return profile_assignments
+
+    def delete_diarization_segment_assignments(self, profile_id: str) -> bool:
+        assignments = self._read("diarization_segment_assignments", {})
+        if profile_id not in assignments:
+            return False
+        del assignments[profile_id]
+        self._write("diarization_segment_assignments", assignments)
         return True
 
     def list_checkpoints(self, profile_id: str) -> List[Dict[str, Any]]:

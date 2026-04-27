@@ -158,6 +158,7 @@ from .api_diarization import (
     _parse_legacy_segment_key,
     _build_diarization_speaker_summary,
     _create_profile_from_diarized_speaker,
+    _save_diarization_result,
     diarize_audio,
     filter_sample,
     set_profile_speaker_embedding,
@@ -733,6 +734,37 @@ def _serialize_profile_for_response(profile: Dict[str, Any]) -> Dict[str, Any]:
             'adapter' if clean_profile['has_trained_model'] else 'base'
         ),
     )
+    can_train = clean_profile['profile_role'] == 'target_user' and sample_count > 0
+    can_convert = clean_profile['profile_role'] == 'target_user' and clean_profile['has_trained_model']
+    clean_profile['readiness'] = {
+        'training': {
+            'ready': can_train,
+            'reason': 'ready' if can_train else (
+                'source_artist_profiles_are_not_trainable'
+                if clean_profile['profile_role'] == 'source_artist'
+                else 'no_trainable_samples'
+            ),
+            'sample_count': sample_count,
+            'clean_vocal_seconds': clean_vocal_seconds,
+            'clean_vocal_minutes': round(clean_vocal_seconds / 60.0, 2),
+        },
+        'conversion': {
+            'ready': can_convert,
+            'reason': 'ready' if can_convert else (
+                'source_artist_profiles_are_not_conversion_targets'
+                if clean_profile['profile_role'] == 'source_artist'
+                else 'target_profile_not_trained'
+            ),
+        },
+        'live_conversion': {
+            'ready': can_convert,
+            'reason': 'ready' if can_convert else (
+                'source_artist_profiles_are_not_live_targets'
+                if clean_profile['profile_role'] == 'source_artist'
+                else 'target_profile_not_trained'
+            ),
+        },
+    }
     return clean_profile
 
 
@@ -826,6 +858,7 @@ register_diarization_routes(
     validation_error_response=validation_error_response,
     not_found_response=not_found_response,
     error_response=error_response,
+    get_state_store=_get_state_store,
     get_profile_store=_get_profile_store,
     find_training_sample=_find_training_sample,
 )

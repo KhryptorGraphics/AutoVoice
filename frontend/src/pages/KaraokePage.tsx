@@ -83,8 +83,10 @@ export function KaraokePage() {
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [collectTrainingSamples, setCollectTrainingSamples] = useState(false);
   const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null);
+  const isLiveReadyProfile = (profile: VoiceProfile) =>
+    profile.readiness?.live_conversion?.ready ?? profile.has_trained_model;
   const trainedTargetProfiles = voiceProfiles.filter(
-    (profile) => profile.profile_role !== 'source_artist' && profile.has_trained_model
+    (profile) => profile.profile_role !== 'source_artist' && isLiveReadyProfile(profile)
   );
   const selectedProfile = selectedProfileId
     ? voiceProfiles.find((profile) => profile.profile_id === selectedProfileId) ?? null
@@ -324,7 +326,7 @@ export function KaraokePage() {
       setVoiceProfiles(profiles);
       if (!selectedProfileId) {
         const defaultProfile = profiles.find(
-          (profile) => profile.profile_role !== 'source_artist' && profile.has_trained_model
+          (profile) => profile.profile_role !== 'source_artist' && isLiveReadyProfile(profile)
         );
         if (defaultProfile) {
           setSelectedProfileId(defaultProfile.profile_id);
@@ -685,7 +687,7 @@ export function KaraokePage() {
                 </select>
                 {trainedTargetProfiles.length === 0 && (
                   <p className="text-xs text-yellow-400 mt-2">
-                    No trained target user profiles. Train one on Voice Profiles page for better quality.
+                    No live-ready target user profiles. Train a LoRA or dedicated full model on Voice Profiles page.
                   </p>
                 )}
                 {selectedProfile && (

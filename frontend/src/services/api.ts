@@ -127,6 +127,26 @@ export interface YouTubeHistoryItem {
 export type ProfileRole = 'source_artist' | 'target_user'
 export type ActiveModelType = 'base' | 'adapter' | 'full_model'
 
+export interface ReadinessState {
+  ready: boolean
+  reason: string
+  label?: string
+  blockers?: string[]
+  warnings?: string[]
+  sample_count?: number
+  clean_vocal_minutes?: number
+  clean_vocal_seconds?: number
+  remaining_seconds?: number
+  remaining_minutes?: number
+}
+
+export interface ProfileReadiness {
+  training?: ReadinessState
+  conversion?: ReadinessState
+  live_conversion?: ReadinessState
+  diarization?: ReadinessState
+}
+
 export interface VoiceProfile {
   profile_id: string
   user_id?: string
@@ -151,6 +171,7 @@ export interface VoiceProfile {
   has_adapter_model?: boolean
   active_model_type?: ActiveModelType
   selected_adapter?: 'hq' | 'nvfp4' | 'unified' | null
+  readiness?: ProfileReadiness
 }
 
 // Training status for voice profiles
@@ -641,6 +662,21 @@ export interface ConversionWorkflowResolvedProfile {
   clean_vocal_minutes?: number
 }
 
+export interface ConversionWorkflowDiarizationState {
+  status?: string
+  diarization_id?: string | null
+  num_speakers?: number
+  dominant_speaker_id?: string | null
+  speaker_assignments?: Array<{
+    speaker_id: string
+    duration_seconds?: number
+    segment_count?: number
+    resolved_profile_id?: string
+    resolution?: string
+    sample_paths?: string[]
+  }>
+}
+
 export interface ConversionWorkflowCandidatePayload {
   role: ProfileRole
   speaker_id?: string
@@ -702,10 +738,21 @@ export interface ConversionWorkflow {
     reason: string
     sample_count?: number
     clean_vocal_minutes?: number
+    blockers?: string[]
+    warnings?: string[]
   }
   conversion_readiness: {
     ready: boolean
     reason: string
+    blockers?: string[]
+    warnings?: string[]
+  }
+  user_analysis?: Record<string, unknown>
+  artist_analysis?: ConversionWorkflowDiarizationState | Record<string, unknown>
+  readiness?: {
+    training?: ReadinessState
+    conversion?: ReadinessState
+    live_conversion?: ReadinessState
   }
   current_training_job_id?: string | null
   created_at: string

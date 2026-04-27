@@ -162,6 +162,22 @@ def test_conversion_workflow_create_requires_dual_uploads(client_workflow, app_w
     assert missing_user.status_code == 400
 
 
+def test_conversion_workflow_convert_rejects_invalid_pipeline_type(client_workflow, app_workflow):
+    class _RejectingWorkflowManager(_FakeWorkflowManager):
+        def create_conversion_job(self, workflow_id, settings):
+            raise ValueError('pipeline_type must be one of: quality, quality_seedvc, quality_shortcut, realtime')
+
+    app_workflow.conversion_workflow_manager = _RejectingWorkflowManager()
+
+    response = client_workflow.post(
+        '/api/v1/convert/workflows/wf-1/convert',
+        json={'pipeline_type': 'magic'},
+    )
+
+    assert response.status_code == 400
+    assert 'pipeline_type must be one of' in response.get_json()['error']
+
+
 def test_attach_training_job_route_persists_real_workflow_state(client_workflow, app_workflow, tmp_path):
     workflow_id = "wf-persist"
     app_workflow.state_store.save_conversion_workflow(

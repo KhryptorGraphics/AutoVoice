@@ -55,6 +55,10 @@ run_cmd "$PYTHON" "$SCRIPT_DIR/verify_dependencies.py" \
     --require-tensorrt \
     --output "$AUDIT_PATH"
 
+if [[ "$PIPELINE" == "all" || "$PIPELINE" == "realtime_meanvc" ]]; then
+    run_cmd "$PYTHON" "$SCRIPT_DIR/prepare_meanvc_assets.py"
+fi
+
 run_cmd "$PYTHON" "$SCRIPT_DIR/performance_validation.py" \
     --pipeline "$PIPELINE" \
     --duration 10 \
