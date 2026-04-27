@@ -6,6 +6,7 @@ import clsx from 'clsx'
 import { AudioDeviceSelector } from '../components/AudioDeviceSelector'
 import { GPUMonitor } from '../components/GPUMonitor'
 import { ModelManager } from '../components/ModelManager'
+import { NotificationSettings } from '../components/NotificationSettings'
 import { StatusBanner } from '../components/StatusBanner'
 import { SystemConfigPanel } from '../components/SystemConfigPanel'
 import { TensorRTControls } from '../components/TensorRTControls'
@@ -289,6 +290,7 @@ export function SystemStatusPage() {
             </section>
             <section className="space-y-6">
               <TensorRTControls />
+              <NotificationSettings />
               <SystemConfigPanel onConfigChange={() => void refetch()} />
             </section>
           </div>

@@ -223,6 +223,76 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     headphone_device: headphoneDevice,
     sample_rate: 24000,
   }
+  let youtubeInfoRequests = 0
+  let youtubeDownloadRequests = 0
+  let youtubeAddToProfileRequests = 0
+  let conversionHistoryDeletes = 0
+  let checkpointRollbacks = 0
+  let checkpointDeletes = 0
+  const conversionRecords = [
+    {
+      id: 'history-1',
+      status: 'complete',
+      created_at: '2026-04-18T00:00:00Z',
+      input_file: 'demo-vocal.wav',
+      profile_id: 'profile-1',
+      preset: 'Studio',
+      duration: 132,
+      pipeline_type: 'quality_seedvc',
+      requested_pipeline: 'quality_seedvc',
+      resolved_pipeline: 'quality_seedvc',
+      runtime_backend: 'tensorrt',
+      adapter_type: 'hq',
+      active_model_type: 'adapter',
+      processing_time_seconds: 61.2,
+      rtf: 0.46,
+      audio_duration_seconds: 132,
+      resultUrl: '/outputs/history-1.wav',
+      output_url: '/outputs/history-1.wav',
+      download_url: '/outputs/history-1.wav',
+      isFavorite: false,
+      targetVoice: 'Smoke Profile',
+      originalFileName: 'demo-vocal.wav',
+    },
+  ]
+  const checkpoints = [
+    {
+      id: 'checkpoint-active',
+      profile_id: 'profile-1',
+      version: 'v2',
+      created_at: '2026-04-18T01:00:00Z',
+      epochs_trained: 12,
+      final_loss: 0.21,
+      is_active: true,
+      file_size_mb: 96.2,
+      training_samples: 3,
+      notes: 'Current production adapter',
+    },
+    {
+      id: 'checkpoint-rollback',
+      profile_id: 'profile-1',
+      version: 'v1',
+      created_at: '2026-04-17T01:00:00Z',
+      epochs_trained: 8,
+      final_loss: 0.29,
+      is_active: false,
+      file_size_mb: 88.5,
+      training_samples: 3,
+      notes: 'Last known stable adapter',
+    },
+    {
+      id: 'checkpoint-delete',
+      profile_id: 'profile-1',
+      version: 'v0',
+      created_at: '2026-04-16T01:00:00Z',
+      epochs_trained: 4,
+      final_loss: 0.41,
+      is_active: false,
+      file_size_mb: 81.4,
+      training_samples: 2,
+      notes: 'Superseded experimental adapter',
+    },
+  ]
 
   await page.route('**/api/v1/health', async (route) => {
     return jsonResponse(route, {
@@ -493,6 +563,118 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
         sample_rate: 44100,
         created: '2026-04-18T00:00:00Z',
         metadata: {},
+      },
+    ])
+  })
+
+  await page.route('**/api/v1/profiles/profile-1/samples/from-path', async (route) => {
+    youtubeAddToProfileRequests += 1
+    return jsonResponse(route, {
+      sample_id: 'sample-youtube-1',
+      id: 'sample-youtube-1',
+      profile_id: 'profile-1',
+      audio_path: '/tmp/autovoice-youtube-smoke.wav',
+      duration_seconds: 142,
+      sample_rate: 44100,
+      created: '2026-04-18T00:00:00Z',
+      metadata: route.request().postDataJSON(),
+    }, 201)
+  })
+
+  await page.route('**/api/v1/profiles/profile-1/checkpoints', async (route) => {
+    return jsonResponse(route, checkpoints)
+  })
+
+  await page.route('**/api/v1/profiles/profile-1/checkpoints/checkpoint-rollback/rollback', async (route) => {
+    checkpointRollbacks += 1
+    checkpoints.forEach((checkpoint) => {
+      checkpoint.is_active = checkpoint.id === 'checkpoint-rollback'
+    })
+    return route.fulfill({ status: 204 })
+  })
+
+  await page.route('**/api/v1/profiles/profile-1/checkpoints/checkpoint-delete', async (route) => {
+    checkpointDeletes += 1
+    const index = checkpoints.findIndex((checkpoint) => checkpoint.id === 'checkpoint-delete')
+    if (index >= 0) {
+      checkpoints.splice(index, 1)
+    }
+    return route.fulfill({ status: 204 })
+  })
+
+  await page.route(/\/api\/v1\/convert\/history(?:\?.*)?$/, async (route) => {
+    return jsonResponse(route, conversionRecords)
+  })
+
+  await page.route('**/api/v1/convert/history/history-1', async (route) => {
+    if (route.request().method() === 'DELETE') {
+      conversionHistoryDeletes += 1
+      const index = conversionRecords.findIndex((record) => record.id === 'history-1')
+      if (index >= 0) {
+        conversionRecords.splice(index, 1)
+      }
+      return route.fulfill({ status: 204 })
+    }
+    if (route.request().method() === 'PATCH') {
+      const body = route.request().postDataJSON() as Record<string, unknown>
+      Object.assign(conversionRecords[0], body)
+      return jsonResponse(route, conversionRecords[0])
+    }
+    return jsonResponse(route, conversionRecords[0] ?? {})
+  })
+
+  await page.route('**/api/v1/youtube/info', async (route) => {
+    youtubeInfoRequests += 1
+    return jsonResponse(route, {
+      success: true,
+      title: 'Smoke Song',
+      duration: 142,
+      main_artist: 'Smoke Artist',
+      featured_artists: [],
+      is_cover: false,
+      original_artist: null,
+      song_title: 'Smoke Song',
+      thumbnail_url: null,
+      video_id: 'smoke-video',
+      error: null,
+    })
+  })
+
+  await page.route('**/api/v1/youtube/download', async (route) => {
+    youtubeDownloadRequests += 1
+    return jsonResponse(route, {
+      success: true,
+      audio_path: '/tmp/autovoice-youtube-smoke.wav',
+      title: 'Smoke Song',
+      duration: 142,
+      main_artist: 'Smoke Artist',
+      featured_artists: [],
+      is_cover: false,
+      original_artist: null,
+      song_title: 'Smoke Song',
+      thumbnail_url: null,
+      video_id: 'smoke-video',
+      error: null,
+    })
+  })
+
+  await page.route(/\/api\/v1\/youtube\/history(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === 'DELETE') {
+      return route.fulfill({ status: 204 })
+    }
+    return jsonResponse(route, [
+      {
+        id: 'youtube-history-1',
+        url: 'https://youtu.be/smoke-video',
+        title: 'Smoke Song',
+        mainArtist: 'Smoke Artist',
+        featuredArtists: [],
+        hasDiarization: false,
+        numSpeakers: 0,
+        timestamp: '2026-04-18T00:00:00Z',
+        audioPath: '/tmp/autovoice-youtube-smoke.wav',
+        filteredPath: null,
+        videoId: 'smoke-video',
       },
     ])
   })
@@ -787,5 +969,13 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     getLoadedModelCount: () => loadedModels.length,
     getLoadedModelTypes: () => loadedModels.map((model) => model.type),
     getBuiltTensorRTEngines: () => builtEngines.map((engine) => `${engine.name}:${engine.precision}`),
+    getYouTubeInfoRequests: () => youtubeInfoRequests,
+    getYouTubeDownloadRequests: () => youtubeDownloadRequests,
+    getYouTubeAddToProfileRequests: () => youtubeAddToProfileRequests,
+    getConversionHistoryDeletes: () => conversionHistoryDeletes,
+    getConversionRecordCount: () => conversionRecords.length,
+    getCheckpointRollbacks: () => checkpointRollbacks,
+    getCheckpointDeletes: () => checkpointDeletes,
+    getCheckpointCount: () => checkpoints.length,
   }
 }

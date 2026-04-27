@@ -8,6 +8,7 @@ import { AddSongButton } from '../components/AddSongButton'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { TrainingSampleUpload } from '../components/TrainingSampleUpload'
 import { AdapterSelector } from '../components/AdapterSelector'
+import { CheckpointBrowser } from '../components/CheckpointBrowser'
 import { ConfirmActionButton } from '../components/ConfirmActionButton'
 import { useToastContext } from '../contexts/ToastContext'
 import clsx from 'clsx'
@@ -64,7 +65,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>(DEFAULT_TRAINING_CONFIG)
   const [selectedJob, setSelectedJob] = useState<TrainingJob | null>(null)
   const [startingTraining, setStartingTraining] = useState(false)
-  const [activeTab, setActiveTab] = useState<'samples' | 'adapters' | 'config' | 'jobs' | 'segments'>('samples')
+  const [activeTab, setActiveTab] = useState<'samples' | 'adapters' | 'checkpoints' | 'config' | 'jobs' | 'segments'>('samples')
   const [showAdvancedUpload, setShowAdvancedUpload] = useState(false)
   const [assignedSegments, setAssignedSegments] = useState<Array<{ type: string; segment_key: string; audio_path: string }>>([])
   const [loadingSegments, setLoadingSegments] = useState(false)
@@ -310,7 +311,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
         {(
           isSourceProfile
             ? (['samples', 'segments'] as const)
-            : (['samples', 'adapters', 'segments', 'config', 'jobs'] as const)
+            : (['samples', 'adapters', 'checkpoints', 'segments', 'config', 'jobs'] as const)
         ).map(tab => (
           <button
             key={tab}
@@ -325,6 +326,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
           >
             {tab === 'samples' ? `Samples (${samples.length})` :
              tab === 'adapters' ? `Adapters (${adapters?.count ?? 0})` :
+             tab === 'checkpoints' ? 'Checkpoints' :
              tab === 'segments' ? 'Diarized Segments' :
              tab === 'jobs' ? 'Training Jobs' : 'Config'}
           </button>
@@ -481,6 +483,16 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
             </div>
           </div>
         </div>
+      )}
+
+      {activeTab === 'checkpoints' && (
+        <CheckpointBrowser
+          profileId={profile.profile_id}
+          onRollback={(checkpoint) => {
+            void refreshProfile()
+            toast.success(`Rolled back to checkpoint ${checkpoint.version}`)
+          }}
+        />
       )}
 
       {activeTab === 'config' && (
