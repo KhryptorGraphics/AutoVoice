@@ -139,3 +139,35 @@ SecRequestBodyLimit 262144000
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["ok"] is True
     assert report["checks"]["vhosts"]["ok"] is True
+
+
+def test_completion_matrix_smoke_runner(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_completion_matrix.py",
+            "--output-dir",
+            str(tmp_path / "completion"),
+            "--timeout",
+            "180",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    matrix_path = tmp_path / "completion" / "completion_matrix.json"
+    audit_path = tmp_path / "completion" / "skip_audit.json"
+    assert matrix_path.exists()
+    assert audit_path.exists()
+
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    assert matrix["ok"] is True
+    lane_names = {lane["name"] for lane in matrix["lanes"]}
+    assert "priority-skip-audit" in lane_names
+    assert "benchmark-dashboard-validate" in lane_names
+    assert "hosted-preflight-local" in lane_names
+
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit["findings"] == []

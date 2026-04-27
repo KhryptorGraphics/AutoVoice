@@ -18,9 +18,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = None
         status = 200
-        if self.path == "/health":
+        if self.path == "/api/v1/health":
             payload = {"status": "healthy"}
-        elif self.path == "/api/v1/ready":
+        elif self.path == "/ready":
             payload = {"ready": True}
         elif self.path == "/api/v1/metrics":
             payload = {"total_conversions": 1}
@@ -116,6 +116,9 @@ def test_validate_release_candidate_script(tmp_path: Path):
         assert report["compose"]["ok"] is True
         assert report["repo_boundaries"]["ok"] is True
         assert all(check["ok"] for check in report["checks"])
+        checked_urls = {check["url"] for check in report["checks"]}
+        assert any(url.endswith("/api/v1/health") for url in checked_urls)
+        assert any(url.endswith("/ready") for url in checked_urls)
     finally:
         server.shutdown()
         server.server_close()

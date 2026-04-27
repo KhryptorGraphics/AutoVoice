@@ -140,21 +140,14 @@ class TestKaraokeNamespaceInit:
 
 
 class TestConnectDisconnect:
-    """Test connect/disconnect event handlers.
+    """Connect/disconnect handlers are covered by context-aware integration tests."""
 
-    Note: These tests require Flask app context. They are marked to skip
-    if the context cannot be established.
-    """
+    def test_context_coverage_lives_in_dedicated_module(self):
+        """Keep this unit module free of Flask context placeholders."""
+        import tests.test_karaoke_websocket_context as context_tests
 
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_connect_emits_connected(self):
-        """on_connect emits 'connected' event."""
-        pass
-
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_disconnect_cleans_up_session(self):
-        """on_disconnect cleans up client session."""
-        pass
+        assert hasattr(context_tests, 'test_on_connect_emits_connected')
+        assert hasattr(context_tests, 'test_on_disconnect_cleans_up_session_and_collector')
 
 
 class TestJoinLeaveSession:
@@ -198,30 +191,15 @@ class TestJoinLeaveSession:
 
 
 class TestStartSession:
-    """Test start_session event handler.
+    """start_session handler coverage is owned by the context-aware test module."""
 
-    Note: These tests require Flask app context and are skipped for unit testing.
-    """
+    def test_start_session_context_coverage_exists(self):
+        """Guard against regressing back to skip-only start_session coverage."""
+        import tests.test_karaoke_websocket_context as context_tests
 
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_start_session_missing_params_emits_error(self):
-        """on_start_session emits error without required params."""
-        pass
-
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_start_session_creates_session(self):
-        """on_start_session creates KaraokeSession."""
-        pass
-
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_start_session_with_embedding(self):
-        """on_start_session sets speaker embedding if provided."""
-        pass
-
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_start_session_emits_session_started(self):
-        """on_start_session emits session_started event."""
-        pass
+        assert hasattr(context_tests, 'test_on_start_session_missing_params_emits_error')
+        assert hasattr(context_tests, 'test_on_start_session_creates_session_and_registers')
+        assert hasattr(context_tests, 'test_on_start_session_with_embedding_sets_speaker_embedding')
 
 
 class TestStopSession:
@@ -264,30 +242,15 @@ class TestStopSession:
 
 
 class TestAudioChunk:
-    """Test audio_chunk event handler.
+    """audio_chunk handler coverage is owned by the context-aware test module."""
 
-    Note: These tests require Flask app context and are skipped for unit testing.
-    """
+    def test_audio_chunk_context_coverage_exists(self):
+        """Guard against regressing back to skip-only audio_chunk coverage."""
+        import tests.test_karaoke_websocket_context as context_tests
 
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_audio_chunk_without_session_emits_error(self):
-        """on_audio_chunk emits error without active session."""
-        pass
-
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_audio_chunk_processes_audio(self):
-        """on_audio_chunk processes audio through session."""
-        pass
-
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_audio_chunk_emits_converted_audio(self):
-        """on_audio_chunk emits converted audio back."""
-        pass
-
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_on_audio_chunk_processing_error_emits_error(self):
-        """on_audio_chunk emits error on processing failure."""
-        pass
+        assert hasattr(context_tests, 'test_on_audio_chunk_without_session_emits_error')
+        assert hasattr(context_tests, 'test_on_audio_chunk_processes_audio_and_emits_result')
+        assert hasattr(context_tests, 'test_on_audio_chunk_processing_error_emits_error')
 
 
 class TestSetSpeakerEmbedding:
@@ -363,15 +326,13 @@ class TestRegisterNamespace:
 
 
 class TestSampleCollection:
-    """Test training sample collection during karaoke.
+    """Test training sample collection during karaoke."""
 
-    Note: These tests require Flask app context and are skipped for unit testing.
-    """
+    def test_start_session_sample_collection_context_coverage_exists(self):
+        """Guard against regressing back to skip-only sample collection coverage."""
+        import tests.test_karaoke_websocket_context as context_tests
 
-    @pytest.mark.skip(reason="Requires Flask app context - tested via integration tests")
-    def test_start_session_enables_sample_collection(self):
-        """start_session can enable sample collection."""
-        pass
+        assert hasattr(context_tests, 'test_on_start_session_with_profile_and_sample_collection')
 
     def test_stop_session_reports_samples_collected(self):
         """stop_session reports number of samples collected."""

@@ -465,10 +465,7 @@ class TestMultiArtistFlow:
                 'artist_names': ['Artist A', 'Artist B'],
             })
 
-            # Auto-create might not be fully implemented
-            if response.status_code == 404:
-                pytest.skip("Auto-create endpoint not implemented")
-
+            assert response.status_code != 404, "Auto-create endpoint is part of the public contract"
             assert response.status_code in [200, 201]
             result = json.loads(response.data)
             assert 'profiles' in result
@@ -495,10 +492,7 @@ class TestAdapterIntegration:
         # Check for adapters
         response = client.get(f'/api/v1/profiles/{profile_id}/adapters')
 
-        # Adapter listing might not be implemented
-        if response.status_code == 404:
-            pytest.skip("Adapter listing not implemented")
-
+        assert response.status_code != 404, "Adapter listing endpoint is part of the public contract"
         assert response.status_code == 200
         adapters = json.loads(response.data)
         assert 'adapters' in adapters
@@ -544,10 +538,7 @@ class TestErrorHandling:
         """Test Task 5.2: Invalid file rejection."""
         client, socketio = client_with_socketio
 
-        try:
-            profile_id = create_test_profile(client, 'Test', sample_rate)
-        except AssertionError:
-            pytest.skip("Profile creation not available")
+        profile_id = create_test_profile(client, 'Test', sample_rate)
 
         # Try to upload text file as audio
         fake_audio = io.BytesIO(b'This is not audio')
@@ -566,10 +557,7 @@ class TestErrorHandling:
         client, socketio = client_with_socketio
 
         # Create profile and samples
-        try:
-            profile_id = create_test_profile(client, 'Cancel Test', sample_rate)
-        except AssertionError:
-            pytest.skip("Profile creation not available")
+        profile_id = create_test_profile(client, 'Cancel Test', sample_rate)
 
         # Upload samples and create job
         sample_ids = []
@@ -606,10 +594,7 @@ class TestErrorHandling:
         # Cancel the job
         response = client.post(f'/api/v1/training/jobs/{job_id}/cancel')
 
-        # Cancellation might not be implemented
-        if response.status_code == 404:
-            pytest.skip("Cancellation endpoint not implemented")
-
+        assert response.status_code != 404, "Training cancellation endpoint is part of the public contract"
         assert response.status_code == 200
 
         # Verify job is cancelled

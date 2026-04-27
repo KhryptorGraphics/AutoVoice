@@ -32,6 +32,8 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
   `python scripts/validate_experimental_evidence.py`
 - benchmark/release promotion evidence is defined by `config/benchmark_suites.json` and
   validated by `python scripts/validate_benchmark_dashboard.py`
+- production completion evidence is written by `python scripts/run_completion_matrix.py`
+  under `reports/completion/latest/`
 
 ## Vendor Model Repos
 
@@ -117,7 +119,9 @@ Use those only after validating against the canonical docs and live code paths.
 - generated API docs: `/api/v1/openapi.json`, `/api/v1/openapi.yaml`, `/docs`
 - frontend build: `cd frontend && npm run build`
 - release-candidate validation: `python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --wait-seconds 180`
-  This now verifies benchmark evidence schema/provenance against `HEAD` or `GITHUB_SHA`, not just file existence.
+  This validates `/api/v1/health`, `/ready`, and `/api/v1/metrics`, and verifies benchmark evidence schema/provenance against `HEAD` or `GITHUB_SHA`.
+- production completion matrix: `python scripts/run_completion_matrix.py`
+  Use `--full` on a capable Jetson/compose/hosted runner; local smoke mode records unavailable frontend, compose, and hardware lanes as explicit skipped lanes.
 - benchmark dashboard contract validation: `python scripts/validate_benchmark_dashboard.py`
 - hosted deployment preflight: `python scripts/validate_hosted_deployment.py --hostname autovoice.giggahost.com`
 - experimental evidence validation: `python scripts/validate_experimental_evidence.py`

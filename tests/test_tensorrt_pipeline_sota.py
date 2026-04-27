@@ -11,6 +11,24 @@ Target: Jetson Thor (SM 11.0, 16GB GPU memory)
 import pytest
 import torch
 import numpy as np
+import os
+from pathlib import Path
+
+
+def _trt_engine_dir() -> str:
+    engine_dir = os.environ.get("AUTOVOICE_TRT_ENGINE_DIR")
+    if not engine_dir:
+        pytest.skip("AUTOVOICE_TRT_ENGINE_DIR is not set for the TensorRT hardware lane")
+    required = {
+        "content_extractor.trt",
+        "pitch_extractor.trt",
+        "decoder.trt",
+        "vocoder.trt",
+    }
+    missing = sorted(name for name in required if not (Path(engine_dir) / name).exists())
+    if missing:
+        pytest.skip(f"AUTOVOICE_TRT_ENGINE_DIR is missing TensorRT engines: {', '.join(missing)}")
+    return engine_dir
 
 
 class TestTRTEngineExport:
@@ -108,18 +126,16 @@ class TestTRTInference:
     def test_trt_pipeline_init(self):
         """TRT pipeline should initialize."""
         pytest.importorskip("tensorrt")
-        pytest.skip("Requires pre-built TRT engines - run build_engines.py first")
         from auto_voice.inference.trt_pipeline import TRTConversionPipeline
-        pipeline = TRTConversionPipeline(engine_dir="/tmp/trt_engines")
+        pipeline = TRTConversionPipeline(engine_dir=_trt_engine_dir())
         assert pipeline is not None
 
     def test_trt_convert_produces_audio(self):
         """TRT pipeline should produce audio output."""
         pytest.importorskip("tensorrt")
-        pytest.skip("Requires pre-built TRT engines")
         from auto_voice.inference.trt_pipeline import TRTConversionPipeline
 
-        pipeline = TRTConversionPipeline(engine_dir="/tmp/trt_engines")
+        pipeline = TRTConversionPipeline(engine_dir=_trt_engine_dir())
 
         audio = torch.sin(torch.linspace(0, 1, 24000) * 2 * np.pi * 440)
         speaker = torch.randn(256)
@@ -131,10 +147,9 @@ class TestTRTInference:
     def test_trt_output_finite(self):
         """TRT output should be finite."""
         pytest.importorskip("tensorrt")
-        pytest.skip("Requires pre-built TRT engines")
         from auto_voice.inference.trt_pipeline import TRTConversionPipeline
 
-        pipeline = TRTConversionPipeline(engine_dir="/tmp/trt_engines")
+        pipeline = TRTConversionPipeline(engine_dir=_trt_engine_dir())
 
         audio = torch.sin(torch.linspace(0, 1, 24000) * 2 * np.pi * 440)
         speaker = torch.randn(256)
@@ -149,7 +164,6 @@ class TestTRTQualityComparison:
     def test_trt_matches_pytorch_within_tolerance(self):
         """TRT output should match PyTorch within 1% relative error."""
         pytest.importorskip("tensorrt")
-        pytest.skip("Requires pre-built TRT engines")
         from auto_voice.inference.trt_pipeline import TRTConversionPipeline
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
 
@@ -157,7 +171,7 @@ class TestTRTQualityComparison:
         pytorch_pipeline = SOTAConversionPipeline()
 
         # TRT pipeline
-        trt_pipeline = TRTConversionPipeline(engine_dir="/tmp/trt_engines")
+        trt_pipeline = TRTConversionPipeline(engine_dir=_trt_engine_dir())
 
         audio = torch.sin(torch.linspace(0, 1, 24000) * 2 * np.pi * 440)
         speaker = torch.randn(256)
@@ -180,11 +194,10 @@ class TestTRTPerformance:
     def test_trt_latency_under_100ms(self):
         """TRT inference should be under 100ms for 1s audio."""
         pytest.importorskip("tensorrt")
-        pytest.skip("Requires pre-built TRT engines")
         import time
         from auto_voice.inference.trt_pipeline import TRTConversionPipeline
 
-        pipeline = TRTConversionPipeline(engine_dir="/tmp/trt_engines")
+        pipeline = TRTConversionPipeline(engine_dir=_trt_engine_dir())
 
         audio = torch.sin(torch.linspace(0, 1, 24000) * 2 * np.pi * 440)
         speaker = torch.randn(256)
@@ -202,10 +215,9 @@ class TestTRTPerformance:
     def test_trt_memory_efficient(self):
         """TRT engines should fit in 16GB GPU memory."""
         pytest.importorskip("tensorrt")
-        pytest.skip("Requires pre-built TRT engines")
         from auto_voice.inference.trt_pipeline import TRTConversionPipeline
 
-        pipeline = TRTConversionPipeline(engine_dir="/tmp/trt_engines")
+        pipeline = TRTConversionPipeline(engine_dir=_trt_engine_dir())
 
         # Get total engine memory usage
         total_memory = pipeline.get_engine_memory_usage()
@@ -226,10 +238,9 @@ class TestNoFallbackTRT:
     def test_invalid_input_raises(self):
         """Invalid input should raise RuntimeError."""
         pytest.importorskip("tensorrt")
-        pytest.skip("Requires pre-built TRT engines")
         from auto_voice.inference.trt_pipeline import TRTConversionPipeline
 
-        pipeline = TRTConversionPipeline(engine_dir="/tmp/trt_engines")
+        pipeline = TRTConversionPipeline(engine_dir=_trt_engine_dir())
 
         with pytest.raises(RuntimeError):
             pipeline.convert(torch.tensor([]), 24000, torch.randn(256))

@@ -58,6 +58,7 @@ You can rerun the validation independently:
 
 ```bash
 scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform
+python scripts/run_completion_matrix.py --output-dir reports/completion/latest
 python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5000 --report-dir reports/platform
 python scripts/validate_hosted_deployment.py --skip-dns --skip-tls --vhost-file /etc/apache2/sites-available/autovoice.giggadev.com.conf
 python scripts/validate_benchmark_dashboard.py
@@ -124,6 +125,17 @@ Release-candidate validation now requires benchmark evidence artifacts under
 for the candidate commit being validated. A stale dashboard or release-evidence
 pair from another git SHA no longer satisfies the RC gate.
 
+The canonical production completion matrix is:
+
+```bash
+python scripts/run_completion_matrix.py --full --base-url http://127.0.0.1:10001
+```
+
+Use the default smoke mode for local development when frontend browser tooling,
+Docker, public DNS/TLS, or Jetson TensorRT hardware are intentionally
+unavailable. Smoke mode still writes `reports/completion/latest/completion_matrix.json`
+and records unavailable lanes explicitly instead of hiding them.
+
 The hosted preflight lane is machine-checkable:
 
 ```bash
@@ -139,7 +151,7 @@ records or certificates are intentionally unavailable.
 
 Rollback criteria for a release candidate are simple:
 
-- `/health` is not healthy
+- `/api/v1/health` is not healthy
 - `/ready` is not ready
 - `/api/v1/metrics` does not respond
 - compose config is invalid

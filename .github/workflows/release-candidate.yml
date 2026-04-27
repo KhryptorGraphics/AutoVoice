@@ -23,21 +23,13 @@ jobs:
         run: |
           : > .env
           echo "SECRET_KEY=release-candidate-secret-key" >> .env
+          echo "GRAFANA_PASSWORD=release-candidate-grafana-password" >> .env
           echo "HOST_PORT=10001" >> .env
           echo "FRONTEND_PORT=13000" >> .env
           echo "LOG_LEVEL=info" >> .env
 
       - name: Validate compose config
-        run: docker compose -f docker-compose.yaml config -q
-
-      - name: Start real compose stack
-        env:
-          AUTOVOICE_RC_PROJECT: autovoice-rc-${{ github.run_id }}
-        run: |
-          docker compose -p "$AUTOVOICE_RC_PROJECT" -f docker-compose.yaml up -d --build backend frontend
-
-      - name: Validate release candidate endpoints
-        run: python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --report-dir reports/platform --wait-seconds 180
+        run: bash scripts/validate_compose_config.sh
 
       - name: Generate release benchmark evidence fixture
         run: |
@@ -86,6 +78,15 @@ jobs:
             --bundle realtime=reports/benchmarks/rc-bundles/realtime.json \
             --bundle hq_svc=reports/benchmarks/rc-bundles/hq_svc.json \
             --output-dir reports/benchmarks/latest
+
+      - name: Start real compose stack
+        env:
+          AUTOVOICE_RC_PROJECT: autovoice-rc-${{ github.run_id }}
+        run: |
+          docker compose -p "$AUTOVOICE_RC_PROJECT" -f docker-compose.yaml up -d --build backend frontend
+
+      - name: Validate release candidate endpoints
+        run: python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --report-dir reports/platform --wait-seconds 180
 
       - name: Validate benchmark dashboard contract
         run: python scripts/validate_benchmark_dashboard.py

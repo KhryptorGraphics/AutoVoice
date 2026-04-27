@@ -230,11 +230,15 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     if not args.skip_compose:
+        compose_env = os.environ.copy()
+        compose_env.setdefault("SECRET_KEY", "release-candidate-compose-validation-secret")
+        compose_env.setdefault("GRAFANA_PASSWORD", "release-candidate-compose-validation-grafana-password")
         compose_result = subprocess.run(
             ["docker", "compose", "-f", args.compose_file, "config", "-q"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
+            env=compose_env,
         )
         results["compose"] = {
             "ok": compose_result.returncode == 0,
@@ -243,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         results["compose"] = {"ok": True, "skipped": True}
 
-    for path in ("/health", "/api/v1/ready", "/api/v1/metrics"):
+    for path in ("/api/v1/health", "/ready", "/api/v1/metrics"):
         results["checks"].append(
             _check_url_with_retry(
                 f"{results['base_url']}{path}",
