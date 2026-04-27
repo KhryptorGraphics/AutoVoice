@@ -265,6 +265,15 @@ def test_build_engine_onnx_not_found(mock_trt_builder):
         builder.build_engine("/nonexistent/model.onnx")
 
 
+def test_build_engine_requires_tensorrt_when_onnx_exists(mock_onnx_file):
+    """Test engine building reports missing optional TensorRT dependency clearly."""
+    builder = TRTEngineBuilder()
+
+    with patch('auto_voice.export.tensorrt_engine.trt', None):
+        with pytest.raises(RuntimeError, match="TensorRT is not available"):
+            builder.build_engine(mock_onnx_file)
+
+
 def test_build_engine_with_fp16(mock_trt_builder, mock_onnx_file):
     """Test engine building with FP16 precision enabled."""
     builder = TRTEngineBuilder()

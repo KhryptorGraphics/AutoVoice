@@ -11,9 +11,9 @@ try:
     from .tensorrt_engine import (
         LatencyStats,
         ShapeProfile,
+        TRT_AVAILABLE as _TENSORRT_AVAILABLE,
         TRTEngineBuilder,
     )
-    _TENSORRT_AVAILABLE = True
 except ImportError:
     # TensorRT not available - define placeholder classes
     LatencyStats = None

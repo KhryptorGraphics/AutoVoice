@@ -26,9 +26,19 @@ services:
 
     volumes:
       - ${AUTOVOICE_PRETRAINED_DIR:-./models/pretrained}:/app/models/pretrained:ro
+      - autovoice-app-state:/app/data/app_state
       - autovoice-profiles:/app/data/voice_profiles
+      - autovoice-samples:/app/data/samples
+      - autovoice-trained-models:/app/data/trained_models
+      - autovoice-checkpoints:/app/data/checkpoints
+      - autovoice-training-vocals:/app/data/training_vocals
+      - autovoice-youtube-audio:/app/data/youtube_audio
+      - autovoice-separated-youtube:/app/data/separated_youtube
+      - autovoice-diarized-youtube:/app/data/diarized_youtube
       - autovoice-uploads:/app/data/uploads
       - autovoice-outputs:/app/data/outputs
+      - autovoice-swarm-runs:/app/data/swarm_runs
+      - autovoice-swarm-memory:/app/data/swarm_memory
       - autovoice-logs:/app/logs
       - ./config:/app/config:ro
 
@@ -117,12 +127,32 @@ services:
       - prometheus
 
 volumes:
+  autovoice-app-state:
+    name: autovoice-app-state
   autovoice-profiles:
     name: autovoice-profiles
+  autovoice-samples:
+    name: autovoice-samples
+  autovoice-trained-models:
+    name: autovoice-trained-models
+  autovoice-checkpoints:
+    name: autovoice-checkpoints
+  autovoice-training-vocals:
+    name: autovoice-training-vocals
+  autovoice-youtube-audio:
+    name: autovoice-youtube-audio
+  autovoice-separated-youtube:
+    name: autovoice-separated-youtube
+  autovoice-diarized-youtube:
+    name: autovoice-diarized-youtube
   autovoice-uploads:
     name: autovoice-uploads
   autovoice-outputs:
     name: autovoice-outputs
+  autovoice-swarm-runs:
+    name: autovoice-swarm-runs
+  autovoice-swarm-memory:
+    name: autovoice-swarm-memory
   autovoice-logs:
     name: autovoice-logs
   prometheus-data:

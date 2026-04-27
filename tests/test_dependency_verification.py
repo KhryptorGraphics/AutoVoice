@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import builtins
+import importlib
+import sys
 import types
 from pathlib import Path
 
@@ -70,6 +73,46 @@ def test_default_dependencies_can_require_tensorrt():
         dep for dep in default_dependencies(require_tensorrt=True) if dep.name == "tensorrt"
     )
     assert tensorrt.required is True
+
+
+def test_export_imports_when_tensorrt_is_missing(monkeypatch):
+    """TensorRT is optional; ONNX exports must remain importable without it."""
+    module_names = ["auto_voice.export", "auto_voice.export.tensorrt_engine"]
+    original_modules = {name: sys.modules.pop(name, None) for name in module_names}
+    auto_voice_pkg = sys.modules.get("auto_voice")
+    original_export_attr = (
+        getattr(auto_voice_pkg, "export", None) if auto_voice_pkg else None
+    )
+    had_export_attr = auto_voice_pkg is not None and hasattr(auto_voice_pkg, "export")
+    real_import = builtins.__import__
+
+    def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tensorrt":
+            raise ImportError("No module named 'tensorrt'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+
+    try:
+        tensorrt_engine = importlib.import_module("auto_voice.export.tensorrt_engine")
+        export_package = importlib.import_module("auto_voice.export")
+
+        assert tensorrt_engine.TRT_AVAILABLE is False
+        assert tensorrt_engine.TRT_LOGGER is None
+        assert export_package._TENSORRT_AVAILABLE is False
+        assert export_package.export_content_encoder is not None
+        assert export_package.TRTEngineBuilder is tensorrt_engine.TRTEngineBuilder
+    finally:
+        for name in module_names:
+            sys.modules.pop(name, None)
+        for name, module in original_modules.items():
+            if module is not None:
+                sys.modules[name] = module
+        if auto_voice_pkg is not None:
+            if had_export_attr:
+                setattr(auto_voice_pkg, "export", original_export_attr)
+            elif hasattr(auto_voice_pkg, "export"):
+                delattr(auto_voice_pkg, "export")
 
 
 def test_check_dependency_reports_success(monkeypatch):

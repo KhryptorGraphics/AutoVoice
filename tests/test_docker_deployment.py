@@ -13,9 +13,11 @@ import logging
 import platform
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 import requests
+import yaml
 
 
 pytestmark = pytest.mark.integration
@@ -33,6 +35,23 @@ MAX_STARTUP_WAIT = 120  # seconds
 HEALTH_CHECK_INTERVAL = 5  # seconds
 BUILD_TIMEOUT = 1800  # seconds
 SHARED_SECRET = "test-secret-key-for-docker-deployment"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+REQUIRED_DATA_DIR_VOLUMES = {
+    "autovoice-app-state": "/app/data/app_state",
+    "autovoice-profiles": "/app/data/voice_profiles",
+    "autovoice-samples": "/app/data/samples",
+    "autovoice-trained-models": "/app/data/trained_models",
+    "autovoice-checkpoints": "/app/data/checkpoints",
+    "autovoice-training-vocals": "/app/data/training_vocals",
+    "autovoice-youtube-audio": "/app/data/youtube_audio",
+    "autovoice-separated-youtube": "/app/data/separated_youtube",
+    "autovoice-diarized-youtube": "/app/data/diarized_youtube",
+    "autovoice-uploads": "/app/data/uploads",
+    "autovoice-outputs": "/app/data/outputs",
+    "autovoice-swarm-runs": "/app/data/swarm_runs",
+    "autovoice-swarm-memory": "/app/data/swarm_memory",
+}
 
 CRITICAL_LOG_PATTERNS = [
     "Traceback (most recent call last)",
@@ -41,6 +60,37 @@ CRITICAL_LOG_PATTERNS = [
     "Fatal error",
     "CUDA error: out of memory",
 ]
+
+
+def _load_compose() -> dict:
+    return yaml.safe_load((PROJECT_ROOT / "docker-compose.yaml").read_text(encoding="utf-8"))
+
+
+def _compose_mounts_by_source(service: dict) -> dict[str, str]:
+    mounts = {}
+    for volume in service.get("volumes", []):
+        if not isinstance(volume, str):
+            continue
+        parts = volume.rsplit(":", 2)
+        if len(parts) < 2:
+            continue
+        source, target = parts[0], parts[1]
+        mounts[source] = target
+    return mounts
+
+
+def test_compose_persists_all_canonical_data_dir_state():
+    """The Docker backend must not lose durable DATA_DIR state on container recreate."""
+    compose = _load_compose()
+    backend = compose["services"]["backend"]
+    environment = backend.get("environment", [])
+    mounts = _compose_mounts_by_source(backend)
+    declared_volumes = set(compose.get("volumes", {}))
+
+    assert "DATA_DIR=/app/data" in environment
+    for volume_name, target in REQUIRED_DATA_DIR_VOLUMES.items():
+        assert mounts.get(volume_name) == target
+        assert volume_name in declared_volumes
 
 
 def _run(cmd: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:

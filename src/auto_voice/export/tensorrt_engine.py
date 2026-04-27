@@ -5,6 +5,8 @@ support, FP16/INT8 precision, and engine caching. Targets Jetson Thor
 (SM 11.0, CUDA 13.0, TensorRT 10.x).
 """
 
+from __future__ import annotations
+
 import gc
 import logging
 import os
@@ -26,6 +28,16 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING) if trt else None
+
+
+def _require_tensorrt() -> Any:
+    """Return the TensorRT module or fail with an actionable optional-dependency error."""
+    if trt is None:
+        raise RuntimeError(
+            "TensorRT is not available. Install the optional 'tensorrt' package "
+            "to build, load, or run TensorRT engines."
+        )
+    return trt
 
 
 @dataclass
@@ -116,12 +128,13 @@ class TRTEngineBuilder:
         if not Path(onnx_path).exists():
             raise RuntimeError(f"ONNX file not found: {onnx_path}")
 
+        trt_module = _require_tensorrt()
         self._cleanup_cuda()
-        builder = trt.Builder(TRT_LOGGER)
+        builder = trt_module.Builder(TRT_LOGGER)
         network = builder.create_network(
-            1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+            1 << int(trt_module.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
         )
-        parser = trt.OnnxParser(network, TRT_LOGGER)
+        parser = trt_module.OnnxParser(network, TRT_LOGGER)
 
         with open(onnx_path, 'rb') as f:
             if not parser.parse(f.read()):
@@ -133,12 +146,15 @@ class TRTEngineBuilder:
                 )
 
         config = builder.create_builder_config()
-        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, self._workspace_bytes)
+        config.set_memory_pool_limit(
+            trt_module.MemoryPoolType.WORKSPACE,
+            self._workspace_bytes,
+        )
 
         if fp16:
-            config.set_flag(trt.BuilderFlag.FP16)
+            config.set_flag(trt_module.BuilderFlag.FP16)
         if int8:
-            config.set_flag(trt.BuilderFlag.INT8)
+            config.set_flag(trt_module.BuilderFlag.INT8)
             if calibrator is not None:
                 config.int8_calibrator = calibrator
 
@@ -175,7 +191,7 @@ class TRTEngineBuilder:
         if serialized is None:
             raise RuntimeError(f"TensorRT engine build failed for {onnx_path}")
 
-        runtime = trt.Runtime(TRT_LOGGER)
+        runtime = trt_module.Runtime(TRT_LOGGER)
         engine = runtime.deserialize_cuda_engine(serialized)
         if engine is None:
             raise RuntimeError("Failed to deserialize built engine")
@@ -224,8 +240,9 @@ class TRTEngineBuilder:
         if not Path(path).exists():
             raise RuntimeError(f"Engine file not found: {path}")
 
+        trt_module = _require_tensorrt()
         self._cleanup_cuda()
-        runtime = trt.Runtime(TRT_LOGGER)
+        runtime = trt_module.Runtime(TRT_LOGGER)
         with open(path, 'rb') as f:
             engine = runtime.deserialize_cuda_engine(f.read())
 
@@ -286,6 +303,7 @@ class TRTEngineBuilder:
         Raises:
             RuntimeError: If inference execution fails.
         """
+        trt_module = _require_tensorrt()
         context = engine.create_execution_context()
         self._cleanup_cuda()
 
@@ -303,7 +321,7 @@ class TRTEngineBuilder:
             name = engine.get_tensor_name(i)
             mode = engine.get_tensor_mode(name)
 
-            if mode == trt.TensorIOMode.INPUT:
+            if mode == trt_module.TensorIOMode.INPUT:
                 # Copy input to GPU
                 arr = inputs[name]
                 device_tensor = torch.from_numpy(arr).cuda()
@@ -312,7 +330,7 @@ class TRTEngineBuilder:
             else:
                 # Allocate output buffer
                 shape = context.get_tensor_shape(name)
-                dtype = trt.nptype(engine.get_tensor_dtype(name))
+                dtype = trt_module.nptype(engine.get_tensor_dtype(name))
                 device_tensor = torch.empty(
                     tuple(shape), dtype=torch.from_numpy(np.empty(1, dtype=dtype)).dtype
                 ).cuda()
@@ -354,6 +372,7 @@ class TRTEngineBuilder:
         Returns:
             LatencyStats with mean, p50, p95, p99 in milliseconds.
         """
+        trt_module = _require_tensorrt()
         context = engine.create_execution_context()
         self._cleanup_cuda()
 
@@ -369,13 +388,13 @@ class TRTEngineBuilder:
             name = engine.get_tensor_name(i)
             mode = engine.get_tensor_mode(name)
 
-            if mode == trt.TensorIOMode.INPUT:
+            if mode == trt_module.TensorIOMode.INPUT:
                 device_tensor = torch.from_numpy(inputs[name]).cuda()
                 device_buffers[name] = device_tensor
                 context.set_tensor_address(name, device_tensor.data_ptr())
             else:
                 shape = context.get_tensor_shape(name)
-                dtype = trt.nptype(engine.get_tensor_dtype(name))
+                dtype = trt_module.nptype(engine.get_tensor_dtype(name))
                 device_tensor = torch.empty(
                     tuple(shape), dtype=torch.from_numpy(np.empty(1, dtype=dtype)).dtype
                 ).cuda()

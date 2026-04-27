@@ -69,6 +69,7 @@ python scripts/validate_benchmark_dashboard.py
 - Common companion ports checked during setup: `3306` (MySQL), `5432` (Postgres), `6333` (Qdrant)
 - Compose stack source: `docker-compose.yaml`
 - Compose images: `autovoice-backend:${AUTOVOICE_IMAGE_TAG:-local}`, `autovoice-frontend:${AUTOVOICE_IMAGE_TAG:-local}`, pinned Prometheus and Grafana images
+- Durable app state: compose sets `DATA_DIR=/app/data` and persists canonical state directories with named volumes, including `app_state`, `voice_profiles`, `samples`, `trained_models`, `checkpoints`, upload/output folders, YouTube/separation staging folders, and swarm run/memory folders
 - Systemd unit source: `config/systemd/autovoice.service`
 - Root privileges are only required if you want the setup script to install the service unit
 
