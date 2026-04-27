@@ -63,6 +63,24 @@ def test_check_python_environment_uses_current_prefix_when_path_matches(monkeypa
     assert status["matches_expected_executable"] is True
 
 
+def test_check_python_environment_ignores_unrelated_active_conda_env(monkeypatch, tmp_path):
+    executable = tmp_path / "miniconda3" / "envs" / "autovoice-thor" / "bin" / "python"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_text("", encoding="utf-8")
+
+    monkeypatch.delenv("AUTOVOICE_ENV_NAME", raising=False)
+    monkeypatch.delenv("AUTOVOICE_ENV_PREFIX", raising=False)
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "base")
+    monkeypatch.setenv("CONDA_PREFIX", str(tmp_path / "miniconda3"))
+
+    status = check_python_environment(executable=str(executable))
+
+    assert status["expected_env_name"] == "autovoice-thor"
+    assert status["expected_env_prefix"].endswith("/envs/autovoice-thor")
+    assert status["matches_expected_env"] is True
+    assert status["matches_expected_executable"] is True
+
+
 def test_default_dependencies_make_tensorrt_optional_by_default():
     tensorrt = next(dep for dep in default_dependencies() if dep.name == "tensorrt")
     assert tensorrt.required is False

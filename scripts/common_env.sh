@@ -11,7 +11,7 @@ if [[ -z "${AUTOVOICE_ENV_PREFIX:-}" ]]; then
         AUTOVOICE_ENV_PREFIX="$(cd "$(dirname "${AUTOVOICE_PYTHON}")/.." && pwd)"
     elif [[ -n "${PYTHON:-}" && -x "${PYTHON}" ]]; then
         AUTOVOICE_ENV_PREFIX="$(cd "$(dirname "${PYTHON}")/.." && pwd)"
-    elif [[ -n "${CONDA_PREFIX:-}" ]]; then
+    elif [[ -n "${CONDA_PREFIX:-}" && "${CONDA_DEFAULT_ENV:-}" == "$AUTOVOICE_ENV_NAME" ]]; then
         AUTOVOICE_ENV_PREFIX="${CONDA_PREFIX}"
     else
         AUTOVOICE_ENV_PREFIX="${HOME}/anaconda3/envs/${AUTOVOICE_ENV_NAME}"

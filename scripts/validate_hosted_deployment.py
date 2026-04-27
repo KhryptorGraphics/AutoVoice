@@ -16,6 +16,28 @@ def _load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _discover_vhost_files(hostname: str, sites_dir: Path = Path("/etc/apache2/sites-available")) -> list[Path]:
+    """Find vhosts that serve hostname by ServerName or ServerAlias."""
+
+    if not sites_dir.exists():
+        return []
+
+    matches: list[Path] = []
+    for path in sorted(sites_dir.glob("*.conf")):
+        try:
+            text = _load_text(path)
+        except OSError:
+            continue
+        for line in text.splitlines():
+            tokens = line.split()
+            if not tokens or tokens[0] not in {"ServerName", "ServerAlias"}:
+                continue
+            if hostname in tokens[1:]:
+                matches.append(path)
+                break
+    return matches
+
+
 def _check_vhost_files(
     vhost_files: list[Path],
     *,
@@ -24,7 +46,12 @@ def _check_vhost_files(
     frontend_root: str,
     min_body_limit: int,
 ) -> dict[str, Any]:
-    result: dict[str, Any] = {"ok": True, "files": {}, "hostname": hostname}
+    result: dict[str, Any] = {
+        "ok": True,
+        "files": {},
+        "hostname": hostname,
+        "serving_vhost_count": 0,
+    }
     expected_tokens = [
         hostname,
         f"ProxyPass /api http://127.0.0.1:{backend_port}/api",
@@ -48,14 +75,15 @@ def _check_vhost_files(
                     body_limit = None
         missing_tokens = [token for token in expected_tokens if token not in text]
         file_ok = not missing_tokens and body_limit is not None and body_limit >= min_body_limit
-        if not file_ok:
-            result["ok"] = False
+        if file_ok:
+            result["serving_vhost_count"] += 1
         result["files"][str(path)] = {
             "ok": file_ok,
             "missing_tokens": missing_tokens,
             "body_limit": body_limit,
             "body_limit_ok": body_limit is not None and body_limit >= min_body_limit,
         }
+    result["ok"] = result["serving_vhost_count"] > 0
     return result
 
 
@@ -134,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
 
     vhost_files = [Path(path) for path in (args.vhost_file or [])]
     if not vhost_files:
-        vhost_files = [
+        vhost_files = _discover_vhost_files(args.hostname) or [
             Path(f"/etc/apache2/sites-available/{args.hostname}.conf"),
             Path(f"/etc/apache2/sites-available/{args.hostname}-le-ssl.conf"),
         ]

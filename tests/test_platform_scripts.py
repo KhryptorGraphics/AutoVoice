@@ -141,6 +141,50 @@ SecRequestBodyLimit 262144000
     assert report["checks"]["vhosts"]["ok"] is True
 
 
+def test_hosted_deployment_discovers_server_alias_vhost(tmp_path):
+    from scripts.validate_hosted_deployment import _check_vhost_files, _discover_vhost_files
+
+    sites_dir = tmp_path / "sites-available"
+    sites_dir.mkdir()
+    canonical = sites_dir / "autovoice.giggadev.com.conf"
+    canonical.write_text(
+        """
+<VirtualHost *:80>
+    ServerName autovoice.giggadev.com
+    ServerAlias autovoice.giggahost.com
+</VirtualHost>
+""",
+        encoding="utf-8",
+    )
+
+    assert _discover_vhost_files("autovoice.giggahost.com", sites_dir=sites_dir) == [canonical]
+
+    ssl_vhost = sites_dir / "autovoice.giggadev.com-le-ssl.conf"
+    ssl_vhost.write_text(
+        """
+<VirtualHost *:443>
+    ServerName autovoice.giggadev.com
+    ServerAlias autovoice.giggahost.com
+    DocumentRoot /home/kp/thordrive/autovoice/frontend/dist
+    ProxyPass /api http://127.0.0.1:10600/api
+    ProxyPass /socket.io http://127.0.0.1:10600/socket.io
+    SecRequestBodyLimit 262144000
+</VirtualHost>
+""",
+        encoding="utf-8",
+    )
+
+    result = _check_vhost_files(
+        [canonical, ssl_vhost],
+        hostname="autovoice.giggahost.com",
+        backend_port=10600,
+        frontend_root="frontend/dist",
+        min_body_limit=262144000,
+    )
+    assert result["ok"] is True
+    assert result["serving_vhost_count"] == 1
+
+
 def test_completion_matrix_smoke_runner(tmp_path):
     result = subprocess.run(
         [

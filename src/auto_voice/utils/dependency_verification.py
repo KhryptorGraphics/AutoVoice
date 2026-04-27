@@ -86,7 +86,6 @@ def resolve_expected_env_name(expected_env_name: Optional[str] = None) -> str:
     candidate = (
         expected_env_name
         or os.environ.get("AUTOVOICE_ENV_NAME")
-        or os.environ.get("CONDA_DEFAULT_ENV")
         or DEFAULT_EXPECTED_ENV_NAME
     )
     return str(candidate).strip() or DEFAULT_EXPECTED_ENV_NAME
@@ -104,12 +103,13 @@ def resolve_expected_env_prefix(
         return Path(configured_prefix).expanduser()
 
     conda_prefix = os.environ.get("CONDA_PREFIX")
-    if conda_prefix:
+    conda_env_name = os.environ.get("CONDA_DEFAULT_ENV")
+    resolved_env_name = resolve_expected_env_name(expected_env_name)
+    if conda_prefix and conda_env_name == resolved_env_name:
         return Path(conda_prefix).expanduser()
 
     resolved_executable = Path(executable or sys.executable).resolve()
     inferred_name = infer_env_name(str(resolved_executable))
-    resolved_env_name = resolve_expected_env_name(expected_env_name)
     if inferred_name and inferred_name == resolved_env_name:
         return resolved_executable.parent.parent
 
@@ -132,7 +132,11 @@ def check_python_environment(
     expected_executable = expected_prefix / "bin" / "python" if expected_prefix else None
     conda_default_env = os.environ.get("CONDA_DEFAULT_ENV")
     matches_expected_env = inferred_name == resolved_env_name or conda_default_env == resolved_env_name
-    matches_expected_executable = resolved == expected_executable if expected_executable else matches_expected_env
+    matches_expected_executable = (
+        resolved == expected_executable.resolve()
+        if expected_executable and expected_executable.exists()
+        else matches_expected_env
+    )
 
     return {
         "executable": str(resolved),

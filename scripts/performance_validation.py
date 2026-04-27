@@ -872,7 +872,7 @@ def main():
     print("  COMPLETE")
     print("=" * 70 + "\n")
 
-    return 0
+    return 1 if any(result.error for result in results) else 0
 
 
 if __name__ == "__main__":
