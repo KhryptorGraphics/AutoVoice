@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -333,6 +334,21 @@ SecRequestBodyLimit 262144000
         )
 
 
+def _available_port(preferred: int) -> str:
+    """Return preferred if free, otherwise ask the OS for an available port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", preferred))
+            return str(preferred)
+        except OSError:
+            pass
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return str(sock.getsockname()[1])
+
+
 def run_real_compose(report_dir: Path, *, timeout: int, base_url: str) -> list[LaneResult]:
     if not shutil.which("docker"):
         return [
@@ -349,7 +365,7 @@ def run_real_compose(report_dir: Path, *, timeout: int, base_url: str) -> list[L
         "SECRET_KEY": os.environ.get("SECRET_KEY", "completion-matrix-compose-secret"),
         "GRAFANA_PASSWORD": os.environ.get("GRAFANA_PASSWORD", "completion-matrix-grafana-password"),
         "HOST_PORT": str(parsed_base_url.port or os.environ.get("HOST_PORT", "10001")),
-        "FRONTEND_PORT": os.environ.get("FRONTEND_PORT", "13000"),
+        "FRONTEND_PORT": os.environ.get("FRONTEND_PORT", _available_port(13000)),
     }
     results = [
         _run_command(
