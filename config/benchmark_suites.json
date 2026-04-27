@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "canonical_pipelines": {
+    "offline": "quality_seedvc",
+    "live": "realtime"
+  },
+  "required_pipelines": [
+    "quality_seedvc",
+    "realtime"
+  ],
+  "minimum_sample_count": 1,
+  "required_metrics": {
+    "quality_seedvc": [
+      "speaker_similarity_mean",
+      "pitch_corr_mean",
+      "mcd_mean",
+      "latency_ms_mean"
+    ],
+    "realtime": [
+      "speaker_similarity_mean",
+      "pitch_corr_mean",
+      "mcd_mean",
+      "latency_ms_mean"
+    ]
+  },
+  "candidate_pipelines": [
+    "hq_svc",
+    "nsf_harmonic_enhancement",
+    "ecapa2_encoder",
+    "pupu_vocoder_refinement",
+    "quality_shortcut",
+    "realtime_meanvc"
+  ]
+}

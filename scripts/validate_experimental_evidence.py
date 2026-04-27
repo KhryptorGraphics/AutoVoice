@@ -40,10 +40,36 @@ def main() -> int:
         default=Path("reports/experimental_evidence/validation.json"),
         help="Where to write the validation report.",
     )
+    parser.add_argument(
+        "--benchmark-suite",
+        type=Path,
+        default=Path("config/benchmark_suites.json"),
+        help="Benchmark suite config whose candidate pipelines must be represented in the registry.",
+    )
     args = parser.parse_args()
 
     registry = load_experimental_registry(args.registry)
     report = evaluate_evidence_gates(registry, root_dir=args.root_dir)
+    if args.benchmark_suite.exists():
+        suite = json.loads(args.benchmark_suite.read_text(encoding="utf-8"))
+        registry_candidates = {
+            str(feature.get("benchmark_gate", {}).get("candidate_pipeline", feature_id))
+            for feature_id, feature in registry["features"].items()
+        }
+        suite_candidates = {str(item) for item in suite.get("candidate_pipelines", [])}
+        report["benchmark_suite"] = {
+            "path": str(args.benchmark_suite),
+            "candidate_pipelines": sorted(suite_candidates),
+            "registry_candidates": sorted(registry_candidates),
+            "missing_registry_candidates": sorted(suite_candidates - registry_candidates),
+        }
+    else:
+        report["benchmark_suite"] = {
+            "path": str(args.benchmark_suite),
+            "candidate_pipelines": [],
+            "registry_candidates": [],
+            "missing_registry_candidates": [],
+        }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
@@ -54,6 +80,12 @@ def main() -> int:
                 f"{feature_id}: missing components={feature['missing_components']} "
                 f"missing evidence={feature['missing_evidence_categories']}"
             )
+    missing_registry_candidates = report.get("benchmark_suite", {}).get("missing_registry_candidates", [])
+    if missing_registry_candidates:
+        failures.append(
+            "benchmark suite candidates missing from experimental registry="
+            + ",".join(missing_registry_candidates)
+        )
 
     if failures:
         raise SystemExit(

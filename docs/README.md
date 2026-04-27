@@ -25,6 +25,7 @@ These are useful for implementation context, but they are not the authoritative 
 - [smoothsinger-concepts.md](./smoothsinger-concepts.md): conceptual notes
 - [security-review.md](./security-review.md): security review context
 - [deployment-guide.md](./deployment-guide.md): deployment-oriented instructions
+- [deployment.md](./deployment.md): current Jetson, compose, hosted preflight, and release-candidate deployment contract
 
 ## Historical Reports
 

@@ -30,6 +30,8 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
 - experimental quality upgrades remain behind the evidence gate defined in
   `config/experimental_evidence.json` and validated by
   `python scripts/validate_experimental_evidence.py`
+- benchmark/release promotion evidence is defined by `config/benchmark_suites.json` and
+  validated by `python scripts/validate_benchmark_dashboard.py`
 
 ## Vendor Model Repos
 
@@ -90,6 +92,8 @@ Read these first:
 - MemKraft is now the preferred durable swarm memory backend for `autovoice swarm` runs when the
   Python package is installed. Run ledgers under `DATA_DIR/swarm_runs/` remain the canonical
   execution record, and `DATA_DIR/swarm_memory/` stores the MemKraft channel/task/agent context.
+- `autovoice swarm status` reports live ledger state before completion, and `autovoice swarm cancel`,
+  `autovoice swarm resume`, and `autovoice swarm retry` are the canonical run-control commands.
 - GitNexus remains the required code-context input; do not treat swarm memory as a replacement for
   fresh code-graph inspection.
 
@@ -114,5 +118,7 @@ Use those only after validating against the canonical docs and live code paths.
 - frontend build: `cd frontend && npm run build`
 - release-candidate validation: `python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --wait-seconds 180`
   This now verifies benchmark evidence schema/provenance against `HEAD` or `GITHUB_SHA`, not just file existence.
+- benchmark dashboard contract validation: `python scripts/validate_benchmark_dashboard.py`
+- hosted deployment preflight: `python scripts/validate_hosted_deployment.py --hostname autovoice.giggahost.com`
 - experimental evidence validation: `python scripts/validate_experimental_evidence.py`
 - Jetson/TensorRT validation: `bash scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform`

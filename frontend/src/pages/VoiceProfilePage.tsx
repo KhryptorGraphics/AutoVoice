@@ -8,6 +8,7 @@ import { AddSongButton } from '../components/AddSongButton'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { TrainingSampleUpload } from '../components/TrainingSampleUpload'
 import { AdapterSelector } from '../components/AdapterSelector'
+import { ConfirmActionButton } from '../components/ConfirmActionButton'
 import { useToastContext } from '../contexts/ToastContext'
 import clsx from 'clsx'
 
@@ -144,7 +145,6 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   }, [profile.profile_id, activeTab])
 
   const handleDelete = async () => {
-    if (!confirm(`Delete profile "${detailProfile.name || detailProfile.profile_id}"? This cannot be undone.`)) return
     setIsDeleting(true)
     try {
       await apiService.deleteProfile(profile.profile_id)
@@ -194,7 +194,6 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   }
 
   const handleDeleteSample = async (sampleId: string) => {
-    if (!confirm('Delete this sample?')) return
     try {
       await apiService.deleteSample(profile.profile_id, sampleId)
       setSamples(prev => prev.filter(s => s.id !== sampleId))
@@ -414,12 +413,14 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                       </div>
                     </div>
                   </div>
-                  <button
-                    onClick={() => handleDeleteSample(sample.id)}
-                    className="p-1 text-gray-400 hover:text-red-400"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  <ConfirmActionButton
+                    label={<Trash2 size={14} />}
+                    confirmMessage="Delete this training sample from the profile?"
+                    confirmLabel="Delete"
+                    onConfirm={() => handleDeleteSample(sample.id)}
+                    className="p-1 text-gray-400 hover:text-red-400 bg-transparent hover:bg-transparent"
+                    testId={`delete-sample-${sample.id}`}
+                  />
                 </div>
               ))}
             </div>
@@ -588,14 +589,21 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
 
       {/* Delete button */}
       <div className="flex justify-end pt-4 border-t border-gray-700">
-        <button
-          onClick={handleDelete}
+        <ConfirmActionButton
+          label={
+            <span className="flex items-center gap-2">
+              {isDeleting ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={16} />}
+              Delete Profile
+            </span>
+          }
+          confirmMessage={`Delete profile "${detailProfile.name || detailProfile.profile_id}"? This cannot be undone.`}
+          confirmLabel="Delete Profile"
+          onConfirm={handleDelete}
           disabled={isDeleting}
+          pending={isDeleting}
           className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded"
-        >
-          {isDeleting ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={16} />}
-          Delete Profile
-        </button>
+          testId="delete-profile"
+        />
       </div>
     </div>
   )

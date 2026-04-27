@@ -30,6 +30,15 @@ AUTOVOICE_DB_NAME="${AUTOVOICE_DB_NAME:-autovoice}"
 AUTOVOICE_DB_USER="${AUTOVOICE_DB_USER:-root}"
 AUTOVOICE_DB_PASS="${AUTOVOICE_DB_PASS:-}"
 AUTOVOICE_DATABASE_URL="${AUTOVOICE_DATABASE_URL:-postgresql://autovoice:autovoice@127.0.0.1:5432/autovoice}"
+export SECRET_KEY="${SECRET_KEY:-${AUTOVOICE_SECRET_FLASK_SECRET_KEY:-}}"
+if [[ -z "$SECRET_KEY" ]]; then
+    SECRET_KEY="$("$PYTHON" - <<'PY'
+import secrets
+print(secrets.token_urlsafe(48))
+PY
+)"
+    export SECRET_KEY
+fi
 DOCKER_COMPOSE_COMMAND=()
 
 usage() {
@@ -267,7 +276,7 @@ if [[ "$SKIP_SERVICE_SETUP" -eq 0 ]]; then
             -e "POSTGRES_DB=autovoice"
         ensure_container_running \
             "$QDRANT_CONTAINER_NAME" \
-            "qdrant/qdrant:latest" \
+            "qdrant/qdrant:v1.11.3" \
             6333
     fi
 

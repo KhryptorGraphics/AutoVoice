@@ -95,6 +95,132 @@ jobs:
             reports/experimental_evidence/validation.json
           if-no-files-found: ignore
 
+  benchmark-evidence:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Generate canonical benchmark dashboard fixture
+        run: |
+          mkdir -p reports/benchmarks/ci-bundles
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("reports/benchmarks/ci-bundles")
+          bundles = {
+              "quality_seedvc": {
+                  "title": "quality_seedvc",
+                  "summary": {
+                      "sample_count": 1,
+                      "speaker_similarity_mean": 0.91,
+                      "pitch_corr_mean": 0.93,
+                      "mcd_mean": 4.1,
+                      "latency_ms_mean": 120.0,
+                  },
+              },
+              "realtime": {
+                  "title": "realtime",
+                  "summary": {
+                      "sample_count": 1,
+                      "speaker_similarity_mean": 0.87,
+                      "pitch_corr_mean": 0.91,
+                      "mcd_mean": 4.5,
+                      "latency_ms_mean": 42.0,
+                  },
+              },
+              "hq_svc": {
+                  "title": "hq_svc",
+                  "summary": {
+                      "sample_count": 1,
+                      "speaker_similarity_mean": 0.95,
+                      "pitch_corr_mean": 0.96,
+                      "mcd_mean": 3.8,
+                      "latency_ms_mean": 41.0,
+                  },
+              },
+          }
+          for name, payload in bundles.items():
+              (root / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
+          PY
+
+      - name: Build benchmark dashboard artifacts
+        run: |
+          python scripts/build_benchmark_dashboard.py \
+            --bundle quality_seedvc=reports/benchmarks/ci-bundles/quality_seedvc.json \
+            --bundle realtime=reports/benchmarks/ci-bundles/realtime.json \
+            --bundle hq_svc=reports/benchmarks/ci-bundles/hq_svc.json \
+            --output-dir reports/benchmarks/latest
+
+      - name: Validate benchmark dashboard artifacts
+        run: python scripts/validate_benchmark_dashboard.py
+
+      - name: Validate experimental evidence registry
+        run: python scripts/validate_experimental_evidence.py
+
+      - name: Upload benchmark evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-evidence-artifacts
+          path: |
+            reports/benchmarks/latest
+            reports/experimental_evidence/validation.json
+          if-no-files-found: ignore
+
+  security-sbom:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies and security tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+          pip install pip-audit cyclonedx-bom
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Generate Python SBOM and audit report
+        run: |
+          mkdir -p reports/platform
+          cyclonedx-py environment --of JSON -o reports/platform/python-sbom.json
+          pip-audit --format json --output reports/platform/pip-audit.json
+
+      - name: Generate frontend SBOM
+        working-directory: frontend
+        run: npm sbom --omit=dev --sbom-format cyclonedx > ../reports/platform/frontend-sbom.json
+
+      - name: Upload security and SBOM artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-sbom-artifacts
+          path: reports/platform
+          if-no-files-found: ignore
+
   deployment-smoke:
     runs-on: ubuntu-latest
 
@@ -114,6 +240,8 @@ jobs:
         run: |
           : > .env
           echo "AUTOVOICE_DB_PASS=ci-dry-run-password" >> .env
+          echo "SECRET_KEY=ci-compose-smoke-secret" >> .env
+          echo "GRAFANA_PASSWORD=ci-compose-grafana-password" >> .env
 
       - name: Validate docker compose config
         run: docker compose -f docker-compose.yaml config -q

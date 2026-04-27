@@ -5,6 +5,8 @@ import {
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiService } from '../services/api'
+import { ConfirmActionButton } from './ConfirmActionButton'
+import { useToastContext } from '../contexts/ToastContext'
 import clsx from 'clsx'
 
 interface Checkpoint {
@@ -27,6 +29,7 @@ interface CheckpointBrowserProps {
 }
 
 export function CheckpointBrowser({ profileId, onRollback, onCompare }: CheckpointBrowserProps) {
+  const toast = useToastContext()
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
@@ -68,10 +71,8 @@ export function CheckpointBrowser({ profileId, onRollback, onCompare }: Checkpoi
 
   const handleRollback = (checkpoint: Checkpoint) => {
     if (checkpoint.is_active) return
-    if (confirm(`Roll back to version ${checkpoint.version}? This will replace the current model.`)) {
-      rollbackMutation.mutate(checkpoint.id)
-      onRollback?.(checkpoint)
-    }
+    rollbackMutation.mutate(checkpoint.id)
+    onRollback?.(checkpoint)
   }
 
   const handleCompare = () => {
@@ -84,12 +85,10 @@ export function CheckpointBrowser({ profileId, onRollback, onCompare }: Checkpoi
 
   const handleDelete = (checkpoint: Checkpoint) => {
     if (checkpoint.is_active) {
-      alert('Cannot delete the active checkpoint')
+      toast.error('Cannot delete the active checkpoint')
       return
     }
-    if (confirm(`Delete checkpoint ${checkpoint.version}? This cannot be undone.`)) {
-      deleteMutation.mutate(checkpoint.id)
-    }
+    deleteMutation.mutate(checkpoint.id)
   }
 
   const handleTest = async (checkpoint: Checkpoint) => {
@@ -210,21 +209,23 @@ export function CheckpointBrowser({ profileId, onRollback, onCompare }: Checkpoi
 
                   <div className="flex items-center gap-1">
                     {!checkpoint.is_active && (
-                      <button
-                        onClick={e => {
-                          e.stopPropagation()
-                          handleRollback(checkpoint)
-                        }}
-                        disabled={rollbackMutation.isPending}
-                        className="p-2 text-gray-400 hover:text-green-400 hover:bg-gray-700 rounded transition-colors"
-                        title="Rollback to this version"
-                      >
-                        {rollbackMutation.isPending && rollbackMutation.variables === checkpoint.id ? (
-                          <Loader2 size={16} className="animate-spin" />
-                        ) : (
-                          <RotateCcw size={16} />
-                        )}
-                      </button>
+                      <div onClick={e => e.stopPropagation()}>
+                        <ConfirmActionButton
+                          label={
+                            rollbackMutation.isPending && rollbackMutation.variables === checkpoint.id
+                              ? <Loader2 size={16} className="animate-spin" />
+                              : <RotateCcw size={16} />
+                          }
+                          confirmMessage={`Roll back to version ${checkpoint.version}? This will replace the current model.`}
+                          confirmLabel="Rollback"
+                          onConfirm={() => handleRollback(checkpoint)}
+                          disabled={rollbackMutation.isPending}
+                          pending={rollbackMutation.isPending && rollbackMutation.variables === checkpoint.id}
+                          variant="neutral"
+                          className="p-2 text-gray-400 hover:text-green-400 hover:bg-gray-700"
+                          testId={`rollback-checkpoint-${checkpoint.id}`}
+                        />
+                      </div>
                     )}
                     <button
                       onClick={e => {
@@ -287,22 +288,27 @@ export function CheckpointBrowser({ profileId, onRollback, onCompare }: Checkpoi
                     </a>
                     {!checkpoint.is_active && (
                       <>
-                        <button
-                          onClick={() => handleRollback(checkpoint)}
+                        <ConfirmActionButton
+                          label={<span className="flex items-center gap-2"><RotateCcw size={14} /> Rollback</span>}
+                          confirmMessage={`Roll back to version ${checkpoint.version}? This will replace the current model.`}
+                          confirmLabel="Rollback"
+                          onConfirm={() => handleRollback(checkpoint)}
                           disabled={rollbackMutation.isPending}
+                          pending={rollbackMutation.isPending && rollbackMutation.variables === checkpoint.id}
+                          variant="neutral"
                           className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 rounded text-sm"
-                        >
-                          <RotateCcw size={14} />
-                          Rollback
-                        </button>
-                        <button
-                          onClick={() => handleDelete(checkpoint)}
+                          testId={`rollback-checkpoint-expanded-${checkpoint.id}`}
+                        />
+                        <ConfirmActionButton
+                          label={<span className="flex items-center gap-2"><Trash2 size={14} /> Delete</span>}
+                          confirmMessage={`Delete checkpoint ${checkpoint.version}? This cannot be undone.`}
+                          confirmLabel="Delete"
+                          onConfirm={() => handleDelete(checkpoint)}
                           disabled={deleteMutation.isPending}
+                          pending={deleteMutation.isPending && deleteMutation.variables === checkpoint.id}
                           className="flex items-center gap-2 px-3 py-2 bg-red-600 hover:bg-red-700 rounded text-sm ml-auto"
-                        >
-                          <Trash2 size={14} />
-                          Delete
-                        </button>
+                          testId={`delete-checkpoint-${checkpoint.id}`}
+                        />
                       </>
                     )}
                   </div>

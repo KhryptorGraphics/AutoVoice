@@ -40,6 +40,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def resolve_pretrained_dir() -> Path:
+    override = os.environ.get("AUTOVOICE_PRETRAINED_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parent.parent / "models" / "pretrained"
+
+
 @dataclass
 class RealtimeConfig:
     """Configuration for realtime pipeline."""
@@ -132,7 +139,7 @@ class RealtimeVoiceConverter:
         logger.info("Loading RMVPE pitch extractor...")
         try:
             from auto_voice.models.pitch import RMVPEPitchExtractor
-            rmvpe_path = Path("models/pretrained/rmvpe.pt")
+            rmvpe_path = resolve_pretrained_dir() / "rmvpe.pt"
             self._rmvpe = RMVPEPitchExtractor(
                 pretrained=str(rmvpe_path) if rmvpe_path.exists() else None,
                 device=self.device

@@ -199,12 +199,14 @@ export function YouTubeDownloadPage() {
       }
 
       const sample = await response.json()
-      alert(`Added "${downloadResult.title}" as sample ${sample.sample_id} to profile`)
+      toast.success(`Added "${downloadResult.title}" as sample ${sample.sample_id} to profile`)
 
       // Refresh profiles to update sample count
       await loadProfiles()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add to profile')
+      const errorMsg = err instanceof Error ? err.message : 'Failed to add to profile'
+      setError(errorMsg)
+      toast.error(errorMsg)
     }
   }
 

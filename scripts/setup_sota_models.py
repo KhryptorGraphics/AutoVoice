@@ -10,6 +10,7 @@ Downloads:
 import os
 import sys
 import logging
+import argparse
 from pathlib import Path
 
 # Add src to path
@@ -24,7 +25,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MODELS_DIR = Path(__file__).parent.parent / 'models' / 'pretrained'
+PROJECT_ROOT = Path(__file__).parent.parent
+
+
+def resolve_models_dir(explicit: str | None = None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    override = os.environ.get("AUTOVOICE_PRETRAINED_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return (PROJECT_ROOT / "models" / "pretrained").resolve()
 
 
 def print_banner(text: str):
@@ -34,7 +44,7 @@ def print_banner(text: str):
     print("=" * width + "\n")
 
 
-def download_bigvgan():
+def download_bigvgan(models_dir: Path):
     """Download BigVGAN v2 24kHz 100band from HuggingFace."""
     print_banner("Downloading BigVGAN v2")
 
@@ -50,8 +60,8 @@ def download_bigvgan():
         generator_path = hf_hub_download(
             repo_id=model_id,
             filename="bigvgan_generator.pt",
-            cache_dir=str(MODELS_DIR / 'cache'),
-            local_dir=str(MODELS_DIR),
+            cache_dir=str(models_dir / 'cache'),
+            local_dir=str(models_dir),
         )
 
         print(f"  ✅ BigVGAN downloaded: {generator_path}")
@@ -67,7 +77,7 @@ def download_bigvgan():
 
             # BigVGAN universal vocoder (fallback)
             url = "https://github.com/NVIDIA/BigVGAN/releases/download/v2.0/bigvgan_v2_24khz_100band_256x.zip"
-            dest = MODELS_DIR / "bigvgan_v2.zip"
+            dest = models_dir / "bigvgan_v2.zip"
 
             print(f"  Downloading: {url}")
             urllib.request.urlretrieve(url, dest)
@@ -75,17 +85,17 @@ def download_bigvgan():
             # Extract
             import zipfile
             with zipfile.ZipFile(dest, 'r') as z:
-                z.extractall(MODELS_DIR)
+                z.extractall(models_dir)
 
-            print(f"  ✅ BigVGAN extracted to {MODELS_DIR}")
-            return str(MODELS_DIR / "bigvgan_v2_24khz_100band_256x")
+            print(f"  ✅ BigVGAN extracted to {models_dir}")
+            return str(models_dir / "bigvgan_v2_24khz_100band_256x")
 
         except Exception as e2:
             logger.error(f"Alternative download also failed: {e2}")
             return None
 
 
-def download_contentvec():
+def download_contentvec(models_dir: Path):
     """Download ContentVec encoder from HuggingFace."""
     print_banner("Downloading ContentVec")
 
@@ -101,7 +111,7 @@ def download_contentvec():
         model = HubertModel.from_pretrained(model_id)
 
         # Save locally
-        save_path = MODELS_DIR / "content-vec-best"
+        save_path = models_dir / "content-vec-best"
         model.save_pretrained(save_path)
 
         print(f"  ✅ ContentVec downloaded: {save_path}")
@@ -111,7 +121,7 @@ def download_contentvec():
         logger.warning(f"Could not download ContentVec: {e}")
 
         # Check if we have hubert-soft as fallback
-        hubert_path = MODELS_DIR / "hubert-soft-35d9f29f.pt"
+        hubert_path = models_dir / "hubert-soft-35d9f29f.pt"
         if hubert_path.exists():
             print(f"  ⚠️  Using existing HuBERT-Soft as fallback: {hubert_path}")
             return str(hubert_path)
@@ -119,7 +129,7 @@ def download_contentvec():
         return None
 
 
-def download_rmvpe():
+def download_rmvpe(models_dir: Path):
     """Download RMVPE pitch extractor."""
     print_banner("Downloading RMVPE")
 
@@ -134,8 +144,8 @@ def download_rmvpe():
         rmvpe_path = hf_hub_download(
             repo_id=model_id,
             filename="rmvpe.pt",
-            cache_dir=str(MODELS_DIR / 'cache'),
-            local_dir=str(MODELS_DIR),
+            cache_dir=str(models_dir / 'cache'),
+            local_dir=str(models_dir),
         )
 
         print(f"  ✅ RMVPE downloaded: {rmvpe_path}")
@@ -146,7 +156,7 @@ def download_rmvpe():
         return None
 
 
-def verify_models():
+def verify_models(models_dir: Path):
     """Verify all models are loadable."""
     print_banner("Verifying Models")
 
@@ -183,7 +193,7 @@ def verify_models():
     try:
         from auto_voice.models.pitch import RMVPEPitchExtractor
 
-        rmvpe_path = MODELS_DIR / "rmvpe.pt"
+        rmvpe_path = models_dir / "rmvpe.pt"
         extractor = RMVPEPitchExtractor(
             pretrained=str(rmvpe_path) if rmvpe_path.exists() else None,
             device=device
@@ -222,24 +232,32 @@ def verify_models():
     return results
 
 
-def main():
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--models-dir",
+        default=None,
+        help="Bootstrap destination for pretrained model assets. Defaults to AUTOVOICE_PRETRAINED_DIR or repo-root models/pretrained.",
+    )
+    args = parser.parse_args(argv)
+    models_dir = resolve_models_dir(args.models_dir)
+
     print_banner("SOTA Model Setup")
 
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    os.chdir(Path(__file__).parent.parent)
+    os.makedirs(models_dir, exist_ok=True)
 
-    print(f"  Models directory: {MODELS_DIR}")
+    print(f"  Models directory: {models_dir}")
     print(f"  CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
 
     # Download models
-    contentvec_path = download_contentvec()
-    rmvpe_path = download_rmvpe()
-    bigvgan_path = download_bigvgan()
+    contentvec_path = download_contentvec(models_dir)
+    rmvpe_path = download_rmvpe(models_dir)
+    bigvgan_path = download_bigvgan(models_dir)
 
     # Verify
-    results = verify_models()
+    results = verify_models(models_dir)
 
     # Summary
     print_banner("Setup Summary")

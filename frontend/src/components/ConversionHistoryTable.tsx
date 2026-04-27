@@ -8,6 +8,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiService, ConversionRecord } from '../services/api'
 import { PipelineBadge } from './PipelineSelector'
 import { AdapterBadge } from './AdapterSelector'
+import { ConfirmActionButton } from './ConfirmActionButton'
 import clsx from 'clsx'
 
 interface ConversionHistoryTableProps {
@@ -372,17 +373,16 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
                             </button>
                           </>
                         )}
-                        <button
-                          onClick={() => {
-                            if (confirm('Delete this record?')) {
-                              deleteMutation.mutate(record.id)
-                            }
-                          }}
-                          className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-700 rounded"
-                          title="Delete"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        <ConfirmActionButton
+                          label={<Trash2 size={14} />}
+                          confirmMessage="Delete this conversion record?"
+                          confirmLabel="Delete"
+                          onConfirm={() => deleteMutation.mutate(record.id)}
+                          disabled={deleteMutation.isPending}
+                          pending={deleteMutation.isPending && deleteMutation.variables === record.id}
+                          className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-700 rounded bg-transparent"
+                          testId={`delete-conversion-record-${record.id}`}
+                        />
                       </div>
                     </td>
                   </tr>

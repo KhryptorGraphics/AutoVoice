@@ -168,6 +168,9 @@ def test_swarm_cli_writes_memkraft_or_fallback_context(tmp_path: Path):
     completion_path = tmp_path / "data" / "swarm_runs" / "memory-run" / "completion.json"
     completion = json.loads(completion_path.read_text(encoding="utf-8"))
     assert completion["memory"]["backend"] in {"memkraft", "file_fallback"}
+    ledger = json.loads((tmp_path / "data" / "swarm_runs" / "memory-run" / "ledger.json").read_text(encoding="utf-8"))
+    assert ledger["prior_memory"]["query"]["channel_id"] == completion["memory"]["channel_id"]
+    assert "fallback_items" in ledger["prior_memory"]
 
     if completion["memory"]["backend"] == "memkraft":
         channel_path = (
@@ -302,6 +305,10 @@ def test_swarm_memory_backend_uses_memkraft_when_available(tmp_path: Path, monke
         def agent_save(self, agent_id: str, payload: dict) -> None:
             events.append(("agent_save", agent_id, payload))
 
+        def search(self, query: str, *, limit: int = 10) -> list[dict]:
+            events.append(("search", query, limit))
+            return [{"query": query}]
+
     monkeypatch.setattr("auto_voice.swarm.memory.MemKraft", FakeMemKraft)
 
     backend = SwarmMemoryBackend.create(
@@ -328,6 +335,8 @@ def test_swarm_memory_backend_uses_memkraft_when_available(tmp_path: Path, monke
         "lane": "testing",
     }
     assert backend.task_prefix == "memkraft-direct:testing"
+    prior = backend.read_prior_context()
+    assert prior["memkraft_items"] == [{"query": "next-phase-perfection hardening sprint-0 testing"}]
     assert events[0][0] == "init"
     assert events[1][0] == "channel_save"
     assert events[1][1] == "autovoice-next-phase-perfection-hardening-sprint-0-memkraft-direct"
@@ -341,3 +350,305 @@ def test_full_swarm_manifest_propagates_parent_run_context():
     assert any('${AUTOVOICE_SWARM_RUN_ID}-development' in command for command in commands)
     assert any('${AUTOVOICE_SWARM_RUN_ID}-review' in command for command in commands)
     assert any('${AUTOVOICE_SWARM_RUN_ID}-testing' in command for command in commands)
+
+
+def test_swarm_cli_cancel_marks_run_cancelled(tmp_path: Path):
+    manifest = tmp_path / "manifest.yaml"
+    flag_path = tmp_path / "cancel.flag"
+    manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "name: cancel-swarm",
+                "parallelism: 1",
+                "tasks:",
+                "  - id: one",
+                "    command: \"python -c \\\"from pathlib import Path; Path(r'"
+                + str(flag_path)
+                + "').write_text('done', encoding='utf-8')\\\"\"",
+                "  - id: two",
+                "    deps: [one]",
+                "    command: \"python -c \\\"print('never-runs')\\\"\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    run_root = tmp_path / "data" / "swarm_runs"
+    run_dir = run_root / "cancel-run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "control.json").write_text(
+        json.dumps({"run_id": "cancel-run", "cancel_requested": True, "reason": "test_cancel"}),
+        encoding="utf-8",
+    )
+
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "auto_voice.cli",
+            "swarm",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "run",
+            "--manifest",
+            str(manifest),
+            "--run-id",
+            "cancel-run",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert run.returncode == 1
+    completion = json.loads((run_dir / "completion.json").read_text(encoding="utf-8"))
+    assert completion["status"] == "cancelled"
+    assert not flag_path.exists()
+
+
+def test_swarm_cli_resume_and_retry_follow_failed_run(tmp_path: Path):
+    marker = tmp_path / "resume-ok.txt"
+    state_file = tmp_path / "failure-state.json"
+    manifest = tmp_path / "manifest.yaml"
+    script = tmp_path / "flaky.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "from pathlib import Path",
+                "state_path = Path(sys.argv[1])",
+                "marker_path = Path(sys.argv[2])",
+                "state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {'fail_once': True}",
+                "if state.get('fail_once'):",
+                "    state['fail_once'] = False",
+                "    state_path.write_text(json.dumps(state), encoding='utf-8')",
+                "    raise SystemExit(1)",
+                "marker_path.write_text('ok', encoding='utf-8')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "name: retry-swarm",
+                "tasks:",
+                "  - id: alpha",
+                "    command: \"python -c \\\"print('alpha')\\\"\"",
+                f"  - id: beta",
+                "    deps: [alpha]",
+                f"    command: \"python {script} {state_file} {marker}\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    first_run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "auto_voice.cli",
+            "swarm",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "run",
+            "--manifest",
+            str(manifest),
+            "--run-id",
+            "base-run",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert first_run.returncode == 1
+
+    status = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "auto_voice.cli",
+            "swarm",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "status",
+            "--run-id",
+            "base-run",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert status.returncode == 0
+    assert json.loads(status.stdout)["status"] == "failed"
+
+    retry_run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "auto_voice.cli",
+            "swarm",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "retry",
+            "--source-run-id",
+            "base-run",
+            "--run-id",
+            "retry-run",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert retry_run.returncode == 0, retry_run.stderr
+    assert marker.read_text(encoding="utf-8") == "ok"
+
+    # Build an interrupted run by deleting completion while keeping the ledger.
+    interrupted_run_dir = tmp_path / "data" / "swarm_runs" / "base-run"
+    (interrupted_run_dir / "completion.json").unlink()
+    resume_status = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "auto_voice.cli",
+            "swarm",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "status",
+            "--run-id",
+            "base-run",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert resume_status.returncode == 0
+    live_status = json.loads(resume_status.stdout)
+    assert live_status["status"] == "failed"
+    assert live_status["status_counts"]["completed"] == 1
+    assert live_status["status_counts"]["failed"] == 1
+    assert live_status["task_count"] == 2
+    assert live_status["pending_count"] == 0
+
+    resume_run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "auto_voice.cli",
+            "swarm",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "resume",
+            "--source-run-id",
+            "base-run",
+            "--run-id",
+            "resume-run",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+    assert resume_run.returncode == 0, resume_run.stderr
+
+
+def test_swarm_cli_resume_includes_unwritten_pending_manifest_tasks(tmp_path: Path):
+    marker = tmp_path / "pending.txt"
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "name: interrupted-swarm",
+                "tasks:",
+                "  - id: alpha",
+                "    command: \"python -c \\\"print('alpha')\\\"\"",
+                "  - id: beta",
+                "    deps: [alpha]",
+                f"    command: \"python -c \\\"from pathlib import Path; Path(r'{marker}').write_text('ok', encoding='utf-8')\\\"\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "data" / "swarm_runs" / "interrupted-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.snapshot.json").write_text(
+        json.dumps(yaml.safe_load(manifest.read_text(encoding="utf-8"))),
+        encoding="utf-8",
+    )
+    (run_dir / "ledger.json").write_text(
+        json.dumps(
+            {
+                "run_id": "interrupted-run",
+                "manifest_path": str(manifest),
+                "tasks": {"alpha": {"task_id": "alpha", "status": "completed"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    resume_run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "auto_voice.cli",
+            "swarm",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "resume",
+            "--source-run-id",
+            "interrupted-run",
+            "--run-id",
+            "resume-pending",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+
+    assert resume_run.returncode == 0, resume_run.stderr
+    assert marker.read_text(encoding="utf-8") == "ok"
+    child_manifest = tmp_path / "data" / "swarm_runs" / "resume-pending" / "resume.manifest.json"
+    assert child_manifest.exists()
+    child_payload = json.loads(child_manifest.read_text(encoding="utf-8"))
+    assert [task["id"] for task in child_payload["tasks"]] == ["beta"]
+
+
+def test_swarm_cli_cancel_completed_run_is_noop(tmp_path: Path):
+    run_dir = tmp_path / "data" / "swarm_runs" / "complete-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "completion.json").write_text(
+        json.dumps({"run_id": "complete-run", "status": "completed"}),
+        encoding="utf-8",
+    )
+
+    cancel = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "auto_voice.cli",
+            "swarm",
+            "--data-dir",
+            str(tmp_path / "data"),
+            "cancel",
+            "--run-id",
+            "complete-run",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_env(),
+    )
+
+    assert cancel.returncode == 0
+    payload = json.loads(cancel.stdout)
+    assert payload["cancel_requested"] is False
+    assert payload["terminal_status"] == "completed"
+    assert not (run_dir / "control.json").exists()

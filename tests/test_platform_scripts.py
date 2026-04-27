@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -96,3 +97,45 @@ def test_swarm_orchestrator_supports_custom_data_dir(tmp_path):
     assert result.returncode == 0, result.stderr
     completion_path = tmp_path / "swarm-data" / "swarm_runs" / "wrapper-run" / "completion.json"
     assert completion_path.exists()
+
+
+def test_validate_hosted_deployment_with_mock_vhost_files(tmp_path):
+    vhost = tmp_path / "autovoice.conf"
+    ssl_vhost = tmp_path / "autovoice-ssl.conf"
+    content = """
+ServerName autovoice.giggahost.com
+DocumentRoot frontend/dist
+ProxyPass /api http://127.0.0.1:10600/api
+ProxyPass /socket.io http://127.0.0.1:10600/socket.io
+SecRequestBodyLimit 262144000
+"""
+    vhost.write_text(content, encoding="utf-8")
+    ssl_vhost.write_text(content, encoding="utf-8")
+    report_path = tmp_path / "hosted-preflight.json"
+
+    env = _script_env()
+    env["SECRET_KEY"] = "unit-test-secret-key"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate_hosted_deployment.py",
+            "--hostname",
+            "autovoice.giggahost.com",
+            "--skip-dns",
+            "--skip-tls",
+            "--vhost-file",
+            str(vhost),
+            "--vhost-file",
+            str(ssl_vhost),
+            "--report",
+            str(report_path),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["ok"] is True
+    assert report["checks"]["vhosts"]["ok"] is True

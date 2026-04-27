@@ -12,6 +12,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import convert_pillowtalk  # noqa: E402
 import download_pretrained_models  # noqa: E402
+import realtime_pipeline  # noqa: E402
+import setup_sota_models  # noqa: E402
 import sota_conversion_nvfp4  # noqa: E402
 import train_fp16_lora  # noqa: E402
 import train_nvfp4_lora  # noqa: E402
@@ -97,6 +99,20 @@ def test_download_pretrained_models_defaults_to_repo_bootstrap_dir(monkeypatch):
     assert download_pretrained_models.resolve_models_dir() == (
         download_pretrained_models.PROJECT_ROOT / "models" / "pretrained"
     )
+
+
+def test_setup_sota_models_supports_explicit_pretrained_override(monkeypatch, tmp_path):
+    pretrained_dir = tmp_path / "sota-bootstrap"
+    monkeypatch.setenv("AUTOVOICE_PRETRAINED_DIR", str(pretrained_dir))
+
+    assert setup_sota_models.resolve_models_dir() == pretrained_dir
+
+
+def test_realtime_pipeline_supports_explicit_pretrained_override(monkeypatch, tmp_path):
+    pretrained_dir = tmp_path / "realtime-pretrained"
+    monkeypatch.setenv("AUTOVOICE_PRETRAINED_DIR", str(pretrained_dir))
+
+    assert realtime_pipeline.resolve_pretrained_dir() == pretrained_dir
 
 
 def test_train_fp16_lora_runtime_paths_follow_data_dir(monkeypatch, tmp_path):

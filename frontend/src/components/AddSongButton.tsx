@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { Plus, Upload, Music, Loader2, CheckCircle, AlertCircle, Scissors } from 'lucide-react'
 import clsx from 'clsx'
 import { apiService } from '../services/api'
+import { useToastContext } from '../contexts/ToastContext'
 
 interface AddSongButtonProps {
   profileId: string
@@ -222,6 +223,7 @@ export function AddSongButton({ profileId, onSongAdded, className }: AddSongButt
 
 // Compact version for toolbar use
 export function AddSongCompact({ profileId, onSongAdded }: AddSongButtonProps) {
+  const toast = useToastContext()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
 
@@ -235,7 +237,7 @@ export function AddSongCompact({ profileId, onSongAdded }: AddSongButtonProps) {
       onSongAdded?.()
     } catch (error) {
       console.error('Failed to add song:', error)
-      alert(`Failed to add song: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      toast.error(`Failed to add song: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setUploading(false)
       if (fileInputRef.current) {

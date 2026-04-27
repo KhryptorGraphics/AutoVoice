@@ -136,6 +136,55 @@ class SwarmMemoryBackend:
             "artifact_prefix": self.artifact_prefix,
         }
 
+    def read_prior_context(self, *, limit: int = 10) -> Dict[str, Any]:
+        """Read prior swarm memory for provenance and resume context."""
+        fallback_dir = self.base_dir / "fallback"
+        fallback_items = []
+        if fallback_dir.exists():
+            for path in sorted(fallback_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+                if len(fallback_items) >= limit:
+                    break
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                fallback_items.append(
+                    {
+                        "name": path.stem,
+                        "path": str(path),
+                        "status": payload.get("status"),
+                        "run_id": payload.get("run_id"),
+                        "taxonomy": payload.get("taxonomy"),
+                    }
+                )
+
+        memkraft_items = []
+        memkraft_error = None
+        if self._memkraft is not None:
+            try:
+                search = getattr(self._memkraft, "search", None)
+                if callable(search):
+                    memkraft_items = list(search(" ".join(self.taxonomy.values()), limit=limit) or [])
+                else:
+                    channel_get = getattr(self._memkraft, "channel_get", None)
+                    if callable(channel_get):
+                        current = channel_get(self.channel_id)
+                        memkraft_items = [current] if current else []
+            except Exception as exc:  # pragma: no cover - optional backend API variance
+                memkraft_error = str(exc)
+
+        return {
+            "backend": self.backend,
+            "query": {
+                "channel_id": self.channel_id,
+                "taxonomy": self.taxonomy,
+                "limit": limit,
+            },
+            "memkraft_items": memkraft_items[:limit],
+            "memkraft_error": memkraft_error,
+            "fallback_items": fallback_items,
+        }
+
     def _write_fallback(self, name: str, payload: Dict[str, Any]) -> None:
         safe_name = _slug(name)
         _write_json(self.base_dir / "fallback" / f"{safe_name}.json", payload)

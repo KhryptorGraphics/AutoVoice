@@ -1,10 +1,11 @@
 import { useState } from 'react'
+import type { ReactNode } from 'react'
 import clsx from 'clsx'
 import { AlertTriangle, Loader2, X } from 'lucide-react'
 
 interface ConfirmActionButtonProps {
-  label: string
-  confirmLabel?: string
+  label: ReactNode
+  confirmLabel?: ReactNode
   confirmMessage: string
   onConfirm: () => Promise<void> | void
   disabled?: boolean

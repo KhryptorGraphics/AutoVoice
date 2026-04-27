@@ -20,6 +20,8 @@ audio:
   n_mels: 80
 
 models:
+  # Host/bootstrap default. Containers mount AUTOVOICE_PRETRAINED_DIR to this
+  # path so runtime config stays stable while operators choose the host dir.
   pretrained_dir: models/pretrained
   sovits_checkpoint: sovits5.0_main_1500.pth
   hifigan_checkpoint: hifigan_ljspeech.ckpt

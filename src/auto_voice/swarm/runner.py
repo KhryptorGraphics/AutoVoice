@@ -11,7 +11,7 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Sequence
 
 import yaml
 
@@ -147,6 +147,130 @@ def _default_required_memory_writes(project_root: Path) -> tuple[str, ...]:
             "handoff_summary",
         )
     return tuple(str(item) for item in writes)
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _control_path(run_dir: Path) -> Path:
+    return run_dir / "control.json"
+
+
+def _read_control(run_dir: Path) -> Dict[str, Any]:
+    path = _control_path(run_dir)
+    if not path.exists():
+        return {}
+    return _read_json(path)
+
+
+def request_cancel(*, run_id: str, run_root: Path, reason: str | None = None) -> Dict[str, Any]:
+    run_dir = run_root / run_id
+    if not run_dir.exists():
+        raise FileNotFoundError(f"Run not found: {run_id}")
+
+    completion_path = run_dir / "completion.json"
+    if completion_path.exists():
+        completion = _read_json(completion_path)
+        return {
+            "run_id": run_id,
+            "cancel_requested": False,
+            "reason": "run_already_terminal",
+            "terminal_status": completion.get("status"),
+        }
+
+    payload = {
+        "run_id": run_id,
+        "cancel_requested": True,
+        "reason": reason or "cancel_requested",
+        "requested_at": time.time(),
+    }
+    _write_json(_control_path(run_dir), payload)
+    return payload
+
+
+def _prepare_followup_manifest(
+    *,
+    source_run_dir: Path,
+    new_run_dir: Path,
+    selected_task_ids: Sequence[str],
+    mode: str,
+) -> Path:
+    snapshot_path = source_run_dir / "manifest.snapshot.json"
+    payload = _read_json(snapshot_path)
+    selected = set(selected_task_ids)
+    tasks = []
+    for task in payload.get("tasks", []):
+        task_id = str(task.get("id") or "")
+        if task_id not in selected:
+            continue
+        next_task = dict(task)
+        next_task["deps"] = [dep for dep in (task.get("deps", []) or []) if dep in selected]
+        tasks.append(next_task)
+    payload["tasks"] = tasks
+    new_run_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = new_run_dir / f"{mode}.manifest.json"
+    manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return manifest_path
+
+
+def prepare_resume_run(
+    *,
+    source_run_id: str,
+    new_run_id: str,
+    run_root: Path,
+    mode: str,
+) -> Dict[str, Any]:
+    source_run_dir = run_root / source_run_id
+    ledger_path = source_run_dir / "ledger.json"
+    if not ledger_path.exists():
+        raise FileNotFoundError(f"Run ledger not found: {source_run_id}")
+
+    ledger = _read_json(ledger_path)
+    tasks = ledger.get("tasks", {})
+    if not isinstance(tasks, dict):
+        raise ValueError(f"Run ledger is malformed: {source_run_id}")
+    snapshot = _read_json(source_run_dir / "manifest.snapshot.json")
+    manifest_task_ids = [
+        str(task.get("id") or "")
+        for task in snapshot.get("tasks", [])
+        if isinstance(task, dict) and str(task.get("id") or "")
+    ]
+
+    completed = sorted(
+        task_id
+        for task_id, task in tasks.items()
+        if isinstance(task, dict) and task.get("status") in {"completed", "dry_run"}
+    )
+    rerun = []
+    for task_id in manifest_task_ids:
+        task = tasks.get(task_id, {})
+        status = task.get("status") if isinstance(task, dict) else None
+        if mode == "resume":
+            if status not in {"completed", "dry_run"}:
+                rerun.append(task_id)
+        elif mode == "retry":
+            if status in {"failed", "skipped", "cancelled"}:
+                rerun.append(task_id)
+        else:
+            raise ValueError(f"Unsupported follow-up mode: {mode}")
+
+    if not rerun:
+        raise ValueError(f"No tasks available to {mode} for run {source_run_id}")
+
+    manifest_path = _prepare_followup_manifest(
+        source_run_dir=source_run_dir,
+        new_run_dir=run_root / new_run_id,
+        selected_task_ids=rerun,
+        mode=mode,
+    )
+    return {
+        "manifest_path": str(manifest_path),
+        "completed_tasks": completed,
+        "rerun_tasks": sorted(rerun),
+        "parent_run_id": source_run_id,
+        "run_id": new_run_id,
+    }
 
 
 def build_run_context(
@@ -319,6 +443,7 @@ def execute_manifest(
         "required_memory_writes": list(context.required_memory_writes),
         "context_sources": _context_sources(project_root),
         "memory": memory.describe(),
+        "prior_memory": memory.read_prior_context(),
         "started_at": time.time(),
         "tasks": {},
         "waves": [],
@@ -328,8 +453,44 @@ def execute_manifest(
     completed: set[str] = set()
     failed: set[str] = set()
     pending = dict(specs)
+    control = _read_control(run_dir)
 
     while pending:
+        control = _read_control(run_dir)
+        if control.get("cancel_requested"):
+            for task_id, spec in list(pending.items()):
+                ledger["tasks"][task_id] = {
+                    "task_id": task_id,
+                    "description": spec.description,
+                    "status": "cancelled",
+                    "deps": list(spec.deps),
+                    "error": control.get("reason") or "cancel_requested",
+                    "artifacts": list(spec.artifacts),
+                    "lane": spec.lane,
+                    "role": spec.role,
+                    "task_key": f"{context.run_id}:{spec.lane}:{spec.id}",
+                    "lane_key": f"{context.run_id}:{spec.lane}",
+                    "agent_key": f"{context.run_id}:{spec.lane}:{spec.role or spec.id}",
+                    "artifact_key": f"{context.run_id}:{spec.lane}:{spec.id}:artifact",
+                    "artifact_root": str(run_dir / "artifacts" / spec.lane / spec.id),
+                }
+                memory.record_task_started(
+                    task_id=f"{context.run_id}:{spec.lane}:{spec.id}",
+                    description=spec.description,
+                    lane=spec.lane,
+                    role=spec.role,
+                )
+                memory.record_task_status(
+                    f"{context.run_id}:{spec.lane}:{spec.id}",
+                    "cancelled",
+                    note=control.get("reason") or "cancel_requested",
+                )
+                failed.add(task_id)
+                del pending[task_id]
+            ledger["waves"].append({"task_ids": [], "status": "cancelled"})
+            _write_json(run_dir / "ledger.json", ledger)
+            break
+
         skipped_this_wave: List[str] = []
         for task_id, spec in list(pending.items()):
             if any(dep in failed for dep in spec.deps):
@@ -417,13 +578,19 @@ def execute_manifest(
                     )
                 del pending[spec.id]
                 _write_json(run_dir / "ledger.json", ledger)
+        control = _read_control(run_dir)
 
     finished = time.time()
+    control = _read_control(run_dir)
     completion = {
         "run_id": run_id,
         "parent_run_id": context.parent_run_id or None,
         "manifest_path": str(manifest_path),
-        "status": "completed" if not failed else "failed",
+        "status": (
+            "cancelled"
+            if control.get("cancel_requested")
+            else ("completed" if not failed else "failed")
+        ),
         "dry_run": dry_run,
         "channel_id": context.channel_id,
         "taxonomy": context.taxonomy,
@@ -443,9 +610,63 @@ def execute_manifest(
 
 
 def print_status(run_id: str, *, run_root: Path) -> int:
+    run_dir = run_root / run_id
     completion_path = run_root / run_id / "completion.json"
     if not completion_path.exists():
-        print(f"Run not found: {run_id}")
-        return 1
+        ledger_path = run_dir / "ledger.json"
+        if not ledger_path.exists():
+            print(f"Run not found: {run_id}")
+            return 1
+        ledger = _read_json(ledger_path)
+        tasks = ledger.get("tasks", {})
+        snapshot_path = run_dir / "manifest.snapshot.json"
+        snapshot_task_ids = []
+        if snapshot_path.exists():
+            snapshot = _read_json(snapshot_path)
+            snapshot_task_ids = [
+                str(task.get("id") or "")
+                for task in snapshot.get("tasks", [])
+                if isinstance(task, dict) and str(task.get("id") or "")
+            ]
+        task_ids = snapshot_task_ids or list(tasks.keys())
+        status_counts = Counter(
+            str(task.get("status"))
+            for task in tasks.values()
+            if isinstance(task, dict) and task.get("status")
+        )
+        terminal_statuses = {"completed", "dry_run", "failed", "skipped", "cancelled"}
+        pending_ids = [
+            task_id
+            for task_id in task_ids
+            if not (
+                isinstance(tasks.get(task_id), dict)
+                and tasks[task_id].get("status") in terminal_statuses
+            )
+        ]
+        cancel_requested = bool(_read_control(run_dir).get("cancel_requested"))
+        if cancel_requested:
+            inferred_status = "cancelling" if pending_ids else "cancelled"
+        elif pending_ids:
+            inferred_status = "running"
+        elif any(status in status_counts for status in ("failed", "skipped")):
+            inferred_status = "failed"
+        elif status_counts.get("cancelled"):
+            inferred_status = "cancelled"
+        else:
+            inferred_status = "completed"
+        payload = {
+            "run_id": run_id,
+            "status": inferred_status,
+            "manifest_path": ledger.get("manifest_path"),
+            "started_at": ledger.get("started_at"),
+            "channel_id": ledger.get("channel_id"),
+            "taxonomy": ledger.get("taxonomy"),
+            "task_count": len(task_ids),
+            "pending_count": len(pending_ids),
+            "status_counts": dict(sorted(status_counts.items())),
+            "cancel_requested": cancel_requested,
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
     print(completion_path.read_text(encoding="utf-8"))
     return 0

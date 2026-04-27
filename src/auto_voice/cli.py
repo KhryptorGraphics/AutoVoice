@@ -13,7 +13,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 from auto_voice.config.loader import ConfigLoader, ConfigLoadError
-from auto_voice.swarm.runner import execute_manifest, load_manifest, print_status, task_specs, topological_order
+from auto_voice.swarm.runner import (
+    execute_manifest,
+    load_manifest,
+    prepare_resume_run,
+    print_status,
+    request_cancel,
+    task_specs,
+    topological_order,
+)
 from auto_voice.web.app import create_app
 
 logger = logging.getLogger(__name__)
@@ -58,6 +66,18 @@ def _swarm_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
 
     status_parser = swarm_subparsers.add_parser("status", help="Print status for an existing swarm run")
     status_parser.add_argument("--run-id", required=True, help="Run identifier to inspect")
+
+    cancel_parser = swarm_subparsers.add_parser("cancel", help="Request cancellation for an active swarm run")
+    cancel_parser.add_argument("--run-id", required=True, help="Run identifier to cancel")
+    cancel_parser.add_argument("--reason", default="cancel_requested", help="Cancellation reason")
+
+    resume_parser = swarm_subparsers.add_parser("resume", help="Resume unfinished work from a prior swarm run")
+    resume_parser.add_argument("--source-run-id", required=True, help="Existing run identifier to resume from")
+    resume_parser.add_argument("--run-id", required=True, help="New run identifier for the resumed run")
+
+    retry_parser = swarm_subparsers.add_parser("retry", help="Retry failed or skipped work from a prior swarm run")
+    retry_parser.add_argument("--source-run-id", required=True, help="Existing run identifier to retry from")
+    retry_parser.add_argument("--run-id", required=True, help="New run identifier for the retry run")
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
@@ -164,6 +184,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             return 0
         if args.swarm_command == "status":
             return print_status(args.run_id, run_root=run_root)
+        if args.swarm_command == "cancel":
+            print(json.dumps(request_cancel(run_id=args.run_id, run_root=run_root, reason=args.reason), indent=2))
+            return 0
         if args.swarm_command == "run":
             return execute_manifest(
                 Path(args.manifest),
@@ -172,6 +195,21 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 run_root=run_root,
                 project_root=Path.cwd(),
                 parent_run_id=os.environ.get("AUTOVOICE_SWARM_RUN_ID"),
+            )
+        if args.swarm_command in {"resume", "retry"}:
+            prepared = prepare_resume_run(
+                source_run_id=args.source_run_id,
+                new_run_id=args.run_id,
+                run_root=run_root,
+                mode=args.swarm_command,
+            )
+            return execute_manifest(
+                Path(prepared["manifest_path"]),
+                run_id=args.run_id,
+                dry_run=False,
+                run_root=run_root,
+                project_root=Path.cwd(),
+                parent_run_id=str(prepared["parent_run_id"]),
             )
         raise SystemExit(f"Unsupported swarm command: {args.swarm_command}")
 

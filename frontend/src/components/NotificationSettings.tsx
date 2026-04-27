@@ -6,6 +6,7 @@ import {
 import clsx from 'clsx'
 import { useToastContext } from '../contexts/ToastContext'
 import { STORAGE_KEYS, usePersistedState } from '../hooks/usePersistedState'
+import { ConfirmActionButton } from './ConfirmActionButton'
 
 interface WebhookConfig {
   id: string
@@ -122,10 +123,8 @@ export function NotificationSettings() {
 
   // Delete webhook
   const deleteWebhook = (id: string) => {
-    if (confirm('Delete this webhook?')) {
-      updateConfig({ webhooks: config.webhooks.filter(w => w.id !== id) })
-      toast.success('Webhook deleted successfully')
-    }
+    updateConfig({ webhooks: config.webhooks.filter(w => w.id !== id) })
+    toast.success('Webhook deleted successfully')
   }
 
   // Toggle webhook
@@ -424,13 +423,14 @@ export function NotificationSettings() {
                         >
                           <Edit2 size={14} />
                         </button>
-                        <button
-                          onClick={() => deleteWebhook(webhook.id)}
-                          className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-700 rounded"
-                          title="Delete webhook"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        <ConfirmActionButton
+                          label={<Trash2 size={14} />}
+                          confirmMessage={`Delete webhook "${webhook.name}"?`}
+                          confirmLabel="Delete"
+                          onConfirm={() => deleteWebhook(webhook.id)}
+                          className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-700 rounded bg-transparent"
+                          testId={`delete-webhook-${webhook.id}`}
+                        />
                       </div>
                     </div>
                   </div>

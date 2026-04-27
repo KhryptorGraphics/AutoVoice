@@ -4,8 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
-    image: autovoice:latest
-    container_name: autovoice-backend
+    image: autovoice-backend:${AUTOVOICE_IMAGE_TAG:-local}
     restart: unless-stopped
 
     runtime: nvidia
@@ -13,19 +12,20 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - SECRET_KEY=${SECRET_KEY:-autovoice-dev-key}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY must be set}
       - CUDA_VISIBLE_DEVICES=0
       - MAX_WORKERS=${MAX_WORKERS:-4}
       - DATA_DIR=/app/data
 
     env_file:
-      - .env
+      - path: .env
+        required: false
 
     ports:
       - "${HOST_PORT:-10001}:5000"
 
     volumes:
-      - ./models/pretrained:/app/models/pretrained:ro
+      - ${AUTOVOICE_PRETRAINED_DIR:-./models/pretrained}:/app/models/pretrained:ro
       - autovoice-profiles:/app/data/voice_profiles
       - autovoice-uploads:/app/data/uploads
       - autovoice-outputs:/app/data/outputs
@@ -63,8 +63,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.frontend
-    image: autovoice-frontend:latest
-    container_name: autovoice-frontend
+    image: autovoice-frontend:${AUTOVOICE_IMAGE_TAG:-local}
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-3000}:80"
@@ -80,8 +79,7 @@ services:
         max-file: "3"
 
   prometheus:
-    image: prom/prometheus:latest
-    container_name: autovoice-prometheus
+    image: prom/prometheus:v2.54.1
     restart: unless-stopped
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -99,14 +97,13 @@ services:
       - monitoring
 
   grafana:
-    image: grafana/grafana:latest
-    container_name: autovoice-grafana
+    image: grafana/grafana:11.2.0
     restart: unless-stopped
     ports:
       - "${GRAFANA_PORT:-10003}:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD must be set when monitoring profile is enabled}
       - GF_INSTALL_PLUGINS=grafana-piechart-panel
     volumes:
       - grafana-data:/var/lib/grafana

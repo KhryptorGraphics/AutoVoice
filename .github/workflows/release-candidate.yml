@@ -39,6 +39,57 @@ jobs:
       - name: Validate release candidate endpoints
         run: python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --report-dir reports/platform --wait-seconds 180
 
+      - name: Generate release benchmark evidence fixture
+        run: |
+          mkdir -p reports/benchmarks/rc-bundles
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("reports/benchmarks/rc-bundles")
+          bundles = {
+              "quality_seedvc": {
+                  "title": "quality_seedvc",
+                  "summary": {
+                      "sample_count": 1,
+                      "speaker_similarity_mean": 0.91,
+                      "pitch_corr_mean": 0.93,
+                      "mcd_mean": 4.1,
+                      "latency_ms_mean": 120.0,
+                  },
+              },
+              "realtime": {
+                  "title": "realtime",
+                  "summary": {
+                      "sample_count": 1,
+                      "speaker_similarity_mean": 0.87,
+                      "pitch_corr_mean": 0.91,
+                      "mcd_mean": 4.5,
+                      "latency_ms_mean": 42.0,
+                  },
+              },
+              "hq_svc": {
+                  "title": "hq_svc",
+                  "summary": {
+                      "sample_count": 1,
+                      "speaker_similarity_mean": 0.95,
+                      "pitch_corr_mean": 0.96,
+                      "mcd_mean": 3.8,
+                      "latency_ms_mean": 41.0,
+                  },
+              },
+          }
+          for name, payload in bundles.items():
+              (root / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
+          PY
+          python scripts/build_benchmark_dashboard.py \
+            --bundle quality_seedvc=reports/benchmarks/rc-bundles/quality_seedvc.json \
+            --bundle realtime=reports/benchmarks/rc-bundles/realtime.json \
+            --bundle hq_svc=reports/benchmarks/rc-bundles/hq_svc.json \
+            --output-dir reports/benchmarks/latest
+
+      - name: Validate benchmark dashboard contract
+        run: python scripts/validate_benchmark_dashboard.py
+
       - name: Validate experimental evidence registry
         run: python scripts/validate_experimental_evidence.py
 
@@ -64,4 +115,5 @@ jobs:
           name: release-candidate-artifacts
           path: |
             reports/platform
+            reports/benchmarks/latest
           if-no-files-found: ignore

@@ -10,7 +10,7 @@ The script assumes the existing `autovoice-thor` conda environment and the share
 
 - activates the canonical interpreter
 - verifies required dependencies and TensorRT
-- prepares runtime directories under `data/`, `logs/`, `models/pretrained/`, and `reports/platform/`
+- prepares runtime directories under `data/`, `logs/`, the pretrained bootstrap directory, and `reports/platform/`
 - bootstraps the companion MySQL, PostgreSQL, and Qdrant containers when Docker is available
 - initializes both the MySQL metadata schema and PostgreSQL profile schema
 - brings up the bundled `docker-compose.yaml` backend/frontend stack
@@ -23,6 +23,20 @@ The script assumes the existing `autovoice-thor` conda environment and the share
 ```bash
 scripts/setup_jetson_thor.sh --output-dir reports/platform
 ```
+
+The pretrained model host directory is explicit and operator-owned:
+
+```bash
+export AUTOVOICE_PRETRAINED_DIR=/srv/autovoice/models/pretrained
+python scripts/setup_sota_models.py --models-dir "$AUTOVOICE_PRETRAINED_DIR"
+```
+
+If `AUTOVOICE_PRETRAINED_DIR` is unset, bootstrap scripts use repo-local
+`models/pretrained` as a host default. The compose stack always mounts the
+selected host directory into the stable container path `/app/models/pretrained`.
+`SECRET_KEY` is required by compose; `scripts/setup_jetson_thor.sh` derives it
+from `SECRET_KEY`, then `AUTOVOICE_SECRET_FLASK_SECRET_KEY`, and otherwise
+generates an ephemeral local bootstrap secret.
 
 Useful flags:
 
@@ -45,6 +59,8 @@ You can rerun the validation independently:
 ```bash
 scripts/validate_cuda_stack.sh --pipeline all --output-dir reports/platform
 python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5000 --report-dir reports/platform
+python scripts/validate_hosted_deployment.py --skip-dns --skip-tls --vhost-file /etc/apache2/sites-available/autovoice.giggadev.com.conf
+python scripts/validate_benchmark_dashboard.py
 ```
 
 ## Operational Notes
@@ -52,6 +68,7 @@ python scripts/validate_release_candidate.py --base-url http://127.0.0.1:5000 --
 - Expected web port: `5000`
 - Common companion ports checked during setup: `3306` (MySQL), `5432` (Postgres), `6333` (Qdrant)
 - Compose stack source: `docker-compose.yaml`
+- Compose images: `autovoice-backend:${AUTOVOICE_IMAGE_TAG:-local}`, `autovoice-frontend:${AUTOVOICE_IMAGE_TAG:-local}`, pinned Prometheus and Grafana images
 - Systemd unit source: `config/systemd/autovoice.service`
 - Root privileges are only required if you want the setup script to install the service unit
 
@@ -105,6 +122,19 @@ Release-candidate validation now requires benchmark evidence artifacts under
 `reports/benchmarks/latest/` to be structurally valid and to carry provenance
 for the candidate commit being validated. A stale dashboard or release-evidence
 pair from another git SHA no longer satisfies the RC gate.
+
+The hosted preflight lane is machine-checkable:
+
+```bash
+python scripts/validate_hosted_deployment.py \
+  --hostname autovoice.giggahost.com \
+  --backend-port 10600 \
+  --vhost-file /etc/apache2/sites-available/autovoice.giggadev.com.conf \
+  --vhost-file /etc/apache2/sites-available/autovoice.giggadev.com-le-ssl.conf
+```
+
+Use `--skip-dns` or `--skip-tls` only for local/dry-run checks where public
+records or certificates are intentionally unavailable.
 
 Rollback criteria for a release candidate are simple:
 

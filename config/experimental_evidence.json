@@ -139,6 +139,76 @@
           "notes": "Needs deployment validation on supported targets."
         }
       }
+    },
+    "quality_shortcut": {
+      "display_name": "Seed-VC shortcut offline path",
+      "status": "experimental",
+      "summary": "Shortcut-flow offline conversion remains experimental until quality and stability evidence beats the canonical quality_seedvc path.",
+      "component_paths": [
+        "src/auto_voice/inference/pipeline_factory.py",
+        "src/auto_voice/web/api_conversion.py",
+        "scripts/performance_validation.py"
+      ],
+      "benchmark_gate": {
+        "dashboard_artifact": "reports/benchmarks/latest/benchmark_dashboard.json",
+        "candidate_pipeline": "quality_shortcut",
+        "canonical_pipeline": "quality_seedvc"
+      },
+      "evidence": {
+        "quality": {
+          "artifacts": [
+            "reports/benchmarks/latest/benchmark_dashboard.json"
+          ],
+          "notes": "Needs fixed-suite evidence against quality_seedvc before promotion."
+        },
+        "latency": {
+          "artifacts": [],
+          "notes": "Needs latency and full-song stability evidence."
+        },
+        "packaging": {
+          "artifacts": [],
+          "notes": "Needs packaged runtime compatibility evidence."
+        },
+        "deployability": {
+          "artifacts": [],
+          "notes": "Needs release-candidate deployment evidence."
+        }
+      }
+    },
+    "realtime_meanvc": {
+      "display_name": "MeanVC live path",
+      "status": "experimental",
+      "summary": "MeanVC streaming remains an experimental live pipeline until latency, quality, and deployability evidence beats the canonical realtime path.",
+      "component_paths": [
+        "src/auto_voice/inference/pipeline_factory.py",
+        "src/auto_voice/web/karaoke_api.py",
+        "scripts/benchmark_pipelines_comprehensive.py"
+      ],
+      "benchmark_gate": {
+        "dashboard_artifact": "reports/benchmarks/latest/benchmark_dashboard.json",
+        "candidate_pipeline": "realtime_meanvc",
+        "canonical_pipeline": "realtime"
+      },
+      "evidence": {
+        "quality": {
+          "artifacts": [
+            "reports/benchmarks/latest/benchmark_dashboard.json"
+          ],
+          "notes": "Needs live-path similarity and intelligibility evidence."
+        },
+        "latency": {
+          "artifacts": [],
+          "notes": "Needs streaming latency and jitter evidence on supported devices."
+        },
+        "packaging": {
+          "artifacts": [],
+          "notes": "Needs dependency and artifact packaging evidence."
+        },
+        "deployability": {
+          "artifacts": [],
+          "notes": "Needs live karaoke deployment validation."
+        }
+      }
     }
   }
 }
