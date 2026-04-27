@@ -8,6 +8,7 @@ cd "$PROJECT_DIR"
 
 source "$SCRIPT_DIR/common_env.sh"
 autovoice_activate_env
+export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 
 echo "=== AutoVoice Build & Test ==="
 echo "Python: $PYTHON"

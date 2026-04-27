@@ -59,6 +59,8 @@ frontend/dist/
 .kilocode/
 .roo/
 .swarm/
+.omx/
+.playwright-mcp/
 .beads/
 checkpoints/
 
