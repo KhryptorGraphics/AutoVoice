@@ -107,6 +107,7 @@ ServerName autovoice.giggahost.com
 DocumentRoot frontend/dist
 ProxyPass /api http://127.0.0.1:10600/api
 ProxyPass /socket.io http://127.0.0.1:10600/socket.io
+ProxyPass /ready http://127.0.0.1:10600/ready
 SecRequestBodyLimit 262144000
 """
     vhost.write_text(content, encoding="utf-8")
@@ -168,6 +169,7 @@ def test_hosted_deployment_discovers_server_alias_vhost(tmp_path):
     DocumentRoot /home/kp/thordrive/autovoice/frontend/dist
     ProxyPass /api http://127.0.0.1:10600/api
     ProxyPass /socket.io http://127.0.0.1:10600/socket.io
+    ProxyPass /ready http://127.0.0.1:10600/ready
     SecRequestBodyLimit 262144000
 </VirtualHost>
 """,

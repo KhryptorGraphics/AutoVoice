@@ -1132,3 +1132,37 @@ class TestPipelineResolution:
         assert result["metadata"]["requested_pipeline"] == "quality_seedvc"
         assert result["metadata"]["resolved_pipeline"] == "quality"
         assert result["metadata"]["runtime_backend"] == "pytorch_full_model"
+
+    def test_quality_seedvc_pipeline_defaults_nullable_workflow_settings(
+        self,
+        job_manager,
+        sample_audio_file,
+        mock_voice_profile_manager,
+    ):
+        mock_voice_profile_manager.store = MagicMock()
+        settings = {
+            "pipeline_type": "quality_seedvc",
+            "requested_pipeline": "quality_seedvc",
+            "pitch_shift": None,
+        }
+        job = {
+            "file_path": sample_audio_file,
+            "profile_id": "test-profile",
+            "settings": settings,
+        }
+        pipeline = MagicMock()
+        pipeline.convert.return_value = {
+            "audio": np.zeros(22050, dtype=np.float32),
+            "sample_rate": 22050,
+            "metadata": {},
+        }
+        factory = MagicMock()
+        factory.get_pipeline.return_value = pipeline
+
+        with patch("auto_voice.inference.pipeline_factory.PipelineFactory.get_instance", return_value=factory):
+            result = job_manager._convert_with_resolved_pipeline("job-seedvc", job, settings)
+
+        pipeline.convert.assert_called_once()
+        assert pipeline.convert.call_args.kwargs["pitch_shift"] == 0
+        assert result["duration"] == 1.0
+        assert result["metadata"]["resolved_pipeline"] == "quality_seedvc"

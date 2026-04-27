@@ -87,7 +87,9 @@ The live AutoVoice app on this host is served behind Apache and the existing
   - `/etc/apache2/sites-available/autovoice.giggadev.com-le-ssl.conf`
 
 Apache serves the built frontend directly from `frontend/dist` and reverse
-proxies `/api`, `/socket.io`, and `/health` to the backend on `127.0.0.1:10600`.
+proxies `/api`, `/socket.io`, `/health`, and `/ready` to the backend on
+`127.0.0.1:10600`. The `/ready` proxy must be defined before the frontend SPA
+fallback so public readiness returns backend JSON instead of `index.html`.
 
 Because AutoVoice accepts large multipart audio uploads, Apache's ModSecurity
 request-body limit must be raised above the default `13,107,200` bytes on the
@@ -112,6 +114,9 @@ external prerequisites outside the repo:
 
 - DNS for `autovoice.giggahost.com` must resolve to this server
 - the active Let's Encrypt certificate must include `autovoice.giggahost.com`
+- every enabled Apache vhost must reference existing certificate files, because
+  one unrelated missing certificate path can block `apache2ctl configtest` and
+  prevent AutoVoice reloads
 
 ## Release Candidate Workflow
 

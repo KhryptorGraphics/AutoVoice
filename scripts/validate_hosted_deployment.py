@@ -56,6 +56,7 @@ def _check_vhost_files(
         hostname,
         f"ProxyPass /api http://127.0.0.1:{backend_port}/api",
         f"ProxyPass /socket.io http://127.0.0.1:{backend_port}/socket.io",
+        f"ProxyPass /ready http://127.0.0.1:{backend_port}/ready",
         frontend_root,
     ]
     for path in vhost_files:
@@ -65,6 +66,12 @@ def _check_vhost_files(
             continue
 
         text = _load_text(path)
+        redirects_to_https = (
+            "https://" in text
+            and ("Redirect " in text or "RewriteRule " in text)
+            and "ProxyPass /api" not in text
+            and frontend_root not in text
+        )
         body_limit = None
         for line in text.splitlines():
             if "SecRequestBodyLimit" in line:
@@ -73,12 +80,26 @@ def _check_vhost_files(
                     body_limit = int(tokens[-1])
                 except (ValueError, IndexError):
                     body_limit = None
+        if redirects_to_https:
+            missing_hostname = hostname not in text
+            result["files"][str(path)] = {
+                "ok": not missing_hostname,
+                "kind": "redirect",
+                "missing_tokens": [hostname] if missing_hostname else [],
+                "body_limit": body_limit,
+                "body_limit_ok": True,
+            }
+            if missing_hostname:
+                result["ok"] = False
+            continue
+
         missing_tokens = [token for token in expected_tokens if token not in text]
         file_ok = not missing_tokens and body_limit is not None and body_limit >= min_body_limit
         if file_ok:
             result["serving_vhost_count"] += 1
         result["files"][str(path)] = {
             "ok": file_ok,
+            "kind": "serving",
             "missing_tokens": missing_tokens,
             "body_limit": body_limit,
             "body_limit_ok": body_limit is not None and body_limit >= min_body_limit,

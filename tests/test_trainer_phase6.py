@@ -36,7 +36,7 @@ class FakePitchEncoder(nn.Module):
 
     def forward(self, f0):
         batch_size = f0.shape[0]
-        return torch.ones(batch_size, 4, 768, device=f0.device)
+        return torch.ones(batch_size, 4, 256, device=f0.device)
 
 
 class TrainingTestModel(nn.Module):
@@ -45,6 +45,9 @@ class TrainingTestModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.scale = nn.Parameter(torch.tensor(1.0))
+        self.content_dim = 768
+        self.pitch_dim = 256
+        self.speaker_dim = 4
 
     def forward(self, content, pitch, speaker, spec=None):
         batch_size, frames, _ = content.shape
@@ -92,6 +95,36 @@ def trainer_factory(tmp_path):
 
 class TestTrainingLoopOrchestration:
     """Exercise train() branches without running full training."""
+
+    def test_trainer_uses_decoder_pitch_feature_contract(self, tmp_path):
+        from auto_voice.training.trainer import Trainer
+
+        seen = {}
+
+        class RecordingPitchEncoder(FakePitchEncoder):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                seen["output_size"] = kwargs.get("output_size")
+
+        with patch('auto_voice.models.encoder.ContentEncoder', FakeContentEncoder), \
+             patch('auto_voice.models.encoder.PitchEncoder', RecordingPitchEncoder):
+            Trainer(
+                TrainingTestModel(),
+                config={'checkpoint_dir': str(tmp_path / 'checkpoints')},
+                device='cpu',
+            )
+
+        assert seen["output_size"] == 256
+
+    def test_train_epoch_reports_feature_shape_mismatch(self, trainer_factory):
+        trainer = trainer_factory()
+        trainer.speaker_embedding = torch.ones(4)
+        trainer.pitch_encoder.forward = MagicMock(
+            return_value=torch.ones(2, 4, 768)
+        )
+
+        with pytest.raises(RuntimeError, match='pitch_dim=768 expected 256'):
+            trainer._train_epoch([make_batch()], epoch=0)
 
     def test_train_resumes_and_adjusts_small_batch_size(self, trainer_factory):
         trainer = trainer_factory({'batch_size': 8, 'epochs': 1, 'save_every': 1})

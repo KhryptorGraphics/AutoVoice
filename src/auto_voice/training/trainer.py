@@ -178,7 +178,9 @@ class Trainer:
             encoder_backend='contentvec',
             device=self.device
         ).to(self.device)
-        self.pitch_encoder = PitchEncoder(output_size=768).to(self.device)  # Match 768-dim
+        # CoMoSVCDecoder conditions on ContentVec(768) + pitch(256).
+        # Keeping this contract explicit prevents projection shape drift.
+        self.pitch_encoder = PitchEncoder(output_size=256).to(self.device)
         self.speaker_embedding: Optional[torch.Tensor] = None
         self.sample_rate = self.config.get('sample_rate', 22050)
 
@@ -285,6 +287,7 @@ class Trainer:
             if self.speaker_embedding is None:
                 raise RuntimeError("Speaker embedding not set. Call set_speaker_embedding() first.")
             speaker = self.speaker_embedding.unsqueeze(0).expand(audio.shape[0], -1)
+            self._validate_model_feature_shapes(content, pitch, speaker)
 
             # Compute spectrogram for posterior encoder
             spec = self._compute_spec(audio, n_mel_frames)
@@ -367,6 +370,7 @@ class Trainer:
                 if self.speaker_embedding is None:
                     raise RuntimeError("Speaker embedding not set.")
                 speaker = self.speaker_embedding.unsqueeze(0).expand(audio.shape[0], -1)
+                self._validate_model_feature_shapes(content, pitch, speaker)
                 spec = self._compute_spec(audio, n_mel_frames)
 
                 outputs = self.model(content, pitch, speaker, spec=spec)
@@ -468,6 +472,36 @@ class Trainer:
                                  mode='linear', align_corners=False).squeeze(0)
             specs.append(spec)
         return torch.stack(specs)  # [B, 513, target_frames]
+
+    def _validate_model_feature_shapes(
+        self,
+        content: torch.Tensor,
+        pitch: torch.Tensor,
+        speaker: torch.Tensor,
+    ) -> None:
+        """Validate encoder feature dimensions against the decoder contract."""
+        expected_content_dim = getattr(self.model, "content_dim", None)
+        expected_pitch_dim = getattr(self.model, "pitch_dim", None)
+        expected_speaker_dim = getattr(self.model, "speaker_dim", None)
+
+        mismatches = []
+        if expected_content_dim is not None and content.shape[-1] != expected_content_dim:
+            mismatches.append(
+                f"content_dim={content.shape[-1]} expected {expected_content_dim}"
+            )
+        if expected_pitch_dim is not None and pitch.shape[-1] != expected_pitch_dim:
+            mismatches.append(f"pitch_dim={pitch.shape[-1]} expected {expected_pitch_dim}")
+        if expected_speaker_dim is not None and speaker.shape[-1] != expected_speaker_dim:
+            mismatches.append(
+                f"speaker_dim={speaker.shape[-1]} expected {expected_speaker_dim}"
+            )
+
+        if mismatches:
+            raise RuntimeError(
+                "Training feature shape mismatch: "
+                + ", ".join(mismatches)
+                + ". Check encoder and decoder dimension configuration."
+            )
 
     def set_speaker_embedding(self, audio_dir: str):
         """Compute and set fixed speaker embedding from training audio."""

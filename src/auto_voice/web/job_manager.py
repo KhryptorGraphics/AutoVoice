@@ -262,7 +262,7 @@ class JobManager:
             result = run_offline_realtime_conversion(
                 job['file_path'],
                 speaker_embedding,
-                pitch_shift=settings.get('pitch_shift', 0.0),
+                pitch_shift=self._float_setting(settings, 'pitch_shift', 0.0),
             )
             result.setdefault('metadata', {})
             result['metadata'].update({
@@ -276,11 +276,11 @@ class JobManager:
             result = self.singing_pipeline.convert_song(
                 song_path=job['file_path'],
                 target_profile_id=job['profile_id'],
-                vocal_volume=settings.get('vocal_volume', 1.0),
-                instrumental_volume=settings.get('instrumental_volume', 0.9),
-                pitch_shift=settings.get('pitch_shift', 0.0),
-                return_stems=settings.get('return_stems', False),
-                preset=settings.get('preset', 'balanced'),
+                vocal_volume=self._float_setting(settings, 'vocal_volume', 1.0),
+                instrumental_volume=self._float_setting(settings, 'instrumental_volume', 0.9),
+                pitch_shift=self._float_setting(settings, 'pitch_shift', 0.0),
+                return_stems=bool(settings.get('return_stems', False)),
+                preset=settings.get('preset') or 'balanced',
             )
             result.setdefault('metadata', {})
             result['metadata'].update({
@@ -313,7 +313,7 @@ class JobManager:
         converted = pipeline.convert(
             audio,
             sample_rate,
-            pitch_shift=int(round(settings.get('pitch_shift', 0.0))),
+            pitch_shift=int(round(self._float_setting(settings, 'pitch_shift', 0.0))),
         )
         output_audio = converted.get('audio')
         if hasattr(output_audio, 'detach'):
@@ -333,6 +333,13 @@ class JobManager:
             },
             'stems': {},
         }
+
+    @staticmethod
+    def _float_setting(settings: Dict[str, Any], key: str, default: float) -> float:
+        value = settings.get(key)
+        if value is None:
+            return default
+        return float(value)
 
     def _calculate_metrics(self, result: Dict) -> Dict[str, Any]:
         """Calculate quality metrics for completed conversion."""

@@ -310,6 +310,7 @@ ServerName autovoice.giggahost.com
 DocumentRoot frontend/dist
 ProxyPass /api http://127.0.0.1:10600/api
 ProxyPass /socket.io http://127.0.0.1:10600/socket.io
+ProxyPass /ready http://127.0.0.1:10600/ready
 SecRequestBodyLimit 262144000
 """
         vhost.write_text(content, encoding="utf-8")
