@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 const FRONTEND_PORT = Number(process.env.AUTOVOICE_PLAYWRIGHT_PORT ?? 4273)
 const BACKEND_PORT = Number(process.env.AUTOVOICE_LIVE_BACKEND_PORT ?? 5051)
+const BACKEND_PYTHON = process.env.AUTOVOICE_PYTHON ?? '/home/kp/anaconda3/envs/autovoice-thor/bin/python'
 const HOST = '127.0.0.1'
 
 export default defineConfig({
@@ -17,7 +18,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `PYTHONNOUSERSITE=1 PYTHONPATH=../src python ../tests/live_backend_server.py --host ${HOST} --port ${BACKEND_PORT}`,
+      command: `PYTHONNOUSERSITE=1 PYTHONPATH=../src ${BACKEND_PYTHON} ../tests/live_backend_server.py --host ${HOST} --port ${BACKEND_PORT}`,
       port: BACKEND_PORT,
       reuseExistingServer: false,
       timeout: 120_000,

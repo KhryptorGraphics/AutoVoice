@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import ssl
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,45 @@ def _discover_vhost_files(hostname: str, sites_dir: Path = Path("/etc/apache2/si
     return matches
 
 
+def _discover_enabled_vhosts(sites_enabled_dir: Path = Path("/etc/apache2/sites-enabled")) -> list[Path]:
+    """Return enabled Apache vhost files, resolving symlinks when possible."""
+
+    if not sites_enabled_dir.exists():
+        return []
+
+    enabled: list[Path] = []
+    for path in sorted(sites_enabled_dir.glob("*.conf")):
+        try:
+            enabled.append(path.resolve())
+        except OSError:
+            enabled.append(path)
+    return enabled
+
+
+def _check_apache_configtest(command: str = "apache2ctl") -> dict[str, Any]:
+    """Run Apache configtest when apache2ctl is available."""
+
+    try:
+        completed = subprocess.run(
+            [command, "configtest"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except FileNotFoundError:
+        return {"ok": True, "skipped": True, "reason": f"{command} not found"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "apache configtest timed out"}
+
+    output = (completed.stdout + completed.stderr).strip()
+    return {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "output": output,
+    }
+
+
 def _check_vhost_files(
     vhost_files: list[Path],
     *,
@@ -51,6 +91,8 @@ def _check_vhost_files(
         "files": {},
         "hostname": hostname,
         "serving_vhost_count": 0,
+        "canonical_server_name_count": 0,
+        "enabled_files": [str(path) for path in _discover_enabled_vhosts()],
     }
     expected_tokens = [
         hostname,
@@ -66,6 +108,16 @@ def _check_vhost_files(
             continue
 
         text = _load_text(path)
+        server_names = []
+        server_aliases = []
+        for line in text.splitlines():
+            tokens = line.split()
+            if not tokens:
+                continue
+            if tokens[0] == "ServerName":
+                server_names.extend(tokens[1:])
+            elif tokens[0] == "ServerAlias":
+                server_aliases.extend(tokens[1:])
         redirects_to_https = (
             "https://" in text
             and ("Redirect " in text or "RewriteRule " in text)
@@ -88,6 +140,10 @@ def _check_vhost_files(
                 "missing_tokens": [hostname] if missing_hostname else [],
                 "body_limit": body_limit,
                 "body_limit_ok": True,
+                "server_names": server_names,
+                "server_aliases": server_aliases,
+                "canonical_server_name": hostname in server_names,
+                "hostname_covered": hostname in server_names or hostname in server_aliases,
             }
             if missing_hostname:
                 result["ok"] = False
@@ -97,14 +153,21 @@ def _check_vhost_files(
         file_ok = not missing_tokens and body_limit is not None and body_limit >= min_body_limit
         if file_ok:
             result["serving_vhost_count"] += 1
+        if hostname in server_names:
+            result["canonical_server_name_count"] += 1
         result["files"][str(path)] = {
             "ok": file_ok,
             "kind": "serving",
             "missing_tokens": missing_tokens,
             "body_limit": body_limit,
             "body_limit_ok": body_limit is not None and body_limit >= min_body_limit,
+            "server_names": server_names,
+            "server_aliases": server_aliases,
+            "canonical_server_name": hostname in server_names,
+            "hostname_covered": hostname in server_names or hostname in server_aliases,
         }
     result["ok"] = result["serving_vhost_count"] > 0
+    result["canonical_server_name_ok"] = result["canonical_server_name_count"] > 0
     return result
 
 
@@ -166,6 +229,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, default=Path("reports/platform/hosted-preflight.json"))
     parser.add_argument("--skip-dns", action="store_true")
     parser.add_argument("--skip-tls", action="store_true")
+    parser.add_argument("--skip-apache-configtest", action="store_true")
+    parser.add_argument("--require-canonical-server-name", action="store_true")
     parser.add_argument("--require-jetson", action="store_true")
     parser.add_argument(
         "--required-env",
@@ -188,13 +253,23 @@ def main(argv: list[str] | None = None) -> int:
             Path(f"/etc/apache2/sites-available/{args.hostname}-le-ssl.conf"),
         ]
 
+    vhost_check = _check_vhost_files(
+        vhost_files,
+        hostname=args.hostname,
+        backend_port=args.backend_port,
+        frontend_root=args.frontend_root,
+        min_body_limit=args.min_body_limit,
+    )
+    if args.require_canonical_server_name and not vhost_check["canonical_server_name_ok"]:
+        vhost_check["ok"] = False
+        vhost_check["error"] = f"{args.hostname} is covered only as an alias, not as ServerName"
+
     checks = {
-        "vhosts": _check_vhost_files(
-            vhost_files,
-            hostname=args.hostname,
-            backend_port=args.backend_port,
-            frontend_root=args.frontend_root,
-            min_body_limit=args.min_body_limit,
+        "vhosts": vhost_check,
+        "apache_configtest": (
+            {"ok": True, "skipped": True}
+            if args.skip_apache_configtest
+            else _check_apache_configtest()
         ),
         "dns": {"ok": True, "skipped": True} if args.skip_dns else _check_dns(args.hostname),
         "tls": {"ok": True, "skipped": True} if args.skip_tls else _check_tls(args.hostname),

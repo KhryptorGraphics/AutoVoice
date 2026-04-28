@@ -68,6 +68,7 @@ class PipelineMetrics:
     # Quality metrics
     mcd: float = 0.0  # Mel Cepstral Distortion (lower is better)
     speaker_similarity: float = 0.0  # Cosine similarity (higher is better)
+    pitch_corr: float = 0.0  # Pitch correlation (higher is better)
 
     # Audio metadata
     input_duration_s: float = 0.0
@@ -230,6 +231,43 @@ def compute_mcd(
         return 0.0
 
 
+def compute_pitch_correlation(
+    audio1: np.ndarray,
+    sr1: int,
+    audio2: np.ndarray,
+    sr2: int,
+) -> float:
+    """Compute a simple F0 correlation signal between two audio clips."""
+    try:
+        import librosa
+
+        target_sr = 22050
+        if sr1 != target_sr:
+            audio1 = librosa.resample(audio1, orig_sr=sr1, target_sr=target_sr)
+        if sr2 != target_sr:
+            audio2 = librosa.resample(audio2, orig_sr=sr2, target_sr=target_sr)
+
+        f0_1, voiced_1, _ = librosa.pyin(audio1, fmin=50, fmax=1100, sr=target_sr)
+        f0_2, voiced_2, _ = librosa.pyin(audio2, fmin=50, fmax=1100, sr=target_sr)
+        f0_1 = np.nan_to_num(f0_1, nan=0.0)
+        f0_2 = np.nan_to_num(f0_2, nan=0.0)
+        frame_count = min(len(f0_1), len(f0_2))
+        if frame_count < 2:
+            return 0.0
+
+        voiced = np.asarray(voiced_1[:frame_count], dtype=bool) & np.asarray(voiced_2[:frame_count], dtype=bool)
+        if int(np.sum(voiced)) < 2:
+            return 0.0
+
+        corr = np.corrcoef(f0_1[:frame_count][voiced], f0_2[:frame_count][voiced])[0, 1]
+        if not np.isfinite(corr):
+            return 0.0
+        return float(np.clip(corr, -1.0, 1.0))
+    except Exception as e:
+        logger.warning(f"Pitch correlation computation failed: {e}")
+        return 0.0
+
+
 def load_test_audio(
     audio_path: Path,
     duration_limit: Optional[float] = None,
@@ -341,6 +379,10 @@ def benchmark_realtime_pipeline(
                 outputs[0], metrics.output_sample_rate,
                 reference_audio, reference_sr
             )
+            metrics.pitch_corr = compute_pitch_correlation(
+                outputs[0], metrics.output_sample_rate,
+                reference_audio, reference_sr
+            )
 
     except Exception as e:
         metrics.success = False
@@ -444,6 +486,10 @@ def benchmark_quality_pipeline(
             output_audio, metrics.output_sample_rate,
             reference_audio, reference_sr
         )
+        metrics.pitch_corr = compute_pitch_correlation(
+            output_audio, metrics.output_sample_rate,
+            reference_audio, reference_sr
+        )
 
     except Exception as e:
         metrics.success = False
@@ -534,6 +580,10 @@ def benchmark_seedvc_pipeline(
             reference_audio, reference_sr
         )
         metrics.speaker_similarity = compute_speaker_similarity(
+            output_audio, metrics.output_sample_rate,
+            reference_audio, reference_sr
+        )
+        metrics.pitch_corr = compute_pitch_correlation(
             output_audio, metrics.output_sample_rate,
             reference_audio, reference_sr
         )
@@ -642,6 +692,10 @@ def benchmark_meanvc_pipeline(
             output_audio, metrics.output_sample_rate,
             reference_audio, reference_sr
         )
+        metrics.pitch_corr = compute_pitch_correlation(
+            output_audio, metrics.output_sample_rate,
+            reference_audio, reference_sr
+        )
 
     except Exception as e:
         metrics.success = False
@@ -721,7 +775,7 @@ def print_report(report: BenchmarkReport):
     print("PIPELINE RESULTS")
     print("-" * 80)
 
-    header = f"{'Pipeline':<30} {'RTF':<8} {'Latency':<10} {'Memory':<12} {'Similarity':<12} {'MCD':<8}"
+    header = f"{'Pipeline':<30} {'RTF':<8} {'Latency':<10} {'Memory':<12} {'Similarity':<12} {'Pitch':<8} {'MCD':<8}"
     print(header)
     print("-" * 80)
 
@@ -730,7 +784,7 @@ def print_report(report: BenchmarkReport):
             latency_str = f"{metrics.latency_ms:.1f}ms" if metrics.latency_ms > 0 else "N/A"
             memory_str = f"{metrics.gpu_memory_peak_mb:.0f}MB" if metrics.gpu_memory_peak_mb > 0 else "CPU"
             print(f"{metrics.pipeline_name:<30} {metrics.rtf:<8.3f} {latency_str:<10} {memory_str:<12} "
-                  f"{metrics.speaker_similarity:<12.3f} {metrics.mcd:<8.2f}")
+                  f"{metrics.speaker_similarity:<12.3f} {metrics.pitch_corr:<8.3f} {metrics.mcd:<8.2f}")
         else:
             print(f"{metrics.pipeline_name:<30} FAILED: {metrics.error}")
 
@@ -851,7 +905,10 @@ def main():
         report.pipelines[pipeline_type] = metrics
 
         if metrics.success:
-            logger.info(f"RTF: {metrics.rtf:.3f}, Similarity: {metrics.speaker_similarity:.3f}, MCD: {metrics.mcd:.2f}")
+            logger.info(
+                f"RTF: {metrics.rtf:.3f}, Similarity: {metrics.speaker_similarity:.3f}, "
+                f"Pitch: {metrics.pitch_corr:.3f}, MCD: {metrics.mcd:.2f}"
+            )
         else:
             logger.error(f"Failed: {metrics.error}")
 

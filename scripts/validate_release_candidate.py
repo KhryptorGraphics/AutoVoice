@@ -174,6 +174,9 @@ def _validate_evidence_payloads(
     if release_evidence.get("comparison_count") != len(comparisons):
         report["error"] = "release evidence comparison_count does not match dashboard"
         return report
+    if release_evidence.get("quality_gate_passed") is not True:
+        report["error"] = f"release evidence quality gate failed: {release_evidence.get('quality_failures')!r}"
+        return report
 
     report["ok"] = True
     return report

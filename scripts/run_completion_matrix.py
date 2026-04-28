@@ -381,6 +381,40 @@ def run_benchmark_evidence(report_dir: Path, *, timeout: int) -> list[LaneResult
     return [build, validate_dashboard, validate_experimental]
 
 
+def run_benchmark_evidence_from_report(report_dir: Path, *, timeout: int, benchmark_report: Path) -> list[LaneResult]:
+    dashboard_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
+    build = _run_command(
+        "benchmark-dashboard-build-real",
+        [
+            sys.executable,
+            "scripts/build_benchmark_dashboard.py",
+            "--comprehensive-report",
+            str(benchmark_report),
+            "--fixture-tier",
+            "quality",
+            "--fixture-suite",
+            "completion-real-benchmark",
+            "--output-dir",
+            str(dashboard_dir),
+        ],
+        report_dir=report_dir,
+        timeout=timeout,
+    )
+    validate_dashboard = _run_command(
+        "benchmark-dashboard-validate",
+        [sys.executable, "scripts/validate_benchmark_dashboard.py"],
+        report_dir=report_dir,
+        timeout=timeout,
+    )
+    validate_experimental = _run_command(
+        "experimental-evidence-validate",
+        [sys.executable, "scripts/validate_experimental_evidence.py"],
+        report_dir=report_dir,
+        timeout=timeout,
+    )
+    return [build, validate_dashboard, validate_experimental]
+
+
 def run_hosted_preflight(report_dir: Path, *, timeout: int, full: bool) -> LaneResult:
     report_path = PROJECT_ROOT / "reports" / "platform" / "hosted-preflight.json"
     if full:
@@ -543,7 +577,10 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
             timeout=args.timeout,
         )
     )
-    lanes.extend(run_benchmark_evidence(report_dir, timeout=args.timeout))
+    if args.benchmark_report:
+        lanes.extend(run_benchmark_evidence_from_report(report_dir, timeout=args.timeout, benchmark_report=args.benchmark_report))
+    else:
+        lanes.extend(run_benchmark_evidence(report_dir, timeout=args.timeout))
     lanes.append(run_hosted_preflight(report_dir, timeout=args.timeout, full=args.full_hosted_preflight))
 
     if args.frontend:
@@ -605,6 +642,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("reports/completion/latest"))
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--base-url", default="http://127.0.0.1:10001")
+    parser.add_argument("--benchmark-report", type=Path, help="Comprehensive benchmark report to use for release evidence.")
     parser.add_argument("--refresh-gitnexus", action="store_true", help="Run npx gitnexus analyze as a lane")
     parser.add_argument("--frontend", action="store_true", help="Run frontend lint/type/build/browser smoke lanes")
     parser.add_argument("--real-compose", action="store_true", help="Boot the real compose backend/frontend stack")

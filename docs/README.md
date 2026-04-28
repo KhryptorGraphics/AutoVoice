@@ -13,6 +13,7 @@ These documents describe the current MVP behavior and should be treated as the s
 - [frontend-persistence-boundaries.md](./frontend-persistence-boundaries.md): what lives in browser `localStorage` versus what is owned by backend storage
 - [api/README.md](./api/README.md): REST and WebSocket API entrypoint
 - [deployment.md](./deployment.md): current compose, hosted preflight, release-candidate, and completion-matrix deployment contract
+- [production-readiness-closeout-2026-04-28.md](./production-readiness-closeout-2026-04-28.md): latest production verification results and remaining release blockers
 - [quality-ux-post-release.md](./quality-ux-post-release.md): post-release quality and operator-UX milestone backed by production smoke and benchmark evidence
 - [troubleshooting.md](./troubleshooting.md): operational debugging and recovery notes
 

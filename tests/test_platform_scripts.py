@@ -124,6 +124,7 @@ SecRequestBodyLimit 262144000
             "autovoice.giggahost.com",
             "--skip-dns",
             "--skip-tls",
+            "--skip-apache-configtest",
             "--vhost-file",
             str(vhost),
             "--vhost-file",
@@ -140,6 +141,8 @@ SecRequestBodyLimit 262144000
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["ok"] is True
     assert report["checks"]["vhosts"]["ok"] is True
+    assert report["checks"]["apache_configtest"]["ok"] is True
+    assert report["checks"]["apache_configtest"]["skipped"] is True
 
 
 def test_hosted_deployment_discovers_server_alias_vhost(tmp_path):
@@ -185,6 +188,37 @@ def test_hosted_deployment_discovers_server_alias_vhost(tmp_path):
     )
     assert result["ok"] is True
     assert result["serving_vhost_count"] == 1
+    assert result["canonical_server_name_ok"] is False
+    assert result["files"][str(ssl_vhost)]["hostname_covered"] is True
+
+
+def test_hosted_deployment_can_require_canonical_server_name(tmp_path):
+    from scripts.validate_hosted_deployment import _check_vhost_files
+
+    vhost = tmp_path / "autovoice.conf"
+    vhost.write_text(
+        """
+<VirtualHost *:443>
+    ServerName autovoice.giggahost.com
+    DocumentRoot frontend/dist
+    ProxyPass /api http://127.0.0.1:10600/api
+    ProxyPass /socket.io http://127.0.0.1:10600/socket.io
+    ProxyPass /ready http://127.0.0.1:10600/ready
+    SecRequestBodyLimit 262144000
+</VirtualHost>
+""",
+        encoding="utf-8",
+    )
+
+    result = _check_vhost_files(
+        [vhost],
+        hostname="autovoice.giggahost.com",
+        backend_port=10600,
+        frontend_root="frontend/dist",
+        min_body_limit=262144000,
+    )
+    assert result["ok"] is True
+    assert result["canonical_server_name_ok"] is True
 
 
 def test_completion_matrix_smoke_runner(tmp_path):

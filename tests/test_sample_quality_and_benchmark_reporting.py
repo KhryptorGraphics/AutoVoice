@@ -257,3 +257,69 @@ def test_validate_benchmark_dashboard_reports_missing_files_as_json(tmp_path):
     payload = json.loads(completed.stdout)
     assert payload["ok"] is False
     assert any("file missing" in error for error in payload["errors"])
+
+
+def test_build_benchmark_dashboard_accepts_comprehensive_report(tmp_path):
+    report_path = tmp_path / "comprehensive_report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "pipelines": {
+                    "quality_seedvc": {
+                        "pipeline_name": "Quality SeedVC",
+                        "success": True,
+                        "iterations": 3,
+                        "speaker_similarity": 0.91,
+                        "pitch_corr": 0.93,
+                        "mcd": 4.1,
+                        "latency_ms": 120.0,
+                        "rtf": 0.8,
+                        "gpu_memory_peak_mb": 2048.0,
+                    },
+                    "realtime": {
+                        "pipeline_name": "Realtime",
+                        "success": True,
+                        "iterations": 3,
+                        "speaker_similarity": 0.88,
+                        "pitch_corr": 0.91,
+                        "mcd": 4.4,
+                        "latency_ms": 42.0,
+                        "rtf": 0.2,
+                        "gpu_memory_peak_mb": 512.0,
+                    },
+                    "failed_pipeline": {
+                        "success": False,
+                        "error": "missing model",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "reports"
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "build_benchmark_dashboard.py"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+            "--comprehensive-report",
+            str(report_path),
+            "--fixture-tier",
+            "quality",
+            "--fixture-suite",
+            "unit-real-benchmark",
+            "--output-dir",
+            str(output_dir),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    dashboard = json.loads((output_dir / "benchmark_dashboard.json").read_text(encoding="utf-8"))
+    release = json.loads((output_dir / "release_evidence.json").read_text(encoding="utf-8"))
+    assert set(dashboard["pipelines"]) == {"quality_seedvc", "realtime"}
+    assert dashboard["pipelines"]["quality_seedvc"]["fixture_suite"] == "unit-real-benchmark"
+    assert release["quality_gate_passed"] is True

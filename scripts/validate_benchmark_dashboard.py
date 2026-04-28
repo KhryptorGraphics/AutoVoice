@@ -92,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
         errors.append("release evidence pipeline_count mismatch")
     if release_evidence.get("comparison_count") != len(comparisons):
         errors.append("release evidence comparison_count mismatch")
+    if release_evidence.get("quality_gate_passed") is not True:
+        failures = release_evidence.get("quality_failures")
+        errors.append(f"release evidence quality gate failed: {failures!r}")
     if required_fixture_tiers:
         tiers = set(str(name) for name in release_evidence.get("fixture_tiers", []))
         if not tiers.intersection(required_fixture_tiers):

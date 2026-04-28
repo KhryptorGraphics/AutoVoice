@@ -77,6 +77,7 @@ def _seed_evidence_files() -> None:
         "comparison_count": 0,
         "promotable_candidates": [],
         "quality_gate_passed": True,
+        "quality_failures": [],
     }
     (evidence_dir / "benchmark_dashboard.json").write_text(json.dumps(dashboard), encoding="utf-8")
     (evidence_dir / "release_evidence.json").write_text(json.dumps(release_evidence), encoding="utf-8")
@@ -251,6 +252,51 @@ def test_validate_release_candidate_rejects_mismatched_evidence_git_sha(tmp_path
         assert result.returncode == 1
         report = json.loads(Path(result.stdout.strip()).read_text(encoding="utf-8"))
         assert "does not match expected" in report["evidence_files"]["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_validate_release_candidate_rejects_failing_quality_gate(tmp_path: Path):
+    _seed_evidence_files()
+    evidence_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
+    release_path = evidence_dir / "release_evidence.json"
+    release_evidence = json.loads(release_path.read_text(encoding="utf-8"))
+    release_evidence["quality_gate_passed"] = False
+    release_evidence["quality_failures"] = [
+        {"pipeline": "quality_seedvc", "metric": "mcd_mean", "value": 750.51, "target_status": "fail"}
+    ]
+    release_path.write_text(json.dumps(release_evidence), encoding="utf-8")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        report_dir = tmp_path / "reports"
+        env = os.environ.copy()
+        pythonpath = str(PROJECT_ROOT / "src")
+        if env.get("PYTHONPATH"):
+            pythonpath = f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
+        env["PYTHONPATH"] = pythonpath
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/validate_release_candidate.py",
+                "--base-url",
+                f"http://127.0.0.1:{server.server_port}",
+                "--skip-compose",
+                "--report-dir",
+                str(report_dir),
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 1
+        report = json.loads(Path(result.stdout.strip()).read_text(encoding="utf-8"))
+        assert "quality gate failed" in report["evidence_files"]["error"]
     finally:
         server.shutdown()
         server.server_close()
