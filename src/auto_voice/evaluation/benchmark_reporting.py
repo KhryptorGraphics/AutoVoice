@@ -115,6 +115,8 @@ def build_benchmark_dashboard(
         pipelines[pipeline_name] = {
             "title": payload.get("title", pipeline_name),
             "sample_count": int(summary.get("sample_count", payload.get("sample_count", 0) or 0)),
+            "fixture_tier": payload.get("fixture_tier", summary.get("fixture_tier", "unspecified")),
+            "fixture_suite": payload.get("fixture_suite", summary.get("fixture_suite", "unspecified")),
             "summary": metrics,
             "source_bundle": payload.get("source_bundle"),
         }
@@ -184,6 +186,10 @@ def build_release_evidence(
         "pipeline_count": len(pipelines),
         "comparison_count": len(comparisons),
         "promotable_candidates": dashboard.get("promotable_candidates", []),
+        "fixture_tiers": sorted({
+            str(pipeline.get("fixture_tier", "unspecified"))
+            for pipeline in pipelines.values()
+        }),
         "quality_gate_passed": all(
             metric_data.get("target_status") in {"pass", "n/a"}
             for pipeline in pipelines.values()

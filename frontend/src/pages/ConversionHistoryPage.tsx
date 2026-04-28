@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Clock, Download, Play, Trash2, Music, Star, Search, Filter, FileText } from 'lucide-react'
+import { Clock, Download, Play, Trash2, Music, Star, Search, Filter, FileText, GitCompare } from 'lucide-react'
 import { apiService, ConversionRecord } from '../services/api'
 import { PipelineBadge, type PipelineType } from '../components/PipelineSelector'
 import { AdapterBadge } from '../components/AdapterSelector'
@@ -408,35 +408,7 @@ export function ConversionHistoryPage() {
                 </div>
 
                 {(item.stem_urls?.vocals || item.stem_urls?.instrumental || item.reassemble_url) && (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {item.stem_urls?.vocals && (
-                      <a
-                        href={item.stem_urls.vocals}
-                        download
-                        className="text-xs px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
-                      >
-                        Download Vocals
-                      </a>
-                    )}
-                    {item.stem_urls?.instrumental && (
-                      <a
-                        href={item.stem_urls.instrumental}
-                        download
-                        className="text-xs px-3 py-1.5 rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
-                      >
-                        Download Instrumental
-                      </a>
-                    )}
-                    {item.reassemble_url && (
-                      <a
-                        href={item.reassemble_url}
-                        download
-                        className="text-xs px-3 py-1.5 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
-                      >
-                        Reassemble Mix
-                      </a>
-                    )}
-                  </div>
+                  <ArtifactComparison record={item} />
                 )}
 
                 {/* Notes Section */}
@@ -474,6 +446,59 @@ export function ConversionHistoryPage() {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+function ArtifactComparison({ record }: { record: ConversionRecord }) {
+  const mixUrl = record.resultUrl ?? record.output_url ?? record.download_url
+  const artifacts = [
+    { key: 'source', label: 'Original source', url: record.input_file, tone: 'bg-gray-100 text-gray-700' },
+    { key: 'mix', label: 'Converted mix', url: mixUrl, tone: 'bg-green-50 text-green-700' },
+    { key: 'vocals', label: 'Converted vocals', url: record.stem_urls?.vocals, tone: 'bg-cyan-50 text-cyan-700' },
+    { key: 'instrumental', label: 'Instrumental', url: record.stem_urls?.instrumental, tone: 'bg-amber-50 text-amber-700' },
+    { key: 'reassemble', label: 'Reassembled mix', url: record.reassemble_url, tone: 'bg-blue-50 text-blue-700' },
+  ]
+
+  return (
+    <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3" data-testid={`artifact-comparison-${record.id}`}>
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+        <GitCompare className="h-4 w-4" />
+        Artifact comparison
+      </div>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+        {artifacts.map((artifact) => (
+          <div key={artifact.key} className="rounded-md border border-gray-200 bg-white p-2">
+            <div className="text-xs font-medium text-gray-500">{artifact.label}</div>
+            {artifact.url ? (
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const audio = new Audio(artifact.url)
+                    audio.play()
+                  }}
+                  className="rounded bg-primary-50 p-1.5 text-primary-700 hover:bg-primary-100"
+                  title={`Play ${artifact.label}`}
+                >
+                  <Play className="h-4 w-4" />
+                </button>
+                <a
+                  href={artifact.url}
+                  download
+                  className={`rounded px-2 py-1 text-xs font-medium transition-colors ${artifact.tone}`}
+                >
+                  Download
+                </a>
+              </div>
+            ) : (
+              <div className="mt-2 rounded bg-gray-100 px-2 py-1 text-xs text-gray-500">
+                Not available for this conversion
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   )

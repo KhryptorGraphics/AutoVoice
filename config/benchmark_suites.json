@@ -9,6 +9,11 @@
     "realtime"
   ],
   "minimum_sample_count": 1,
+  "required_fixture_tiers": [
+    "smoke",
+    "quality",
+    "full"
+  ],
   "required_metrics": {
     "quality_seedvc": [
       "speaker_similarity_mean",

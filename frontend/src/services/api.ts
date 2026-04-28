@@ -298,6 +298,55 @@ export interface PipelineStatusResponse {
   pipelines: Record<string, PipelineStatusInfo>
 }
 
+export interface BenchmarkMetricStatus {
+  value: number
+  target_status: 'pass' | 'fail' | 'n/a' | string
+}
+
+export interface BenchmarkPipelineEvidence {
+  title: string
+  sample_count: number
+  fixture_tier?: string
+  fixture_suite?: string
+  summary: Record<string, BenchmarkMetricStatus>
+  source_bundle?: string
+}
+
+export interface BenchmarkDashboard {
+  generated_at: string
+  provenance?: {
+    schema_version?: number
+    generator?: string
+    git_sha?: string | null
+    source_bundles?: string[]
+  }
+  target_hardware?: string
+  canonical_pipelines?: {
+    offline?: string
+    live?: string
+  }
+  pipelines?: Record<string, BenchmarkPipelineEvidence>
+  comparisons?: Record<string, {
+    canonical_pipeline: string
+    meets_or_beats_canonical: boolean
+    quality_checks_passed: boolean
+    latency_guard_passed: boolean
+  }>
+  promotable_candidates?: string[]
+}
+
+export interface ReleaseEvidence {
+  generated_at: string
+  quality_gate_passed: boolean
+  target_hardware?: string
+  canonical_pipelines?: BenchmarkDashboard['canonical_pipelines']
+  pipeline_count?: number
+  comparison_count?: number
+  promotable_candidates?: string[]
+  fixture_tiers?: string[]
+  provenance?: BenchmarkDashboard['provenance']
+}
+
 export interface TrainingTelemetryResponse {
   job: TrainingJob
   runtime_metrics: {
@@ -917,6 +966,14 @@ class ApiService {
 
   async getPipelineStatus(): Promise<PipelineStatusResponse> {
     return this.request('/pipelines/status')
+  }
+
+  async getLatestBenchmarkDashboard(): Promise<BenchmarkDashboard> {
+    return this.request('/reports/benchmarks/latest')
+  }
+
+  async getLatestReleaseEvidence(): Promise<ReleaseEvidence> {
+    return this.request('/reports/release-evidence/latest')
   }
 
   async getAppSettings(): Promise<AppSettings> {

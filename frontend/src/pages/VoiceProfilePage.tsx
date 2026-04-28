@@ -289,21 +289,21 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
       </div>
 
       {!isSourceProfile && (
-        <div className="bg-gray-800 rounded-lg p-4">
-          <div className="flex items-center justify-between text-sm mb-2">
-            <span className="text-gray-300">Full-model unlock progress</span>
-            <span className="text-gray-400">{Math.min((cleanVocalMinutes / 30) * 100, 100).toFixed(0)}%</span>
-          </div>
-          <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-            <div
-              className={clsx(
-                'h-full transition-all',
-                allowFullTraining ? 'bg-violet-500' : 'bg-emerald-500'
-              )}
-              style={{ width: `${Math.min((cleanVocalMinutes / 30) * 100, 100)}%` }}
-            />
-          </div>
-        </div>
+        <TrainingReadinessPanel
+          cleanVocalMinutes={cleanVocalMinutes}
+          remainingMinutes={remainingMinutes}
+          allowFullTraining={allowFullTraining}
+          hasAdapterModel={Boolean(detailProfile.has_adapter_model)}
+          hasFullModel={Boolean(detailProfile.has_full_model)}
+          onSelectFullTraining={() => {
+            setTrainingConfig((prev) => ({
+              ...prev,
+              training_mode: 'full',
+              initialization_mode: detailProfile.has_full_model ? 'continue' : 'scratch',
+            }))
+            setActiveTab('config')
+          }}
+        />
       )}
 
       {/* Tab navigation */}
@@ -617,6 +617,98 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
           testId="delete-profile"
         />
       </div>
+    </div>
+  )
+}
+
+function TrainingReadinessPanel({
+  cleanVocalMinutes,
+  remainingMinutes,
+  allowFullTraining,
+  hasAdapterModel,
+  hasFullModel,
+  onSelectFullTraining,
+}: {
+  cleanVocalMinutes: number
+  remainingMinutes: number
+  allowFullTraining: boolean
+  hasAdapterModel: boolean
+  hasFullModel: boolean
+  onSelectFullTraining: () => void
+}) {
+  const progress = Math.min((cleanVocalMinutes / 30) * 100, 100)
+  const nextAction = allowFullTraining
+    ? hasFullModel
+      ? 'Continue full-model training for higher live-mode fidelity.'
+      : 'Train a dedicated full model from scratch for better song and live conversion accuracy.'
+    : hasAdapterModel
+      ? 'Keep collecting clean singing vocals while continuing LoRA refinement.'
+      : 'Train a LoRA first, then keep uploading clean singing until full-model training unlocks.'
+
+  return (
+    <div className="rounded-lg border border-gray-700 bg-gray-800 p-4" data-testid="training-readiness-panel">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h3 className="text-lg font-semibold text-white">Training readiness</h3>
+          <p className="mt-1 text-sm text-gray-400">
+            {cleanVocalMinutes.toFixed(1)} minutes of clean target-user singing are available. Full-model training unlocks at 30 minutes.
+          </p>
+        </div>
+        <span className={clsx(
+          'rounded-full px-3 py-1 text-xs font-medium',
+          allowFullTraining ? 'bg-violet-500/20 text-violet-200' : 'bg-emerald-500/20 text-emerald-200'
+        )}>
+          {allowFullTraining ? 'Full model ready' : `${Math.max(remainingMinutes, 0).toFixed(1)}m remaining`}
+        </span>
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-2 flex items-center justify-between text-sm">
+          <span className="text-gray-300">Full-model unlock progress</span>
+          <span className="text-gray-400">{progress.toFixed(0)}%</span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-gray-700">
+          <div
+            className={clsx('h-full transition-all', allowFullTraining ? 'bg-violet-500' : 'bg-emerald-500')}
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+        <ReadinessStep label="LoRA" state={hasAdapterModel ? 'ready' : 'recommended'} detail={hasAdapterModel ? 'Adapter exists' : 'Best first training path'} />
+        <ReadinessStep label="Full model" state={allowFullTraining ? 'ready' : 'locked'} detail={allowFullTraining ? '30m threshold met' : 'Needs more clean vocals'} />
+        <ReadinessStep label="Live mode" state={hasFullModel ? 'ready' : 'recommended'} detail={hasFullModel ? 'Dedicated model available' : 'Improves after full model'} />
+      </div>
+
+      <div className="mt-4 flex flex-col gap-3 rounded-lg bg-gray-900 p-3 md:flex-row md:items-center md:justify-between">
+        <p className="text-sm text-gray-300">{nextAction}</p>
+        {allowFullTraining && (
+          <button
+            type="button"
+            onClick={onSelectFullTraining}
+            data-testid="select-full-model-training"
+            className="rounded bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500"
+          >
+            Configure full-model training
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ReadinessStep({ label, state, detail }: { label: string; state: 'ready' | 'recommended' | 'locked'; detail: string }) {
+  const className = state === 'ready'
+    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+    : state === 'locked'
+      ? 'border-gray-700 bg-gray-900 text-gray-400'
+      : 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+
+  return (
+    <div className={clsx('rounded-lg border p-3', className)}>
+      <div className="text-sm font-semibold">{label}</div>
+      <div className="mt-1 text-xs opacity-80">{detail}</div>
     </div>
   )
 }

@@ -39,6 +39,74 @@ DISALLOWED_SKIP_TOKENS = (
     "Requires pre-built TRT engines",
 )
 
+E2E_ENVIRONMENT_GATES = {
+    "CUDA": {
+        "lane": "jetson-cuda-tensorrt",
+        "owner": "hardware-runner",
+        "action": "Run completion matrix with --hardware or --full on a Jetson/CUDA host.",
+    },
+    "Diarization": {
+        "lane": "voice-profile-diarization-e2e",
+        "owner": "backend-runtime",
+        "action": "Run the diarization E2E lane with the diarization service and real audio fixtures available.",
+    },
+    "Training": {
+        "lane": "voice-profile-training-e2e",
+        "owner": "training-runtime",
+        "action": "Run the voice-profile training E2E lane with training services and sample fixtures available.",
+    },
+    "Karaoke": {
+        "lane": "karaoke-websocket-e2e",
+        "owner": "frontend-runtime",
+        "action": "Run the live browser karaoke websocket lane against a live backend.",
+    },
+    "Jetson": {
+        "lane": "jetson-cuda-tensorrt",
+        "owner": "hardware-runner",
+        "action": "Publish CUDA/TensorRT validation evidence from the self-hosted Jetson runner.",
+    },
+    "benchmark audio files": {
+        "lane": "benchmark-audio-e2e",
+        "owner": "benchmark-runtime",
+        "action": "Run benchmark-audio validation with release-quality fixture media mounted.",
+    },
+    "trained model": {
+        "lane": "trained-model-e2e",
+        "owner": "model-runtime",
+        "action": "Run model-backed E2E checks after restoring trained model fixtures.",
+    },
+    "TRT engines": {
+        "lane": "jetson-cuda-tensorrt",
+        "owner": "hardware-runner",
+        "action": "Build or restore TensorRT engines and rerun the hardware lane.",
+    },
+    "AUTOVOICE_TRT_ENGINE_DIR": {
+        "lane": "jetson-cuda-tensorrt",
+        "owner": "hardware-runner",
+        "action": "Set AUTOVOICE_TRT_ENGINE_DIR to a directory containing TensorRT engine artifacts.",
+    },
+    "tensorrt": {
+        "lane": "jetson-cuda-tensorrt",
+        "owner": "hardware-runner",
+        "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests.",
+    },
+    "ContentVec": {
+        "lane": "jetson-cuda-tensorrt",
+        "owner": "model-runtime",
+        "action": "Use the checkpoint-backed TensorRT export path for ContentVec instead of lazy ONNX export.",
+    },
+    "Sample upload failed": {
+        "lane": "voice-profile-training-e2e",
+        "owner": "training-runtime",
+        "action": "Run with the live backend sample-upload endpoint available and preserve the generated failure report.",
+    },
+    "Job creation failed": {
+        "lane": "voice-profile-training-e2e",
+        "owner": "training-runtime",
+        "action": "Run with the live training job endpoint available and preserve the generated failure report.",
+    },
+}
+
 
 @dataclass
 class LaneResult:
@@ -132,6 +200,7 @@ def _run_command(
 def audit_priority_skips() -> LaneResult:
     findings: list[dict[str, Any]] = []
     allowed: list[dict[str, Any]] = []
+    environment_gate_evidence: list[dict[str, Any]] = []
     for file_name in PRIORITY_SKIP_FILES:
         path = PROJECT_ROOT / file_name
         if not path.exists():
@@ -145,6 +214,20 @@ def audit_priority_skips() -> LaneResult:
                 findings.append(entry)
             else:
                 allowed.append(entry)
+                gate = next(
+                    (metadata for token, metadata in E2E_ENVIRONMENT_GATES.items() if token.lower() in line.lower()),
+                    None,
+                )
+                environment_gate_evidence.append({
+                    **entry,
+                    "explained": gate is not None,
+                    "lane": gate["lane"] if gate else "unclassified-e2e-gate",
+                    "owner": gate["owner"] if gate else "unassigned",
+                    "action": gate["action"] if gate else "Classify this skip with a concrete service or hardware lane.",
+                })
+
+    unexplained = [entry for entry in environment_gate_evidence if not entry["explained"]]
+    findings.extend({"file": entry["file"], "line": entry["line"], "text": f"unexplained environment gate: {entry['text']}"} for entry in unexplained)
 
     status = "passed" if not findings else "failed"
     return LaneResult(
@@ -154,6 +237,7 @@ def audit_priority_skips() -> LaneResult:
             "disallowed_tokens": list(DISALLOWED_SKIP_TOKENS),
             "findings": findings,
             "allowed_environment_gates": allowed,
+            "environment_gate_evidence": environment_gate_evidence,
         },
     )
 
@@ -167,11 +251,15 @@ def write_skip_audit(report_dir: Path) -> LaneResult:
     return result
 
 
-def _bundle_payload(title: str, *, sample_count: int, similarity: float, pitch: float, mcd: float, latency: float) -> dict:
+def _bundle_payload(title: str, *, sample_count: int, similarity: float, pitch: float, mcd: float, latency: float, fixture_tier: str) -> dict:
     return {
         "title": title,
+        "fixture_tier": fixture_tier,
+        "fixture_suite": "completion-smoke-real-audio",
         "summary": {
             "sample_count": sample_count,
+            "fixture_tier": fixture_tier,
+            "fixture_suite": "completion-smoke-real-audio",
             "speaker_similarity_mean": similarity,
             "pitch_corr_mean": pitch,
             "mcd_mean": mcd,
@@ -190,6 +278,7 @@ def generate_smoke_benchmark_bundles(bundle_dir: Path) -> dict[str, Path]:
             pitch=0.93,
             mcd=4.1,
             latency=120.0,
+            fixture_tier="smoke",
         ),
         "realtime": _bundle_payload(
             "realtime smoke evidence",
@@ -198,6 +287,7 @@ def generate_smoke_benchmark_bundles(bundle_dir: Path) -> dict[str, Path]:
             pitch=0.91,
             mcd=4.4,
             latency=42.0,
+            fixture_tier="smoke",
         ),
         "hq_svc": _bundle_payload(
             "hq_svc candidate smoke evidence",
@@ -206,6 +296,7 @@ def generate_smoke_benchmark_bundles(bundle_dir: Path) -> dict[str, Path]:
             pitch=0.91,
             mcd=4.4,
             latency=140.0,
+            fixture_tier="smoke",
         ),
         "nsf_harmonic_enhancement": _bundle_payload(
             "nsf_harmonic_enhancement candidate smoke evidence",
@@ -214,6 +305,7 @@ def generate_smoke_benchmark_bundles(bundle_dir: Path) -> dict[str, Path]:
             pitch=0.90,
             mcd=4.6,
             latency=130.0,
+            fixture_tier="smoke",
         ),
         "ecapa2_encoder": _bundle_payload(
             "ecapa2_encoder candidate smoke evidence",
@@ -222,6 +314,7 @@ def generate_smoke_benchmark_bundles(bundle_dir: Path) -> dict[str, Path]:
             pitch=0.91,
             mcd=4.3,
             latency=150.0,
+            fixture_tier="smoke",
         ),
         "pupu_vocoder_refinement": _bundle_payload(
             "pupu_vocoder_refinement candidate smoke evidence",
@@ -230,6 +323,7 @@ def generate_smoke_benchmark_bundles(bundle_dir: Path) -> dict[str, Path]:
             pitch=0.90,
             mcd=4.5,
             latency=155.0,
+            fixture_tier="smoke",
         ),
         "quality_shortcut": _bundle_payload(
             "quality_shortcut candidate smoke evidence",
@@ -238,6 +332,7 @@ def generate_smoke_benchmark_bundles(bundle_dir: Path) -> dict[str, Path]:
             pitch=0.90,
             mcd=4.5,
             latency=90.0,
+            fixture_tier="smoke",
         ),
         "realtime_meanvc": _bundle_payload(
             "realtime_meanvc candidate smoke evidence",
@@ -246,6 +341,7 @@ def generate_smoke_benchmark_bundles(bundle_dir: Path) -> dict[str, Path]:
             pitch=0.90,
             mcd=4.7,
             latency=48.0,
+            fixture_tier="smoke",
         ),
     }
     paths: dict[str, Path] = {}

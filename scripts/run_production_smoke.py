@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
@@ -25,6 +26,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ARTIST_SONG = PROJECT_ROOT / "tests/quality_samples/conor_maynard_pillowtalk.wav"
 DEFAULT_USER_VOCALS = PROJECT_ROOT / "tests/quality_samples/william_singe_pillowtalk.wav"
 DEFAULT_BASE_URL = "https://autovoice.giggahost.com"
+FIXTURE_SUITE_CONFIG = PROJECT_ROOT / "config/quality_fixture_suites.json"
+QUALITY_FIXTURE_TIERS = {
+    "smoke": {
+        "max_upload_seconds": 3.0,
+        "description": "Hosted production monitor tier using short real-audio excerpts.",
+    },
+    "quality": {
+        "max_upload_seconds": 30.0,
+        "description": "Release quality tier using longer offline clips when upload limits allow it.",
+    },
+    "full": {
+        "max_upload_seconds": 0.0,
+        "description": "Full fixture tier using the complete source files.",
+    },
+}
 
 
 @dataclass
@@ -154,6 +170,99 @@ def _stage_upload_audio(path: Path, output_dir: Path, max_seconds: float) -> Pat
         return staged_path
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _inspect_audio_artifact(path: Path) -> dict[str, Any]:
+    """Return deterministic, dependency-free quality signals for an audio file."""
+    inspection: dict[str, Any] = {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+        "ok": path.exists() and path.stat().st_size > 44,
+    }
+    try:
+        with wave.open(str(path), "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            sample_rate = wav_file.getframerate()
+            frame_count = wav_file.getnframes()
+            frames = wav_file.readframes(frame_count)
+    except wave.Error:
+        inspection.update({
+            "format": "unknown",
+            "duration_seconds": None,
+            "sample_rate": None,
+            "non_silent": inspection["size_bytes"] > 44,
+        })
+        return inspection
+
+    peak = 0
+    energy = 0
+    sample_count = 0
+    if sample_width == 1:
+        values = [sample - 128 for sample in frames]
+    elif sample_width == 2:
+        values = [
+            int.from_bytes(frames[index:index + 2], "little", signed=True)
+            for index in range(0, len(frames), 2)
+        ]
+    else:
+        values = []
+    for value in values:
+        absolute = abs(value)
+        peak = max(peak, absolute)
+        energy += absolute * absolute
+        sample_count += 1
+
+    max_value = float((2 ** (8 * sample_width - 1)) - 1) if sample_width > 0 else 1.0
+    rms = ((energy / sample_count) ** 0.5 / max_value) if sample_count else 0.0
+    inspection.update({
+        "format": "wav",
+        "channels": channels,
+        "sample_width_bytes": sample_width,
+        "sample_rate": sample_rate,
+        "frame_count": frame_count,
+        "duration_seconds": round(frame_count / sample_rate, 3) if sample_rate else 0.0,
+        "rms": round(rms, 6),
+        "peak": round(peak / max_value, 6) if max_value else 0.0,
+        "non_silent": peak > 0,
+    })
+    inspection["ok"] = bool(inspection["ok"] and inspection["duration_seconds"] and inspection["duration_seconds"] > 0)
+    return inspection
+
+
+def _quality_metrics(downloads: list[dict[str, Any]], conversion_status: dict[str, Any]) -> dict[str, Any]:
+    inspections = {download["variant"]: download.get("inspection", {}) for download in downloads}
+    durations = [
+        inspection.get("duration_seconds")
+        for inspection in inspections.values()
+        if isinstance(inspection.get("duration_seconds"), (int, float))
+    ]
+    duration_spread = round(max(durations) - min(durations), 3) if len(durations) >= 2 else 0.0
+    mix = inspections.get("mix", {})
+    return {
+        "rtf": conversion_status.get("rtf"),
+        "processing_time_seconds": conversion_status.get("processing_time_seconds"),
+        "audio_duration_seconds": conversion_status.get("audio_duration_seconds") or mix.get("duration_seconds"),
+        "download_count": len(downloads),
+        "duration_spread_seconds": duration_spread,
+        "non_silent_downloads": all(inspection.get("non_silent", True) for inspection in inspections.values()),
+        "all_downloads_ok": all(download.get("ok") for download in downloads),
+        "artifact_comparison": {
+            "mix_sha256": mix.get("sha256"),
+            "vocal_sha256": inspections.get("vocals", {}).get("sha256"),
+            "instrumental_sha256": inspections.get("instrumental", {}).get("sha256"),
+            "stems_duration_aligned": duration_spread <= 0.25,
+        },
+    }
+
+
 def _copy_evidence(output_dir: Path) -> dict[str, str]:
     copied: dict[str, str] = {}
     for name in ("benchmark_dashboard.json", "release_evidence.json", "report.md"):
@@ -165,6 +274,21 @@ def _copy_evidence(output_dir: Path) -> dict[str, str]:
         shutil.copy2(source, dest)
         copied[name] = str(dest)
     return copied
+
+
+def _fixture_suite_metadata(fixture_tier: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(FIXTURE_SUITE_CONFIG.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"config_path": str(FIXTURE_SUITE_CONFIG), "tier": fixture_tier, "available": False}
+    suite = (payload.get("suites") or {}).get(fixture_tier, {})
+    return {
+        "config_path": str(FIXTURE_SUITE_CONFIG),
+        "tier": fixture_tier,
+        "available": bool(suite),
+        "description": suite.get("description"),
+        "fixture_roles": [fixture.get("role") for fixture in suite.get("fixtures", [])],
+    }
 
 
 def _check_json_endpoint(base_url: str, path: str, predicate: Any) -> dict[str, Any]:
@@ -244,16 +368,19 @@ def _resolve_reviews(base_url: str, workflow: dict[str, Any], created_profile_id
     return workflow
 
 
-def _download_asset(base_url: str, path: str, output_path: Path) -> dict[str, Any]:
+def _download_asset(base_url: str, path: str, output_path: Path, *, variant: str) -> dict[str, Any]:
     result = _request("GET", base_url, path, timeout=120)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(result.body)
+    inspection = _inspect_audio_artifact(output_path)
     return {
+        "variant": variant,
         "path": path,
         "status": result.status,
         "output_path": str(output_path),
         "size_bytes": output_path.stat().st_size,
-        "ok": result.status == 200 and output_path.stat().st_size > 44,
+        "inspection": inspection,
+        "ok": result.status == 200 and bool(inspection.get("ok")),
     }
 
 
@@ -287,9 +414,13 @@ def run_full_smoke(args: argparse.Namespace, output_dir: Path) -> dict[str, Any]
     if missing:
         raise FileNotFoundError(f"Missing production smoke fixture(s): {missing}")
     staged_dir = output_dir / "upload_fixtures"
-    artist_song = _stage_upload_audio(source_artist_song, staged_dir, args.max_upload_seconds)
+    tier = QUALITY_FIXTURE_TIERS[args.fixture_tier]
+    max_upload_seconds = args.max_upload_seconds
+    if max_upload_seconds is None:
+        max_upload_seconds = float(tier["max_upload_seconds"])
+    artist_song = _stage_upload_audio(source_artist_song, staged_dir, max_upload_seconds)
     user_vocals = [
-        _stage_upload_audio(path, staged_dir / "user_vocals", args.max_upload_seconds)
+        _stage_upload_audio(path, staged_dir / "user_vocals", max_upload_seconds)
         for path in source_user_vocals
     ]
 
@@ -406,21 +537,31 @@ def run_full_smoke(args: argparse.Namespace, output_dir: Path) -> dict[str, Any]
         if conversion_status.get("status") != "completed":
             raise RuntimeError(f"Conversion job did not complete: {conversion_status!r}")
 
-        downloads.append(_download_asset(args.base_url, f"/api/v1/convert/download/{conversion_job_id}", output_dir / "downloads" / "mix.wav"))
+        downloads.append(_download_asset(args.base_url, f"/api/v1/convert/download/{conversion_job_id}", output_dir / "downloads" / "mix.wav", variant="mix"))
         if conversion_status.get("stem_urls"):
-            downloads.append(_download_asset(args.base_url, f"/api/v1/convert/download/{conversion_job_id}?variant=vocals", output_dir / "downloads" / "vocals.wav"))
-            downloads.append(_download_asset(args.base_url, f"/api/v1/convert/download/{conversion_job_id}?variant=instrumental", output_dir / "downloads" / "instrumental.wav"))
+            downloads.append(_download_asset(args.base_url, f"/api/v1/convert/download/{conversion_job_id}?variant=vocals", output_dir / "downloads" / "vocals.wav", variant="vocals"))
+            downloads.append(_download_asset(args.base_url, f"/api/v1/convert/download/{conversion_job_id}?variant=instrumental", output_dir / "downloads" / "instrumental.wav", variant="instrumental"))
+        elif args.require_stems:
+            raise RuntimeError("Conversion completed without stem_urls while --require-stems was set")
+
+        quality_metrics = _quality_metrics(downloads, conversion_status)
+        if args.require_quality_evidence and not all(download.get("inspection", {}).get("ok") for download in downloads):
+            raise RuntimeError(f"Downloaded artifact quality evidence failed: {quality_metrics!r}")
 
         report = {
             "ok": False,
             "duration_seconds": round(time.monotonic() - started, 3),
             "upload_fixtures": {
-                "max_upload_seconds": args.max_upload_seconds,
+                "fixture_tier": args.fixture_tier,
+                "fixture_tier_description": tier["description"],
+                "fixture_suite": _fixture_suite_metadata(args.fixture_tier),
+                "max_upload_seconds": max_upload_seconds,
                 "artist_song": {
                     "source": str(source_artist_song),
                     "staged": str(artist_song),
                     "source_size_bytes": source_artist_song.stat().st_size,
                     "staged_size_bytes": artist_song.stat().st_size,
+                    "inspection": _inspect_audio_artifact(artist_song),
                 },
                 "user_vocals": [
                     {
@@ -428,6 +569,7 @@ def run_full_smoke(args: argparse.Namespace, output_dir: Path) -> dict[str, Any]
                         "staged": str(staged),
                         "source_size_bytes": source.stat().st_size,
                         "staged_size_bytes": staged.stat().st_size,
+                        "inspection": _inspect_audio_artifact(staged),
                     }
                     for source, staged in zip(source_user_vocals, user_vocals)
                 ],
@@ -438,6 +580,17 @@ def run_full_smoke(args: argparse.Namespace, output_dir: Path) -> dict[str, Any]
             "training_job": training_job,
             "conversion_job": conversion_status,
             "downloads": downloads,
+            "quality_metrics": quality_metrics,
+            "stem_assertions": {
+                "requested": True,
+                "required": bool(args.require_stems),
+                "reported_by_api": bool(conversion_status.get("stem_urls")),
+                "downloaded_variants": sorted(download["variant"] for download in downloads),
+                "ok": (
+                    (not conversion_status.get("stem_urls") or {"vocals", "instrumental"}.issubset({download["variant"] for download in downloads}))
+                    and (not args.require_stems or {"vocals", "instrumental"}.issubset({download["variant"] for download in downloads}))
+                ),
+            },
             "cleanup": cleanup,
         }
         return report
@@ -447,7 +600,9 @@ def run_full_smoke(args: argparse.Namespace, output_dir: Path) -> dict[str, Any]
         if report is not None:
             downloads_ok = all(download["ok"] for download in downloads)
             cleanup_ok = args.no_cleanup or all(entry["ok"] for entry in cleanup)
-            report["ok"] = downloads_ok and cleanup_ok
+            stem_ok = bool(report.get("stem_assertions", {}).get("ok", True))
+            quality_ok = bool(report.get("quality_metrics", {}).get("all_downloads_ok", downloads_ok))
+            report["ok"] = downloads_ok and cleanup_ok and stem_ok and quality_ok
             report["duration_seconds"] = round(time.monotonic() - started, 3)
 
 
@@ -461,12 +616,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--user-vocals", type=Path, action="append", default=None)
     parser.add_argument("--target-profile-id", default=None)
     parser.add_argument("--pipeline", default="quality_seedvc")
+    parser.add_argument("--fixture-tier", choices=sorted(QUALITY_FIXTURE_TIERS), default="smoke")
     parser.add_argument(
         "--max-upload-seconds",
         type=float,
-        default=3.0,
-        help="Stage short real-audio excerpts for upload; pass 0 to upload full files.",
+        default=None,
+        help="Override fixture-tier upload duration; pass 0 to upload full files.",
     )
+    parser.add_argument("--require-stems", action="store_true", help="Fail full smoke if converted stem URLs are not reported and downloadable.")
+    parser.add_argument("--require-quality-evidence", action="store_true", help="Fail full smoke if deterministic artifact inspection fails.")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=1e-4)

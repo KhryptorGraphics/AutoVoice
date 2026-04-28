@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "suites": {
+    "smoke": {
+      "description": "Hosted production monitor fixtures trimmed to stay below public upload limits.",
+      "max_upload_seconds": 3.0,
+      "fixtures": [
+        {
+          "role": "artist_song",
+          "path": "tests/quality_samples/conor_maynard_pillowtalk.wav"
+        },
+        {
+          "role": "target_user_vocal",
+          "path": "tests/quality_samples/william_singe_pillowtalk.wav"
+        }
+      ]
+    },
+    "quality": {
+      "description": "Longer offline quality fixtures for release-evidence runs.",
+      "max_upload_seconds": 30.0,
+      "fixtures": [
+        {
+          "role": "artist_song",
+          "path": "tests/quality_samples/conor_maynard_pillowtalk.wav"
+        },
+        {
+          "role": "target_user_vocal",
+          "path": "tests/quality_samples/william_singe_pillowtalk.wav"
+        }
+      ]
+    },
+    "multi_singer": {
+      "description": "Diarization-focused fixture tier for multi-singer workflow proof.",
+      "max_upload_seconds": 30.0,
+      "fixtures": [
+        {
+          "role": "multi_singer_song",
+          "path": "tests/quality_samples/conor_maynard_pillowtalk.wav",
+          "notes": "Replace with a dedicated duet fixture when licensed test media is available."
+        }
+      ]
+    },
+    "full": {
+      "description": "Full local fixture tier using complete source files.",
+      "max_upload_seconds": 0.0,
+      "fixtures": [
+        {
+          "role": "artist_song",
+          "path": "tests/quality_samples/conor_maynard_pillowtalk.wav"
+        },
+        {
+          "role": "target_user_vocal",
+          "path": "tests/quality_samples/william_singe_pillowtalk.wav"
+        }
+      ]
+    }
+  }
+}

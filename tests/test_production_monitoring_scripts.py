@@ -233,9 +233,69 @@ def test_production_smoke_full_mode_exercises_workflow_and_cleanup(tmp_path):
         "/api/v1/convert/download/convert-smoke?variant=vocals",
         "/api/v1/convert/download/convert-smoke?variant=instrumental",
     }
+    assert report["full"]["upload_fixtures"]["fixture_tier"] == "smoke"
+    assert report["full"]["stem_assertions"] == {
+        "requested": True,
+        "required": False,
+        "reported_by_api": True,
+        "downloaded_variants": ["instrumental", "mix", "vocals"],
+        "ok": True,
+    }
+    assert report["full"]["quality_metrics"]["download_count"] == 3
+    assert report["full"]["quality_metrics"]["all_downloads_ok"] is True
+    assert all(download["inspection"]["sha256"] for download in report["full"]["downloads"])
     assert {entry["method"] for entry in report["full"]["cleanup"]} == {"POST"}
     assert all(entry["ok"] for entry in report["full"]["cleanup"])
     assert set(_SmokeHandler.deleted_profiles) == {"target-smoke", "source-smoke"}
+
+
+def test_production_smoke_full_mode_fails_when_required_stems_missing(tmp_path):
+    class NoStemHandler(_SmokeHandler):
+        def do_GET(self):  # noqa: N802
+            if self.path == "/api/v1/convert/status/convert-smoke":
+                self._send_json(200, {"job_id": "convert-smoke", "status": "completed"})
+            else:
+                super().do_GET()
+
+    NoStemHandler.resolved_reviews = False
+    NoStemHandler.deleted_profiles = []
+    artist_song = tmp_path / "artist.wav"
+    user_vocals = tmp_path / "user.wav"
+    _write_wav(artist_song)
+    _write_wav(user_vocals)
+    server, base_url = _serve(NoStemHandler)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/run_production_smoke.py",
+                "--mode",
+                "full",
+                "--base-url",
+                base_url,
+                "--artist-song",
+                str(artist_song),
+                "--user-vocals",
+                str(user_vocals),
+                "--output-dir",
+                str(tmp_path / "latest"),
+                "--run-id",
+                "no-stems",
+                "--poll-interval",
+                "0.01",
+                "--require-stems",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+
+    assert result.returncode == 1
+    report = json.loads((tmp_path / "latest" / "no-stems" / "production_smoke.json").read_text())
+    assert report["ok"] is False
+    assert "without stem_urls" in report["error"]
 
 
 def test_production_monitoring_workflow_has_expected_schedules():

@@ -217,3 +217,6 @@ def test_completion_matrix_smoke_runner(tmp_path):
 
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     assert audit["findings"] == []
+    assert audit["environment_gate_evidence"]
+    assert all(entry["explained"] for entry in audit["environment_gate_evidence"])
+    assert {entry["owner"] for entry in audit["environment_gate_evidence"]} >= {"hardware-runner", "training-runtime"}

@@ -60,6 +60,7 @@ def test_benchmark_dashboard_and_release_evidence_round_trip(tmp_path):
         {
             "quality_seedvc": {
                 "title": "quality_seedvc",
+                "fixture_tier": "quality",
                 "summary": {
                     "sample_count": 2,
                     "speaker_similarity_mean": 0.91,
@@ -70,6 +71,7 @@ def test_benchmark_dashboard_and_release_evidence_round_trip(tmp_path):
             },
             "hq_svc": {
                 "title": "hq_svc",
+                "fixture_tier": "quality",
                 "summary": {
                     "sample_count": 2,
                     "speaker_similarity_mean": 0.94,
@@ -80,6 +82,7 @@ def test_benchmark_dashboard_and_release_evidence_round_trip(tmp_path):
             },
             "realtime": {
                 "title": "realtime",
+                "fixture_tier": "quality",
                 "summary": {
                     "sample_count": 2,
                     "speaker_similarity_mean": 0.87,
@@ -97,6 +100,8 @@ def test_benchmark_dashboard_and_release_evidence_round_trip(tmp_path):
 
     assert dashboard["comparisons"]["hq_svc"]["meets_or_beats_canonical"] is True
     assert release["quality_gate_passed"] is True
+    assert dashboard["pipelines"]["quality_seedvc"]["fixture_tier"] == "quality"
+    assert release["fixture_tiers"] == ["quality"]
     assert dashboard["provenance"]["schema_version"] == 1
     assert dashboard["provenance"]["generator"]
     assert release["provenance"] == dashboard["provenance"]

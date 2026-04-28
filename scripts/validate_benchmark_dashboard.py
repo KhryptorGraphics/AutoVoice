@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         for name, metrics in (suite.get("required_metrics", {}) or {}).items()
     }
     minimum_sample_count = int(suite.get("minimum_sample_count", 1))
+    required_fixture_tiers = [str(name) for name in suite.get("required_fixture_tiers", [])]
 
     for pipeline_name in required_pipelines:
         pipeline = pipelines.get(pipeline_name)
@@ -76,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
         if int(pipeline.get("sample_count", 0)) < minimum_sample_count:
             errors.append(f"pipeline {pipeline_name} sample_count below minimum {minimum_sample_count}")
         summary = pipeline.get("summary", {})
+        if required_fixture_tiers and str(pipeline.get("fixture_tier", "")) not in required_fixture_tiers:
+            errors.append(f"pipeline {pipeline_name} fixture_tier is not one of {required_fixture_tiers}")
         for metric in required_metrics.get(pipeline_name, []):
             if metric not in summary:
                 errors.append(f"pipeline {pipeline_name} missing required metric {metric}")
@@ -89,6 +92,10 @@ def main(argv: list[str] | None = None) -> int:
         errors.append("release evidence pipeline_count mismatch")
     if release_evidence.get("comparison_count") != len(comparisons):
         errors.append("release evidence comparison_count mismatch")
+    if required_fixture_tiers:
+        tiers = set(str(name) for name in release_evidence.get("fixture_tiers", []))
+        if not tiers.intersection(required_fixture_tiers):
+            errors.append("release evidence fixture_tiers do not include a required tier")
 
     report = {
         "suite_config": str(args.suite_config),
