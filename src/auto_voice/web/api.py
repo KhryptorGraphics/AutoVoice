@@ -839,6 +839,7 @@ register_profile_sample_routes(
     serialize_profile_for_response=_serialize_profile_for_response,
     get_frontend_adapter_type=_get_frontend_adapter_type,
     get_canonical_adapter_artifact=_get_canonical_adapter_artifact,
+    get_state_store=_get_state_store,
     save_background_job=_save_background_job,
     get_background_job=_get_background_job,
     soundfile_available=SOUNDFILE_AVAILABLE,

@@ -30,6 +30,7 @@ def register_runtime_routes(api_bp: Blueprint) -> None:
     api_bp.add_url_rule('/gpu/metrics', view_func=gpu_metrics, methods=['GET'])
     api_bp.add_url_rule('/kernels/metrics', view_func=kernel_metrics, methods=['GET'])
     api_bp.add_url_rule('/system/info', view_func=system_info, methods=['GET'])
+    api_bp.add_url_rule('/audit/events', view_func=list_audit_events, methods=['GET'])
     api_bp.add_url_rule('/devices/list', view_func=list_devices, methods=['GET'])
     api_bp.add_url_rule('/devices/config', view_func=get_device_config, methods=['GET'])
     api_bp.add_url_rule('/devices/config', view_func=set_device_config, methods=['POST'])
@@ -69,10 +70,33 @@ def get_latest_benchmark_dashboard():
 def get_latest_release_evidence():
     """Return the latest release evidence JSON."""
     root = _root()
-    report_path = root._reports_dir() / "benchmarks" / "latest" / "release_evidence.json"
+    report_path = root._reports_dir() / "release-evidence" / "latest" / "release_decision.json"
+    if not report_path.exists():
+        report_path = root._reports_dir() / "benchmarks" / "latest" / "release_evidence.json"
     if not report_path.exists():
         return root.not_found_response('Release evidence not found')
     return jsonify(json.loads(report_path.read_text(encoding='utf-8')))
+
+
+def list_audit_events():
+    """Return structured audit events from the durable local state store."""
+    root = _root()
+    try:
+        limit = request.args.get('limit', default=100, type=int)
+        resource_id = request.args.get('resource_id')
+        event_type = request.args.get('event_type')
+        events = root._get_state_store().list_audit_events(
+            resource_id=resource_id,
+            event_type=event_type,
+            limit=max(1, min(limit or 100, 1000)),
+        )
+        return jsonify({
+            "events": events,
+            "count": len(events),
+        })
+    except Exception as exc:
+        root.logger.error("Failed to list audit events: %s", exc, exc_info=True)
+        return root.error_response(str(exc))
 
 
 def health_check():

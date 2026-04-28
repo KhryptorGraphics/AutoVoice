@@ -7,11 +7,12 @@ import os
 import time
 import uuid
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from flask import Flask, g, jsonify, request
+from flask import Flask, current_app, g, has_app_context, has_request_context, jsonify, request
 from werkzeug.utils import secure_filename
 
 from .utils import allowed_file
@@ -33,6 +34,32 @@ YOUTUBE_HOSTS = {
     "www.youtube-nocookie.com",
     "youtu.be",
     "www.youtu.be",
+}
+
+_ASSET_SCALAR_FIELDS: dict[str, tuple[str, str]] = {
+    "path": ("asset_id", "asset"),
+    "file_path": ("file_asset_id", "file"),
+    "audio_path": ("audio_asset_id", "audio"),
+    "vocals_path": ("vocals_asset_id", "vocals"),
+    "instrumental_path": ("instrumental_asset_id", "instrumental"),
+    "model_path": ("model_asset_id", "model"),
+    "full_model_path": ("full_model_asset_id", "full_model"),
+    "tensorrt_engine_path": ("tensorrt_engine_asset_id", "tensorrt_engine"),
+    "adapter_path": ("adapter_asset_id", "adapter"),
+    "embedding_path": ("embedding_asset_id", "embedding"),
+    "runtime_artifact_manifest_path": (
+        "runtime_artifact_manifest_asset_id",
+        "runtime_artifact_manifest",
+    ),
+    "primary_reference_audio_path": ("primary_reference_audio_asset_id", "reference_audio"),
+    "filtered_audio_path": ("filtered_audio_asset_id", "filtered_audio"),
+    "original_path": ("original_asset_id", "source_audio"),
+    "audioPath": ("audioAssetId", "audio"),
+    "filteredPath": ("filteredAssetId", "filtered_audio"),
+}
+
+_ASSET_LIST_FIELDS: dict[str, tuple[str, str]] = {
+    "reference_audio_paths": ("reference_audio_asset_ids", "reference_audio"),
 }
 
 
@@ -188,6 +215,25 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
+def resolve_managed_media_path(
+    raw_path: Any,
+    *,
+    data_dir: str | Path,
+    upload_folder: str | Path | None = None,
+) -> Path | None:
+    if not raw_path:
+        return None
+    try:
+        path = Path(str(raw_path)).expanduser().resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+    if not path.exists() or not path.is_file():
+        return None
+    if not any(_is_relative_to(path, root) for root in managed_audio_roots(data_dir, upload_folder)):
+        return None
+    return path
+
+
 def resolve_server_audio_path(
     raw_path: Any,
     *,
@@ -205,6 +251,114 @@ def resolve_server_audio_path(
     if strict and not any(_is_relative_to(path, root) for root in managed_audio_roots(data_dir, upload_folder)):
         raise PermissionError("audio_path must be under a managed AutoVoice data directory")
     return path
+
+
+def asset_id_for_path(
+    raw_path: Any,
+    *,
+    asset_kind: str = "asset",
+    app: Flask | None = None,
+) -> str | None:
+    if not raw_path:
+        return None
+    try:
+        normalized_path = str(Path(str(raw_path)).expanduser().resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        normalized_path = str(raw_path)
+
+    target_app = app
+    if target_app is None and has_app_context():
+        target_app = current_app._get_current_object()
+
+    secret = (
+        (target_app.config.get("AUTOVOICE_API_TOKEN") if target_app else None)
+        or (target_app.config.get("SECRET_KEY") if target_app else None)
+        or os.environ.get("AUTOVOICE_ASSET_ID_SECRET")
+        or "autovoice-asset-id"
+    )
+    digest = hmac.new(
+        str(secret).encode("utf-8"),
+        msg=f"{asset_kind}:{normalized_path}".encode("utf-8"),
+        digestmod="sha256",
+    ).hexdigest()
+    return f"{asset_kind}_{digest[:24]}"
+
+
+def build_asset_reference(
+    raw_path: Any,
+    *,
+    asset_kind: str = "asset",
+    app: Flask | None = None,
+) -> dict[str, Any] | None:
+    asset_id = asset_id_for_path(raw_path, asset_kind=asset_kind, app=app)
+    if asset_id is None:
+        return None
+
+    resolved_path = None
+    size_bytes = None
+    try:
+        resolved = Path(str(raw_path)).expanduser().resolve()
+        resolved_path = str(resolved)
+        if resolved.exists() and resolved.is_file():
+            size_bytes = resolved.stat().st_size
+    except (OSError, RuntimeError, TypeError, ValueError):
+        resolved_path = str(raw_path)
+
+    reference: dict[str, Any] = {
+        "asset_id": asset_id,
+        "kind": asset_kind,
+        "filename": Path(str(raw_path)).name or None,
+    }
+    if size_bytes is not None:
+        reference["size_bytes"] = size_bytes
+
+    target_app = app
+    if target_app is None and has_app_context():
+        target_app = current_app._get_current_object()
+    if not (target_app and public_deployment_enabled(target_app)):
+        reference["path"] = resolved_path
+    return reference
+
+
+def annotate_asset_payload(payload: Any, *, app: Flask | None = None) -> Any:
+    target_app = app
+    if target_app is None and has_app_context():
+        target_app = current_app._get_current_object()
+    public_mode = bool(target_app and public_deployment_enabled(target_app))
+
+    def _walk(value: Any) -> Any:
+        if isinstance(value, dict):
+            annotated: dict[str, Any] = {}
+            for key, item in value.items():
+                list_mapping = _ASSET_LIST_FIELDS.get(key)
+                if list_mapping and isinstance(item, list):
+                    asset_field, asset_kind = list_mapping
+                    asset_ids = [
+                        asset_id_for_path(entry, asset_kind=asset_kind, app=target_app)
+                        for entry in item
+                        if entry
+                    ]
+                    annotated[key] = [] if public_mode else list(item)
+                    if asset_ids:
+                        annotated[asset_field] = [asset_id for asset_id in asset_ids if asset_id]
+                    continue
+
+                scalar_mapping = _ASSET_SCALAR_FIELDS.get(key)
+                if scalar_mapping and item:
+                    asset_field, asset_kind = scalar_mapping
+                    annotated[key] = None if public_mode else item
+                    asset_id = asset_id_for_path(item, asset_kind=asset_kind, app=target_app)
+                    if asset_id:
+                        annotated[asset_field] = asset_id
+                    continue
+
+                annotated[key] = _walk(item)
+            return annotated
+        if isinstance(value, list):
+            return [_walk(item) for item in value]
+        return value
+
+    return _walk(value=payload)
 
 
 def safe_upload_filename(filename: str) -> str:
@@ -246,3 +400,116 @@ def require_media_consent(data: dict[str, Any], app: Flask) -> None:
         raise PermissionError(
             "consent_confirmed and source_media_policy_confirmed are required in public mode"
         )
+
+
+def record_structured_audit_event(
+    action: str,
+    resource_type: str,
+    *,
+    app: Flask | None = None,
+    resource_id: str | None = None,
+    asset_paths: list[Any] | None = None,
+    asset_kind: str = "asset",
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    target_app = app
+    if target_app is None and has_app_context():
+        target_app = current_app._get_current_object()
+
+    asset_refs = [
+        reference
+        for reference in (
+            build_asset_reference(path, asset_kind=asset_kind, app=target_app)
+            for path in (asset_paths or [])
+        )
+        if reference is not None
+    ]
+
+    event: dict[str, Any] = {
+        "event_id": uuid.uuid4().hex,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+        "mode": "public" if target_app and public_deployment_enabled(target_app) else "local",
+        "asset_ids": [reference["asset_id"] for reference in asset_refs],
+        "assets": asset_refs,
+        "details": dict(details or {}),
+    }
+    if has_request_context():
+        event["request"] = {
+            "id": getattr(g, "request_id", None),
+            "method": request.method,
+            "path": request.path,
+            "remote_addr": request.remote_addr,
+        }
+
+    state_store = getattr(target_app, "state_store", None) if target_app is not None else None
+    if state_store is not None and hasattr(state_store, "record_audit_event"):
+        state_store.record_audit_event(event)
+    return event
+
+
+PATH_RESPONSE_FIELDS = {
+    "audio_path",
+    "audioPath",
+    "filtered_audio_path",
+    "filteredPath",
+    "file_path",
+    "model_path",
+    "full_model_path",
+    "tensorrt_engine_path",
+    "adapter_path",
+    "embedding_path",
+    "primary_reference_audio_path",
+    "runtime_artifact_manifest_path",
+    "instrumental_path",
+    "vocals_path",
+    "original_path",
+    "path",
+}
+
+PATH_LIST_RESPONSE_FIELDS = {
+    "reference_audio_paths",
+}
+
+
+def public_asset_payload(app: Flask, state_store: Any, path: Any, *, kind: str, owner_id: str | None = None) -> dict[str, Any]:
+    """Return an opaque asset reference and persist the local path server-side."""
+    if not path:
+        return {}
+    asset = state_store.register_asset(str(path), kind=kind, owner_id=owner_id)
+    return {"asset_id": asset["asset_id"]}
+
+
+def redact_public_paths(
+    payload: Any,
+    app: Flask,
+    state_store: Any,
+    *,
+    owner_id: str | None = None,
+    kind: str = "file",
+) -> Any:
+    """Replace filesystem paths with opaque asset IDs when public deployment mode is enabled."""
+    if not public_deployment_enabled(app):
+        return payload
+    if isinstance(payload, list):
+        return [redact_public_paths(item, app, state_store, owner_id=owner_id, kind=kind) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+
+    redacted: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in PATH_LIST_RESPONSE_FIELDS and isinstance(value, list):
+            redacted[f"{key}_asset_ids"] = [
+                public_asset_payload(app, state_store, item, kind=kind, owner_id=owner_id).get("asset_id")
+                for item in value
+                if item
+            ]
+            continue
+        if key in PATH_RESPONSE_FIELDS and value:
+            asset = public_asset_payload(app, state_store, value, kind=kind, owner_id=owner_id)
+            redacted[f"{key}_asset_id"] = asset.get("asset_id")
+            continue
+        redacted[key] = redact_public_paths(value, app, state_store, owner_id=owner_id, kind=kind)
+    return redacted

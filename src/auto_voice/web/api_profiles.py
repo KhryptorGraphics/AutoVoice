@@ -8,12 +8,17 @@ import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from flask import Blueprint, current_app, jsonify, request
 from werkzeug.utils import secure_filename
 
 from .security import (
+    annotate_asset_payload,
+    public_deployment_enabled,
+    redact_public_paths,
+    record_structured_audit_event,
     require_media_consent,
     resolve_server_audio_path,
     strict_path_sandbox_enabled,
@@ -30,6 +35,8 @@ def register_profile_sample_routes(api_bp: Blueprint, **deps: Any) -> None:
     api_bp.add_url_rule('/voice/profiles/<profile_id>', view_func=get_voice_profile, methods=['GET'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>', view_func=delete_voice_profile, methods=['DELETE'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>/delete', view_func=delete_voice_profile, methods=['POST'])
+    api_bp.add_url_rule('/voice/profiles/<profile_id>/export', view_func=export_voice_profile, methods=['GET'])
+    api_bp.add_url_rule('/voice/profiles/<profile_id>/purge', view_func=purge_voice_profile, methods=['DELETE', 'POST'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>/adapters', view_func=get_profile_adapters, methods=['GET'])
     api_bp.add_url_rule('/profiles/<profile_id>/adapters', view_func=get_profile_adapters, methods=['GET'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>/model', view_func=get_profile_model, methods=['GET'])
@@ -158,7 +165,13 @@ def clone_voice():
         for field in ['profile_id', 'audio_duration', 'user_id', 'name', 'vocal_range', 'created_at']:
             if field not in response_data:
                 response_data[field] = result.get(field)
-        return jsonify(response_data), 201
+        _audit_event(
+            "voice_profile.created",
+            "voice_profile",
+            response_data.get("profile_id"),
+            {"name": name, "user_id": user_id, "source_filename": secure_name},
+        )
+        return jsonify(_redact_profile_payload(response_data, response_data.get("profile_id"))), 201
 
     except _dep('InvalidAudioError') as e:
         logger.warning(f"Invalid audio for voice cloning: {e}")
@@ -211,7 +224,7 @@ def get_voice_profiles():
         store = _dep('get_profile_store')()
         profiles = store.list_profiles(user_id=user_id)
         clean_profiles = [
-            _dep('serialize_profile_for_response')(profile)
+            _redact_profile_payload(_dep('serialize_profile_for_response')(profile), profile.get('profile_id'))
             for profile in profiles
         ]
         return jsonify(clean_profiles)
@@ -248,7 +261,7 @@ def get_voice_profile(profile_id):
         if adapter_artifact is not None:
             clean_profile['adapter_path'] = adapter_artifact['path']
 
-        return jsonify(clean_profile)
+        return jsonify(_redact_profile_payload(clean_profile, profile_id))
     except _dep('ProfileNotFoundError'):
         logger.info(f"Voice profile not found via exception: {profile_id}")
         return jsonify({
@@ -275,12 +288,31 @@ def delete_voice_profile(profile_id):
         }), 503
 
     try:
+        profile = _dep('load_runtime_profile')(profile_id)
+        sample_payloads = []
+        profile_payload = None
+        if profile is not None:
+            profile_payload = _dep('serialize_profile_for_response')(profile)
+            sample_payloads = [
+                _serialize_training_sample(profile_id, sample)
+                for sample in _dep('get_profile_store')().list_training_samples(profile_id)
+            ]
+
         deleted = voice_cloner.delete_voice_profile(profile_id)
         if deleted:
+            purge_summary = _state_store().purge_profile_state(profile_id) if _state_store() else {}
+            _audit_event(
+                "voice_profile.deleted",
+                "voice_profile",
+                profile_id,
+                {"profile_id": profile_id, "purge_summary": purge_summary},
+                payload={"profile": profile_payload, "samples": sample_payloads},
+            )
             logger.info(f"Voice profile deleted: {profile_id}")
             return jsonify({
                 'status': 'success',
-                'profile_id': profile_id
+                'profile_id': profile_id,
+                'purge_summary': purge_summary,
             })
 
         logger.warning(f"Voice profile not found for deletion: {profile_id}")
@@ -300,6 +332,181 @@ def delete_voice_profile(profile_id):
             'Temporary service unavailability during profile deletion',
             message=str(e),
         )
+
+
+def _state_store():
+    getter = _deps.get('get_state_store')
+    return getter() if getter else None
+
+
+_AUDIT_ACTION_OVERRIDES = {
+    "voice_profile.created": "clone",
+    "voice_profile.deleted": "delete",
+    "voice_profile.exported": "export",
+    "voice_profile.purged": "delete",
+    "training_sample.imported": "import",
+    "training_sample.deleted": "delete",
+}
+
+_PATH_KEYS = {
+    "audio_path",
+    "audioPath",
+    "filtered_audio_path",
+    "filteredPath",
+    "file_path",
+    "model_path",
+    "adapter_path",
+    "embedding_path",
+    "path",
+    "instrumental_path",
+    "primary_reference_audio_path",
+    "runtime_artifact_manifest_path",
+    "full_model_path",
+    "tensorrt_engine_path",
+    "vocals_path",
+    "original_path",
+}
+
+
+def _collect_path_values(payload: Any) -> list[str]:
+    paths: list[str] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key == "reference_audio_paths" and isinstance(value, list):
+                paths.extend(str(item) for item in value if item)
+                continue
+            if key in _PATH_KEYS and value:
+                paths.append(str(value))
+                continue
+            paths.extend(_collect_path_values(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            paths.extend(_collect_path_values(item))
+    return paths
+
+
+def _audit_event(
+    event_type: str,
+    resource_type: str,
+    resource_id: str | None,
+    metadata: Dict[str, Any],
+    *,
+    payload: Any = None,
+    asset_paths: Optional[list[str]] = None,
+) -> None:
+    try:
+        action = metadata.get("action") or _AUDIT_ACTION_OVERRIDES.get(
+            event_type,
+            event_type.rsplit(".", 1)[-1],
+        )
+        details = dict(metadata)
+        details["event_type"] = event_type
+        paths = _collect_path_values(payload) if payload is not None else []
+        if asset_paths:
+            paths.extend(str(path) for path in asset_paths if path)
+        record_structured_audit_event(
+            action,
+            resource_type,
+            app=current_app,
+            resource_id=resource_id,
+            asset_paths=paths,
+            asset_kind="voice_profile",
+            details=details,
+        )
+    except Exception:
+        _dep('logger').warning("Failed to persist audit event %s", event_type, exc_info=True)
+
+
+def _redact_profile_payload(payload: Dict[str, Any], profile_id: str) -> Dict[str, Any]:
+    store = _state_store()
+    annotated = annotate_asset_payload(payload, app=current_app)
+    if store is None or not public_deployment_enabled(current_app):
+        return annotated
+    return redact_public_paths(payload, current_app, store, owner_id=profile_id, kind="voice_profile")
+
+
+def export_voice_profile(profile_id):
+    """Export profile metadata and server-side asset references for portability/compliance."""
+    profile = _dep('load_runtime_profile')(profile_id)
+    if profile is None:
+        return _dep('not_found_response')('Voice profile not found')
+
+    store = _dep('get_profile_store')()
+    samples = [_serialize_training_sample(profile_id, sample) for sample in store.list_training_samples(profile_id)]
+    manifest = {
+        "profile": _dep('serialize_profile_for_response')(profile),
+        "samples": samples,
+        "state": _state_store().export_profile_state(profile_id) if _state_store() else {},
+        "assets": _state_store().list_assets(owner_id=profile_id) if _state_store() else [],
+        "exported_at": time.time(),
+    }
+    _audit_event(
+        "voice_profile.exported",
+        "voice_profile",
+        profile_id,
+        {"sample_count": len(samples), "asset_count": len(manifest["assets"])},
+        payload=manifest,
+    )
+    return jsonify(_redact_profile_payload(manifest, profile_id))
+
+
+def purge_voice_profile(profile_id):
+    """Delete profile metadata plus registered owned assets from the local deployment."""
+    logger = _dep('logger')
+    voice_cloner = getattr(current_app, 'voice_cloner', None)
+    if voice_cloner is None:
+        logger.warning("Voice cloner service unavailable")
+        return jsonify({
+            'error': 'Voice cloning service unavailable',
+            'message': 'Voice cloner not initialized'
+        }), 503
+
+    store = _state_store()
+    profile = _dep('load_runtime_profile')(profile_id)
+    sample_payloads = []
+    profile_payload = None
+    if profile is not None:
+        profile_payload = _dep('serialize_profile_for_response')(profile)
+        sample_payloads = [
+            _serialize_training_sample(profile_id, sample)
+            for sample in _dep('get_profile_store')().list_training_samples(profile_id)
+        ]
+    purged_assets: list[str] = []
+    purge_summary = store.purge_profile_state(profile_id) if store is not None else {}
+    if store is not None:
+        for asset in store.list_assets(owner_id=profile_id):
+            if store.delete_asset(asset["asset_id"]):
+                purged_assets.append(asset["asset_id"])
+
+    try:
+        deleted = voice_cloner.delete_voice_profile(profile_id)
+    except _dep('ProfileNotFoundError'):
+        deleted = False
+
+    if not deleted and not purged_assets:
+        return jsonify({
+            'error': 'Voice profile not found',
+            'profile_id': profile_id
+        }), 404
+
+    _audit_event(
+        "voice_profile.purged",
+        "voice_profile",
+        profile_id,
+        {
+            "profile_deleted": bool(deleted),
+            "purged_asset_count": len(purged_assets),
+            "purge_summary": purge_summary,
+        },
+        payload={"profile": profile_payload, "samples": sample_payloads},
+    )
+    return jsonify({
+        "status": "success",
+        "profile_id": profile_id,
+        "profile_deleted": bool(deleted),
+        "purged_asset_ids": purged_assets,
+        "purge_summary": purge_summary,
+    })
 
 
 def get_profile_adapters(profile_id):
@@ -323,12 +530,12 @@ def get_profile_adapters(profile_id):
         })
         selected = adapter_artifact['type']
 
-    return jsonify({
+    return jsonify(_redact_profile_payload({
         'profile_id': profile_id,
         'adapters': adapters,
         'selected': selected,
         'count': len(adapters),
-    })
+    }, profile_id))
 
 
 def get_profile_model(profile_id):
@@ -357,7 +564,7 @@ def get_profile_model(profile_id):
         serialized_profile = _dep('serialize_profile_for_response')(profile)
 
         if not available_artifact_types:
-            return jsonify({
+            return jsonify(_redact_profile_payload({
                 'profile_id': profile_id,
                 'has_model': False,
                 'has_trained_model': False,
@@ -371,7 +578,7 @@ def get_profile_model(profile_id):
                 'full_model_eligible': serialized_profile['full_model_eligible'],
                 'available_artifact_types': [],
                 'message': 'No trained model available for this profile',
-            }), 404
+            }, profile_id)), 404
 
         if not has_adapter:
             selected_artifact_type = available_artifact_types[0]
@@ -384,7 +591,7 @@ def get_profile_model(profile_id):
                 'tensorrt': 'TensorRT engine available for this profile',
             }.get(selected_artifact_type, 'Trained model available for this profile')
 
-            return jsonify({
+            return jsonify(_redact_profile_payload({
                 'profile_id': profile_id,
                 'has_model': True,
                 'has_trained_model': True,
@@ -402,7 +609,7 @@ def get_profile_model(profile_id):
                     str(tensorrt_engine_path) if tensorrt_engine_path else None
                 ),
                 'message': message,
-            }), 200
+            }, profile_id)), 200
 
         adapter_info = adapter_manager.get_adapter_info(profile_id)
         embedding_path = adapter_manager.get_embedding_path(profile_id)
@@ -424,7 +631,7 @@ def get_profile_model(profile_id):
                 adapter_path.stat().st_mtime
             ).isoformat()
 
-        return jsonify({
+        return jsonify(_redact_profile_payload({
             'profile_id': profile_id,
             'has_model': True,
             'has_trained_model': True,
@@ -451,7 +658,7 @@ def get_profile_model(profile_id):
             'embedding_path': str(embedding_path) if embedding_exists else None,
             'embedding_shape': list(embedding_shape) if embedding_shape is not None else None,
             'created_at': created_at,
-        })
+        }, profile_id))
 
     except Exception as e:
         logger.error(f"Error getting model info for {profile_id}: {e}", exc_info=True)
@@ -490,14 +697,14 @@ def select_profile_adapter(profile_id):
         profile['selected_adapter'] = adapter_type
         store.save(dict(profile))
 
-        return jsonify({
+        return jsonify(_redact_profile_payload({
             'status': 'success',
             'success': True,
             'profile_id': profile_id,
             'selected': _dep('get_frontend_adapter_type')({'selected_adapter': adapter_type}),
             'selected_adapter': adapter_type,
             'adapter_path': adapter_artifact['path'],
-        })
+        }, profile_id))
     except Exception as e:
         logger.error(f"Failed to select adapter: {e}", exc_info=True)
         return _dep('error_response')('Failed to select adapter', message=str(e))
@@ -546,13 +753,13 @@ def get_adapter_metrics(profile_id):
             }
         }
 
-    return jsonify({
+    return jsonify(_redact_profile_payload({
         'profile_id': profile_id,
         'profile_name': profile.get('name', 'Unknown'),
         'adapters': metrics,
         'adapter_count': len(metrics),
         'recommended': next(iter(metrics.keys()), None),
-    })
+    }, profile_id))
 
 
 def get_profile_training_status(profile_id):
@@ -602,12 +809,12 @@ def list_samples(profile_id: str):
         training_samples = store.list_training_samples(profile_id)
         samples = [_serialize_training_sample(profile_id, sample) for sample in training_samples]
         if samples:
-            return jsonify(samples)
+            return jsonify(_redact_profile_payload(samples, profile_id))
     except Exception as e:
         logger.warning(f"Failed to get samples from VoiceProfileStore: {e}")
 
     samples = _profile_samples.get(profile_id, {})
-    return jsonify(list(samples.values()))
+    return jsonify(_redact_profile_payload(list(samples.values()), profile_id))
 
 
 def upload_sample(profile_id: str):
@@ -674,7 +881,18 @@ def upload_sample(profile_id: str):
             sample_payload = _serialize_training_sample(profile_id, training_sample)
 
         logger.info(f"Uploaded sample {training_sample.sample_id} for profile {profile_id}")
-        return jsonify(sample_payload), 201
+        _audit_event(
+            "training_sample.imported",
+            "training_sample",
+            training_sample.sample_id,
+            {
+                "profile_id": profile_id,
+                "sample_id": training_sample.sample_id,
+                "source": sample_payload.get("metadata", {}).get("source", "upload"),
+            },
+            payload=sample_payload,
+        )
+        return jsonify(_redact_profile_payload(sample_payload, profile_id)), 201
     except Exception as e:
         logger.error(f"Error uploading sample: {e}", exc_info=True)
         return _dep('error_response')(str(e))
@@ -788,7 +1006,19 @@ def add_sample_from_path(profile_id: str):
         sample_payload['metadata'].update(metadata)
 
         logger.info(f"Added sample {training_sample.sample_id} (vocals) from path for profile {profile_id}")
-        return jsonify(sample_payload), 201
+        _audit_event(
+            "training_sample.imported",
+            "training_sample",
+            training_sample.sample_id,
+            {
+                "profile_id": profile_id,
+                "sample_id": training_sample.sample_id,
+                "source": sample_payload.get("metadata", {}).get("source", "youtube_download"),
+                "skip_separation": bool(skip_separation),
+            },
+            payload=sample_payload,
+        )
+        return jsonify(_redact_profile_payload(sample_payload, profile_id)), 201
     except Exception as e:
         logger.error(f"Error adding sample from path: {e}", exc_info=True)
         return _dep('error_response')(str(e))
@@ -933,7 +1163,7 @@ def get_separation_status(job_id: str):
     job = _separation_jobs.get(job_id) or _dep('get_background_job')(job_id)
     if not job:
         return _dep('not_found_response')('Job not found')
-    return jsonify(job)
+    return jsonify(_redact_profile_payload(job, job.get("profile_id")))
 
 
 def get_sample(profile_id: str, sample_id: str):
@@ -944,13 +1174,13 @@ def get_sample(profile_id: str, sample_id: str):
 
     sample = _find_training_sample(profile_id, sample_id)
     if sample is not None:
-        return jsonify(_serialize_training_sample(profile_id, sample))
+        return jsonify(_redact_profile_payload(_serialize_training_sample(profile_id, sample), profile_id))
 
     samples = _profile_samples.get(profile_id, {})
     fallback = samples.get(sample_id)
     if fallback is None:
         return _dep('not_found_response')('Sample not found')
-    return jsonify(fallback)
+    return jsonify(_redact_profile_payload(fallback, profile_id))
 
 
 def delete_sample(profile_id: str, sample_id: str):
@@ -961,18 +1191,36 @@ def delete_sample(profile_id: str, sample_id: str):
         return legacy_delete_sample(profile_id, sample_id)
 
     store = _dep('get_profile_store')()
+    sample_payload = None
+    sample = _find_training_sample(profile_id, sample_id)
+    if sample is not None:
+        sample_payload = _serialize_training_sample(profile_id, sample)
     if store.delete_training_sample(profile_id, sample_id):
+        _audit_event(
+            "training_sample.deleted",
+            "training_sample",
+            sample_id,
+            {"profile_id": profile_id, "sample_id": sample_id},
+            payload=sample_payload,
+        )
         logger.info(f"Deleted sample {sample_id} from profile {profile_id}")
         return '', 204
 
     samples = _profile_samples.get(profile_id, {})
-    sample = samples.get(sample_id)
-    if sample is None:
+    fallback_sample = samples.get(sample_id)
+    if fallback_sample is None:
         return _dep('not_found_response')('Sample not found')
 
-    if sample.get('file_path') and os.path.exists(sample['file_path']):
-        os.remove(sample['file_path'])
+    if fallback_sample.get('file_path') and os.path.exists(fallback_sample['file_path']):
+        os.remove(fallback_sample['file_path'])
 
     del _profile_samples[profile_id][sample_id]
+    _audit_event(
+        "training_sample.deleted",
+        "training_sample",
+        sample_id,
+        {"profile_id": profile_id, "sample_id": sample_id},
+        payload=fallback_sample,
+    )
     logger.info(f"Deleted fallback sample {sample_id} from profile {profile_id}")
     return '', 204

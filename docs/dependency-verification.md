@@ -30,6 +30,32 @@ PYTHONNOUSERSITE=1 PYTHONPATH=src /home/kp/anaconda3/envs/autovoice-thor/bin/pyt
   scripts/verify_bindings.py
 ```
 
+## Supply-Chain Contract and Image Policy
+
+Backend dependencies and production images are governed by `requirements.lock` and
+validated by `scripts/check_dependency_contract.py`.
+
+The contract checks:
+
+- exact SHA-256 of `requirements-runtime.txt`
+- exact SHA-256 of `frontend/package-lock.json`
+- digest-pinned image references in:
+  - `Dockerfile`
+  - `frontend/Dockerfile.frontend`
+  - `docker-compose.yaml` (monitoring images)
+- optional high/critical vulnerability policy for generated audit reports
+
+Run locally before merge:
+
+```bash
+python scripts/check_dependency_contract.py \
+  --pip-audit-report reports/platform/pip-audit.json \
+  --npm-audit-report reports/platform/npm-audit.json
+```
+
+GitHub `security-sbom` writes both reports under `reports/platform/` and runs this
+contract check in CI.
+
 ## Environment Spec
 
 The reproducible base spec lives in:

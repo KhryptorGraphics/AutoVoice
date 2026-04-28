@@ -23,6 +23,14 @@ This runbook applies to private or hosted deployments. Public/commercial launch 
 - Run `python scripts/validate_benchmark_dashboard.py --current-git-sha --release-grade` before release claims.
 - Do not use `/tmp` benchmark source bundles as release evidence.
 
+## Full RC Evidence
+
+- Use `python scripts/preflight_full_hardware_rc.py --output reports/release_candidates/AV-j4cd/preflight.json --benchmark-report <current-head-benchmark-report.json>` to record hard blockers before starting the full run.
+- Use `python scripts/run_full_hardware_rc.py --benchmark-report <current-head-benchmark-report.json>` on the Jetson/hosted runner to collect the full RC bundle.
+- The full runner writes immutable artifacts under `reports/release_candidates/AV-j4cd/<timestamp>-<git-sha>/`.
+- `release_decision.json` is the canonical go/no-go artifact for that run.
+- `artifact_manifest.json` records the exact completion-matrix, platform, benchmark, parity, and production-smoke artifacts captured for the decision.
+
 ## Backup And Restore
 
 - Run `scripts/backup_compose_volumes.sh` before upgrades and after major training/import sessions.

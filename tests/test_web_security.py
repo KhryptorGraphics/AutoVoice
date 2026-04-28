@@ -9,6 +9,7 @@ from flask import Flask
 from auto_voice.web.app import create_app
 from auto_voice.web.security import (
     canonical_youtube_url,
+    redact_public_paths,
     resolve_server_audio_path,
     socketio_cors_allowed_origins,
 )
@@ -62,3 +63,19 @@ def test_youtube_url_validation_canonicalizes_and_rejects_non_youtube():
         canonical_youtube_url("https://example.com/watch?v=abc123")
     with pytest.raises(ValueError, match="Only http"):
         canonical_youtube_url("file:///etc/passwd")
+
+
+def test_public_mode_redacts_path_fields_to_asset_ids(monkeypatch, tmp_path):
+    from auto_voice.web.persistence import AppStateStore
+
+    monkeypatch.setenv("AUTOVOICE_PUBLIC_DEPLOYMENT", "true")
+    app = Flask(__name__)
+    store = AppStateStore(str(tmp_path))
+    payload = {"audio_path": str(tmp_path / "audio.wav"), "nested": {"file_path": str(tmp_path / "file.wav")}}
+
+    redacted = redact_public_paths(payload, app, store, owner_id="profile-a", kind="voice_sample")
+
+    assert "audio_path" not in redacted
+    assert "audio_path_asset_id" in redacted
+    assert "file_path" not in redacted["nested"]
+    assert len(store.list_assets("profile-a")) == 2

@@ -9,7 +9,13 @@ from typing import Optional
 
 from flask import Blueprint, current_app, jsonify, request
 
-from .security import canonical_youtube_url, require_media_consent
+from .security import (
+    canonical_youtube_url,
+    managed_audio_roots,
+    record_structured_audit_event,
+    redact_public_paths,
+    require_media_consent,
+)
 
 
 def _root():
@@ -24,6 +30,8 @@ def register_youtube_routes(api_bp: Blueprint) -> None:
     api_bp.add_url_rule('/youtube/history', view_func=save_youtube_history, methods=['POST'])
     api_bp.add_url_rule('/youtube/history', view_func=clear_youtube_history, methods=['DELETE'])
     api_bp.add_url_rule('/youtube/history/<item_id>', view_func=delete_youtube_history_item, methods=['DELETE'])
+    api_bp.add_url_rule('/youtube/history/export', view_func=export_youtube_history, methods=['GET'])
+    api_bp.add_url_rule('/youtube/history/purge', view_func=purge_youtube_history, methods=['POST', 'DELETE'])
     api_bp.add_url_rule('/youtube/info', view_func=youtube_info, methods=['POST'])
     api_bp.add_url_rule('/youtube/download', view_func=youtube_download, methods=['POST'])
 
@@ -52,7 +60,9 @@ def list_youtube_history():
     root = _root()
     try:
         limit = request.args.get('limit', type=int)
-        return jsonify(root._get_state_store().list_youtube_history(limit=limit))
+        state_store = root._get_state_store()
+        history = state_store.list_youtube_history(limit=limit)
+        return jsonify(_redact_youtube_payload(history))
     except Exception as exc:
         root.logger.error("Failed to list YouTube history: %s", exc, exc_info=True)
         return root.error_response(str(exc))
@@ -84,8 +94,10 @@ def save_youtube_history():
             'filteredPath': data.get('filteredPath'),
             'videoId': data.get('videoId'),
         }
-        root._get_state_store().save_youtube_history_item(history_item)
-        return jsonify(history_item), 201
+        state_store = root._get_state_store()
+        state_store.save_youtube_history_item(history_item)
+        _audit_event("youtube.history.saved", "youtube_history", history_item["id"], {"video_id": history_item.get("videoId")})
+        return jsonify(_redact_youtube_payload(history_item)), 201
     except Exception as exc:
         root.logger.error("Failed to save YouTube history: %s", exc, exc_info=True)
         return root.error_response(str(exc))
@@ -95,7 +107,16 @@ def clear_youtube_history():
     """Clear persisted YouTube download history."""
     root = _root()
     try:
-        root._get_state_store().clear_youtube_history()
+        state_store = root._get_state_store()
+        history = state_store.list_youtube_history()
+        state_store.clear_youtube_history()
+        _audit_event(
+            "youtube.history.cleared",
+            "youtube_history",
+            "history",
+            {"cleared_count": len(history)},
+            payload=history,
+        )
         return '', 204
     except Exception as exc:
         root.logger.error("Failed to clear YouTube history: %s", exc, exc_info=True)
@@ -106,11 +127,71 @@ def delete_youtube_history_item(item_id: str):
     """Delete one persisted YouTube history item."""
     root = _root()
     try:
-        if not root._get_state_store().delete_youtube_history_item(item_id):
+        state_store = root._get_state_store()
+        history_item = state_store.get_youtube_history_item(item_id)
+        if not state_store.delete_youtube_history_item(item_id):
             return root.not_found_response('History item not found')
+        _audit_event(
+            "youtube.history.deleted",
+            "youtube_history",
+            item_id,
+            {"history_item_id": item_id},
+            payload=history_item,
+        )
         return '', 204
     except Exception as exc:
         root.logger.error("Failed to delete YouTube history item: %s", exc, exc_info=True)
+        return root.error_response(str(exc))
+
+
+def export_youtube_history():
+    """Export persisted YouTube history with opaque asset references in public mode."""
+    root = _root()
+    try:
+        limit = request.args.get('limit', type=int)
+        payload = root._get_state_store().export_youtube_history(limit=limit)
+        _audit_event(
+            "youtube.history.exported",
+            "youtube_history",
+            "history",
+            {"count": payload.get("count", 0)},
+            payload=payload,
+        )
+        return jsonify(_redact_youtube_payload(payload))
+    except Exception as exc:
+        root.logger.error("Failed to export YouTube history: %s", exc, exc_info=True)
+        return root.error_response(str(exc))
+
+
+def purge_youtube_history():
+    """Purge YouTube history and optionally delete managed downloaded media."""
+    root = _root()
+    try:
+        data = request.get_json(silent=True) or {}
+        delete_assets = bool(data.get("delete_assets", True))
+        state_store = root._get_state_store()
+        payload = state_store.purge_youtube_history(
+            delete_assets=delete_assets,
+            managed_roots=managed_audio_roots(
+                current_app.config.get("DATA_DIR", "data"),
+                root.UPLOAD_FOLDER,
+            ),
+        )
+        _audit_event(
+            "youtube.history.purged",
+            "youtube_history",
+            "history",
+            {
+                "delete_assets": delete_assets,
+                "purged_items": payload.get("purged_items", 0),
+                "deleted_file_count": len(payload.get("deleted_files", [])),
+                "skipped_file_count": len(payload.get("skipped_files", [])),
+            },
+            asset_paths=payload.get("deleted_files", []),
+        )
+        return jsonify(_redact_youtube_payload(payload))
+    except Exception as exc:
+        root.logger.error("Failed to purge YouTube history: %s", exc, exc_info=True)
         return root.error_response(str(exc))
 
 
@@ -296,7 +377,8 @@ def youtube_download():
                 response['diarization_error'] = str(exc)
 
         try:
-            root._get_state_store().save_youtube_history_item({
+            state_store = root._get_state_store()
+            history_item = {
                 'id': f"{int(time.time())}-{result.video_id or uuid.uuid4().hex[:8]}",
                 'url': url,
                 'title': result.title,
@@ -308,11 +390,81 @@ def youtube_download():
                 'audioPath': result.audio_path,
                 'filteredPath': response.get('filtered_audio_path'),
                 'videoId': result.video_id,
-            })
+            }
+            state_store.save_youtube_history_item(history_item)
+            _audit_event(
+                "youtube.downloaded",
+                "youtube_audio",
+                history_item["id"],
+                {"video_id": result.video_id, "title": result.title},
+            )
         except Exception as history_error:
             root.logger.warning("Failed to persist YouTube history: %s", history_error)
 
-        return jsonify(response)
+        return jsonify(_redact_youtube_payload(response))
     except Exception as exc:
+        _audit_event("youtube.download_failed", "youtube_audio", None, {"error": str(exc)})
         root.logger.error("YouTube download failed: %s", exc)
         return root.error_response(str(exc))
+
+
+_AUDIT_ACTION_OVERRIDES = {
+    "youtube.downloaded": "download",
+    "youtube.download_failed": "download",
+    "youtube.history.saved": "import",
+    "youtube.history.deleted": "delete",
+    "youtube.history.cleared": "delete",
+    "youtube.history.exported": "export",
+    "youtube.history.purged": "delete",
+}
+
+
+def _collect_path_values(payload):
+    paths = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in {"audio_path", "filtered_audio_path", "audioPath", "filteredPath", "path"} and value:
+                paths.append(str(value))
+                continue
+            paths.extend(_collect_path_values(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            paths.extend(_collect_path_values(item))
+    return paths
+
+
+def _redact_youtube_payload(payload):
+    return redact_public_paths(payload, current_app, _root()._get_state_store(), kind="youtube_audio")
+
+
+def _audit_event(
+    event_type: str,
+    resource_type: str,
+    resource_id: str | None,
+    metadata: dict,
+    *,
+    payload=None,
+    asset_paths=None,
+) -> None:
+    root = _root()
+    try:
+        action = metadata.get("action") or _AUDIT_ACTION_OVERRIDES.get(
+            event_type,
+            event_type.rsplit(".", 1)[-1],
+        )
+        details = dict(metadata)
+        details["event_type"] = event_type
+        paths = _collect_path_values(payload) if payload is not None else []
+        if asset_paths:
+            paths.extend(str(path) for path in asset_paths if path)
+        record_structured_audit_event(
+            action,
+            resource_type,
+            app=current_app,
+            resource_id=resource_id,
+            asset_paths=paths,
+            asset_kind="youtube_audio",
+            details=details,
+        )
+    except Exception:
+        root.logger.warning("Failed to persist audit event %s", event_type, exc_info=True)

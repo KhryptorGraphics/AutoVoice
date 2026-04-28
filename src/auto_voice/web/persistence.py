@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
+import uuid
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -299,6 +302,8 @@ class AppStateStore:
             "karaoke_sessions": self.base_dir / "karaoke_sessions.json",
             "diarization_results": self.base_dir / "diarization_results.json",
             "diarization_segment_assignments": self.base_dir / "diarization_segment_assignments.json",
+            "asset_registry": self.base_dir / "asset_registry.json",
+            "audit_log": self.base_dir / "audit_log.json",
         }
 
     def _read(self, name: str, default: Any) -> Any:
@@ -507,6 +512,12 @@ class AppStateStore:
             return items[:limit]
         return items
 
+    def get_youtube_history_item(self, item_id: str) -> Optional[Dict[str, Any]]:
+        for item in self._read("youtube_history", []):
+            if item.get("id") == item_id:
+                return deepcopy(item)
+        return None
+
     def save_youtube_history_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         items = self._read("youtube_history", [])
         items = [existing for existing in items if existing.get("id") != item["id"]]
@@ -524,6 +535,251 @@ class AppStateStore:
 
     def clear_youtube_history(self) -> None:
         self._write("youtube_history", [])
+
+    def export_youtube_history(self, limit: Optional[int] = None) -> Dict[str, Any]:
+        items = self.list_youtube_history(limit=limit)
+        return {
+            "count": len(items),
+            "items": items,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def purge_youtube_history(
+        self,
+        *,
+        delete_assets: bool = False,
+        managed_roots: Optional[List[Path]] = None,
+    ) -> Dict[str, Any]:
+        items = self.list_youtube_history()
+        roots = [Path(root).expanduser().resolve() for root in (managed_roots or [])]
+        deleted_files: List[str] = []
+        skipped_files: List[str] = []
+        seen_paths: set[str] = set()
+
+        for item in items:
+            for key in ("audioPath", "filteredPath", "audio_path", "filtered_audio_path"):
+                raw_path = item.get(key)
+                if not raw_path:
+                    continue
+                try:
+                    resolved = Path(str(raw_path)).expanduser().resolve()
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    skipped_files.append(str(raw_path))
+                    continue
+                if str(resolved) in seen_paths:
+                    continue
+                seen_paths.add(str(resolved))
+                if not resolved.exists() or not resolved.is_file():
+                    continue
+                if roots and not any(
+                    resolved == root or str(resolved).startswith(f"{root}{os.sep}")
+                    for root in roots
+                ):
+                    skipped_files.append(str(resolved))
+                    continue
+                if not delete_assets:
+                    continue
+                try:
+                    resolved.unlink()
+                    deleted_files.append(str(resolved))
+                except OSError:
+                    skipped_files.append(str(resolved))
+
+        self.clear_youtube_history()
+        return {
+            "purged_items": len(items),
+            "deleted_files": deleted_files,
+            "skipped_files": skipped_files,
+        }
+
+    def register_asset(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        kind: str,
+        owner_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        assets = self._read("asset_registry", {})
+        raw_path = str(path)
+        existing_id = next(
+            (asset_id for asset_id, asset in assets.items() if asset.get("path") == raw_path),
+            None,
+        )
+        asset_id = existing_id or uuid.uuid5(uuid.NAMESPACE_URL, raw_path).hex
+        record = {
+            "asset_id": asset_id,
+            "kind": kind,
+            "owner_id": owner_id,
+            "path": raw_path,
+            "metadata": deepcopy(metadata or {}),
+            "registered_at": assets.get(asset_id, {}).get("registered_at") or time.time(),
+            "updated_at": time.time(),
+        }
+        assets[asset_id] = record
+        self._write("asset_registry", assets)
+        return deepcopy(record)
+
+    def get_asset(self, asset_id: str) -> Optional[Dict[str, Any]]:
+        asset = self._read("asset_registry", {}).get(asset_id)
+        return deepcopy(asset) if asset else None
+
+    def list_assets(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        assets = list(self._read("asset_registry", {}).values())
+        if owner_id:
+            assets = [asset for asset in assets if asset.get("owner_id") == owner_id]
+        assets.sort(key=lambda item: item.get("updated_at", 0), reverse=True)
+        return deepcopy(assets)
+
+    def delete_asset(self, asset_id: str) -> bool:
+        assets = self._read("asset_registry", {})
+        if asset_id not in assets:
+            return False
+        del assets[asset_id]
+        self._write("asset_registry", assets)
+        return True
+
+    def append_audit_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        events = self._read("audit_log", [])
+        record = {
+            "id": event.get("id") or uuid.uuid4().hex,
+            "event_type": event.get("event_type") or event.get("type") or "unknown",
+            "actor": event.get("actor") or "api",
+            "resource_type": event.get("resource_type"),
+            "resource_id": event.get("resource_id"),
+            "request_id": event.get("request_id"),
+            "metadata": deepcopy(event.get("metadata") or {}),
+            "created_at": event.get("created_at") or time.time(),
+        }
+        events.insert(0, record)
+        self._write("audit_log", events[:1000])
+        return deepcopy(record)
+
+    def record_audit_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = {
+            "id": event.get("event_id") or event.get("id"),
+            "event_type": event.get("action") or event.get("event_type") or event.get("type"),
+            "actor": event.get("actor") or "api",
+            "resource_type": event.get("resource_type"),
+            "resource_id": event.get("resource_id"),
+            "request_id": (event.get("request") or {}).get("id") or event.get("request_id"),
+            "metadata": {
+                "mode": event.get("mode"),
+                "asset_ids": deepcopy(event.get("asset_ids") or []),
+                "assets": deepcopy(event.get("assets") or []),
+                **deepcopy(event.get("details") or {}),
+            },
+            "created_at": event.get("timestamp") or event.get("created_at") or time.time(),
+        }
+        return self.append_audit_event(normalized)
+
+    def list_audit_events(
+        self,
+        *,
+        resource_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        action: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        events = self._read("audit_log", [])
+        if resource_id:
+            events = [
+                event
+                for event in events
+                if event.get("resource_id") == resource_id
+                or event.get("metadata", {}).get("profile_id") == resource_id
+            ]
+        effective_event_type = event_type or action
+        if effective_event_type:
+            events = [event for event in events if event.get("event_type") == effective_event_type]
+        if limit is not None:
+            events = events[:limit]
+        return deepcopy(events)
+
+    def export_profile_state(self, profile_id: str) -> Dict[str, Any]:
+        return {
+            "profile_id": profile_id,
+            "checkpoints": self.list_checkpoints(profile_id),
+            "training_jobs": self.list_training_jobs(profile_id),
+            "background_jobs": [
+                job
+                for job in self.list_background_jobs()
+                if job.get("profile_id") == profile_id
+            ],
+            "conversion_history": self.list_conversion_history(profile_id),
+            "segment_assignments": self.get_diarization_segment_assignments(profile_id),
+            "karaoke_sessions": [
+                session
+                for session in self.list_karaoke_sessions()
+                if profile_id in {
+                    session.get("target_profile_id"),
+                    session.get("voice_model_id"),
+                    session.get("source_voice_model_id"),
+                }
+            ],
+            "audit_events": self.list_audit_events(resource_id=profile_id, limit=100),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def purge_profile_state(self, profile_id: str) -> Dict[str, Any]:
+        checkpoints = self._read("profile_checkpoints", {})
+        removed_checkpoints = len(checkpoints.pop(profile_id, {}))
+        self._write("profile_checkpoints", checkpoints)
+
+        training_jobs = self._read("training_jobs", {})
+        retained_training_jobs = {
+            job_id: job
+            for job_id, job in training_jobs.items()
+            if job.get("profile_id") != profile_id
+        }
+        removed_training_jobs = len(training_jobs) - len(retained_training_jobs)
+        self._write("training_jobs", retained_training_jobs)
+
+        background_jobs = self._read("background_jobs", {})
+        retained_background_jobs = {
+            job_id: job
+            for job_id, job in background_jobs.items()
+            if job.get("profile_id") != profile_id
+        }
+        removed_background_jobs = len(background_jobs) - len(retained_background_jobs)
+        self._write("background_jobs", retained_background_jobs)
+
+        conversion_history = self._read("conversion_history", {})
+        retained_conversion_history = {
+            record_id: record
+            for record_id, record in conversion_history.items()
+            if record.get("profile_id") != profile_id
+        }
+        removed_conversion_history = len(conversion_history) - len(retained_conversion_history)
+        self._write("conversion_history", retained_conversion_history)
+
+        segment_assignments = self._read("diarization_segment_assignments", {})
+        removed_segment_assignments = 1 if profile_id in segment_assignments else 0
+        segment_assignments.pop(profile_id, None)
+        self._write("diarization_segment_assignments", segment_assignments)
+
+        karaoke_sessions = self._read("karaoke_sessions", {})
+        retained_karaoke_sessions = {
+            session_id: session
+            for session_id, session in karaoke_sessions.items()
+            if profile_id not in {
+                session.get("target_profile_id"),
+                session.get("voice_model_id"),
+                session.get("source_voice_model_id"),
+            }
+        }
+        removed_karaoke_sessions = len(karaoke_sessions) - len(retained_karaoke_sessions)
+        self._write("karaoke_sessions", retained_karaoke_sessions)
+
+        return {
+            "profile_id": profile_id,
+            "removed_checkpoints": removed_checkpoints,
+            "removed_training_jobs": removed_training_jobs,
+            "removed_background_jobs": removed_background_jobs,
+            "removed_conversion_history": removed_conversion_history,
+            "removed_segment_assignments": removed_segment_assignments,
+            "removed_karaoke_sessions": removed_karaoke_sessions,
+        }
 
     def get_app_settings(self) -> Dict[str, Any]:
         return _normalize_app_settings(self._read("app_settings", {}))

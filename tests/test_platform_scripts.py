@@ -48,6 +48,64 @@ def test_dependency_contract_script_passes():
     assert report["ok"] is True
 
 
+def test_dependency_contract_script_detects_lock_drift(tmp_path):
+    current_lock = PROJECT_ROOT / "requirements.lock"
+    tampered = json.loads(current_lock.read_text(encoding="utf-8"))
+    tampered["backend"]["requirements_runtime"]["sha256"] = (
+        "000000000000000000000000000000000000000000000000000000000000000000"
+    )
+    tampered_path = tmp_path / "requirements.lock"
+    tampered_path.write_text(json.dumps(tampered, indent=2), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_dependency_contract.py",
+            "--lock-path",
+            str(tampered_path),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 1, result.stderr
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert any("requirements-runtime.txt hash mismatch" in msg for msg in report["errors"])
+
+
+def test_dependency_contract_enforces_high_critical_audit_policy(tmp_path):
+    pip_report = {"vulnerabilities": [{"id": "CVE-2026-0001", "severity": "high"}]}
+    npm_report = {"metadata": {"vulnerabilities": {"high": 1, "moderate": 0}}}
+    pip_report_path = tmp_path / "pip-audit.json"
+    npm_report_path = tmp_path / "npm-audit.json"
+    pip_report_path.write_text(json.dumps(pip_report), encoding="utf-8")
+    npm_report_path.write_text(json.dumps(npm_report), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_dependency_contract.py",
+            "--lock-path",
+            str(PROJECT_ROOT / "requirements.lock"),
+            "--pip-audit-report",
+            str(pip_report_path),
+            "--npm-audit-report",
+            str(npm_report_path),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 1, result.stderr
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert report["audits"]["pip-audit"]["ok"] is False
+    assert report["audits"]["npm-audit"]["ok"] is False
+
+
 def test_common_env_prefers_canonical_python_over_stale_python():
     command = (
         "export PYTHON=/tmp/not-autovoice-python; "
@@ -135,6 +193,84 @@ def test_validate_cuda_stack_dry_run(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "dependency-audit.json" in result.stdout
     assert "all-latency-report.md" in result.stdout
+
+
+def test_hardware_release_evidence_runner_fails_closed_without_execute(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_hardware_release_evidence.py",
+            "--dry-run",
+            "--allow-blocked",
+            "--output-dir",
+            str(tmp_path / "release-evidence"),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    decision_path = tmp_path / "release-evidence" / "release_decision.json"
+    preflight_path = tmp_path / "release-evidence" / "preflight.json"
+    assert decision_path.exists()
+    assert preflight_path.exists()
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    assert decision["ready"] is False
+    assert decision["git_sha"]
+    assert "hardware validation lanes were not executed" in " ".join(decision["blockers"])
+
+
+def test_full_hardware_rc_preflight_records_actionable_blockers(tmp_path):
+    output_path = tmp_path / "preflight.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/preflight_full_hardware_rc.py",
+            "--output",
+            str(output_path),
+            "--no-require-docker",
+            "--no-require-gitnexus",
+            "--no-require-hosted-probes",
+            "--no-require-jetson",
+            "--no-require-tensorrt-suite",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 1
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["ready"] is False
+    assert any(blocker["check"] == "benchmark_report" for blocker in report["blockers"])
+    assert report["checks"]["hosted_endpoints"]["skipped"] is True
+
+
+def test_full_hardware_rc_runner_writes_blocked_decision(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_full_hardware_rc.py",
+            "--artifact-root",
+            str(tmp_path / "release-candidates"),
+            "--no-require-docker",
+            "--no-require-gitnexus",
+            "--no-require-hosted-probes",
+            "--no-require-jetson",
+            "--no-require-tensorrt-suite",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 1
+    decision_path = Path(result.stdout.strip())
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    assert decision["ready_for_release"] is False
+    assert decision["status"] == "blocked"
+    assert any(blocker["check"] == "benchmark_report" for blocker in decision["blockers"])
 
 
 def test_swarm_orchestrator_supports_custom_data_dir(tmp_path):
@@ -283,12 +419,18 @@ def test_hosted_deployment_can_require_canonical_server_name(tmp_path):
 
 
 def test_completion_matrix_smoke_runner(tmp_path):
+    platform_dir = tmp_path / "platform"
+    parity_report = tmp_path / "benchmarks" / "parity.json"
     result = subprocess.run(
         [
             sys.executable,
             "scripts/run_completion_matrix.py",
             "--output-dir",
             str(tmp_path / "completion"),
+            "--platform-report-dir",
+            str(platform_dir),
+            "--tensorrt-parity-report",
+            str(parity_report),
             "--timeout",
             "180",
         ],
@@ -305,11 +447,14 @@ def test_completion_matrix_smoke_runner(tmp_path):
 
     matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
     assert matrix["ok"] is True
+    assert matrix["artifacts"]["platform_report_dir"] == str(platform_dir)
+    assert matrix["artifacts"]["tensorrt_parity_report"] == str(parity_report)
     lane_names = {lane["name"] for lane in matrix["lanes"]}
     assert "priority-skip-audit" in lane_names
     assert "benchmark-dashboard-validate" in lane_names
     assert "hosted-preflight-local" in lane_names
     assert "tensorrt-checkpoint-parity" in lane_names
+    assert (platform_dir / "hosted-preflight.json").exists()
 
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     assert audit["findings"] == []
@@ -350,3 +495,95 @@ def test_tensorrt_parity_benchmark_metadata_validation(tmp_path):
         assert "missing required metadata fields" in str(exc)
     else:
         raise AssertionError("expected metadata validation failure")
+
+
+def test_preflight_full_hardware_rc_reports_blockers(tmp_path):
+    report_path = tmp_path / "preflight.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/preflight_full_hardware_rc.py",
+            "--output",
+            str(report_path),
+            "--no-require-hosted-probes",
+            "--no-require-jetson",
+            "--no-require-docker",
+            "--no-require-tensorrt-suite",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 1, result.stderr
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["ready"] is False
+    assert any(blocker["check"] == "benchmark_report" for blocker in report["blockers"])
+
+
+def test_preflight_full_hardware_rc_accepts_explicit_benchmark_report(tmp_path):
+    report_path = tmp_path / "preflight.json"
+    benchmark_report = tmp_path / "benchmark-report.json"
+    benchmark_report.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-04-28T12:00:00Z",
+                "pipelines": {
+                    "quality_seedvc": {"success": True},
+                    "realtime": {"success": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/preflight_full_hardware_rc.py",
+            "--output",
+            str(report_path),
+            "--benchmark-report",
+            str(benchmark_report),
+            "--no-require-hosted-probes",
+            "--no-require-jetson",
+            "--no-require-docker",
+            "--no-require-tensorrt-suite",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["ready"] is True
+    assert report["checks"]["benchmark_report"]["ok"] is True
+
+
+def test_run_full_hardware_rc_writes_blocked_release_decision(tmp_path):
+    artifact_root = tmp_path / "release-candidates"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_full_hardware_rc.py",
+            "--artifact-root",
+            str(artifact_root),
+            "--no-require-hosted-probes",
+            "--no-require-jetson",
+            "--no-require-docker",
+            "--no-require-tensorrt-suite",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 1, result.stderr
+    decision_path = Path(result.stdout.strip())
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    assert decision["status"] == "blocked"
+    assert decision["ready_for_release"] is False
+    assert any(blocker["check"] == "benchmark_report" for blocker in decision["blockers"])
+    run_dir = decision_path.parent
+    assert (run_dir / "preflight.json").exists()
+    assert (run_dir / "artifact_manifest.json").exists()

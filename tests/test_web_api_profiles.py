@@ -87,6 +87,32 @@ def _save_profile(store, profile_id: str, *, trained: bool = True) -> None:
     })
 
 
+def test_profile_export_and_purge_write_audit_events(client, app_with_profiles, tmp_path):
+    profile_id = "00000000-0000-0000-0000-000000000001"
+    app_with_profiles.voice_cloner.load_voice_profile.return_value = {
+        "profile_id": profile_id,
+        "name": "Governed Profile",
+        "embedding": np.zeros(256).tolist(),
+    }
+    app_with_profiles.voice_cloner.delete_voice_profile.return_value = True
+    asset_path = tmp_path / "sample.wav"
+    asset_path.write_bytes(b"RIFF")
+    app_with_profiles.state_store.register_asset(asset_path, kind="voice_sample", owner_id=profile_id)
+
+    export_response = client.get(f"/api/v1/voice/profiles/{profile_id}/export")
+    purge_response = client.delete(f"/api/v1/voice/profiles/{profile_id}/purge")
+
+    assert export_response.status_code == 200
+    assert purge_response.status_code == 200
+    events = app_with_profiles.state_store.list_audit_events(resource_id=profile_id)
+    event_types = {event["event_type"] for event in events}
+    assert {"export", "delete"} <= event_types
+    assert {"voice_profile.exported", "voice_profile.purged"} <= {
+        event["metadata"]["event_type"] for event in events
+    }
+    assert app_with_profiles.state_store.list_assets(profile_id) == []
+
+
 class TestListSamples:
     """Test GET /api/v1/profiles/{id}/samples endpoint."""
 

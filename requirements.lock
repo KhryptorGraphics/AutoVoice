@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-28T09:48:00Z",
+  "generated_by": "scripts/check_dependency_contract.py",
+  "backend": {
+    "requirements_runtime": {
+      "path": "requirements-runtime.txt",
+      "sha256": "76073e15fb1e999be715278a9cf206c17740d503c297d2cdc32d98cc50eaa740",
+      "line_count": 30
+    },
+    "frontend_lock": {
+      "path": "frontend/package-lock.json",
+      "sha256": "558b5c2635ba523d61778d507ad4103c2454455f89d884e863bc96f8dbec0980"
+    }
+  },
+  "images": {
+    "dockerfiles": {
+      "backend_base": "nvcr.io/nvidia/pytorch:25.08-py3@sha256:b70bc3ff73fae58e7ec326849b4726eac04200d9ec1da2b385f94c9f7775971f",
+      "frontend_builder": "node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c",
+      "frontend_runtime": "nginx:alpine@sha256:3bcf852aed06467cf075c6105892e4d5a6ebbbafa0ce22d35062db9e90ddef4c"
+    },
+    "compose": {
+      "prometheus": "prom/prometheus:v2.54.1@sha256:69961df6ffa67598048a31aa2822d61f3c93b91d7db24e44d9bb03f99d520da9",
+      "grafana": "grafana/grafana:11.2.0@sha256:37a5d8860aef847dfa09f5f8947f010f6479f98cf7820b5186f9c6314b44be60"
+    }
+  }
+}

@@ -25,6 +25,15 @@ Hosted use should be limited to media and voices the operator or user owns, crea
 | Models/checkpoints | trained models, checkpoints | trained/checkpoint volumes | May contain voice identity information |
 | Logs/audit | request IDs, operator events | log/app-state volumes | Keep long enough for abuse investigation |
 
+## Operator Controls
+
+Public mode now exposes structured operator controls for governance workflows:
+
+- `GET /api/v1/audit/events` returns durable audit events with request IDs and resource metadata.
+- `GET /api/v1/voice/profiles/<profile_id>/export` returns profile metadata, samples, and opaque asset references for user export workflows.
+- `DELETE /api/v1/voice/profiles/<profile_id>/purge` removes the profile and any registered owned assets tracked by the app-state registry.
+- Public-mode responses redact known filesystem path fields and replace them with `*_asset_id` fields backed by the server-side asset registry.
+
 ## Launch Decisions Still Required
 
 - Whether hosted YouTube ingestion is allowed at all.

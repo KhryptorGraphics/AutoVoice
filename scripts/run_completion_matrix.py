@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -140,6 +141,16 @@ def _display_path(path: Path) -> str:
         return str(path.relative_to(PROJECT_ROOT))
     except ValueError:
         return str(path)
+
+
+def _resolve_repo_path(path: Path) -> Path:
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def _gitnexus_analyze_command() -> list[str]:
+    if shutil.which("gitnexus"):
+        return ["gitnexus", "analyze", "."]
+    return ["npx", "-y", "gitnexus", "analyze", "."]
 
 
 def _run_command(
@@ -376,14 +387,13 @@ def generate_smoke_benchmark_bundles(bundle_dir: Path) -> dict[str, Path]:
     return paths
 
 
-def run_benchmark_evidence(report_dir: Path, *, timeout: int) -> list[LaneResult]:
-    bundle_dir = report_dir / "benchmark_bundles"
+def run_benchmark_evidence(report_dir: Path, *, timeout: int, dashboard_dir: Path) -> list[LaneResult]:
+    bundle_dir = dashboard_dir / "source_bundles"
     bundle_paths = generate_smoke_benchmark_bundles(bundle_dir)
     bundle_args: list[str] = []
     for pipeline, path in bundle_paths.items():
         bundle_args.extend(["--bundle", f"{pipeline}={path}"])
 
-    dashboard_dir = _benchmark_archive_dir(report_dir)
     build = _run_command(
         "benchmark-dashboard-build",
         [sys.executable, "scripts/build_benchmark_dashboard.py", *bundle_args, "--output-dir", str(dashboard_dir)],
@@ -418,8 +428,13 @@ def run_benchmark_evidence(report_dir: Path, *, timeout: int) -> list[LaneResult
     return [build, publish, validate_dashboard, validate_experimental]
 
 
-def run_benchmark_evidence_from_report(report_dir: Path, *, timeout: int, benchmark_report: Path) -> list[LaneResult]:
-    dashboard_dir = _benchmark_archive_dir(report_dir)
+def run_benchmark_evidence_from_report(
+    report_dir: Path,
+    *,
+    timeout: int,
+    benchmark_report: Path,
+    dashboard_dir: Path,
+) -> list[LaneResult]:
     build = _run_command(
         "benchmark-dashboard-build-real",
         [
@@ -466,8 +481,7 @@ def run_benchmark_evidence_from_report(report_dir: Path, *, timeout: int, benchm
     return [build, publish, validate_dashboard, validate_experimental]
 
 
-def run_hosted_preflight(report_dir: Path, *, timeout: int, full: bool) -> LaneResult:
-    report_path = PROJECT_ROOT / "reports" / "platform" / "hosted-preflight.json"
+def run_hosted_preflight(report_dir: Path, *, timeout: int, full: bool, report_path: Path) -> LaneResult:
     if full:
         return _run_command(
             "hosted-preflight",
@@ -590,8 +604,7 @@ def run_tensorrt_engine_suite(report_dir: Path, *, timeout: int) -> LaneResult:
     )
 
 
-def run_tensorrt_parity_benchmark(report_dir: Path, *, timeout: int) -> LaneResult:
-    report_path = PROJECT_ROOT / "reports" / "benchmarks" / "tensorrt-parity" / "latest" / "parity_report.json"
+def run_tensorrt_parity_benchmark(report_dir: Path, *, timeout: int, report_path: Path) -> LaneResult:
     result = _run_command(
         "tensorrt-checkpoint-parity",
         [
@@ -608,7 +621,14 @@ def run_tensorrt_parity_benchmark(report_dir: Path, *, timeout: int) -> LaneResu
     return result
 
 
-def run_real_compose(report_dir: Path, *, timeout: int, base_url: str) -> list[LaneResult]:
+def run_real_compose(
+    report_dir: Path,
+    *,
+    timeout: int,
+    base_url: str,
+    evidence_dir: Path,
+    platform_report_dir: Path,
+) -> list[LaneResult]:
     if not shutil.which("docker"):
         return [
             LaneResult(
@@ -642,7 +662,9 @@ def run_real_compose(report_dir: Path, *, timeout: int, base_url: str) -> list[L
                 "--base-url",
                 base_url,
                 "--report-dir",
-                "reports/platform",
+                str(platform_report_dir),
+                "--evidence-dir",
+                str(evidence_dir),
                 "--wait-seconds",
                 "180",
             ],
@@ -672,10 +694,22 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
     if not report_dir.is_absolute():
         report_dir = PROJECT_ROOT / report_dir
     report_dir.mkdir(parents=True, exist_ok=True)
+    platform_report_dir = _resolve_repo_path(args.platform_report_dir)
+    platform_report_dir.mkdir(parents=True, exist_ok=True)
+    tensorrt_parity_report = _resolve_repo_path(args.tensorrt_parity_report)
+    tensorrt_parity_report.parent.mkdir(parents=True, exist_ok=True)
+    benchmark_archive_dir = _benchmark_archive_dir(report_dir)
 
     lanes: list[LaneResult] = []
     if args.refresh_gitnexus:
-        lanes.append(_run_command("gitnexus-analyze", ["npx", "gitnexus", "analyze"], report_dir=report_dir, timeout=args.timeout))
+        lanes.append(
+            _run_command(
+                "gitnexus-analyze",
+                _gitnexus_analyze_command(),
+                report_dir=report_dir,
+                timeout=args.timeout,
+            )
+        )
 
     lanes.append(write_skip_audit(report_dir))
     lanes.append(
@@ -706,10 +740,24 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
         )
     )
     if args.benchmark_report:
-        lanes.extend(run_benchmark_evidence_from_report(report_dir, timeout=args.timeout, benchmark_report=args.benchmark_report))
+        lanes.extend(
+            run_benchmark_evidence_from_report(
+                report_dir,
+                timeout=args.timeout,
+                benchmark_report=args.benchmark_report,
+                dashboard_dir=benchmark_archive_dir,
+            )
+        )
     else:
-        lanes.extend(run_benchmark_evidence(report_dir, timeout=args.timeout))
-    lanes.append(run_hosted_preflight(report_dir, timeout=args.timeout, full=args.full_hosted_preflight))
+        lanes.extend(run_benchmark_evidence(report_dir, timeout=args.timeout, dashboard_dir=benchmark_archive_dir))
+    lanes.append(
+        run_hosted_preflight(
+            report_dir,
+            timeout=args.timeout,
+            full=args.full_hosted_preflight,
+            report_path=platform_report_dir / "hosted-preflight.json",
+        )
+    )
 
     if args.frontend:
         for command_name, command in (
@@ -723,7 +771,15 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
         lanes.append(skipped_lane("frontend-verification", "pass --frontend or --full to run lint/type/build/browser smoke"))
 
     if args.real_compose:
-        lanes.extend(run_real_compose(report_dir, timeout=args.timeout, base_url=args.base_url))
+        lanes.extend(
+            run_real_compose(
+                report_dir,
+                timeout=args.timeout,
+                base_url=args.base_url,
+                evidence_dir=benchmark_archive_dir,
+                platform_report_dir=platform_report_dir,
+            )
+        )
     else:
         lanes.append(skipped_lane("real-compose-stack", "pass --real-compose or --full to boot the real compose stack"))
         lanes.append(
@@ -737,13 +793,13 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
         lanes.append(
             _run_command(
                 "jetson-cuda-tensorrt",
-                ["bash", "scripts/validate_cuda_stack.sh", "--output-dir", "reports/platform"],
+                ["bash", "scripts/validate_cuda_stack.sh", "--output-dir", str(platform_report_dir)],
                 report_dir=report_dir,
                 timeout=args.timeout,
             )
         )
         lanes.append(run_tensorrt_engine_suite(report_dir, timeout=args.timeout))
-        lanes.append(run_tensorrt_parity_benchmark(report_dir, timeout=args.timeout))
+        lanes.append(run_tensorrt_parity_benchmark(report_dir, timeout=args.timeout, report_path=tensorrt_parity_report))
     else:
         lanes.append(skipped_lane("jetson-cuda-tensorrt", "pass --hardware or --full on Jetson/CUDA/TensorRT hosts"))
         lanes.append(skipped_lane("tensorrt-engine-suite", "pass --hardware or --full with AUTOVOICE_TRT_ENGINE_DIR set"))
@@ -755,6 +811,13 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
         "git_sha": _git_sha(),
         "mode": "full" if args.full else "smoke",
         "ok": all(lane.ok for lane in lanes),
+        "artifacts": {
+            "report_dir": str(report_dir),
+            "platform_report_dir": str(platform_report_dir),
+            "benchmark_archive_dir": str(benchmark_archive_dir),
+            "benchmark_latest_dir": str(PROJECT_ROOT / "reports" / "benchmarks" / "latest"),
+            "tensorrt_parity_report": str(tensorrt_parity_report),
+        },
         "lanes": [lane.__dict__ for lane in lanes],
     }
     matrix_path = report_dir / "completion_matrix.json"
@@ -791,7 +854,7 @@ def _publish_latest_benchmark_evidence(archive_dir: Path) -> LaneResult:
                 artifacts[name] = str(dest)
         return LaneResult(
             "benchmark-dashboard-publish-latest",
-            "pass",
+            "passed",
             duration_seconds=round(time.time() - started, 3),
             artifacts=artifacts,
             details={"archive_dir": str(archive_dir), "latest_dir": str(latest_dir)},
@@ -799,7 +862,7 @@ def _publish_latest_benchmark_evidence(archive_dir: Path) -> LaneResult:
     except Exception as exc:
         return LaneResult(
             "benchmark-dashboard-publish-latest",
-            "fail",
+            "failed",
             duration_seconds=round(time.time() - started, 3),
             details={"archive_dir": str(archive_dir), "error": str(exc)},
         )
@@ -808,9 +871,16 @@ def _publish_latest_benchmark_evidence(archive_dir: Path) -> LaneResult:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=Path("reports/completion/latest"))
+    parser.add_argument("--platform-report-dir", type=Path, default=Path("reports/platform"))
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--base-url", default="http://127.0.0.1:10001")
     parser.add_argument("--benchmark-report", type=Path, help="Comprehensive benchmark report to use for release evidence.")
+    parser.add_argument(
+        "--tensorrt-parity-report",
+        type=Path,
+        default=Path("reports/benchmarks/tensorrt-parity/latest/parity_report.json"),
+        help="Parity report path for the TensorRT checkpoint comparison lane.",
+    )
     parser.add_argument("--refresh-gitnexus", action="store_true", help="Run npx gitnexus analyze as a lane")
     parser.add_argument("--frontend", action="store_true", help="Run frontend lint/type/build/browser smoke lanes")
     parser.add_argument("--real-compose", action="store_true", help="Boot the real compose backend/frontend stack")

@@ -122,6 +122,8 @@ Use those only after validating against the canonical docs and live code paths.
   This validates `/api/v1/health`, `/ready`, and `/api/v1/metrics`, and verifies benchmark evidence schema/provenance against `HEAD` or `GITHUB_SHA`.
 - production completion matrix: `python scripts/run_completion_matrix.py`
   Use `--full` on a capable Jetson/compose/hosted runner; local smoke mode records unavailable frontend, compose, and hardware lanes as explicit skipped lanes.
+- full hardware RC evidence preflight: `python scripts/preflight_full_hardware_rc.py --output reports/release_candidates/AV-j4cd/preflight.json --benchmark-report <current-head-benchmark-report.json>`
+- full hardware RC evidence bundle: `python scripts/run_full_hardware_rc.py --benchmark-report <current-head-benchmark-report.json>`
 - benchmark dashboard contract validation: `python scripts/validate_benchmark_dashboard.py`
 - hosted deployment preflight: `python scripts/validate_hosted_deployment.py --hostname autovoice.giggahost.com`
 - experimental evidence validation: `python scripts/validate_experimental_evidence.py`

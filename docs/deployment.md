@@ -70,6 +70,7 @@ python scripts/validate_benchmark_dashboard.py
 - Common companion ports checked during setup: `3306` (MySQL), `5432` (Postgres), `6333` (Qdrant)
 - Compose stack source: `docker-compose.yaml`
 - Compose images: `autovoice-backend:${AUTOVOICE_IMAGE_TAG:-local}`, `autovoice-frontend:${AUTOVOICE_IMAGE_TAG:-local}`, pinned Prometheus and Grafana images
+- `requirements.lock` additionally records the digest-pinned image references for backend base image, frontend builder/runtime images, and monitoring images. CI enforces this via `scripts/check_dependency_contract.py`.
 - Durable app state: compose sets `DATA_DIR=/app/data` and persists canonical state directories with named volumes, including `app_state`, `voice_profiles`, `samples`, `trained_models`, `checkpoints`, upload/output folders, YouTube/separation staging folders, and swarm run/memory folders
 - Systemd unit source: `config/systemd/autovoice.service`
 - Root privileges are only required if you want the setup script to install the service unit
@@ -173,6 +174,18 @@ python scripts/validate_hosted_deployment.py \
 
 Use `--skip-dns` or `--skip-tls` only for local/dry-run checks where public
 records or certificates are intentionally unavailable.
+
+Current-head hardware release evidence is generated separately from the smoke
+matrix and fails closed when Jetson/CUDA lanes are not actually executed:
+
+```bash
+python scripts/run_hardware_release_evidence.py --execute
+```
+
+The runner writes immutable artifacts under `reports/release-evidence/<timestamp>-<git-sha>/`
+and mirrors the latest decision to `reports/release-evidence/latest/release_decision.json`.
+Use `--dry-run --allow-blocked` only to prove preflight/report generation on
+non-Jetson developer machines; a dry-run decision is never release-ready.
 
 Rollback criteria for a release candidate are simple:
 

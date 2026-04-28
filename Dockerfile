@@ -4,7 +4,7 @@
 # NVIDIA's current Thor Docker docs use the generic PyTorch NGC container
 # rather than the older l4t-pytorch tags. Keep this overridable for future
 # JetPack/container revisions and local testing.
-ARG AUTOVOICE_BASE_IMAGE=nvcr.io/nvidia/pytorch:25.08-py3
+ARG AUTOVOICE_BASE_IMAGE=nvcr.io/nvidia/pytorch:25.08-py3@sha256:b70bc3ff73fae58e7ec326849b4726eac04200d9ec1da2b385f94c9f7775971f
 
 # Base stage: CUDA-enabled PyTorch runtime for Jetson Thor
 FROM ${AUTOVOICE_BASE_IMAGE} AS base
@@ -35,7 +35,7 @@ RUN grep -Ev '^(torch|torchaudio)([<>=!~].*)?$' requirements.txt > /tmp/requirem
     pip uninstall -y torchaudio || true
 
 # Frontend build stage
-FROM node:20-slim AS frontend
+FROM node:20-slim@sha256:3d0f05455dea2c82e2f76e7e2543964c30f6b7d673fc1a83286736d44fe4c41c AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm ci

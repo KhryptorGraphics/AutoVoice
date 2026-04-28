@@ -221,6 +221,22 @@ def test_app_state_store_checkpoint_and_youtube_history_crud(tmp_path):
     store.clear_youtube_history()
     assert store.list_youtube_history() == []
 
+    asset = store.register_asset(tmp_path / "sample.wav", kind="voice_sample", owner_id="profile-a")
+    assert store.get_asset(asset["asset_id"])["owner_id"] == "profile-a"
+    assert [item["asset_id"] for item in store.list_assets("profile-a")] == [asset["asset_id"]]
+    assert store.delete_asset(asset["asset_id"]) is True
+
+    event = store.append_audit_event(
+        {
+            "event_type": "voice_profile.exported",
+            "resource_type": "voice_profile",
+            "resource_id": "profile-a",
+            "metadata": {"sample_count": 1},
+        }
+    )
+    assert store.list_audit_events(resource_id="profile-a")[0]["id"] == event["id"]
+    assert store.list_audit_events(event_type="voice_profile.exported")[0]["metadata"]["sample_count"] == 1
+
 
 def test_app_state_store_settings_models_configs_and_karaoke_sessions(tmp_path):
     store = AppStateStore(str(tmp_path))
