@@ -20,11 +20,11 @@ Current ownership split:
 | get profile | `/api/v1/voice/profiles/{profile_id}` | Canonical |
 | delete profile | `/api/v1/voice/profiles/{profile_id}` | Canonical |
 | adapter/model/training status | `/api/v1/voice/profiles/{profile_id}/...` | Canonical |
-| training samples | `/api/v1/profiles/{profile_id}/samples...` | Legacy-but-active |
+| training samples | `/api/v1/profiles/{profile_id}/samples...` | Active compatibility path; implemented by the shared web API handler |
 | checkpoints and quality history | `/api/v1/profiles/{profile_id}/...` | Legacy-but-active |
 | auto-create from diarization | `/api/v1/profiles/auto-create` | Legacy-but-active |
 
-There is no separate `/api/v1/voice/profiles/{profile_id}/samples` surface yet. Sample management remains on `/api/v1/profiles/*`.
+There is no separate `/api/v1/voice/profiles/{profile_id}/samples` surface yet. Sample management remains on `/api/v1/profiles/*`, but duplicate same-method sample handlers are not registered; the shared web API handler owns the route and delegates to the DB-backed compatibility functions only when a profile is not present in the runtime store.
 
 ## Canonical Voice Profile Routes
 
@@ -128,6 +128,7 @@ Accepted file field names:
 Optional form field:
 
 - `metadata`: JSON-encoded metadata object
+- `consent_confirmed` and `source_media_policy_confirmed`: required when `AUTOVOICE_REQUIRE_MEDIA_CONSENT=true`
 
 ### Add Sample From Server Path
 
@@ -142,6 +143,8 @@ JSON body:
   "metadata": {}
 }
 ```
+
+When `AUTOVOICE_REQUIRE_MEDIA_CONSENT=true`, the JSON body must also include `consent_confirmed: true` and `source_media_policy_confirmed: true`.
 
 ### Get Or Delete A Sample
 

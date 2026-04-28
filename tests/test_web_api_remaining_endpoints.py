@@ -585,6 +585,59 @@ class TestSampleAndDiarizationEndpoints:
         assert payload["metadata"]["source"] == "youtube_download"
         assert payload["metadata"]["original_path"] == str(source_path)
 
+    def test_add_sample_from_path_rejects_false_string_consent(
+        self, client_remaining, app_remaining, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("AUTOVOICE_REQUIRE_MEDIA_CONSENT", "true")
+        profile_id = "00000000-0000-0000-0000-000000000319"
+        _create_profile(app_remaining, profile_id=profile_id)
+        source_path = tmp_path / "existing.wav"
+        _write_wav(source_path)
+
+        response = client_remaining.post(
+            f"/api/v1/profiles/{profile_id}/samples/from-path",
+            json={
+                "audio_path": str(source_path),
+                "skip_separation": True,
+                "consent_confirmed": "false",
+                "source_media_policy_confirmed": "false",
+            },
+        )
+
+        assert response.status_code == 400
+
+    def test_add_sample_from_path_requires_asset_id_when_auth_enabled(
+        self, client_remaining, app_remaining, monkeypatch
+    ):
+        monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+        monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+        profile_id = "00000000-0000-0000-0000-000000000320"
+        _create_profile(app_remaining, profile_id=profile_id)
+        data_dir = Path(app_remaining.config["DATA_DIR"])
+        data_dir.mkdir(parents=True, exist_ok=True)
+        source_path = data_dir / "existing-auth.wav"
+        _write_wav(source_path)
+        asset = app_remaining.state_store.register_asset(
+            str(source_path),
+            kind="youtube_audio",
+            owner_id=profile_id,
+        )
+        headers = {"Authorization": "Bearer unit-token"}
+
+        raw_path_response = client_remaining.post(
+            f"/api/v1/profiles/{profile_id}/samples/from-path",
+            json={"audio_path": str(source_path), "skip_separation": True},
+            headers=headers,
+        )
+        asset_response = client_remaining.post(
+            f"/api/v1/profiles/{profile_id}/samples/from-path",
+            json={"audio_asset_id": asset["asset_id"], "skip_separation": True},
+            headers=headers,
+        )
+
+        assert raw_path_response.status_code == 400
+        assert asset_response.status_code == 201
+
     def test_add_sample_from_path_runs_separation(self, client_remaining, app_remaining, tmp_path, monkeypatch):
         from auto_voice.web import api as web_api
         import soundfile as sf
@@ -660,7 +713,12 @@ class TestSampleAndDiarizationEndpoints:
 
         response = client_remaining.post(
             f"/api/v1/profiles/{profile_id}/songs",
-            data={"file": (_wav_bytes(), "song.wav"), "auto_split": "true"},
+            data={
+                "file": (_wav_bytes(), "song.wav"),
+                "auto_split": "true",
+                "consent_confirmed": "true",
+                "source_media_policy_confirmed": "true",
+            },
             content_type="multipart/form-data",
         )
 
@@ -669,6 +727,9 @@ class TestSampleAndDiarizationEndpoints:
 
         status_response = client_remaining.get(f"/api/v1/separation/{job_id}/status")
         assert status_response.status_code == 200
+        events = app_remaining.state_store.list_audit_events(resource_id=profile_id)
+        event_types = {event["metadata"]["event_type"] for event in events}
+        assert {"song.uploaded", "song.separation_completed"} <= event_types
         payload = status_response.get_json()
         assert payload["status"] == "complete"
         assert payload["vocals_path"] is not None
@@ -676,6 +737,61 @@ class TestSampleAndDiarizationEndpoints:
         stored_sample = app_remaining.voice_cloner.store.list_training_samples(profile_id)[0]
         assert stored_sample.sample_id == payload["sample_id"]
         assert stored_sample.quality_metadata["qa_status"] in {"pass", "fail", "warn"}
+
+    def test_upload_sample_requires_media_consent_when_enabled(
+        self, client_remaining, app_remaining, monkeypatch
+    ):
+        monkeypatch.setenv("AUTOVOICE_REQUIRE_MEDIA_CONSENT", "true")
+        profile_id = "00000000-0000-0000-0000-000000000315"
+        _create_profile(app_remaining, profile_id=profile_id)
+
+        rejected = client_remaining.post(
+            f"/api/v1/profiles/{profile_id}/samples",
+            data={"file": (_wav_bytes(), "sample.wav")},
+            content_type="multipart/form-data",
+        )
+        accepted = client_remaining.post(
+            f"/api/v1/profiles/{profile_id}/samples",
+            data={
+                "file": (_wav_bytes(), "sample.wav"),
+                "consent_confirmed": "true",
+                "source_media_policy_confirmed": "true",
+            },
+            content_type="multipart/form-data",
+        )
+
+        assert rejected.status_code == 400
+        assert accepted.status_code == 201
+        events = app_remaining.state_store.list_audit_events(resource_id=profile_id)
+        assert any(event["metadata"]["event_type"] == "training_sample.imported" for event in events)
+
+    def test_upload_song_requires_media_consent_when_enabled(
+        self, client_remaining, app_remaining, monkeypatch
+    ):
+        monkeypatch.setenv("AUTOVOICE_REQUIRE_MEDIA_CONSENT", "true")
+        profile_id = "00000000-0000-0000-0000-000000000317"
+        _create_profile(app_remaining, profile_id=profile_id)
+
+        rejected = client_remaining.post(
+            f"/api/v1/profiles/{profile_id}/songs",
+            data={"file": (_wav_bytes(), "song.wav"), "auto_split": "false"},
+            content_type="multipart/form-data",
+        )
+        accepted = client_remaining.post(
+            f"/api/v1/profiles/{profile_id}/songs",
+            data={
+                "file": (_wav_bytes(), "song.wav"),
+                "auto_split": "false",
+                "consent_confirmed": "true",
+                "source_media_policy_confirmed": "true",
+            },
+            content_type="multipart/form-data",
+        )
+
+        assert rejected.status_code == 400
+        assert accepted.status_code == 202
+        events = app_remaining.state_store.list_audit_events(resource_id=profile_id)
+        assert any(event["metadata"]["event_type"] == "song.uploaded" for event in events)
 
     def test_training_job_rejects_failed_quality_samples(self, client_remaining, app_remaining, tmp_path):
         profile_id = "00000000-0000-0000-0000-000000000316"
@@ -700,8 +816,13 @@ class TestSampleAndDiarizationEndpoints:
         assert "quality gates" in payload["error"]
         assert payload["details"]["trainable_sample_count"] == 0
 
-    def test_reports_endpoints_return_latest_dashboard_and_release_evidence(self, client_remaining):
-        reports_dir = Path("reports/benchmarks/latest")
+    def test_reports_endpoints_return_latest_dashboard_and_release_evidence(
+        self, client_remaining, tmp_path, monkeypatch
+    ):
+        from auto_voice.web import api as web_api
+
+        monkeypatch.setattr(web_api, "_reports_dir", lambda: tmp_path / "reports")
+        reports_dir = tmp_path / "reports" / "benchmarks" / "latest"
         reports_dir.mkdir(parents=True, exist_ok=True)
         dashboard_path = reports_dir / "benchmark_dashboard.json"
         evidence_path = reports_dir / "release_evidence.json"
@@ -1255,17 +1376,23 @@ class TestYoutubeAnalysisAndQualityRoutes:
         fake_filter_module.TrainingDataFilter = type("TrainingDataFilter", (), {})
         monkeypatch.setitem(sys.modules, "auto_voice.audio.training_filter", fake_filter_module)
 
-        assert client_remaining.post("/api/v1/youtube/history", json={"url": "https://yt", "title": "Saved"}).status_code == 201
+        assert client_remaining.post(
+            "/api/v1/youtube/history",
+            json={"url": "https://www.youtube.com/watch?v=abc123", "title": "Saved"},
+        ).status_code == 201
         assert client_remaining.get("/api/v1/youtube/history?limit=1").status_code == 200
 
-        info_response = client_remaining.post("/api/v1/youtube/info", json={"url": "https://youtube.test/watch?v=1"})
+        info_response = client_remaining.post(
+            "/api/v1/youtube/info",
+            json={"url": "https://www.youtube.com/watch?v=abc123"},
+        )
         assert info_response.status_code == 200
         assert info_response.get_json()["video_id"] == "vid123"
 
         download_response = client_remaining.post(
             "/api/v1/youtube/download",
             json={
-                "url": "https://youtube.test/watch?v=1",
+                "url": "https://www.youtube.com/watch?v=abc123",
                 "format": "wav",
                 "sample_rate": 22050,
                 "run_diarization": True,
@@ -1282,6 +1409,18 @@ class TestYoutubeAnalysisAndQualityRoutes:
         item_id = items[0]["id"]
         assert client_remaining.delete(f"/api/v1/youtube/history/{item_id}").status_code == 204
         assert client_remaining.delete("/api/v1/youtube/history").status_code == 204
+
+    def test_youtube_history_rejects_client_supplied_paths(self, client_remaining):
+        response = client_remaining.post(
+            "/api/v1/youtube/history",
+            json={
+                "url": "https://www.youtube.com/watch?v=abc123",
+                "title": "Injected",
+                "audioPath": "/etc/passwd",
+            },
+        )
+
+        assert response.status_code == 400
 
     def test_youtube_download_surfaces_filter_and_history_warnings(
         self, client_remaining, app_remaining, tmp_path, monkeypatch
@@ -1341,7 +1480,7 @@ class TestYoutubeAnalysisAndQualityRoutes:
         response = client_remaining.post(
             "/api/v1/youtube/download",
             json={
-                "url": "https://youtube.test/watch?v=warn",
+                "url": "https://www.youtube.com/watch?v=warn",
                 "format": "wav",
                 "sample_rate": 22050,
                 "run_diarization": True,
@@ -1394,7 +1533,7 @@ class TestYoutubeAnalysisAndQualityRoutes:
         response = client_remaining.post(
             "/api/v1/youtube/download",
             json={
-                "url": "https://youtube.test/watch?v=warn2",
+                "url": "https://www.youtube.com/watch?v=warn2",
                 "format": "wav",
                 "sample_rate": 22050,
                 "run_diarization": True,

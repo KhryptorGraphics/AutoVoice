@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Zap, Sparkles, HelpCircle, Crown, Radio, Rocket, BarChart3, X } from 'lucide-react'
 import clsx from 'clsx'
 import { STORAGE_KEYS } from '../hooks/usePersistedState'
@@ -180,15 +180,6 @@ export function PipelineSelector({
   const [showTooltip, setShowTooltip] = useState<PipelineType | null>(null)
   const [showBenchmarkModal, setShowBenchmarkModal] = useState(false)
   const selectablePipelines = getSelectablePipelines(context)
-
-  // Load saved preference on mount
-  useEffect(() => {
-    const saved = getPreferredPipeline()
-    if (saved && saved !== value) {
-      // Only auto-apply saved preference if component doesn't have an explicit value
-      // This allows the parent to override the saved preference if needed
-    }
-  }, [])
 
   // Save preference when user changes pipeline
   const handleChange = (newPipeline: PipelineType) => {

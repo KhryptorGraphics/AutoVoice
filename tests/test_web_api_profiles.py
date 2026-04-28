@@ -70,6 +70,19 @@ def audio_file():
     return voiced_wav_io(duration_seconds=1.0, sample_rate=22050)
 
 
+@pytest.fixture
+def legacy_sqlite_db(tmp_path, monkeypatch):
+    from auto_voice.profiles.db import session as db_session
+
+    monkeypatch.setenv("AUTOVOICE_DATABASE_URL", f"sqlite:///{tmp_path / 'profiles.db'}")
+    db_session._engine = None
+    db_session._SessionLocal = None
+    db_session.init_db()
+    yield
+    db_session._engine = None
+    db_session._SessionLocal = None
+
+
 def _save_profile(store, profile_id: str, *, trained: bool = True) -> None:
     store.save({
         'profile_id': profile_id,
@@ -79,6 +92,23 @@ def _save_profile(store, profile_id: str, *, trained: bool = True) -> None:
         'has_trained_model': trained,
         'training_status': 'ready' if trained else 'pending',
     })
+
+
+def test_sample_routes_have_one_registered_handler_family(app_with_profiles):
+    sample_routes = {}
+    for rule in app_with_profiles.url_map.iter_rules():
+        if "/api/v1/profiles/" not in rule.rule or "/samples" not in rule.rule:
+            continue
+        if "<sample_id>/filter" in rule.rule:
+            continue
+        for method in rule.methods - {"HEAD", "OPTIONS"}:
+            sample_routes.setdefault((rule.rule, method), []).append(rule.endpoint)
+
+    duplicates = {key: endpoints for key, endpoints in sample_routes.items() if len(endpoints) > 1}
+
+    assert duplicates == {}
+    assert sample_routes[("/api/v1/profiles/<profile_id>/samples", "GET")] == ["api.list_samples"]
+    assert sample_routes[("/api/v1/profiles/<profile_id>/samples", "POST")] == ["api.upload_sample"]
 
 
 def test_profile_export_and_purge_write_audit_events(client, app_with_profiles, tmp_path):
@@ -143,6 +173,25 @@ class TestUploadSample:
 
         assert response.status_code == 400
 
+    def test_db_only_profile_accepts_documented_file_field(
+        self, client, app_with_profiles, legacy_sqlite_db, tmp_path
+    ):
+        app_with_profiles.config["SAMPLE_STORAGE_PATH"] = str(tmp_path / "legacy-samples")
+        created = client.post(
+            "/api/v1/profiles",
+            json={"user_id": "legacy-user", "name": "Legacy Profile"},
+        )
+        profile_id = created.get_json()["id"]
+
+        response = client.post(
+            f"/api/v1/profiles/{profile_id}/samples",
+            data={"file": (voiced_wav_io(duration_seconds=0.2), "legacy.wav")},
+            content_type="multipart/form-data",
+        )
+
+        assert response.status_code == 201
+        assert response.get_json()["profile_id"] == profile_id
+
 
 class TestAddSampleFromPath:
     """Test POST /api/v1/profiles/{id}/samples/from-path endpoint."""
@@ -166,6 +215,27 @@ class TestAddSampleFromPath:
         )
 
         assert response.status_code in (400, 404)
+
+
+class TestUploadSong:
+    def test_db_only_profile_accepts_song_upload_without_auto_split(self, client, legacy_sqlite_db):
+        created = client.post(
+            "/api/v1/profiles",
+            json={"user_id": "legacy-user", "name": "Legacy Profile"},
+        )
+        profile_id = created.get_json()["id"]
+
+        response = client.post(
+            f"/api/v1/profiles/{profile_id}/songs",
+            data={
+                "file": (voiced_wav_io(duration_seconds=0.2), "song.wav"),
+                "auto_split": "false",
+            },
+            content_type="multipart/form-data",
+        )
+
+        assert response.status_code == 202
+        assert response.get_json()["status"] == "complete"
 
 
 class TestGetSampleDetail:

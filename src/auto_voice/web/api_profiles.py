@@ -16,6 +16,8 @@ from werkzeug.utils import secure_filename
 
 from .security import (
     annotate_asset_payload,
+    api_auth_required,
+    env_bool,
     public_deployment_enabled,
     redact_public_paths,
     record_structured_audit_event,
@@ -65,6 +67,48 @@ _profile_samples: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 # In-memory storage for song separation jobs
 _separation_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+def _form_bool(name: str) -> bool:
+    return str(request.form.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _form_media_consent_payload() -> Dict[str, bool]:
+    return {
+        "consent_confirmed": _form_bool("consent_confirmed"),
+        "source_media_policy_confirmed": _form_bool("source_media_policy_confirmed"),
+    }
+
+
+def _ensure_profile_for_song_upload(profile_id: str) -> bool:
+    try:
+        _dep('ensure_profile_in_store')(profile_id)
+        return True
+    except _dep('ProfileNotFoundError'):
+        pass
+
+    try:
+        from auto_voice.profiles.db.models import VoiceProfileDB
+        from auto_voice.profiles.db.session import get_db_session
+
+        with get_db_session() as session:
+            profile = session.query(VoiceProfileDB).filter_by(id=profile_id).first()
+            if not profile:
+                return False
+            _dep('get_profile_store')().save({
+                'profile_id': profile.id,
+                'name': profile.name,
+                'profile_role': 'target_user',
+                'training_status': 'pending',
+                'has_trained_model': False,
+                'metadata': {
+                    'source': 'legacy_db_profile',
+                    'user_id': profile.user_id,
+                },
+            })
+        return True
+    except Exception:
+        return False
 
 
 def _serialize_training_sample(profile_id: str, training_sample: Any) -> Dict[str, Any]:
@@ -821,12 +865,6 @@ def upload_sample(profile_id: str):
     """Upload a new training sample for a profile."""
     logger = _dep('logger')
     try:
-        try:
-            _dep('ensure_profile_in_store')(profile_id)
-        except _dep('ProfileNotFoundError'):
-            from auto_voice.profiles.api import upload_sample as legacy_upload_sample
-            return legacy_upload_sample(profile_id)
-
         file = None
         if 'file' in request.files:
             file = request.files['file']
@@ -840,6 +878,17 @@ def upload_sample(profile_id: str):
 
         if not _dep('allowed_file')(file.filename):
             return _dep('validation_error_response')('Invalid file type')
+
+        try:
+            require_media_consent(_form_media_consent_payload(), current_app)
+        except PermissionError as exc:
+            return _dep('validation_error_response')(str(exc))
+
+        try:
+            _dep('ensure_profile_in_store')(profile_id)
+        except _dep('ProfileNotFoundError'):
+            from auto_voice.profiles.api import upload_sample as legacy_upload_sample
+            return legacy_upload_sample(profile_id)
 
         filename = secure_filename(file.filename)
         upload_dir = os.path.join(_dep('upload_folder'), 'incoming-samples', profile_id)
@@ -905,10 +954,28 @@ def add_sample_from_path(profile_id: str):
         _dep('ensure_profile_in_store')(profile_id)
         data = request.get_json() or {}
         audio_path = data.get('audio_path')
+        audio_asset_id = (
+            data.get('audio_asset_id')
+            or data.get('audioAssetId')
+            or data.get('audio_path_asset_id')
+            or data.get('asset_id')
+        )
         skip_separation = data.get('skip_separation', False)
 
         try:
             require_media_consent(data, current_app)
+            if audio_asset_id:
+                asset = (_state_store().get_asset(str(audio_asset_id)) if _state_store() else None)
+                if not asset:
+                    return _dep('not_found_response')(f'Asset not found: {audio_asset_id}')
+                owner_id = asset.get('owner_id')
+                if owner_id not in {None, profile_id}:
+                    return _dep('validation_error_response')('Asset is not owned by this profile')
+                audio_path = asset.get('path')
+            elif api_auth_required(current_app) and not env_bool("AUTOVOICE_ALLOW_SERVER_AUDIO_PATH_IMPORT"):
+                return _dep('validation_error_response')(
+                    'audio_asset_id is required for server-side sample imports when API authentication is enabled'
+                )
             resolved_audio_path = resolve_server_audio_path(
                 audio_path,
                 data_dir=current_app.config.get('DATA_DIR', 'data'),
@@ -1043,6 +1110,14 @@ def upload_song(profile_id: str):
         if not _dep('allowed_file')(file.filename):
             return _dep('validation_error_response')('Invalid file type')
 
+        try:
+            require_media_consent(_form_media_consent_payload(), current_app)
+        except PermissionError as exc:
+            return _dep('validation_error_response')(str(exc))
+
+        if not _ensure_profile_for_song_upload(profile_id):
+            return _dep('not_found_response')('Profile not found')
+
         filename = secure_filename(file.filename)
         job_id = str(uuid.uuid4())
         song_id = str(uuid.uuid4())
@@ -1072,8 +1147,23 @@ def upload_song(profile_id: str):
         }
         _separation_jobs[job_id] = separation_job
         _dep('save_background_job')(separation_job)
+        _audit_event(
+            "song.uploaded",
+            "song",
+            song_id,
+            {
+                "profile_id": profile_id,
+                "job_id": job_id,
+                "source": "uploaded_song",
+                "auto_split": auto_split,
+            },
+            payload=separation_job,
+            asset_paths=[file_path],
+        )
 
         if auto_split:
+            app_obj = current_app._get_current_object()
+
             def run_separation():
                 try:
                     _separation_jobs[job_id]['status'] = 'processing'
@@ -1133,6 +1223,22 @@ def upload_song(profile_id: str):
                     )
                     _separation_jobs[job_id]['sample_id'] = sample.sample_id
                     _dep('save_background_job')(_separation_jobs[job_id])
+                    record_structured_audit_event(
+                        "separate",
+                        "song",
+                        app=app_obj,
+                        resource_id=song_id,
+                        asset_paths=[vocals_path, instrumental_path],
+                        asset_kind="voice_profile",
+                        details={
+                            "event_type": "song.separation_completed",
+                            "profile_id": profile_id,
+                            "job_id": job_id,
+                            "song_id": song_id,
+                            "sample_id": sample.sample_id,
+                            "source": "uploaded_song",
+                        },
+                    )
 
                     logger.info(f"Separation complete for song {song_id}, added sample {sample.sample_id}")
                 except Exception as e:
@@ -1141,6 +1247,21 @@ def upload_song(profile_id: str):
                     _separation_jobs[job_id]['error'] = str(e)
                     _separation_jobs[job_id]['message'] = f'Separation failed: {str(e)}'
                     _dep('save_background_job')(_separation_jobs[job_id])
+                    record_structured_audit_event(
+                        "separate",
+                        "song",
+                        app=app_obj,
+                        resource_id=song_id,
+                        asset_paths=[file_path],
+                        asset_kind="voice_profile",
+                        details={
+                            "event_type": "song.separation_failed",
+                            "profile_id": profile_id,
+                            "job_id": job_id,
+                            "song_id": song_id,
+                            "error": str(e),
+                        },
+                    )
 
             thread = threading.Thread(target=run_separation, daemon=True)
             thread.start()

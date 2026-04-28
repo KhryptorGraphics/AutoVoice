@@ -246,6 +246,8 @@ class TestConvertDownloadEndpoint:
     def test_download_unknown_job_returns_404(self, client_full):
         resp = client_full.get('/api/v1/convert/download/nonexistent-job')
         assert resp.status_code == 404
+        events = client_full.application.state_store.list_audit_events(resource_id="nonexistent-job")
+        assert not any(event["metadata"]["event_type"] == "conversion.downloaded" for event in events)
 
     def test_download_vocal_stem_variant_returns_file(self, client_full, tmp_path, monkeypatch):
         vocals_path = tmp_path / 'vocals.wav'
@@ -260,6 +262,8 @@ class TestConvertDownloadEndpoint:
         resp = client_full.get('/api/v1/convert/download/job-123?variant=vocals')
         assert resp.status_code == 200
         assert resp.mimetype == 'audio/wav'
+        events = client_full.application.state_store.list_audit_events(resource_id="job-123")
+        assert any(event["metadata"]["event_type"] == "conversion.downloaded" for event in events)
 
     def test_reassemble_endpoint_returns_mixed_audio(self, client_full, tmp_path, monkeypatch):
         vocals_path = tmp_path / 'vocals.wav'
@@ -283,6 +287,8 @@ class TestConvertDownloadEndpoint:
         resp = client_full.get('/api/v1/convert/reassemble/job-123')
         assert resp.status_code == 200
         assert resp.mimetype == 'audio/wav'
+        events = client_full.application.state_store.list_audit_events(resource_id="job-123")
+        assert any(event["metadata"]["event_type"] == "conversion.reassembled" for event in events)
 
 
 class TestConvertCancelEndpoint:

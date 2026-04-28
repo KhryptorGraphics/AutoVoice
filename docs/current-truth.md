@@ -133,7 +133,7 @@ These are useful for archaeology but are not the current product spec:
 - `conductor/`
 - `ORCHESTRATOR*.md`
 - date-stamped coverage and readiness reports under `docs/`
-- generated runtime reports under `reports/` and `output/reports/`
+- generated runtime reports under `reports/`, `output/`, and `output/reports/`
 - older swarm/claude-flow helper scripts and notes
 
 Use those only after validating against the canonical docs and live code paths.
@@ -146,9 +146,9 @@ See [repo-hygiene.md](./repo-hygiene.md) for the full policy. The short version:
   `docs/`, and explicitly tracked fixtures
 - canonical evidence is generated under ignored `reports/` paths and is valid for
   release claims only when its embedded git SHA matches the candidate commit
-- tracked audio/model outputs are either explicit fixtures or historical samples;
-  do not add new generated media/model artifacts without documenting the owner,
-  purpose, and retention rule
+- generated media/model outputs under `output/` are not tracked; do not add new
+  generated media/model artifacts without documenting the owner, purpose, and
+  retention rule as an explicit fixture exception
 - local runtime state, scratch outputs, and swarm run artifacts belong in ignored
   report/data paths, not in the root repository
 

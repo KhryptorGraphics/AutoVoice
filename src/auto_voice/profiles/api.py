@@ -229,7 +229,6 @@ def get_profile_sample_dir(profile_id: str) -> Path:
     return get_storage_path() / profile_id
 
 
-@profiles_bp.route("/<profile_id>/samples", methods=["POST"])
 def upload_sample(profile_id: str):
     """Upload an audio sample for a profile.
 
@@ -250,11 +249,11 @@ def upload_sample(profile_id: str):
             if not profile:
                 return not_found_response("Profile not found")
 
-            # Check for audio file
-            if "audio" not in request.files:
-                return validation_error_response("audio file is required")
-
-            audio_file = request.files["audio"]
+            # Check for audio file. The shared /api/v1/profiles surface documents
+            # "file"; keep accepting legacy "audio" for older clients.
+            audio_file = request.files.get("audio") or request.files.get("file")
+            if audio_file is None:
+                return validation_error_response('audio file is required')
             if not audio_file.filename:
                 return validation_error_response("audio file is required")
 
@@ -314,7 +313,6 @@ def upload_sample(profile_id: str):
         return error_response(str(e))
 
 
-@profiles_bp.route("/<profile_id>/samples", methods=["GET"])
 def list_samples(profile_id: str):
     """List all samples for a profile.
 
@@ -342,7 +340,6 @@ def list_samples(profile_id: str):
         return error_response(str(e))
 
 
-@profiles_bp.route("/<profile_id>/samples/<sample_id>", methods=["GET"])
 def get_sample(profile_id: str, sample_id: str):
     """Get a sample by ID.
 
@@ -372,7 +369,6 @@ def get_sample(profile_id: str, sample_id: str):
         return error_response(str(e))
 
 
-@profiles_bp.route("/<profile_id>/samples/<sample_id>", methods=["DELETE"])
 def delete_sample(profile_id: str, sample_id: str):
     """Delete a sample.
 

@@ -150,8 +150,16 @@ export interface YouTubeHistoryItem {
   timestamp: string
   audioPath: string | null
   filteredPath: string | null
+  audioAssetId?: string | null
+  filteredAssetId?: string | null
   videoId?: string | null
 }
+
+export type YouTubeHistorySaveItem =
+  Omit<Partial<YouTubeHistoryItem>, 'audioPath' | 'filteredPath'> & {
+    audioAssetId?: string | null
+    filteredAssetId?: string | null
+  }
 
 export type ProfileRole = 'source_artist' | 'target_user'
 export type ActiveModelType = 'base' | 'adapter' | 'full_model'
@@ -1774,7 +1782,7 @@ class ApiService {
     return this.request(`/youtube/history${params}`)
   }
 
-  async saveYouTubeHistory(item: Partial<YouTubeHistoryItem>): Promise<YouTubeHistoryItem> {
+  async saveYouTubeHistory(item: YouTubeHistorySaveItem): Promise<YouTubeHistoryItem> {
     return this.request('/youtube/history', {
       method: 'POST',
       body: JSON.stringify(item),

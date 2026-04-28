@@ -13,6 +13,8 @@ from typing import Any, Dict
 from flask import Blueprint, current_app, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
+from .security import record_structured_audit_event
+
 
 def _root():
     from . import api as api_root
@@ -62,6 +64,37 @@ def register_conversion_routes(api_bp: Blueprint) -> None:
 # Legacy in-process conversion-history mirror kept for compatibility tests and
 # transient runtime references. AppStateStore is the canonical source of truth.
 _conversion_history: Dict[str, Dict[str, Any]] = {}
+
+
+def _audit_conversion_asset_access(
+    action: str,
+    job_id: str,
+    *,
+    variant: str,
+    asset_paths: list[str] | None = None,
+    status: str = "success",
+    error: str | None = None,
+) -> None:
+    try:
+        details = {
+            "event_type": f"conversion.{action}",
+            "job_id": job_id,
+            "variant": variant,
+            "status": status,
+        }
+        if error:
+            details["error"] = error
+        record_structured_audit_event(
+            action,
+            "conversion_job",
+            app=current_app,
+            resource_id=job_id,
+            asset_paths=asset_paths or [],
+            asset_kind="conversion_audio",
+            details=details,
+        )
+    except Exception:
+        _root().logger.warning("Failed to persist conversion audit event", exc_info=True)
 
 
 def list_conversion_workflows():
@@ -768,10 +801,18 @@ def download_converted_audio(job_id):
             job_id,
             variant,
         )
+        _audit_conversion_asset_access(
+            "download_failed",
+            job_id,
+            variant=variant,
+            status="not_found",
+            error=f"{variant} result not available",
+        )
         return root.not_found_response(f'{variant} result not available')
 
     try:
         root.logger.info("Downloading result for job %s (%s): %s", job_id, variant, result_path)
+        _audit_conversion_asset_access("downloaded", job_id, variant=variant, asset_paths=[result_path])
         return send_file(
             result_path,
             mimetype='audio/wav',
@@ -780,6 +821,14 @@ def download_converted_audio(job_id):
         )
     except Exception:
         root.logger.error("Download error for job %s", job_id, exc_info=True)
+        _audit_conversion_asset_access(
+            "download_failed",
+            job_id,
+            variant=variant,
+            asset_paths=[result_path],
+            status="error",
+            error="Download failed",
+        )
         return root.error_response('Download failed')
 
 
@@ -795,6 +844,14 @@ def reassemble_converted_audio(job_id):
         job_manager.get_job_asset_path(job_id, 'instrumental')
     )
     if not vocals_path or not instrumental_path:
+        _audit_conversion_asset_access(
+            "reassemble_failed",
+            job_id,
+            variant="reassembled",
+            asset_paths=[path for path in [vocals_path, instrumental_path] if path],
+            status="not_found",
+            error="Stem assets are not available",
+        )
         return root.not_found_response(
             'Stem assets are not available for this conversion. '
             'Run conversion with stems enabled first.'
@@ -830,6 +887,12 @@ def reassemble_converted_audio(job_id):
             "Reassembled converted vocals with instrumental for job %s",
             job_id,
         )
+        _audit_conversion_asset_access(
+            "reassembled",
+            job_id,
+            variant="reassembled",
+            asset_paths=[vocals_path, instrumental_path],
+        )
         return send_file(
             buffer,
             mimetype='audio/wav',
@@ -838,6 +901,14 @@ def reassemble_converted_audio(job_id):
         )
     except Exception as exc:
         root.logger.error("Reassembly error for job %s: %s", job_id, exc, exc_info=True)
+        _audit_conversion_asset_access(
+            "reassemble_failed",
+            job_id,
+            variant="reassembled",
+            asset_paths=[path for path in [vocals_path, instrumental_path] if path],
+            status="error",
+            error=str(exc),
+        )
         return root.error_response('Failed to reassemble converted vocals with instrumental')
 
 

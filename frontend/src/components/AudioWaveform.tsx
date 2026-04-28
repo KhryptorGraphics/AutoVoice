@@ -51,6 +51,11 @@ export function AudioWaveform({
   const [volume, setVolume] = useState(0.7)
   const [internalLoading, setInternalLoading] = useState(false)
   const [internalError, setInternalError] = useState<string | null>(null)
+  const volumeRef = useRef(volume)
+
+  useEffect(() => {
+    volumeRef.current = volume
+  }, [volume])
 
   useEffect(() => {
     // Reset playback-related state when audioUrl changes
@@ -82,7 +87,7 @@ export function AudioWaveform({
     })
 
     // Set initial volume to match React state
-    wavesurfer.current.setVolume(volume)
+    wavesurfer.current.setVolume(volumeRef.current)
 
     // Enhanced error handling
     try {
@@ -103,7 +108,7 @@ export function AudioWaveform({
     wavesurfer.current.on('ready', () => {
       setDuration(wavesurfer.current?.getDuration() || 0)
       // Sync volume with React state in ready event
-      wavesurfer.current?.setVolume(volume)
+      wavesurfer.current?.setVolume(volumeRef.current)
       setInternalLoading(false)
     })
 

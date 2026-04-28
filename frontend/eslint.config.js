@@ -23,8 +23,23 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      'react-refresh/only-export-components': [
+        'warn',
+        { allowConstantExport: true },
+      ],
       '@typescript-eslint/no-explicit-any': 'off',
+    },
+  },
+  {
+    files: [
+      'src/components/AugmentationSettings.tsx',
+      'src/components/ErrorBoundary.tsx',
+      'src/components/OutputFormatSelector.tsx',
+      'src/components/PipelineSelector.tsx',
+      'src/contexts/ToastContext.tsx',
+    ],
+    rules: {
+      'react-refresh/only-export-components': 'off',
     },
   },
 )

@@ -27,8 +27,9 @@ documentation, release evidence, or another active worker.
   `test_audio/` are fixtures or historical quality samples. Keep them stable
   unless a dedicated fixture cleanup issue replaces them with smaller,
   deterministic alternatives and updates tests.
-- Existing tracked generated outputs under `output/` are historical samples, not
-  canonical release artifacts. New generated outputs should remain ignored.
+- Generated outputs under `output/` are ignored and must stay untracked unless a
+  dedicated fixture exception documents the owner, test reference, and retention
+  rule.
 - Root-level generated summaries from earlier workstreams are historical reports.
   Prefer moving future summaries into `reports/` or `docs/` with a clear status
   note instead of adding more root artifacts.
@@ -58,5 +59,6 @@ Use this order for cleanup work:
    dedicated cleanup change with before/after size notes and targeted test
    output.
 
-This pass documents the policy and leaves broad artifact deletion to dedicated
-cleanup work because other workers are active in the repository.
+This policy is enforced by `run_repo_boundary_audit`; tracked files under
+`reports/` or `output/` should fail release validation unless they are moved to a
+documented fixture location.

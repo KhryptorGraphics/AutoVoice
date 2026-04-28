@@ -1,7 +1,7 @@
 /**
  * TrackListPanel - Display tracks with YouTube metadata and featured artists
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 interface Track {
   id: string;
@@ -33,7 +33,7 @@ const TrackListPanel: React.FC<TrackListPanelProps> = ({
   const [fetchingMetadata, setFetchingMetadata] = useState(false);
 
   // Load tracks
-  const loadTracks = async () => {
+  const loadTracks = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -54,7 +54,7 @@ const TrackListPanel: React.FC<TrackListPanelProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [filter.artist, filter.hasFeatured]);
 
   // Fetch YouTube metadata for all tracks
   const fetchMetadata = async () => {
@@ -82,7 +82,7 @@ const TrackListPanel: React.FC<TrackListPanelProps> = ({
 
   useEffect(() => {
     loadTracks();
-  }, [filter.artist, filter.hasFeatured]);
+  }, [loadTracks]);
 
   // Filter tracks by search
   const filteredTracks = tracks.filter((track) => {

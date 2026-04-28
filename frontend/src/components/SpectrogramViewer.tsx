@@ -9,6 +9,33 @@ interface SpectrogramViewerProps {
   colorScale?: 'viridis' | 'magma' | 'inferno' | 'plasma'
 }
 
+const colorMaps: Record<string, (t: number) => [number, number, number]> = {
+  viridis: (t) => {
+    const r = Math.floor(68 + 187 * Math.pow(t, 0.5))
+    const g = Math.floor(1 + 254 * t)
+    const b = Math.floor(84 + 171 * (1 - t))
+    return [Math.min(255, r), Math.min(255, g), Math.min(255, b)]
+  },
+  magma: (t) => {
+    const r = Math.floor(252 * Math.pow(t, 0.6))
+    const g = Math.floor(100 * t)
+    const b = Math.floor(180 * (1 - Math.pow(t, 0.8)) + 75 * t)
+    return [r, g, b]
+  },
+  inferno: (t) => {
+    const r = Math.floor(252 * Math.pow(t, 0.5))
+    const g = Math.floor(160 * t)
+    const b = Math.floor(255 * (1 - Math.pow(t, 0.5)))
+    return [r, g, b]
+  },
+  plasma: (t) => {
+    const r = Math.floor(240 * Math.pow(t, 0.4))
+    const g = Math.floor(100 + 155 * t)
+    const b = Math.floor(220 * (1 - t * 0.5))
+    return [r, g, b]
+  },
+}
+
 export function SpectrogramViewer({
   audioUrl,
   compareUrl,
@@ -24,33 +51,6 @@ export function SpectrogramViewer({
   const [showComparison, setShowComparison] = useState(false)
   const [spectrogramData, setSpectrogramData] = useState<ImageData | null>(null)
   const [compareData, setCompareData] = useState<ImageData | null>(null)
-
-  const colorMaps: Record<string, (t: number) => [number, number, number]> = {
-    viridis: (t) => {
-      const r = Math.floor(68 + 187 * Math.pow(t, 0.5))
-      const g = Math.floor(1 + 254 * t)
-      const b = Math.floor(84 + 171 * (1 - t))
-      return [Math.min(255, r), Math.min(255, g), Math.min(255, b)]
-    },
-    magma: (t) => {
-      const r = Math.floor(252 * Math.pow(t, 0.6))
-      const g = Math.floor(100 * t)
-      const b = Math.floor(180 * (1 - Math.pow(t, 0.8)) + 75 * t)
-      return [r, g, b]
-    },
-    inferno: (t) => {
-      const r = Math.floor(252 * Math.pow(t, 0.5))
-      const g = Math.floor(160 * t)
-      const b = Math.floor(255 * (1 - Math.pow(t, 0.5)))
-      return [r, g, b]
-    },
-    plasma: (t) => {
-      const r = Math.floor(240 * Math.pow(t, 0.4))
-      const g = Math.floor(100 + 155 * t)
-      const b = Math.floor(220 * (1 - t * 0.5))
-      return [r, g, b]
-    },
-  }
 
   const generateSpectrogram = useCallback(async (url: string): Promise<ImageData | null> => {
     try {

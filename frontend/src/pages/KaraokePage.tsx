@@ -120,6 +120,8 @@ export function KaraokePage() {
     loadDevices();
     loadVoiceModels();
     loadVoiceProfiles();
+    // These startup loaders intentionally run once to hydrate page state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

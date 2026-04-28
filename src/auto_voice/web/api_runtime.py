@@ -10,6 +10,8 @@ from typing import Any, Dict
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
+from .security import redact_public_paths
+
 
 def _root():
     from . import api as api_root
@@ -90,6 +92,7 @@ def list_audit_events():
             event_type=event_type,
             limit=max(1, min(limit or 100, 1000)),
         )
+        events = redact_public_paths(events, current_app, root._get_state_store(), kind="audit_asset")
         return jsonify({
             "events": events,
             "count": len(events),

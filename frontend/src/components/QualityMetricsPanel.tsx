@@ -7,7 +7,7 @@
  * - Naturalness (spectral distortion, MOS estimate)
  * - Intelligibility (STOI, PESQ) when available
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Activity, Mic, Music, Headphones, CheckCircle, XCircle, AlertCircle, RefreshCw, Loader2 } from 'lucide-react'
 import { QualityMetrics, apiService } from '../services/api'
 import clsx from 'clsx'
@@ -133,7 +133,7 @@ export function QualityMetricsPanel({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const fetchMetrics = async () => {
+  const fetchMetrics = useCallback(async () => {
     if (!jobId) return
     setLoading(true)
     setError(null)
@@ -145,13 +145,13 @@ export function QualityMetricsPanel({
     } finally {
       setLoading(false)
     }
-  }
+  }, [jobId])
 
   useEffect(() => {
     if (jobId && !initialMetrics) {
       fetchMetrics()
     }
-  }, [jobId, initialMetrics])
+  }, [jobId, initialMetrics, fetchMetrics])
 
   useEffect(() => {
     if (initialMetrics) {

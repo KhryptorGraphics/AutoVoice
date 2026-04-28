@@ -97,11 +97,34 @@ def api_auth_required(app: Flask) -> bool:
 
 
 def strict_path_sandbox_enabled(app: Flask) -> bool:
-    return public_deployment_enabled(app) or env_bool("AUTOVOICE_STRICT_PATH_SANDBOX")
+    return (
+        public_deployment_enabled(app)
+        or api_auth_required(app)
+        or env_bool("AUTOVOICE_STRICT_PATH_SANDBOX")
+    )
 
 
 def media_consent_required(app: Flask) -> bool:
     return public_deployment_enabled(app) or env_bool("AUTOVOICE_REQUIRE_MEDIA_CONSENT")
+
+
+def _strict_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return False
+
+
+def response_path_redaction_enabled(app: Flask) -> bool:
+    """Hide local filesystem paths from any externally authenticated API surface."""
+    return public_deployment_enabled(app) or api_auth_required(app)
 
 
 def parse_cors_origins(raw: str | None = None) -> str | list[str]:
@@ -117,11 +140,11 @@ def socketio_cors_allowed_origins(app: Flask) -> str | list[str]:
     if (
         origins == "*"
         and not app.config.get("TESTING")
-        and public_deployment_enabled(app)
+        and api_auth_required(app)
         and not env_bool("AUTOVOICE_ALLOW_INSECURE_CORS")
     ):
         raise RuntimeError(
-            "CORS_ORIGINS='*' is not allowed when AUTOVOICE_PUBLIC_DEPLOYMENT is enabled. "
+            "CORS_ORIGINS='*' is not allowed when API authentication is required. "
             "Set CORS_ORIGINS to explicit origins or AUTOVOICE_ALLOW_INSECURE_CORS=true."
         )
     return origins
@@ -149,10 +172,10 @@ def validate_api_token_configuration(app: Flask) -> None:
         raise RuntimeError(
             "AUTOVOICE_REQUIRE_API_AUTH/AUTOVOICE_PUBLIC_DEPLOYMENT requires AUTOVOICE_API_TOKEN"
         )
-    if public_deployment_enabled(app) and _api_token_is_insecure(token):
+    if _api_token_is_insecure(token) and not env_bool("AUTOVOICE_ALLOW_INSECURE_API_TOKEN"):
         raise RuntimeError(
-            "AUTOVOICE_PUBLIC_DEPLOYMENT requires a non-placeholder AUTOVOICE_API_TOKEN "
-            "with at least 32 characters"
+            "Authenticated AutoVoice deployments require a non-placeholder AUTOVOICE_API_TOKEN "
+            "with at least 32 characters, or AUTOVOICE_ALLOW_INSECURE_API_TOKEN=true for local testing"
         )
 
 
@@ -164,11 +187,7 @@ def _request_token() -> str | None:
     if header_token:
         return header_token
 
-    target_app = current_app._get_current_object() if has_app_context() else None
-    query_tokens_allowed = env_bool("AUTOVOICE_ALLOW_QUERY_API_TOKEN") or not (
-        target_app and public_deployment_enabled(target_app)
-    )
-    if query_tokens_allowed:
+    if env_bool("AUTOVOICE_ALLOW_QUERY_API_TOKEN"):
         return request.args.get("api_token")
     return None
 
@@ -199,9 +218,9 @@ def init_production_security(app: Flask) -> None:
 
     validate_api_token_configuration(app)
 
-    if socketio_cors_allowed_origins(app) == "*" and public_deployment_enabled(app):
+    if socketio_cors_allowed_origins(app) == "*" and api_auth_required(app):
         # The helper raises unless explicitly overridden; call it here so HTTP-only
-        # test paths also fail fast under unsafe public-mode CORS.
+        # test paths also fail fast under unsafe authenticated CORS.
         pass
 
     @app.before_request
@@ -372,7 +391,7 @@ def build_asset_reference(
     target_app = app
     if target_app is None and has_app_context():
         target_app = current_app._get_current_object()
-    if not (target_app and public_deployment_enabled(target_app)):
+    if not (target_app and response_path_redaction_enabled(target_app)):
         reference["path"] = resolved_path
     return reference
 
@@ -381,7 +400,7 @@ def annotate_asset_payload(payload: Any, *, app: Flask | None = None) -> Any:
     target_app = app
     if target_app is None and has_app_context():
         target_app = current_app._get_current_object()
-    public_mode = bool(target_app and public_deployment_enabled(target_app))
+    hide_paths = bool(target_app and response_path_redaction_enabled(target_app))
 
     def _walk(value: Any) -> Any:
         if isinstance(value, dict):
@@ -395,7 +414,7 @@ def annotate_asset_payload(payload: Any, *, app: Flask | None = None) -> Any:
                         for entry in item
                         if entry
                     ]
-                    annotated[key] = [] if public_mode else list(item)
+                    annotated[key] = [] if hide_paths else list(item)
                     if asset_ids:
                         annotated[asset_field] = [asset_id for asset_id in asset_ids if asset_id]
                     continue
@@ -403,7 +422,7 @@ def annotate_asset_payload(payload: Any, *, app: Flask | None = None) -> Any:
                 scalar_mapping = _ASSET_SCALAR_FIELDS.get(key)
                 if scalar_mapping and item:
                     asset_field, asset_kind = scalar_mapping
-                    annotated[key] = None if public_mode else item
+                    annotated[key] = None if hide_paths else item
                     asset_id = asset_id_for_path(item, asset_kind=asset_kind, app=target_app)
                     if asset_id:
                         annotated[asset_field] = asset_id
@@ -453,7 +472,9 @@ def canonical_youtube_url(raw_url: Any) -> str:
 def require_media_consent(data: dict[str, Any], app: Flask) -> None:
     if not media_consent_required(app):
         return
-    if not data.get("consent_confirmed") or not data.get("source_media_policy_confirmed"):
+    if not _strict_bool(data.get("consent_confirmed")) or not _strict_bool(
+        data.get("source_media_policy_confirmed")
+    ):
         raise PermissionError(
             "consent_confirmed and source_media_policy_confirmed are required in public mode"
         )
@@ -547,8 +568,8 @@ def redact_public_paths(
     owner_id: str | None = None,
     kind: str = "file",
 ) -> Any:
-    """Replace filesystem paths with opaque asset IDs when public deployment mode is enabled."""
-    if not public_deployment_enabled(app):
+    """Replace filesystem paths with opaque asset IDs when responses cross an auth boundary."""
+    if not response_path_redaction_enabled(app):
         return payload
     if isinstance(payload, list):
         return [redact_public_paths(item, app, state_store, owner_id=owner_id, kind=kind) for item in payload]

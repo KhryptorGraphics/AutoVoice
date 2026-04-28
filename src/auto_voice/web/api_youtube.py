@@ -81,6 +81,11 @@ def save_youtube_history():
         except ValueError as exc:
             return root.validation_error_response(str(exc))
 
+        if data.get('audioPath') or data.get('filteredPath'):
+            return root.validation_error_response(
+                'audioPath and filteredPath are server-managed fields; use audioAssetId/filteredAssetId'
+            )
+
         history_item = {
             'id': data.get('id') or f"{int(time.time())}-{uuid.uuid4().hex[:8]}",
             'url': url,
@@ -90,8 +95,10 @@ def save_youtube_history():
             'hasDiarization': bool(data.get('hasDiarization', False)),
             'numSpeakers': int(data.get('numSpeakers', 0)),
             'timestamp': data.get('timestamp') or root._utcnow_iso(),
-            'audioPath': data.get('audioPath'),
-            'filteredPath': data.get('filteredPath'),
+            'audioPath': None,
+            'filteredPath': None,
+            'audioAssetId': data.get('audioAssetId'),
+            'filteredAssetId': data.get('filteredAssetId'),
             'videoId': data.get('videoId'),
         }
         state_store = root._get_state_store()

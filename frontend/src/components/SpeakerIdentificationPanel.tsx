@@ -187,7 +187,7 @@ const SpeakerIdentificationPanel: React.FC<SpeakerIdentificationPanelProps> = ({
       loadClusterDetails(selectedCluster.id);
       onClusterSelect?.(selectedCluster);
     }
-  }, [selectedCluster]);
+  }, [selectedCluster, onClusterSelect]);
 
   const formatDuration = (seconds: number | null) => {
     if (!seconds) return '0:00';

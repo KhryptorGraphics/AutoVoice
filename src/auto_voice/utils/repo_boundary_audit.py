@@ -9,8 +9,8 @@ from typing import Any, Dict, List
 
 FORBIDDEN_PREFIXES = (
     "node_modules/",
+    "output/",
     "reports/",
-    "output/reports/",
 )
 
 

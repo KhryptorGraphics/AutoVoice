@@ -7,6 +7,7 @@ This summary tracks the current maintained API documentation scope, not the olde
 - Canonical REST base is `/api/v1`
 - Canonical profile surface is `/api/v1/voice/profiles/*`
 - Compatibility helper routes still exist under `/api/v1/profiles/*`
+- `/api/v1/profiles/{id}/samples*` routes have one registered handler family; legacy DB functions are callable compatibility delegates, not duplicate Flask rules.
 - Default Socket.IO namespace (`/`) carries conversion and training events
 - `/karaoke` is the dedicated live-session namespace
 - The maintained training REST surface includes:

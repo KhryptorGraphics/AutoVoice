@@ -7,6 +7,7 @@ This directory documents the current single-user MVP API surface.
 - Base URL: `http://localhost:5000/api/v1`
 - Canonical voice profile surface: `/api/v1/voice/profiles/*`
 - Compatibility surface still present for one-release migration paths: `/api/v1/profiles/*`
+- Sample CRUD remains on `/api/v1/profiles/*`, but the shared web API handler is the single registered route owner.
 - Canonical non-karaoke Socket.IO namespace: `/`
 - Dedicated live namespace: `/karaoke`
 
