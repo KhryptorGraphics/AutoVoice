@@ -1,0 +1,336 @@
+{
+  "disallowed_tokens": [
+    "not implemented",
+    "Requires Flask app context - tested via integration tests",
+    "Requires benchmark audio files",
+    "Requires trained model and test samples",
+    "Requires pre-built TRT engines"
+  ],
+  "findings": [],
+  "allowed_environment_gates": [
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 42,
+      "text": "pytest.skip(\"CUDA not available - E2E tests require GPU\")"
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 282,
+      "text": "pytest.skip(\"Diarization service not available\")"
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 369,
+      "text": "pytest.skip(\"Training service not available\")"
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 456,
+      "text": "pytest.skip(\"Diarization not available\")"
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 579,
+      "text": "pytest.skip(\"Sample upload failed\")"
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 588,
+      "text": "pytest.skip(\"Training not available\")"
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 592,
+      "text": "pytest.skip(\"Job creation failed\")"
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 665,
+      "text": "pytest.skip(\"Training not available - components not initialized\")"
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 687,
+      "text": "pytest.skip(f\"Training did not complete in time (status: {job_status})\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 21,
+      "text": "pytest.skip(\"AUTOVOICE_TRT_ENGINE_DIR is not set for the TensorRT hardware lane\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 30,
+      "text": "pytest.skip(f\"AUTOVOICE_TRT_ENGINE_DIR is missing TensorRT engines: {', '.join(missing)}\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 49,
+      "text": "pytest.skip(\"ContentVec has lazy-loading that doesn't export well to ONNX - use TRT from checkpoint\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 104,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 112,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 128,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 135,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 149,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 173,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 194,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 217,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 232,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 240,
+      "text": "pytest.importorskip(\"tensorrt\")"
+    },
+    {
+      "file": "tests/test_quality_benchmarking_sota.py",
+      "line": 243,
+      "text": "pytest.importorskip(\"torch.cuda\")"
+    }
+  ],
+  "environment_gate_evidence": [
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 42,
+      "text": "pytest.skip(\"CUDA not available - E2E tests require GPU\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Run completion matrix with --hardware or --full on a Jetson/CUDA host."
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 282,
+      "text": "pytest.skip(\"Diarization service not available\")",
+      "explained": true,
+      "lane": "voice-profile-diarization-e2e",
+      "owner": "backend-runtime",
+      "action": "Run the diarization E2E lane with the diarization service and real audio fixtures available."
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 369,
+      "text": "pytest.skip(\"Training service not available\")",
+      "explained": true,
+      "lane": "voice-profile-training-e2e",
+      "owner": "training-runtime",
+      "action": "Run the voice-profile training E2E lane with training services and sample fixtures available."
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 456,
+      "text": "pytest.skip(\"Diarization not available\")",
+      "explained": true,
+      "lane": "voice-profile-diarization-e2e",
+      "owner": "backend-runtime",
+      "action": "Run the diarization E2E lane with the diarization service and real audio fixtures available."
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 579,
+      "text": "pytest.skip(\"Sample upload failed\")",
+      "explained": true,
+      "lane": "voice-profile-training-e2e",
+      "owner": "training-runtime",
+      "action": "Run with the live backend sample-upload endpoint available and preserve the generated failure report."
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 588,
+      "text": "pytest.skip(\"Training not available\")",
+      "explained": true,
+      "lane": "voice-profile-training-e2e",
+      "owner": "training-runtime",
+      "action": "Run the voice-profile training E2E lane with training services and sample fixtures available."
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 592,
+      "text": "pytest.skip(\"Job creation failed\")",
+      "explained": true,
+      "lane": "voice-profile-training-e2e",
+      "owner": "training-runtime",
+      "action": "Run with the live training job endpoint available and preserve the generated failure report."
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 665,
+      "text": "pytest.skip(\"Training not available - components not initialized\")",
+      "explained": true,
+      "lane": "voice-profile-training-e2e",
+      "owner": "training-runtime",
+      "action": "Run the voice-profile training E2E lane with training services and sample fixtures available."
+    },
+    {
+      "file": "tests/test_voice_profile_training_e2e.py",
+      "line": 687,
+      "text": "pytest.skip(f\"Training did not complete in time (status: {job_status})\")",
+      "explained": true,
+      "lane": "voice-profile-training-e2e",
+      "owner": "training-runtime",
+      "action": "Run the voice-profile training E2E lane with training services and sample fixtures available."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 21,
+      "text": "pytest.skip(\"AUTOVOICE_TRT_ENGINE_DIR is not set for the TensorRT hardware lane\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Set AUTOVOICE_TRT_ENGINE_DIR to a directory containing TensorRT engine artifacts."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 30,
+      "text": "pytest.skip(f\"AUTOVOICE_TRT_ENGINE_DIR is missing TensorRT engines: {', '.join(missing)}\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Set AUTOVOICE_TRT_ENGINE_DIR to a directory containing TensorRT engine artifacts."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 49,
+      "text": "pytest.skip(\"ContentVec has lazy-loading that doesn't export well to ONNX - use TRT from checkpoint\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "model-runtime",
+      "action": "Use the checkpoint-backed TensorRT export path for ContentVec instead of lazy ONNX export."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 104,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 112,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 128,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 135,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 149,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 173,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 194,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 217,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 232,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_tensorrt_pipeline_sota.py",
+      "line": 240,
+      "text": "pytest.importorskip(\"tensorrt\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Install TensorRT in the hardware runner environment and rerun the TensorRT tests."
+    },
+    {
+      "file": "tests/test_quality_benchmarking_sota.py",
+      "line": 243,
+      "text": "pytest.importorskip(\"torch.cuda\")",
+      "explained": true,
+      "lane": "jetson-cuda-tensorrt",
+      "owner": "hardware-runner",
+      "action": "Run completion matrix with --hardware or --full on a Jetson/CUDA host."
+    }
+  ]
+}

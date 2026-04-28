@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-28T17:46:04.185614+00:00",
+  "bead_id": "AV-9dgg",
+  "git_sha": "f0d37ef01f2accd031cc134b84ea8e00501a82e2",
+  "run_dir": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a",
+  "status": "go",
+  "ready_for_release": true,
+  "blockers": [],
+  "artifacts": {
+    "preflight": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/preflight.json",
+    "decision": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/release_decision.json",
+    "completion_matrix": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/completion/completion_matrix.json",
+    "hosted_release_candidate": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/platform/hosted-release-candidate-validation.json",
+    "production_smoke": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/production_smoke.json",
+    "artifact_manifest": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/artifact_manifest.json",
+    "benchmark_report_copy": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/inputs/comprehensive_report.json",
+    "benchmark_dashboard.json": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/benchmarks/benchmark_dashboard.json",
+    "release_evidence.json": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/benchmarks/release_evidence.json",
+    "benchmark_dashboard.md": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/benchmarks/benchmark_dashboard.md",
+    "tensorrt_parity_report": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/benchmarks/tensorrt-parity.json",
+    "platform_report_dir": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/platform"
+  }
+}

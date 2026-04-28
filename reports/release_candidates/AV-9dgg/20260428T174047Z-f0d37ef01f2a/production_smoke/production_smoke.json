@@ -1,0 +1,287 @@
+{
+  "base_url": "http://127.0.0.1:10600",
+  "benchmark_evidence": {
+    "benchmark_dashboard.json": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/benchmark_evidence/benchmark_dashboard.json",
+    "benchmark_dashboard.md": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/benchmark_evidence/benchmark_dashboard.md",
+    "release_evidence.json": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/benchmark_evidence/release_evidence.json"
+  },
+  "full": {
+    "cleanup": [
+      {
+        "method": "DELETE",
+        "ok": true,
+        "profile_id": "4d05cc64-68e9-4922-91b8-938abe90233b",
+        "status": 200
+      }
+    ],
+    "conversion_job": {
+      "active_model_type": "adapter",
+      "adapter_type": null,
+      "audio_duration_seconds": 2.995374149659864,
+      "completed_at": 1777398359.9965682,
+      "created_at": 1777398358.8917875,
+      "download_url": "/api/v1/convert/download/15f02976-9af3-4f30-9a00-eb0b8337e38f",
+      "duration": 2.995374149659864,
+      "input_file": "tmpiw95cz36.wav",
+      "job_id": "15f02976-9af3-4f30-9a00-eb0b8337e38f",
+      "output_url": "/api/v1/convert/download/15f02976-9af3-4f30-9a00-eb0b8337e38f",
+      "pipeline_type": "quality_seedvc",
+      "preset": "balanced",
+      "processing_time_seconds": 1.1033580303192139,
+      "profile_id": "4d05cc64-68e9-4922-91b8-938abe90233b",
+      "progress": 100,
+      "public_status": "completed",
+      "quality": "balanced",
+      "requested_pipeline": "quality_seedvc",
+      "resolved_pipeline": "quality_seedvc",
+      "rtf": 0.368353993588582,
+      "runtime_backend": "pytorch",
+      "started_at": 1777398358.8932102,
+      "status": "completed"
+    },
+    "created_profile_ids": [
+      "4d05cc64-68e9-4922-91b8-938abe90233b"
+    ],
+    "downloads": [
+      {
+        "inspection": {
+          "channels": 1,
+          "duration_seconds": 2.995,
+          "format": "wav",
+          "frame_count": 132096,
+          "non_silent": true,
+          "ok": true,
+          "path": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/downloads/mix.wav",
+          "peak": 0.950041,
+          "rms": 0.128115,
+          "sample_rate": 44100,
+          "sample_width_bytes": 2,
+          "sha256": "65924cf08c8bf32692737a5d3e59521628e0ad95b41434a9fbca8a69dd255ed7",
+          "size_bytes": 264236
+        },
+        "ok": true,
+        "output_path": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/downloads/mix.wav",
+        "path": "/api/v1/convert/download/15f02976-9af3-4f30-9a00-eb0b8337e38f",
+        "size_bytes": 264236,
+        "status": 200,
+        "variant": "mix"
+      }
+    ],
+    "duration_seconds": 15.412,
+    "ok": true,
+    "quality_metrics": {
+      "all_downloads_ok": true,
+      "artifact_comparison": {
+        "instrumental_sha256": null,
+        "mix_sha256": "65924cf08c8bf32692737a5d3e59521628e0ad95b41434a9fbca8a69dd255ed7",
+        "stems_duration_aligned": true,
+        "vocal_sha256": null
+      },
+      "audio_duration_seconds": 2.995374149659864,
+      "download_count": 1,
+      "duration_spread_seconds": 0.0,
+      "non_silent_downloads": true,
+      "processing_time_seconds": 1.1033580303192139,
+      "rtf": 0.368353993588582
+    },
+    "stem_assertions": {
+      "downloaded_variants": [
+        "mix"
+      ],
+      "ok": true,
+      "reported_by_api": false,
+      "requested": true,
+      "required": false
+    },
+    "target_profile_id": "4d05cc64-68e9-4922-91b8-938abe90233b",
+    "training_job": {
+      "completed_at": "2026-04-28T12:45:55.522819",
+      "config": {
+        "batch_size": 1,
+        "epochs": 1,
+        "ewc_lambda": 1000.0,
+        "initialization_mode": "scratch",
+        "learning_rate": 0.0001,
+        "lora_alpha": 4,
+        "lora_dropout": 0.0,
+        "lora_rank": 2,
+        "lora_target_modules": [
+          "q_proj",
+          "v_proj",
+          "content_encoder"
+        ],
+        "max_grad_norm": 1.0,
+        "prior_loss_weight": 0.5,
+        "training_mode": "lora",
+        "use_ewc": true,
+        "use_prior_preservation": false,
+        "warmup_steps": 100
+      },
+      "created_at": "2026-04-28T12:45:53.830347",
+      "error": null,
+      "gpu_device": null,
+      "is_paused": false,
+      "job_id": "job-b9b4ec5ac871",
+      "profile_id": "4d05cc64-68e9-4922-91b8-938abe90233b",
+      "progress": 100,
+      "results": {
+        "adapter_path": "data/trained_models/4d05cc64-68e9-4922-91b8-938abe90233b_adapter.pt",
+        "artifact_reused": null,
+        "artifact_type": "adapter",
+        "best_loss": null,
+        "checkpoint_path": "data/checkpoints/4d05cc64-68e9-4922-91b8-938abe90233b/final.pth",
+        "embedding_path": "data/voice_profiles/4d05cc64-68e9-4922-91b8-938abe90233b.npy",
+        "epochs_completed": 1,
+        "final_loss": 0.19705195724964142,
+        "initialization_mode": "scratch",
+        "job_type": "lora",
+        "manifest_path": "data/trained_models/4d05cc64-68e9-4922-91b8-938abe90233b/artifact_manifest.json",
+        "requested_epochs": 1,
+        "resume_checkpoint": null,
+        "resume_source": "scratch",
+        "resumed_from_epoch": null
+      },
+      "sample_ids": [
+        "sample_001"
+      ],
+      "started_at": "2026-04-28T12:45:53.832174",
+      "status": "completed"
+    },
+    "upload_fixtures": {
+      "artist_song": {
+        "inspection": {
+          "channels": 2,
+          "duration_seconds": 3.0,
+          "format": "wav",
+          "frame_count": 132300,
+          "non_silent": true,
+          "ok": true,
+          "path": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/upload_fixtures/conor_maynard_pillowtalk.wav",
+          "peak": 0.312937,
+          "rms": 0.035512,
+          "sample_rate": 44100,
+          "sample_width_bytes": 2,
+          "sha256": "c00aa445d4d83059236db556f5e945703c752e1c76a799ae26695429eeccab3c",
+          "size_bytes": 529244
+        },
+        "source": "/home/kp/thordrive/autovoice/tests/quality_samples/conor_maynard_pillowtalk.wav",
+        "source_size_bytes": 36581454,
+        "staged": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/upload_fixtures/conor_maynard_pillowtalk.wav",
+        "staged_size_bytes": 529244
+      },
+      "fixture_suite": {
+        "available": true,
+        "config_path": "/home/kp/thordrive/autovoice/config/quality_fixture_suites.json",
+        "description": "Hosted production monitor fixtures trimmed to stay below public upload limits.",
+        "fixture_roles": [
+          "artist_song",
+          "target_user_vocal"
+        ],
+        "tier": "smoke"
+      },
+      "fixture_tier": "smoke",
+      "fixture_tier_description": "Hosted production monitor tier using short real-audio excerpts.",
+      "max_upload_seconds": 3.0,
+      "user_vocals": [
+        {
+          "inspection": {
+            "channels": 2,
+            "duration_seconds": 3.0,
+            "format": "wav",
+            "frame_count": 132300,
+            "non_silent": true,
+            "ok": true,
+            "path": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/upload_fixtures/user_vocals/william_singe_pillowtalk.wav",
+            "peak": 1.000031,
+            "rms": 0.196983,
+            "sample_rate": 44100,
+            "sample_width_bytes": 2,
+            "sha256": "0c792c65cf81c0b2a42240f093f455bdba618089f5ef002fd2405150ddb14e28",
+            "size_bytes": 529244
+          },
+          "source": "/home/kp/thordrive/autovoice/tests/quality_samples/william_singe_pillowtalk.wav",
+          "source_size_bytes": 34488398,
+          "staged": "/home/kp/thordrive/autovoice/reports/release_candidates/AV-9dgg/20260428T174047Z-f0d37ef01f2a/production_smoke/upload_fixtures/user_vocals/william_singe_pillowtalk.wav",
+          "staged_size_bytes": 529244
+        }
+      ]
+    },
+    "workflow_id": "1ebd5fc2-cae1-4836-86c6-c316a84d9467"
+  },
+  "generated_at": "2026-04-28T17:45:48.717691+00:00",
+  "git_sha": "f0d37ef01f2accd031cc134b84ea8e00501a82e2",
+  "git_tag": null,
+  "health": {
+    "checks": [
+      {
+        "duration_seconds": 0.027,
+        "ok": true,
+        "path": "/api/v1/health",
+        "payload": {
+          "components": {
+            "api": {
+              "status": "up"
+            },
+            "job_manager": {
+              "status": "up"
+            },
+            "singing_pipeline": {
+              "status": "up"
+            },
+            "torch": {
+              "cuda": true,
+              "device": "NVIDIA Thor",
+              "status": "up",
+              "version": "2.10.0+cu130"
+            },
+            "voice_cloner": {
+              "status": "up"
+            }
+          },
+          "cuda_kernels_available": false,
+          "status": "healthy",
+          "timestamp": "2026-04-28T17:45:48Z",
+          "uptime": 63143.01713037491,
+          "version": "0.1.0"
+        },
+        "status": 200
+      },
+      {
+        "duration_seconds": 0.004,
+        "ok": true,
+        "path": "/ready",
+        "payload": {
+          "components": {
+            "singing_pipeline": true,
+            "torch": true,
+            "voice_cloner": true
+          },
+          "ready": true,
+          "timestamp": "2026-04-28T17:45:48Z"
+        },
+        "status": 200
+      },
+      {
+        "duration_seconds": 0.001,
+        "ok": true,
+        "path": "/api/v1/metrics",
+        "payload": {
+          "avg_audio_duration_s": 0.0,
+          "avg_latency_ms": 0.0,
+          "conversions_by_preset": {},
+          "failed_conversions": 0,
+          "gpu_utilization": 0.0,
+          "successful_conversions": 0,
+          "total_audio_minutes": 0.0,
+          "total_conversions": 0,
+          "total_errors": 0
+        },
+        "status": 200
+      }
+    ],
+    "ok": true
+  },
+  "mode": "full",
+  "ok": true,
+  "schema_version": 1
+}

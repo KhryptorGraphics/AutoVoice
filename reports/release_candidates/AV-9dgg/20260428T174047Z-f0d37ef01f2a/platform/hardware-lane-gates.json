@@ -1,0 +1,25 @@
+{
+  "lanes": {
+    "hq_svc": {
+      "action": "Install the HQ-SVC experimental dependency set, restore HQ-SVC assets, set AUTOVOICE_HQSVC_FULL=1, and rerun the CUDA validation on hardware.",
+      "full_enabled": false,
+      "missing_dependencies": [
+        "fairseq"
+      ],
+      "owner": "model-runtime",
+      "reason": "HQ-SVC is experimental and disabled unless AUTOVOICE_HQSVC_FULL=1 and optional dependencies are present.",
+      "status": "gated",
+      "support_boundary": "experimental:hq_svc"
+    },
+    "realtime_meanvc": {
+      "action": "Run scripts/prepare_meanvc_assets.py in the canonical autovoice-thor environment, set AUTOVOICE_MEANVC_FULL=1, then rerun scripts/validate_cuda_stack.sh --pipeline realtime_meanvc.",
+      "missing_assets": [],
+      "owner": "model-runtime",
+      "reason": "MeanVC performance is experimental and disabled unless AUTOVOICE_MEANVC_FULL=1 is set.",
+      "status": "gated",
+      "support_boundary": "experimental:meanvc"
+    }
+  },
+  "pipeline": "all",
+  "schema_version": 1
+}

@@ -1,0 +1,114 @@
+{
+  "generated_at": "2026-04-28T17:40:11.040815+00:00",
+  "provenance": {
+    "schema_version": 1,
+    "generator": "auto_voice.evaluation.benchmark_reporting.build_benchmark_dashboard",
+    "git_sha": "f0d37ef01f2accd031cc134b84ea8e00501a82e2",
+    "source_bundles": [
+      "reports/benchmarks/latest/comprehensive_report.json"
+    ]
+  },
+  "target_hardware": "NVIDIA Thor",
+  "canonical_pipelines": {
+    "offline": "quality_seedvc",
+    "live": "realtime"
+  },
+  "pipelines": {
+    "realtime": {
+      "title": "Realtime Karaoke",
+      "sample_count": 1,
+      "fixture_tier": "quality",
+      "fixture_suite": "completion-real-benchmark",
+      "summary": {
+        "sample_count": {
+          "value": 1.0,
+          "target_status": "n/a",
+          "applicable": true
+        },
+        "speaker_similarity_mean": {
+          "value": 0.9075297713279724,
+          "target_status": "pass",
+          "applicable": true,
+          "basis": "converted_output_vs_target_reference"
+        },
+        "pitch_corr_mean": {
+          "value": 2.650839252602718e-15,
+          "target_status": "n/a",
+          "applicable": false,
+          "basis": "informational_converted_output_vs_source_performance"
+        },
+        "mcd_mean": {
+          "value": 0.0,
+          "target_status": "n/a",
+          "applicable": false,
+          "basis": "not_applicable_without_aligned_same_content_target"
+        },
+        "latency_ms_mean": {
+          "value": 2069.545503007248,
+          "target_status": "n/a",
+          "applicable": true
+        },
+        "rtf_mean": {
+          "value": 0.025275313334229093,
+          "target_status": "n/a",
+          "applicable": true
+        },
+        "vram_mb_peak": {
+          "value": 555.4443359375,
+          "target_status": "n/a",
+          "applicable": true
+        }
+      },
+      "source_bundle": "reports/benchmarks/latest/comprehensive_report.json"
+    },
+    "quality_seedvc": {
+      "title": "Quality (Seed-VC DiT-CFM)",
+      "sample_count": 1,
+      "fixture_tier": "quality",
+      "fixture_suite": "completion-real-benchmark",
+      "summary": {
+        "sample_count": {
+          "value": 1.0,
+          "target_status": "n/a",
+          "applicable": true
+        },
+        "speaker_similarity_mean": {
+          "value": 0.9765360355377197,
+          "target_status": "pass",
+          "applicable": true,
+          "basis": "converted_output_vs_target_reference"
+        },
+        "pitch_corr_mean": {
+          "value": 0.7119920979762036,
+          "target_status": "n/a",
+          "applicable": false,
+          "basis": "informational_converted_output_vs_source_performance"
+        },
+        "mcd_mean": {
+          "value": 0.0,
+          "target_status": "n/a",
+          "applicable": false,
+          "basis": "not_applicable_without_aligned_same_content_target"
+        },
+        "latency_ms_mean": {
+          "value": 0.0,
+          "target_status": "n/a",
+          "applicable": true
+        },
+        "rtf_mean": {
+          "value": 0.26520745797703665,
+          "target_status": "n/a",
+          "applicable": true
+        },
+        "vram_mb_peak": {
+          "value": 3112.14599609375,
+          "target_status": "n/a",
+          "applicable": true
+        }
+      },
+      "source_bundle": "reports/benchmarks/latest/comprehensive_report.json"
+    }
+  },
+  "comparisons": {},
+  "promotable_candidates": []
+}

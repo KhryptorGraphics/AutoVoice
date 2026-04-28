@@ -1,0 +1,218 @@
+{
+  "cuda": {
+    "compute_capability": "11.0",
+    "cuda_available": true,
+    "cuda_version": "13.0",
+    "device_name": "NVIDIA Thor",
+    "error": null,
+    "memory_free_gb": 9.33,
+    "memory_total_gb": 122.82,
+    "ok": true,
+    "torch_version": "2.10.0+cu130"
+  },
+  "dependencies": [
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "torch",
+      "name": "torch",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "2.10.0+cu130"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "torchaudio",
+      "name": "torchaudio",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "2.10.0+cu130"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "librosa",
+      "name": "librosa",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "0.10.2"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "soundfile",
+      "name": "soundfile",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "0.12.1"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "transformers",
+      "name": "transformers",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "4.57.6"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "demucs",
+      "name": "demucs",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "4.0.1"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "flask",
+      "name": "flask",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "3.1.2"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "flask_socketio",
+      "name": "flask_socketio",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": null
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "flask_swagger_ui",
+      "name": "flask_swagger_ui",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": null
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "sqlalchemy",
+      "name": "sqlalchemy",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "2.0.46"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "pynvml",
+      "name": "pynvml",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "11.5.3"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "pyworld",
+      "name": "pyworld",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "0.3.5"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "pystoi",
+      "name": "pystoi",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "0.4.1"
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "pesq",
+      "name": "pesq",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": null
+    },
+    {
+      "action": "Install the HQ-SVC experimental dependency set and rerun with AUTOVOICE_HQSVC_FULL=1 on CUDA hardware.",
+      "error": "ModuleNotFoundError: No module named 'fairseq'",
+      "import_path": "fairseq",
+      "name": "fairseq",
+      "ok": false,
+      "owner": "model-runtime",
+      "required": false,
+      "support_boundary": "experimental:hq_svc",
+      "version": null
+    },
+    {
+      "action": "Install the HQ-SVC experimental dependency set before enabling AUTOVOICE_HQSVC_FULL=1.",
+      "error": null,
+      "import_path": "local_attention",
+      "name": "local_attention",
+      "ok": true,
+      "owner": "model-runtime",
+      "required": false,
+      "support_boundary": "experimental:hq_svc",
+      "version": null
+    },
+    {
+      "action": "Install the runtime dependency in the canonical AutoVoice environment.",
+      "error": null,
+      "import_path": "tensorrt",
+      "name": "tensorrt",
+      "ok": true,
+      "owner": "backend-runtime",
+      "required": true,
+      "support_boundary": "supported",
+      "version": "10.13.3.9"
+    }
+  ],
+  "failed_optional": [
+    "fairseq"
+  ],
+  "failed_required": [],
+  "ok": true,
+  "python": {
+    "conda_default_env": "base",
+    "executable": "/home/kp/anaconda3/envs/autovoice-thor/bin/python3.12",
+    "expected_env_name": "autovoice-thor",
+    "expected_env_prefix": "/home/kp/anaconda3/envs/autovoice-thor",
+    "expected_executable": "/home/kp/anaconda3/envs/autovoice-thor/bin/python",
+    "inferred_env_name": "autovoice-thor",
+    "matches_expected_env": true,
+    "matches_expected_executable": true,
+    "version": "3.12.12"
+  }
+}

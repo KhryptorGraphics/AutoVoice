@@ -1,0 +1,111 @@
+{
+  "generated_at": "2026-04-28T17:45:48.548041+00:00",
+  "base_url": "http://127.0.0.1:10600",
+  "compose": {
+    "ok": true,
+    "skipped": true
+  },
+  "repo_boundaries": {
+    "repo_root": "/home/kp/thordrive/autovoice",
+    "forbidden_prefixes": [
+      "node_modules/",
+      "reports/",
+      "output/reports/"
+    ],
+    "violation_count": 0,
+    "violations": [],
+    "ok": true
+  },
+  "expected_git_sha": "f0d37ef01f2accd031cc134b84ea8e00501a82e2",
+  "evidence_files": {
+    "paths": {
+      "benchmark_dashboard": "/home/kp/thordrive/autovoice/reports/benchmarks/20260428-f0d37ef01f2a/benchmark_dashboard.json",
+      "release_evidence": "/home/kp/thordrive/autovoice/reports/benchmarks/20260428-f0d37ef01f2a/release_evidence.json"
+    },
+    "ok": true,
+    "error": null,
+    "expected_git_sha": "f0d37ef01f2accd031cc134b84ea8e00501a82e2",
+    "dashboard_generated_at": "2026-04-28T17:42:17.370426+00:00",
+    "release_generated_at": "2026-04-28T17:42:17.370426+00:00",
+    "dashboard_provenance": {
+      "schema_version": 1,
+      "generator": "auto_voice.evaluation.benchmark_reporting.build_benchmark_dashboard",
+      "git_sha": "f0d37ef01f2accd031cc134b84ea8e00501a82e2",
+      "source_bundles": [
+        "/home/kp/thordrive/autovoice/reports/benchmarks/20260428T174009Z-f0d37ef01f2a/comprehensive_report.json"
+      ]
+    },
+    "release_provenance": {
+      "schema_version": 1,
+      "generator": "auto_voice.evaluation.benchmark_reporting.build_benchmark_dashboard",
+      "git_sha": "f0d37ef01f2accd031cc134b84ea8e00501a82e2",
+      "source_bundles": [
+        "/home/kp/thordrive/autovoice/reports/benchmarks/20260428T174009Z-f0d37ef01f2a/comprehensive_report.json"
+      ]
+    }
+  },
+  "checks": [
+    {
+      "url": "http://127.0.0.1:10600/api/v1/health",
+      "ok": true,
+      "payload": {
+        "components": {
+          "api": {
+            "status": "up"
+          },
+          "job_manager": {
+            "status": "up"
+          },
+          "singing_pipeline": {
+            "status": "up"
+          },
+          "torch": {
+            "cuda": true,
+            "device": "NVIDIA Thor",
+            "status": "up",
+            "version": "2.10.0+cu130"
+          },
+          "voice_cloner": {
+            "status": "up"
+          }
+        },
+        "cuda_kernels_available": false,
+        "status": "healthy",
+        "timestamp": "2026-04-28T17:45:48Z",
+        "uptime": 63142.87245631218,
+        "version": "0.1.0"
+      },
+      "error": null
+    },
+    {
+      "url": "http://127.0.0.1:10600/ready",
+      "ok": true,
+      "payload": {
+        "components": {
+          "singing_pipeline": true,
+          "torch": true,
+          "voice_cloner": true
+        },
+        "ready": true,
+        "timestamp": "2026-04-28T17:45:48Z"
+      },
+      "error": null
+    },
+    {
+      "url": "http://127.0.0.1:10600/api/v1/metrics",
+      "ok": true,
+      "payload": {
+        "avg_audio_duration_s": 0.0,
+        "avg_latency_ms": 0.0,
+        "conversions_by_preset": {},
+        "failed_conversions": 0,
+        "gpu_utilization": 0.0,
+        "successful_conversions": 0,
+        "total_audio_minutes": 0.0,
+        "total_conversions": 0,
+        "total_errors": 0
+      },
+      "error": null
+    }
+  ]
+}
