@@ -7,7 +7,9 @@ import time
 import uuid
 from typing import Optional
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
+
+from .security import canonical_youtube_url, require_media_consent
 
 
 def _root():
@@ -64,9 +66,14 @@ def save_youtube_history():
         if not data:
             return root.validation_error_response('No JSON data provided')
 
+        try:
+            url = canonical_youtube_url(data.get('url')) if data.get('url') else None
+        except ValueError as exc:
+            return root.validation_error_response(str(exc))
+
         history_item = {
             'id': data.get('id') or f"{int(time.time())}-{uuid.uuid4().hex[:8]}",
-            'url': data.get('url'),
+            'url': url,
             'title': data.get('title'),
             'mainArtist': data.get('mainArtist'),
             'featuredArtists': data.get('featuredArtists', []),
@@ -117,9 +124,10 @@ def youtube_info():
     if not data or 'url' not in data:
         return root.validation_error_response('Missing required field: url')
 
-    url = data['url']
-    if not url.strip():
-        return root.validation_error_response('URL cannot be empty')
+    try:
+        url = canonical_youtube_url(data['url'])
+    except ValueError as exc:
+        return root.validation_error_response(str(exc))
 
     try:
         downloader = root.get_youtube_downloader()
@@ -152,9 +160,13 @@ def youtube_download():
     if not data or 'url' not in data:
         return root.validation_error_response('Missing required field: url')
 
-    url = data['url']
-    if not url.strip():
-        return root.validation_error_response('URL cannot be empty')
+    try:
+        require_media_consent(data, current_app)
+        url = canonical_youtube_url(data['url'])
+    except PermissionError as exc:
+        return root.validation_error_response(str(exc))
+    except ValueError as exc:
+        return root.validation_error_response(str(exc))
 
     audio_format = data.get('format', 'wav')
     if audio_format not in ['wav', 'mp3', 'flac']:

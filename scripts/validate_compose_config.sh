@@ -8,5 +8,6 @@ cd "$PROJECT_DIR"
 
 export SECRET_KEY="${SECRET_KEY:-compose-config-validation-secret}"
 export GRAFANA_PASSWORD="${GRAFANA_PASSWORD:-compose-config-validation-grafana-password}"
+export CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:3000,http://localhost:10001}"
 
 docker compose -f docker-compose.yaml config -q

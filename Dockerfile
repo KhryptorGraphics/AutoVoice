@@ -83,9 +83,9 @@ ENV PYTHONPATH=/app/src \
 # Expose ports
 EXPOSE 5000
 
-# Health check (liveness probe)
+# Health check (readiness probe)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:5000/api/v1/health || exit 1
+    CMD curl -f http://localhost:5000/ready || exit 1
 
 # Graceful shutdown timeout
 STOPSIGNAL SIGTERM

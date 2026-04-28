@@ -7,7 +7,13 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
+
+from .security import (
+    resolve_server_audio_path,
+    safe_upload_filename,
+    strict_path_sandbox_enabled,
+)
 
 _deps: Dict[str, Any] = {}
 
@@ -26,6 +32,15 @@ def register_diarization_routes(api_bp: Blueprint, **deps: Any) -> None:
 
 def _dep(name: str) -> Any:
     return _deps[name]
+
+
+def _upload_folder() -> str | None:
+    try:
+        from . import api as api_root
+
+        return getattr(api_root, 'UPLOAD_FOLDER', None)
+    except Exception:
+        return None
 
 
 _diarization_results: Dict[str, Dict[str, Any]] = {}
@@ -221,20 +236,28 @@ def diarize_audio():
 
         if 'file' in request.files or 'audio' in request.files:
             file = request.files.get('file') or request.files.get('audio')
-            if not file.filename:
-                return _dep('validation_error_response')('No file selected')
-            if not _dep('allowed_file')(file.filename):
-                return _dep('validation_error_response')('Invalid file type')
+            try:
+                filename = safe_upload_filename(file.filename)
+            except ValueError as exc:
+                return _dep('validation_error_response')(str(exc))
 
             import tempfile
             temp_dir = tempfile.mkdtemp()
-            audio_path = os.path.join(temp_dir, file.filename)
+            audio_path = os.path.join(temp_dir, filename)
             file.save(audio_path)
         elif request.is_json:
             data = request.get_json()
-            audio_path = data.get('audio_path')
-            if not audio_path or not os.path.exists(audio_path):
+            try:
+                audio_path = str(resolve_server_audio_path(
+                    data.get('audio_path'),
+                    data_dir=current_app.config.get('DATA_DIR', 'data'),
+                    upload_folder=_upload_folder(),
+                    strict=strict_path_sandbox_enabled(current_app),
+                ))
+            except FileNotFoundError:
                 return _dep('validation_error_response')('audio_path not found')
+            except (PermissionError, ValueError) as exc:
+                return _dep('validation_error_response')(str(exc))
         else:
             return _dep('validation_error_response')('Provide file upload or audio_path')
 
@@ -354,9 +377,17 @@ def set_profile_speaker_embedding(profile_id: str):
                 return _dep('validation_error_response')('No training samples to compute embedding from')
             audio_path = samples[0].vocals_path
         elif 'audio_path' in data:
-            audio_path = data['audio_path']
-            if not os.path.exists(audio_path):
+            try:
+                audio_path = str(resolve_server_audio_path(
+                    data['audio_path'],
+                    data_dir=current_app.config.get('DATA_DIR', 'data'),
+                    upload_folder=_upload_folder(),
+                    strict=strict_path_sandbox_enabled(current_app),
+                ))
+            except FileNotFoundError:
                 return _dep('validation_error_response')('Audio file not found')
+            except (PermissionError, ValueError) as exc:
+                return _dep('validation_error_response')(str(exc))
         else:
             return _dep('validation_error_response')('Provide audio_path or set use_samples=true')
 

@@ -35,6 +35,19 @@ def test_platform_scripts_have_valid_bash_syntax():
         assert result.returncode == 0, result.stderr
 
 
+def test_dependency_contract_script_passes():
+    result = subprocess.run(
+        [sys.executable, "scripts/check_dependency_contract.py"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["ok"] is True
+
+
 def test_common_env_prefers_canonical_python_over_stale_python():
     command = (
         "export PYTHON=/tmp/not-autovoice-python; "

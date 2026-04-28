@@ -1,8 +1,22 @@
 """AutoVoice package setup with optional CUDA kernel compilation."""
 import os
 import sys
+from pathlib import Path
 from setuptools import setup, find_packages
 from setuptools.command.build_ext import build_ext
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _read_requirements(path: str) -> list[str]:
+    requirements: list[str] = []
+    for raw_line in (PROJECT_ROOT / path).read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#') or line.startswith('-r '):
+            continue
+        requirements.append(line)
+    return requirements
 
 # Attempt CUDA extension build
 cuda_extensions = []
@@ -51,23 +65,7 @@ setup(
     packages=find_packages(where='src'),
     ext_modules=cuda_extensions,
     cmdclass=cmdclass,
-    install_requires=[
-        'torch>=2.0',
-        'torchaudio>=2.0',
-        'numpy>=1.24',
-        'scipy>=1.10',
-        'librosa>=0.10',
-        'soundfile>=0.12',
-        'flask>=3.0',
-        'flask-socketio>=5.3',
-        'flask-swagger-ui>=4.11',
-        'pyyaml>=6.0',
-        'apispec>=6.0',
-        'apispec-webframeworks>=1.0',
-        'marshmallow>=3.0',
-        'memkraft>=0.1.0',
-        'prometheus_client>=0.19',
-    ],
+    install_requires=_read_requirements('requirements-runtime.txt'),
     extras_require={
         'dev': [
             'pytest>=7.0',

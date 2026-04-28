@@ -1,0 +1,20 @@
+groups:
+  - name: autovoice.release-readiness
+    rules:
+      - alert: AutoVoiceTargetDown
+        expr: up{job="autovoice"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AutoVoice metrics target is down"
+          description: "Prometheus cannot scrape the AutoVoice backend."
+
+      - alert: AutoVoiceHighHttpErrorRate
+        expr: sum(rate(autovoice_requests_total{status_code=~"5.."}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AutoVoice backend is returning 5xx responses"
+          description: "Investigate backend logs with the X-Request-ID value."

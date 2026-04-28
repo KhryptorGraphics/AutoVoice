@@ -260,6 +260,77 @@ def test_validate_benchmark_dashboard_script_round_trip(tmp_path):
     assert payload["ok"] is True
 
 
+def test_validate_benchmark_dashboard_rejects_tmp_source_and_sha_drift(tmp_path):
+    reports_dir = tmp_path / "reports" / "benchmarks" / "latest"
+    reports_dir.mkdir(parents=True)
+    suite_path = tmp_path / "benchmark_suites.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "canonical_pipelines": {"offline": "quality_seedvc", "live": "realtime"},
+                "required_pipelines": ["quality_seedvc", "realtime"],
+                "minimum_sample_count": 1,
+                "required_metrics": {
+                    "quality_seedvc": ["speaker_similarity_mean", "pitch_corr_mean", "mcd_mean", "latency_ms_mean"],
+                    "realtime": ["speaker_similarity_mean", "pitch_corr_mean", "mcd_mean", "latency_ms_mean"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = write_benchmark_dashboard(
+        {
+            "quality_seedvc": {
+                "title": "quality_seedvc",
+                "source_bundle": "/tmp/pytest-stale/quality_seedvc.json",
+                "summary": {
+                    "sample_count": 1,
+                    "speaker_similarity_mean": 0.91,
+                    "pitch_corr_mean": 0.93,
+                    "mcd_mean": 4.1,
+                    "latency_ms_mean": 120.0,
+                },
+            },
+            "realtime": {
+                "title": "realtime",
+                "summary": {
+                    "sample_count": 1,
+                    "speaker_similarity_mean": 0.87,
+                    "pitch_corr_mean": 0.91,
+                    "mcd_mean": 4.5,
+                    "latency_ms_mean": 42.0,
+                },
+            },
+        },
+        reports_dir,
+    )
+
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "validate_benchmark_dashboard.py"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+            "--dashboard",
+            result["dashboard_path"],
+            "--release-evidence",
+            result["release_evidence_path"],
+            "--suite-config",
+            str(suite_path),
+            "--expected-git-sha",
+            "not-current",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    payload = json.loads(completed.stdout)
+    assert payload["ok"] is False
+    assert any("git_sha" in error for error in payload["errors"])
+    assert any("/tmp" in error for error in payload["errors"])
+
+
 def test_validate_benchmark_dashboard_reports_missing_files_as_json(tmp_path):
     suite_path = tmp_path / "benchmark_suites.json"
     suite_path.write_text(

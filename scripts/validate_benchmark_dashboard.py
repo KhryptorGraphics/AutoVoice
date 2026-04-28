@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -12,11 +14,59 @@ def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _current_git_sha() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def _looks_like_tmp_path(value: object) -> bool:
+    if not value:
+        return False
+    try:
+        path = Path(str(value)).expanduser()
+    except TypeError:
+        return False
+    return path.is_absolute() and path.parts[:2] == ("/", "tmp")
+
+
+def _source_bundle_paths(dashboard: dict, release_evidence: dict) -> list[str]:
+    paths: list[str] = []
+    for pipeline in dashboard.get("pipelines", {}).values():
+        if isinstance(pipeline, dict) and pipeline.get("source_bundle"):
+            paths.append(str(pipeline["source_bundle"]))
+    provenance = release_evidence.get("provenance", {}) or {}
+    paths.extend(str(path) for path in provenance.get("source_bundles", []) or [])
+    return sorted(set(paths))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dashboard", type=Path, default=Path("reports/benchmarks/latest/benchmark_dashboard.json"))
     parser.add_argument("--release-evidence", type=Path, default=Path("reports/benchmarks/latest/release_evidence.json"))
     parser.add_argument("--suite-config", type=Path, default=Path("config/benchmark_suites.json"))
+    parser.add_argument(
+        "--expected-git-sha",
+        default=os.environ.get("GITHUB_SHA"),
+        help="Expected provenance git SHA. Defaults to GITHUB_SHA when set.",
+    )
+    parser.add_argument(
+        "--current-git-sha",
+        action="store_true",
+        help="Require benchmark provenance to match the current repository HEAD.",
+    )
+    parser.add_argument(
+        "--release-grade",
+        action="store_true",
+        help="Reject smoke-only fixture evidence and temporary source bundles.",
+    )
     args = parser.parse_args(argv)
 
     errors: list[str] = []
@@ -100,10 +150,34 @@ def main(argv: list[str] | None = None) -> int:
         if not tiers.intersection(required_fixture_tiers):
             errors.append("release evidence fixture_tiers do not include a required tier")
 
+    expected_sha = args.expected_git_sha
+    if args.current_git_sha:
+        expected_sha = _current_git_sha()
+        if not expected_sha:
+            errors.append("unable to resolve current git HEAD for provenance validation")
+    if expected_sha:
+        dashboard_sha = (dashboard.get("provenance", {}) or {}).get("git_sha")
+        release_sha = (release_evidence.get("provenance", {}) or {}).get("git_sha")
+        if dashboard_sha != expected_sha:
+            errors.append(f"dashboard provenance git_sha {dashboard_sha!r} does not match {expected_sha!r}")
+        if release_sha != expected_sha:
+            errors.append(f"release evidence provenance git_sha {release_sha!r} does not match {expected_sha!r}")
+
+    tmp_sources = [path for path in _source_bundle_paths(dashboard, release_evidence) if _looks_like_tmp_path(path)]
+    if tmp_sources:
+        errors.append(f"benchmark source bundles must not come from /tmp: {tmp_sources}")
+
+    if args.release_grade:
+        tiers = set(str(name) for name in release_evidence.get("fixture_tiers", []))
+        if not tiers or tiers == {"smoke"} or "quality" not in tiers and "full" not in tiers:
+            errors.append("release-grade benchmark evidence requires quality or full fixture tiers")
+
     report = {
         "suite_config": str(args.suite_config),
         "dashboard": str(args.dashboard),
         "release_evidence": str(args.release_evidence),
+        "expected_git_sha": expected_sha,
+        "release_grade": args.release_grade,
         "ok": not errors,
         "errors": errors,
     }

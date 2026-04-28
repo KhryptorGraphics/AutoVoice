@@ -120,6 +120,8 @@ jobs:
           bundles = {
               "quality_seedvc": {
                   "title": "quality_seedvc",
+                  "fixture_tier": "smoke",
+                  "fixture_suite": "ci-smoke",
                   "summary": {
                       "sample_count": 1,
                       "speaker_similarity_mean": 0.91,
@@ -130,6 +132,8 @@ jobs:
               },
               "realtime": {
                   "title": "realtime",
+                  "fixture_tier": "smoke",
+                  "fixture_suite": "ci-smoke",
                   "summary": {
                       "sample_count": 1,
                       "speaker_similarity_mean": 0.87,
@@ -140,6 +144,8 @@ jobs:
               },
               "hq_svc": {
                   "title": "hq_svc",
+                  "fixture_tier": "smoke",
+                  "fixture_suite": "ci-smoke",
                   "summary": {
                       "sample_count": 1,
                       "speaker_similarity_mean": 0.95,
@@ -162,7 +168,7 @@ jobs:
             --output-dir reports/benchmarks/latest
 
       - name: Validate benchmark dashboard artifacts
-        run: python scripts/validate_benchmark_dashboard.py
+        run: python scripts/validate_benchmark_dashboard.py --current-git-sha
 
       - name: Validate experimental evidence registry
         run: python scripts/validate_experimental_evidence.py

@@ -383,16 +383,29 @@ def run_benchmark_evidence(report_dir: Path, *, timeout: int) -> list[LaneResult
     for pipeline, path in bundle_paths.items():
         bundle_args.extend(["--bundle", f"{pipeline}={path}"])
 
-    dashboard_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
+    dashboard_dir = _benchmark_archive_dir(report_dir)
     build = _run_command(
         "benchmark-dashboard-build",
         [sys.executable, "scripts/build_benchmark_dashboard.py", *bundle_args, "--output-dir", str(dashboard_dir)],
         report_dir=report_dir,
         timeout=timeout,
     )
+    publish = _publish_latest_benchmark_evidence(dashboard_dir) if build.ok else LaneResult(
+        "benchmark-dashboard-publish-latest",
+        "skipped",
+        details={"reason": "benchmark dashboard build failed"},
+    )
     validate_dashboard = _run_command(
         "benchmark-dashboard-validate",
-        [sys.executable, "scripts/validate_benchmark_dashboard.py"],
+        [
+            sys.executable,
+            "scripts/validate_benchmark_dashboard.py",
+            "--dashboard",
+            str(dashboard_dir / "benchmark_dashboard.json"),
+            "--release-evidence",
+            str(dashboard_dir / "release_evidence.json"),
+            "--current-git-sha",
+        ],
         report_dir=report_dir,
         timeout=timeout,
     )
@@ -402,11 +415,11 @@ def run_benchmark_evidence(report_dir: Path, *, timeout: int) -> list[LaneResult
         report_dir=report_dir,
         timeout=timeout,
     )
-    return [build, validate_dashboard, validate_experimental]
+    return [build, publish, validate_dashboard, validate_experimental]
 
 
 def run_benchmark_evidence_from_report(report_dir: Path, *, timeout: int, benchmark_report: Path) -> list[LaneResult]:
-    dashboard_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
+    dashboard_dir = _benchmark_archive_dir(report_dir)
     build = _run_command(
         "benchmark-dashboard-build-real",
         [
@@ -424,9 +437,23 @@ def run_benchmark_evidence_from_report(report_dir: Path, *, timeout: int, benchm
         report_dir=report_dir,
         timeout=timeout,
     )
+    publish = _publish_latest_benchmark_evidence(dashboard_dir) if build.ok else LaneResult(
+        "benchmark-dashboard-publish-latest",
+        "skipped",
+        details={"reason": "benchmark dashboard build failed"},
+    )
     validate_dashboard = _run_command(
         "benchmark-dashboard-validate",
-        [sys.executable, "scripts/validate_benchmark_dashboard.py"],
+        [
+            sys.executable,
+            "scripts/validate_benchmark_dashboard.py",
+            "--dashboard",
+            str(dashboard_dir / "benchmark_dashboard.json"),
+            "--release-evidence",
+            str(dashboard_dir / "release_evidence.json"),
+            "--current-git-sha",
+            "--release-grade",
+        ],
         report_dir=report_dir,
         timeout=timeout,
     )
@@ -436,7 +463,7 @@ def run_benchmark_evidence_from_report(report_dir: Path, *, timeout: int, benchm
         report_dir=report_dir,
         timeout=timeout,
     )
-    return [build, validate_dashboard, validate_experimental]
+    return [build, publish, validate_dashboard, validate_experimental]
 
 
 def run_hosted_preflight(report_dir: Path, *, timeout: int, full: bool) -> LaneResult:
@@ -740,6 +767,42 @@ def _git_sha() -> str | None:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True).strip()
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def _benchmark_archive_dir(report_dir: Path) -> Path:
+    git_sha = (_git_sha() or "unknown")[:12]
+    date_stamp = _now().strftime("%Y%m%d")
+    archive_dir = PROJECT_ROOT / "reports" / "benchmarks" / f"{date_stamp}-{git_sha}"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    return archive_dir
+
+
+def _publish_latest_benchmark_evidence(archive_dir: Path) -> LaneResult:
+    started = time.time()
+    latest_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
+    try:
+        latest_dir.mkdir(parents=True, exist_ok=True)
+        artifacts: dict[str, str] = {}
+        for name in ("benchmark_dashboard.json", "release_evidence.json", "benchmark_dashboard.md"):
+            source = archive_dir / name
+            if source.exists():
+                dest = latest_dir / name
+                shutil.copy2(source, dest)
+                artifacts[name] = str(dest)
+        return LaneResult(
+            "benchmark-dashboard-publish-latest",
+            "pass",
+            duration_seconds=round(time.time() - started, 3),
+            artifacts=artifacts,
+            details={"archive_dir": str(archive_dir), "latest_dir": str(latest_dir)},
+        )
+    except Exception as exc:
+        return LaneResult(
+            "benchmark-dashboard-publish-latest",
+            "fail",
+            duration_seconds=round(time.time() - started, 3),
+            details={"archive_dir": str(archive_dir), "error": str(exc)},
+        )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

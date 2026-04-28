@@ -265,7 +265,7 @@ def _quality_metrics(downloads: list[dict[str, Any]], conversion_status: dict[st
 
 def _copy_evidence(output_dir: Path) -> dict[str, str]:
     copied: dict[str, str] = {}
-    for name in ("benchmark_dashboard.json", "release_evidence.json", "report.md"):
+    for name in ("benchmark_dashboard.json", "release_evidence.json", "benchmark_dashboard.md"):
         source = PROJECT_ROOT / "reports/benchmarks/latest" / name
         if not source.exists():
             continue

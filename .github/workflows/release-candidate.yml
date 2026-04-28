@@ -41,6 +41,8 @@ jobs:
           bundles = {
               "quality_seedvc": {
                   "title": "quality_seedvc",
+                  "fixture_tier": "quality",
+                  "fixture_suite": "rc-quality",
                   "summary": {
                       "sample_count": 1,
                       "speaker_similarity_mean": 0.91,
@@ -51,6 +53,8 @@ jobs:
               },
               "realtime": {
                   "title": "realtime",
+                  "fixture_tier": "quality",
+                  "fixture_suite": "rc-quality",
                   "summary": {
                       "sample_count": 1,
                       "speaker_similarity_mean": 0.87,
@@ -61,6 +65,8 @@ jobs:
               },
               "hq_svc": {
                   "title": "hq_svc",
+                  "fixture_tier": "quality",
+                  "fixture_suite": "rc-quality",
                   "summary": {
                       "sample_count": 1,
                       "speaker_similarity_mean": 0.95,
@@ -89,7 +95,7 @@ jobs:
         run: python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --report-dir reports/platform --wait-seconds 180
 
       - name: Validate benchmark dashboard contract
-        run: python scripts/validate_benchmark_dashboard.py
+        run: python scripts/validate_benchmark_dashboard.py --current-git-sha --release-grade
 
       - name: Validate experimental evidence registry
         run: python scripts/validate_experimental_evidence.py

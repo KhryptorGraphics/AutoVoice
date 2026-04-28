@@ -13,6 +13,12 @@ from typing import Any, Callable, Dict, Optional
 from flask import Blueprint, current_app, jsonify, request
 from werkzeug.utils import secure_filename
 
+from .security import (
+    require_media_consent,
+    resolve_server_audio_path,
+    strict_path_sandbox_enabled,
+)
+
 _deps: Dict[str, Any] = {}
 
 
@@ -121,6 +127,18 @@ def clone_voice():
 
     user_id = request.form.get('user_id')
     name = request.form.get('name')
+    try:
+        require_media_consent(
+            {
+                'consent_confirmed': request.form.get('consent_confirmed') in ('1', 'true', 'True', 'yes', 'on'),
+                'source_media_policy_confirmed': request.form.get('source_media_policy_confirmed') in (
+                    '1', 'true', 'True', 'yes', 'on'
+                ),
+            },
+            current_app,
+        )
+    except PermissionError as exc:
+        return _dep('validation_error_response')(str(exc))
 
     tmp_file = None
     try:
@@ -671,11 +689,22 @@ def add_sample_from_path(profile_id: str):
         audio_path = data.get('audio_path')
         skip_separation = data.get('skip_separation', False)
 
-        if not audio_path:
-            return _dep('validation_error_response')('audio_path is required')
-
-        if not os.path.exists(audio_path):
+        try:
+            require_media_consent(data, current_app)
+            resolved_audio_path = resolve_server_audio_path(
+                audio_path,
+                data_dir=current_app.config.get('DATA_DIR', 'data'),
+                upload_folder=_dep('upload_folder'),
+                strict=strict_path_sandbox_enabled(current_app),
+            )
+        except FileNotFoundError:
             return _dep('not_found_response')(f'File not found: {audio_path}')
+        except PermissionError as exc:
+            return _dep('validation_error_response')(str(exc))
+        except ValueError as exc:
+            return _dep('validation_error_response')(str(exc))
+
+        audio_path = str(resolved_audio_path)
 
         filename = os.path.basename(audio_path)
         base_name = os.path.splitext(filename)[0]

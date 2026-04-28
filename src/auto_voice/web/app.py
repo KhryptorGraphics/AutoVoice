@@ -7,12 +7,17 @@ import threading
 import time
 from typing import Optional, Dict, Any, Tuple
 
-from flask import Flask, request, g
+from flask import Flask, current_app, request, g
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.exceptions import HTTPException
 
 from auto_voice.config.secrets import SecretsManager
 from auto_voice.web.persistence import AppStateStore
+from auto_voice.web.security import (
+    init_production_security,
+    require_socketio_authorization,
+    socketio_cors_allowed_origins,
+)
 from auto_voice.storage.paths import resolve_profiles_dir, resolve_samples_dir
 
 logger = logging.getLogger(__name__)
@@ -39,6 +44,9 @@ def register_default_socket_handlers(socketio: SocketIO) -> None:
 
     @socketio.on('join_job')
     def handle_join_job(payload: Optional[Dict[str, Any]]) -> None:
+        if not require_socketio_authorization(current_app, payload):
+            emit('job_subscription_error', {'message': 'authentication required'})
+            return
         job_id = str((payload or {}).get('job_id') or '').strip()
         if not job_id:
             emit('job_subscription_error', {'message': 'job_id is required'})
@@ -143,6 +151,8 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
         _release_tracked_request(app)
         return response
 
+    init_production_security(app)
+
     @app.errorhandler(HTTPException)
     def handle_http_exception(error: HTTPException):
         """Return JSON for uncaught HTTP errors while preserving status codes."""
@@ -196,7 +206,7 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
     # Use threading mode in testing to avoid eventlet dependency
     # Check both testing parameter and config TESTING flag for SocketIO mode
     async_mode = 'threading' if (testing is True or app.config.get('TESTING', False)) else 'eventlet'
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode=async_mode)
+    socketio = SocketIO(app, cors_allowed_origins=socketio_cors_allowed_origins(app), async_mode=async_mode)
     app.socketio = socketio
 
     # Register API blueprints
