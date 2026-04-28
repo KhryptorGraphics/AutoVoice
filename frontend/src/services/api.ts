@@ -1,6 +1,35 @@
 import { io, Socket } from 'socket.io-client'
 
-const API_BASE = '/api/v1'
+const API_BASE = import.meta.env.VITE_API_URL || '/api/v1'
+export const API_TOKEN_STORAGE_KEY = 'autovoice_api_token'
+
+export function getApiAuthToken(): string | null {
+  const envToken = import.meta.env.VITE_AUTOVOICE_API_TOKEN || import.meta.env.VITE_API_TOKEN
+  if (typeof envToken === 'string' && envToken.trim()) {
+    return envToken.trim()
+  }
+  if (typeof window === 'undefined') {
+    return null
+  }
+  return window.localStorage.getItem(API_TOKEN_STORAGE_KEY)?.trim() || null
+}
+
+export function apiAuthHeaders(headers?: HeadersInit): Headers {
+  const nextHeaders = new Headers(headers)
+  const token = getApiAuthToken()
+  if (token && !nextHeaders.has('Authorization')) {
+    nextHeaders.set('Authorization', `Bearer ${token}`)
+  }
+  return nextHeaders
+}
+
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const headers = apiAuthHeaders(init.headers)
+  if (!(init.body instanceof FormData) && init.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+  return fetch(input, { ...init, headers })
+}
 
 // WebSocket event types
 export type WSEventType =
@@ -337,7 +366,13 @@ export interface BenchmarkDashboard {
 
 export interface ReleaseEvidence {
   generated_at: string
-  quality_gate_passed: boolean
+  quality_gate_passed?: boolean
+  ready?: boolean
+  ready_for_release?: boolean
+  status?: string
+  git_sha?: string | null
+  git_sha_short?: string | null
+  output_dir?: string
   target_hardware?: string
   canonical_pipelines?: BenchmarkDashboard['canonical_pipelines']
   pipeline_count?: number
@@ -345,6 +380,28 @@ export interface ReleaseEvidence {
   promotable_candidates?: string[]
   fixture_tiers?: string[]
   provenance?: BenchmarkDashboard['provenance']
+  health_url?: string
+  quality_failures?: Array<Record<string, unknown>>
+  blockers?: Array<string | Record<string, unknown>>
+  artifacts?: Record<string, string>
+  executed_lanes?: string[]
+  lane_results?: Array<{
+    name?: string
+    lane?: string
+    status?: string
+    ok?: boolean
+    details?: Record<string, unknown>
+    artifacts?: Record<string, string>
+    command?: string[]
+    stderr?: string
+  }>
+  preflight_checks?: Array<{
+    name?: string
+    ok?: boolean
+    skipped?: boolean
+    stderr?: string
+    stdout?: string
+  }>
 }
 
 export interface TrainingTelemetryResponse {
@@ -944,8 +1001,7 @@ export class ConversionError extends ApiError {
 
 class ApiService {
   private async request<T>(path: string, options?: RequestInit): Promise<T> {
-    const response = await fetch(`${API_BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
+    const response = await apiFetch(`${API_BASE}${path}`, {
       ...options,
     })
     if (!response.ok) {
@@ -1069,7 +1125,7 @@ class ApiService {
     if (name) formData.append('name', name)
     if (userId) formData.append('user_id', userId)
 
-    const response = await fetch(`${API_BASE}/voice/clone`, {
+    const response = await apiFetch(`${API_BASE}/voice/clone`, {
       method: 'POST',
       body: formData,
     })
@@ -1161,9 +1217,8 @@ class ApiService {
     jobId: string,
     payload?: { profile_id?: string; sample_id?: string; duration_seconds?: number; offset_seconds?: number }
   ): Promise<Blob> {
-    const response = await fetch(`${API_BASE}/training/preview/${jobId}`, {
+    const response = await apiFetch(`${API_BASE}/training/preview/${jobId}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload ?? {}),
     })
 
@@ -1220,7 +1275,7 @@ class ApiService {
     if (settings?.adapter_type) formData.append('adapter_type', settings.adapter_type)
     if (settings?.return_stems != null) formData.append('return_stems', String(settings.return_stems))
 
-    const response = await fetch(`${API_BASE}/convert/song`, {
+    const response = await apiFetch(`${API_BASE}/convert/song`, {
       method: 'POST',
       body: formData,
     })
@@ -1259,7 +1314,7 @@ class ApiService {
       formData.append('dominant_source_profile_id', options.dominant_source_profile_id)
     }
 
-    const response = await fetch(`${API_BASE}/convert/workflows`, {
+    const response = await apiFetch(`${API_BASE}/convert/workflows`, {
       method: 'POST',
       body: formData,
     })
@@ -1325,7 +1380,7 @@ class ApiService {
   }
 
   async downloadResult(jobId: string): Promise<Blob> {
-    const response = await fetch(`${API_BASE}/convert/download/${jobId}`)
+    const response = await apiFetch(`${API_BASE}/convert/download/${jobId}`)
     if (!response.ok) throw new Error(`Download failed: ${response.status}`)
     return response.blob()
   }
@@ -1334,13 +1389,13 @@ class ApiService {
     jobId: string,
     variant: 'mix' | 'vocals' | 'instrumental'
   ): Promise<Blob> {
-    const response = await fetch(`${API_BASE}/convert/download/${jobId}?variant=${variant}`)
+    const response = await apiFetch(`${API_BASE}/convert/download/${jobId}?variant=${variant}`)
     if (!response.ok) throw new Error(`Download failed: ${response.status}`)
     return response.blob()
   }
 
   async reassembleConversion(jobId: string): Promise<Blob> {
-    const response = await fetch(`${API_BASE}/convert/reassemble/${jobId}`)
+    const response = await apiFetch(`${API_BASE}/convert/reassemble/${jobId}`)
     if (!response.ok) throw new Error(`Reassembly failed: ${response.status}`)
     return response.blob()
   }
@@ -1351,7 +1406,7 @@ class ApiService {
     formData.append('audio', audioFile)
     if (metadata) formData.append('metadata', JSON.stringify(metadata))
 
-    const response = await fetch(`${API_BASE}/profiles/${profileId}/samples`, {
+    const response = await apiFetch(`${API_BASE}/profiles/${profileId}/samples`, {
       method: 'POST',
       body: formData,
     })
@@ -1419,6 +1474,10 @@ class ApiService {
       })
 
       xhr.open('POST', `${API_BASE}/profiles/${profileId}/songs`)
+      const token = getApiAuthToken()
+      if (token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      }
       xhr.send(formData)
     })
   }
@@ -1587,7 +1646,7 @@ class ApiService {
       formData.append('num_speakers', numSpeakers.toString())
     }
 
-    const response = await fetch(`${API_BASE}/audio/diarize`, {
+    const response = await apiFetch(`${API_BASE}/audio/diarize`, {
       method: 'POST',
       body: formData,
     })
@@ -1882,6 +1941,7 @@ class WebSocketManager {
     this.socket = io(window.location.origin, {
       path: '/socket.io',
       transports: ['websocket'],
+      auth: getApiAuthToken() ? { token: getApiAuthToken() } : undefined,
     })
 
     this.socket.on('connect', () => {

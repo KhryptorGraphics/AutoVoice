@@ -79,11 +79,11 @@ def _build_report_provenance(
     *,
     generator: str,
 ) -> Dict[str, Any]:
-    source_bundles = sorted(
+    source_bundles = sorted({
         str(payload.get("source_bundle"))
         for payload in bundles.values()
         if payload.get("source_bundle")
-    )
+    })
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "generator": generator,
@@ -198,6 +198,17 @@ def build_release_evidence(
         for metric_name, metric_data in pipeline.get("summary", {}).items()
         if metric_data.get("target_status") == "fail"
     ]
+    metric_exemptions = [
+        {
+            "pipeline": pipeline_name,
+            "metric": metric_name,
+            "value": metric_data.get("value"),
+            "basis": metric_data.get("basis"),
+        }
+        for pipeline_name, pipeline in pipelines.items()
+        for metric_name, metric_data in pipeline.get("summary", {}).items()
+        if metric_data.get("applicable") is False
+    ]
     return {
         "generated_at": dashboard.get("generated_at"),
         "provenance": dashboard.get("provenance", {}),
@@ -211,6 +222,7 @@ def build_release_evidence(
             str(pipeline.get("fixture_tier", "unspecified"))
             for pipeline in pipelines.values()
         }),
+        "metric_exemptions": metric_exemptions,
         "quality_gate_passed": not quality_failures,
         "quality_failures": quality_failures,
     }

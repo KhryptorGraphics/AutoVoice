@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import time
+from importlib.util import find_spec
 from typing import Callable, Dict, List, Optional, Union
 
 import numpy as np
@@ -31,6 +32,20 @@ HQ_SVC_ROOT = os.path.abspath(HQ_SVC_ROOT)
 # Minimum input duration (500ms at 16kHz = 8000 samples)
 # RMVPE F0 extraction needs ~500ms minimum for reliable pitch tracking
 MIN_DURATION_SAMPLES_16K = 8000
+
+HQ_SVC_EXPERIMENTAL_DEPENDENCIES = {
+    "fairseq": "fairseq",
+    "local_attention": "local_attention",
+}
+
+
+def missing_hq_svc_experimental_dependencies() -> List[str]:
+    """Return optional dependencies required by the experimental HQ-SVC lane."""
+    missing = []
+    for name, import_path in HQ_SVC_EXPERIMENTAL_DEPENDENCIES.items():
+        if find_spec(import_path) is None:
+            missing.append(name)
+    return missing
 
 
 class HQSVCWrapper:
@@ -151,6 +166,16 @@ class HQSVCWrapper:
         Raises:
             RuntimeError: If model weights not found or loading fails
         """
+        missing_deps = missing_hq_svc_experimental_dependencies()
+        if missing_deps:
+            raise RuntimeError(
+                "HQ-SVC is an experimental lane and is not part of the supported "
+                "runtime dependency contract. Missing optional dependencies: "
+                f"{', '.join(missing_deps)}. Install the HQ-SVC experimental "
+                "dependency set, set AUTOVOICE_HQSVC_FULL=1, and rerun on CUDA "
+                "hardware to exercise this lane."
+            )
+
         from utils.models.models_v2_beta import load_hq_svc
         from utils.vocoder import Vocoder
         from utils.data_preprocessing import (

@@ -86,6 +86,14 @@ def test_default_dependencies_make_tensorrt_optional_by_default():
     assert tensorrt.required is False
 
 
+def test_default_dependencies_mark_fairseq_as_experimental_hqsvc():
+    fairseq = next(dep for dep in default_dependencies() if dep.name == "fairseq")
+    assert fairseq.required is False
+    assert fairseq.support_boundary == "experimental:hq_svc"
+    assert fairseq.owner == "model-runtime"
+    assert "AUTOVOICE_HQSVC_FULL=1" in fairseq.action
+
+
 def test_default_dependencies_can_require_tensorrt():
     tensorrt = next(
         dep for dep in default_dependencies(require_tensorrt=True) if dep.name == "tensorrt"

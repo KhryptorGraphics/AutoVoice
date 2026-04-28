@@ -24,6 +24,9 @@ class DependencySpec:
     required: bool = True
     version_attr: str = "__version__"
     probe: Optional[Callable[[Any], None]] = None
+    support_boundary: str = "supported"
+    owner: str = "backend-runtime"
+    action: str = "Install the runtime dependency in the canonical AutoVoice environment."
 
 
 def _probe_pyworld(module: Any) -> None:
@@ -56,7 +59,28 @@ def default_dependencies(require_tensorrt: bool = False) -> List[DependencySpec]
         DependencySpec("pyworld", "pyworld", probe=_probe_pyworld),
         DependencySpec("pystoi", "pystoi"),
         DependencySpec("pesq", "pesq"),
-        DependencySpec("local_attention", "local_attention", required=False),
+        DependencySpec(
+            "fairseq",
+            "fairseq",
+            required=False,
+            support_boundary="experimental:hq_svc",
+            owner="model-runtime",
+            action=(
+                "Install the HQ-SVC experimental dependency set and rerun with "
+                "AUTOVOICE_HQSVC_FULL=1 on CUDA hardware."
+            ),
+        ),
+        DependencySpec(
+            "local_attention",
+            "local_attention",
+            required=False,
+            support_boundary="experimental:hq_svc",
+            owner="model-runtime",
+            action=(
+                "Install the HQ-SVC experimental dependency set before enabling "
+                "AUTOVOICE_HQSVC_FULL=1."
+            ),
+        ),
         DependencySpec(
             "tensorrt",
             "tensorrt",
@@ -163,6 +187,9 @@ def check_dependency(spec: DependencySpec) -> Dict[str, Any]:
             "name": spec.name,
             "import_path": spec.import_path,
             "required": spec.required,
+            "support_boundary": spec.support_boundary,
+            "owner": spec.owner,
+            "action": spec.action,
             "ok": True,
             "version": version,
             "error": None,
@@ -172,6 +199,9 @@ def check_dependency(spec: DependencySpec) -> Dict[str, Any]:
             "name": spec.name,
             "import_path": spec.import_path,
             "required": spec.required,
+            "support_boundary": spec.support_boundary,
+            "owner": spec.owner,
+            "action": spec.action,
             "ok": False,
             "version": None,
             "error": f"{type(exc).__name__}: {exc}",
@@ -282,7 +312,11 @@ def format_audit(audit: Dict[str, Any]) -> str:
         status = "OK" if item["ok"] else "FAIL"
         required = "required" if item["required"] else "optional"
         detail = item["version"] or item["error"] or ""
-        lines.append(f"  [{status}] {item['name']} ({required}) {detail}".rstrip())
+        boundary = item.get("support_boundary", "supported")
+        suffix = f" [{boundary}]"
+        if not item["required"] and not item["ok"]:
+            suffix += f" owner={item.get('owner', 'unassigned')} action={item.get('action', '')}"
+        lines.append(f"  [{status}] {item['name']} ({required}) {detail}{suffix}".rstrip())
 
     lines.extend(
         [

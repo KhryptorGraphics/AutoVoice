@@ -12,6 +12,7 @@ from auto_voice.web.security import (
     redact_public_paths,
     resolve_server_audio_path,
     socketio_cors_allowed_origins,
+    validate_api_token_configuration,
 )
 
 
@@ -38,6 +39,60 @@ def test_public_mode_rejects_wildcard_socketio_cors(monkeypatch):
 
     with pytest.raises(RuntimeError, match="CORS_ORIGINS='\\*'"):
         socketio_cors_allowed_origins(app)
+
+
+def test_public_mode_rejects_placeholder_api_token(monkeypatch):
+    monkeypatch.setenv("AUTOVOICE_PUBLIC_DEPLOYMENT", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "changeme")
+    app = Flask(__name__)
+
+    with pytest.raises(RuntimeError, match="non-placeholder AUTOVOICE_API_TOKEN"):
+        validate_api_token_configuration(app)
+
+
+def test_public_mode_ignores_query_token_and_sets_explicit_cors(monkeypatch):
+    monkeypatch.setenv("AUTOVOICE_PUBLIC_DEPLOYMENT", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    monkeypatch.setenv("CORS_ORIGINS", "https://ops.example.test")
+    app, _ = create_app(config={"TESTING": True}, testing=True)
+    client = app.test_client()
+
+    query_token = client.get(
+        "/api/v1/system/info?api_token=unit-token",
+        headers={"Origin": "https://ops.example.test"},
+    )
+    header_token = client.get(
+        "/api/v1/system/info",
+        headers={
+            "Authorization": "Bearer unit-token",
+            "Origin": "https://ops.example.test",
+        },
+    )
+    options = client.options(
+        "/api/v1/system/info",
+        headers={"Origin": "https://ops.example.test"},
+    )
+
+    assert query_token.status_code == 401
+    assert header_token.status_code == 200
+    assert header_token.headers["Access-Control-Allow-Origin"] == "https://ops.example.test"
+    assert "Authorization" in options.headers["Access-Control-Allow-Headers"]
+
+
+def test_api_rate_limit_uses_authenticated_bucket(monkeypatch):
+    monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    monkeypatch.setenv("AUTOVOICE_ENABLE_RATE_LIMIT", "true")
+    monkeypatch.setenv("RATE_LIMIT", "1")
+    app, _ = create_app(config={"TESTING": True}, testing=True)
+    client = app.test_client()
+    headers = {"Authorization": "Bearer unit-token"}
+
+    first = client.get("/api/v1/system/info", headers=headers)
+    second = client.get("/api/v1/system/info", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 429
 
 
 def test_strict_audio_path_sandbox_rejects_unmanaged_files(tmp_path):

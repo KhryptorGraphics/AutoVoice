@@ -18,10 +18,11 @@ import json
 import os
 import tempfile
 from unittest.mock import MagicMock, patch
-import wave
 
 import numpy as np
 import pytest
+
+from tests.fixtures.audio import voiced_wav_io
 
 
 @pytest.fixture
@@ -65,15 +66,8 @@ def client(app_with_profiles):
 
 @pytest.fixture
 def audio_file():
-    """Create a minimal WAV file for upload."""
-    buffer = io.BytesIO()
-    with wave.open(buffer, 'wb') as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(22050)
-        wav.writeframes(b'\x00' * 22050 * 2)  # 1 second
-    buffer.seek(0)
-    return buffer
+    """Create a deterministic voiced WAV file for upload."""
+    return voiced_wav_io(duration_seconds=1.0, sample_rate=22050)
 
 
 def _save_profile(store, profile_id: str, *, trained: bool = True) -> None:

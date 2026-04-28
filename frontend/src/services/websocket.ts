@@ -1,4 +1,5 @@
 import { io, Socket } from 'socket.io-client'
+import { getApiAuthToken } from './api'
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'http://localhost:5000'
 
@@ -93,6 +94,7 @@ class WebSocketService {
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
         reconnectionAttempts: this.maxReconnectAttempts,
+        auth: getApiAuthToken() ? { token: getApiAuthToken() } : undefined,
       })
 
       this.socket.on('connect', () => {
@@ -244,7 +246,7 @@ class WebSocketService {
     }
 
     // Join using roomId (which might differ from jobId)
-    this.socket.emit('join_job', { job_id: roomId })
+    this.socket.emit('join_job', { job_id: roomId, token: getApiAuthToken() ?? undefined })
 
     // Wait for confirmation
     return new Promise<void>((resolve) => {
@@ -302,4 +304,3 @@ class WebSocketService {
 }
 
 export const wsService = new WebSocketService()
-

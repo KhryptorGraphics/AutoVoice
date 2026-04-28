@@ -260,6 +260,17 @@ class TestHQSVCWrapperInitialization:
             with pytest.raises(RuntimeError, match="Config file not found"):
                 wrapper._load_config('/fake/config.yaml')
 
+    @patch('auto_voice.inference.hq_svc_wrapper.missing_hq_svc_experimental_dependencies')
+    def test_init_models_fails_with_explicit_experimental_dependency_gate(self, mock_missing):
+        """HQ-SVC fails before upstream imports when optional deps are absent."""
+        mock_missing.return_value = ["fairseq"]
+
+        from auto_voice.inference.hq_svc_wrapper import HQSVCWrapper
+
+        wrapper = object.__new__(HQSVCWrapper)
+        with pytest.raises(RuntimeError, match="HQ-SVC is an experimental lane.*fairseq"):
+            wrapper._init_models()
+
     def test_load_config_sets_defaults(self, mock_config):
         """Test that config loading sets default values."""
         # Mock the logger.utils module
@@ -287,8 +298,10 @@ class TestHQSVCWrapperInitialization:
             assert args.vocoder == 'nsf-hifigan'
             assert args.device == 'cpu'
 
-    def test_init_models_missing_weights(self):
+    @patch('auto_voice.inference.hq_svc_wrapper.missing_hq_svc_experimental_dependencies')
+    def test_init_models_missing_weights(self, mock_missing):
         """Test model initialization with missing weights."""
+        mock_missing.return_value = []
         # Mock HQ-SVC modules
         mock_utils = MagicMock()
         mock_utils.vocoder = MagicMock()

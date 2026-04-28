@@ -8,18 +8,13 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from tests.fixtures.audio import write_voiced_wav
 from auto_voice.storage.voice_profiles import VoiceProfileStore
 
 
-def _write_wav(path: Path, frames: int = 1600) -> None:
-    """Create a minimal mono WAV file for storage tests."""
-    import wave
-
-    with wave.open(str(path), "w") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(16000)
-        wav_file.writeframes(b"\x00" * frames)
+def _write_wav(path: Path, duration_seconds: float = 1.0) -> None:
+    """Create a valid voiced mono WAV file for storage tests."""
+    write_voiced_wav(path, duration_seconds=duration_seconds, sample_rate=16000)
 
 
 @pytest.fixture
@@ -182,7 +177,7 @@ def test_create_profile_from_diarization_adds_metadata_and_segments(
 ):
     """Diarization profile creation should persist metadata and import valid segments."""
     segment = tmp_path / "segment.wav"
-    _write_wav(segment)
+    _write_wav(segment, duration_seconds=2.0)
 
     with patch("scipy.io.wavfile.read", return_value=(16000, np.zeros(32000, dtype=np.int16))):
         profile_id = temp_store.create_profile_from_diarization(

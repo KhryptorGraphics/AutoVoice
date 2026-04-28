@@ -52,6 +52,7 @@ The setup flow writes its outputs under `reports/platform/` by default:
 
 - `jetson-dependency-audit.txt`
 - `dependency-audit.json`
+- `hardware-lane-gates.json`
 - `all-latency-report.md`
 
 You can rerun the validation independently:
@@ -146,6 +147,20 @@ Use the default smoke mode for local development when frontend browser tooling,
 Docker, public DNS/TLS, or Jetson TensorRT hardware are intentionally
 unavailable. Smoke mode still writes `reports/completion/latest/completion_matrix.json`
 and records unavailable lanes explicitly instead of hiding them.
+
+HQ-SVC is not part of the supported production dependency contract because its
+upstream runtime requires `fairseq` and related optional packages. The CUDA
+validation lane records that support boundary in `hardware-lane-gates.json`; to
+exercise it intentionally, install the HQ-SVC experimental dependency set,
+restore the HQ-SVC assets, set `AUTOVOICE_HQSVC_FULL=1`, and rerun the hardware
+validation on CUDA.
+
+MeanVC remains an experimental live lane. `scripts/validate_cuda_stack.sh --pipeline all`
+runs it only when its runtime assets are present and `AUTOVOICE_MEANVC_FULL=1`
+is set; otherwise it emits an explicit `realtime_meanvc` gate with
+`owner=model-runtime` and the action to run `scripts/prepare_meanvc_assets.py`
+and opt into the full MeanVC lane instead of failing supported hardware lanes
+with an unexplained environment error.
 
 Post-release public production monitoring is handled by
 `.github/workflows/production-monitoring.yml`. It runs a nightly health smoke

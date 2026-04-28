@@ -86,6 +86,10 @@ class BenchmarkResult:
     speaker_similarity: float = 0.0
     output_sample_rate: int = 0
     error: Optional[str] = None
+    status: str = "completed"
+    skip_reason: Optional[str] = None
+    owner: Optional[str] = None
+    action: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -152,9 +156,81 @@ PIPELINE_CONFIGS = {
     ),
 }
 
+EXPERIMENTAL_HARDWARE_GATES = {
+    "realtime_meanvc": {
+        "owner": "model-runtime",
+        "action": (
+            "Run scripts/prepare_meanvc_assets.py in the canonical autovoice-thor "
+            "environment, set AUTOVOICE_MEANVC_FULL=1, then rerun "
+            "scripts/validate_cuda_stack.sh --pipeline realtime_meanvc."
+        ),
+        "support_boundary": "experimental:meanvc",
+    },
+}
+
+MEANVC_REQUIRED_ASSETS = (
+    PROJECT_ROOT / "models" / "meanvc" / "src" / "ckpt" / "fastu2++.pt",
+    PROJECT_ROOT / "models" / "meanvc" / "src" / "ckpt" / "meanvc_200ms.pt",
+    PROJECT_ROOT / "models" / "meanvc" / "src" / "ckpt" / "vocos.pt",
+    PROJECT_ROOT
+    / "models"
+    / "meanvc"
+    / "src"
+    / "runtime"
+    / "speaker_verification"
+    / "ckpt"
+    / "wavlm_large_finetune.pth",
+)
+
+
+def experimental_skip_gate(pipeline_type: str) -> Optional[Dict[str, Any]]:
+    """Return skip metadata when an experimental hardware lane is not runnable."""
+    if pipeline_type != "realtime_meanvc":
+        return None
+
+    gate = dict(EXPERIMENTAL_HARDWARE_GATES[pipeline_type])
+    if os.environ.get("AUTOVOICE_MEANVC_FULL") != "1":
+        gate.update(
+            {
+                "reason": (
+                    "MeanVC performance is experimental and disabled unless "
+                    "AUTOVOICE_MEANVC_FULL=1 is set."
+                ),
+                "missing_assets": [],
+            }
+        )
+        return gate
+
+    missing_assets = [str(path) for path in MEANVC_REQUIRED_ASSETS if not path.exists()]
+    if not missing_assets:
+        return None
+
+    gate.update(
+        {
+            "reason": "MeanVC runtime assets are missing.",
+            "missing_assets": missing_assets,
+        }
+    )
+    return gate
+
 
 def evaluate_result(result: BenchmarkResult, config: PipelineConfig) -> Dict[str, Any]:
     """Evaluate benchmark result against the pipeline-specific production gate."""
+    if result.status == "skipped":
+        return {
+            "rtf_ok": True,
+            "latency_ok": True,
+            "memory_ok": True,
+            "mcd_ok": True,
+            "mcd_gated": config.gate_mcd,
+            "target_met": True,
+            "status": "SKIP",
+            "skipped": True,
+            "owner": result.owner,
+            "action": result.action,
+            "reason": result.skip_reason,
+        }
+
     rtf_ok = result.rtf <= config.target_rtf
     latency_ok = result.latency_ms <= config.target_latency_ms if result.latency_ms > 0 else True
     mem_ok = result.gpu_memory_peak_gb <= config.target_memory_gb
@@ -168,6 +244,7 @@ def evaluate_result(result: BenchmarkResult, config: PipelineConfig) -> Dict[str
         "mcd_gated": config.gate_mcd,
         "target_met": target_met,
         "status": "PASS" if target_met else "FAIL",
+        "skipped": False,
     }
 
 
@@ -307,11 +384,13 @@ class BenchmarkRunner:
         warmup_runs: int = 1,
         timed_runs: int = 3,
         verbose: bool = True,
+        allow_experimental_skips: bool = False,
     ):
         self.device = device
         self.warmup_runs = warmup_runs
         self.timed_runs = timed_runs
         self.verbose = verbose
+        self.allow_experimental_skips = allow_experimental_skips
         self.metrics = MetricsCollector(device)
         self._factory = None
 
@@ -374,6 +453,26 @@ class BenchmarkRunner:
         config = PIPELINE_CONFIGS.get(pipeline_type)
         if not config:
             raise ValueError(f"Unknown pipeline type: {pipeline_type}")
+
+        if self.allow_experimental_skips:
+            skip_gate = experimental_skip_gate(pipeline_type)
+            if skip_gate:
+                return BenchmarkResult(
+                    pipeline_name=config.name,
+                    pipeline_type=pipeline_type,
+                    audio_duration_sec=0.0,
+                    processing_time_sec=0.0,
+                    rtf=0.0,
+                    output_sample_rate=config.output_sample_rate,
+                    status="skipped",
+                    skip_reason=str(skip_gate["reason"]),
+                    owner=str(skip_gate["owner"]),
+                    action=str(skip_gate["action"]),
+                    metadata={
+                        "support_boundary": skip_gate["support_boundary"],
+                        "missing_assets": skip_gate["missing_assets"],
+                    },
+                )
 
         if self.verbose:
             print(f"\n{'=' * 60}")
@@ -671,6 +770,14 @@ class ReportGenerator:
                 "",
             ])
 
+            if r.status == "skipped":
+                lines.extend([
+                    f"- **SKIPPED:** {r.skip_reason}",
+                    f"- **Owner:** {r.owner}",
+                    f"- **Action:** {r.action}",
+                    "",
+                ])
+
             if r.error:
                 lines.append(f"- **ERROR:** {r.error}")
                 lines.append("")
@@ -806,6 +913,11 @@ def main():
         action='store_true',
         help='Quiet mode (less output)'
     )
+    parser.add_argument(
+        '--allow-experimental-skips',
+        action='store_true',
+        help='Report blocked experimental hardware lanes as explicit skips with owner/action evidence.'
+    )
 
     args = parser.parse_args()
 
@@ -832,6 +944,7 @@ def main():
         warmup_runs=args.warmup,
         timed_runs=args.runs,
         verbose=not args.quiet,
+        allow_experimental_skips=args.allow_experimental_skips,
     )
 
     # Run benchmarks
@@ -883,6 +996,10 @@ def main():
         status = 'ERROR' if r.error else gate['status']
         print(f"\n  {r.pipeline_name}:")
         print(f"    Status: {status}")
+        if r.status == "skipped":
+            print(f"    Skip Reason: {r.skip_reason}")
+            print(f"    Owner: {r.owner}")
+            print(f"    Action: {r.action}")
         print(f"    RTF: {r.rtf:.3f} (target: <{config.target_rtf})")
         print(f"    Latency: {r.latency_ms:.1f}ms (target: <{config.target_latency_ms}ms)")
         print(f"    Memory: {r.gpu_memory_peak_gb:.2f}GB")

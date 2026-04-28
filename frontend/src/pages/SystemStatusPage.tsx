@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, BarChart3, CheckCircle2, Package, RefreshCw, SlidersHorizontal, XCircle, Zap } from 'lucide-react'
+import { Activity, AlertTriangle, BarChart3, CheckCircle2, Package, RefreshCw, SlidersHorizontal, XCircle, Zap } from 'lucide-react'
 import clsx from 'clsx'
 
 import { AudioDeviceSelector } from '../components/AudioDeviceSelector'
@@ -352,7 +352,32 @@ function BenchmarkEvidencePanel({
   const comparisons = dashboard?.comparisons ?? {}
   const generatedAt = releaseEvidence?.generated_at ?? dashboard?.generated_at
   const freshness = generatedAt ? evidenceFreshness(generatedAt) : null
-  const qualityPassed = Boolean(releaseEvidence?.quality_gate_passed)
+  const releaseReady = releaseEvidence?.ready_for_release ?? releaseEvidence?.ready
+  const qualityPassed = releaseEvidence?.quality_gate_passed ?? Boolean(releaseReady)
+  const laneResults = releaseEvidence?.lane_results ?? []
+  const failedLanes = laneResults.filter((lane) => lane.status === 'failed' || lane.ok === false)
+  const skippedLanes = laneResults.filter((lane) => lane.status === 'skipped' || lane.details?.skipped === true)
+  const blockers = releaseEvidence?.blockers ?? []
+  const preflightChecks = releaseEvidence?.preflight_checks ?? []
+  const failedPreflightChecks = preflightChecks.filter((check) => check.ok === false && check.skipped !== true)
+  const artifactEntries = [
+    ...Object.entries(releaseEvidence?.artifacts ?? {}),
+    ['benchmark_dashboard', 'reports/benchmarks/latest/benchmark_dashboard.json'],
+    ['benchmark_release_evidence', 'reports/benchmarks/latest/release_evidence.json'],
+    ...(dashboard?.provenance?.source_bundles ?? []).map((bundle, index) => [`source_bundle_${index + 1}`, bundle] as [string, string]),
+  ].filter(([, value], index, entries) => value && entries.findIndex(([, candidate]) => candidate === value) === index)
+  const nextActions = buildEvidenceActions({
+    hasDashboard: Boolean(dashboard),
+    hasReleaseEvidence: Boolean(releaseEvidence),
+    blockers,
+    failedLanes,
+    skippedLanes,
+    failedPreflightChecks,
+    qualityPassed,
+  })
+  const statusLabel = releaseEvidence?.status
+    ?? (releaseReady === true ? 'go' : releaseReady === false ? 'blocked' : qualityPassed ? 'quality passed' : 'needs evidence')
+  const hardwareReady = failedPreflightChecks.length === 0 && (releaseReady === true || laneResults.some((lane) => lane.ok === true))
 
   return (
     <section className="rounded-xl border border-gray-800 bg-gray-900/80 p-6 shadow-lg" data-testid="benchmark-evidence-panel">
@@ -371,7 +396,7 @@ function BenchmarkEvidencePanel({
           qualityPassed ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'
         )}>
           {qualityPassed ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
-          {qualityPassed ? 'Quality gate passed' : 'Evidence missing or failing'}
+          {qualityPassed && releaseReady !== false ? 'Evidence ready' : 'Evidence missing or blocked'}
         </span>
       </div>
 
@@ -386,10 +411,54 @@ function BenchmarkEvidencePanel({
         <>
           <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-4">
             <DetailCard label="Generated" value={generatedAt ? new Date(generatedAt).toLocaleString() : 'Unknown'} detail={freshness ?? 'No timestamp'} />
-            <DetailCard label="Pipelines" value={String(releaseEvidence.pipeline_count ?? pipelines.length)} detail={`${releaseEvidence.comparison_count ?? Object.keys(comparisons).length} comparisons`} />
-            <DetailCard label="Fixture tiers" value={(releaseEvidence.fixture_tiers ?? ['unspecified']).join(', ')} detail={dashboard.target_hardware ?? 'Unknown hardware'} />
-            <DetailCard label="Promotable" value={String((releaseEvidence.promotable_candidates ?? []).length)} detail={(releaseEvidence.promotable_candidates ?? []).join(', ') || 'No candidates'} />
+            <DetailCard label="Release status" value={statusLabel} detail={releaseEvidence.git_sha_short ? `sha ${releaseEvidence.git_sha_short}` : 'No git SHA'} />
+            <DetailCard label="Hardware" value={hardwareReady ? 'Ready' : 'Needs validation'} detail={releaseEvidence.target_hardware ?? dashboard.target_hardware ?? 'Unknown hardware'} />
+            <DetailCard label="Lane issues" value={`${failedLanes.length} failed / ${skippedLanes.length} skipped`} detail={`${laneResults.length} lanes reported`} />
           </div>
+
+          {(blockers.length > 0 || failedPreflightChecks.length > 0) && (
+            <div className="mt-5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4" data-testid="evidence-blockers">
+              <div className="flex items-center gap-2 text-sm font-semibold text-amber-100">
+                <AlertTriangle className="h-4 w-4" />
+                Blocking evidence
+              </div>
+              <ul className="mt-3 space-y-2 text-sm text-amber-100/90">
+                {[...blockers.map(formatEvidenceItem), ...failedPreflightChecks.map((check) => `${check.name ?? 'preflight'} failed${check.stderr ? `: ${check.stderr}` : ''}`)].slice(0, 6).map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <EvidenceList
+              title="Failed and skipped lanes"
+              empty="No failed or skipped lanes reported."
+              items={[...failedLanes, ...skippedLanes].map((lane) => ({
+                key: lane.name ?? lane.lane ?? 'lane',
+                primary: lane.name ?? lane.lane ?? 'unnamed lane',
+                secondary: formatEvidenceItem(lane.details?.reason ?? lane.details?.action ?? lane.stderr ?? lane.status ?? (lane.ok === false ? 'failed' : 'skipped')),
+              }))}
+              testId="evidence-lane-list"
+            />
+            <EvidenceList
+              title="Artifact references"
+              empty="No artifact references reported."
+              items={artifactEntries.slice(0, 8).map(([name, value]) => ({
+                key: `${name}:${value}`,
+                primary: name,
+                secondary: value,
+              }))}
+              testId="evidence-artifact-list"
+            />
+          </div>
+
+          <EvidenceList
+            title="Next actions"
+            empty="No follow-up action required by the current evidence."
+            items={nextActions.map((action) => ({ key: action, primary: action }))}
+            testId="evidence-next-actions"
+          />
 
           <div className="mt-5 overflow-hidden rounded-lg border border-gray-800">
             <div className="grid grid-cols-5 bg-gray-950 px-4 py-2 text-xs font-medium uppercase tracking-wide text-gray-500">
@@ -418,6 +487,83 @@ function BenchmarkEvidencePanel({
       )}
     </section>
   )
+}
+
+function buildEvidenceActions({
+  hasDashboard,
+  hasReleaseEvidence,
+  blockers,
+  failedLanes,
+  skippedLanes,
+  failedPreflightChecks,
+  qualityPassed,
+}: {
+  hasDashboard: boolean
+  hasReleaseEvidence: boolean
+  blockers: Array<string | Record<string, unknown>>
+  failedLanes: NonNullable<ReleaseEvidence['lane_results']>
+  skippedLanes: NonNullable<ReleaseEvidence['lane_results']>
+  failedPreflightChecks: NonNullable<ReleaseEvidence['preflight_checks']>
+  qualityPassed: boolean
+}): string[] {
+  if (!hasDashboard || !hasReleaseEvidence) {
+    return ['Generate benchmark dashboard and release evidence before promotion.']
+  }
+  if (blockers.length > 0) {
+    return blockers.map(formatEvidenceItem)
+  }
+  if (failedPreflightChecks.length > 0) {
+    return failedPreflightChecks.map((check) => `Fix ${check.name ?? 'preflight'} and rerun hardware release evidence.`)
+  }
+  if (failedLanes.length > 0) {
+    return failedLanes.map((lane) => `Rerun or fix ${lane.name ?? lane.lane ?? 'failed lane'}.`)
+  }
+  if (skippedLanes.length > 0) {
+    return skippedLanes.map((lane) => formatEvidenceItem(lane.details?.action ?? `Run ${lane.name ?? lane.lane ?? 'skipped lane'} with required services or hardware.`))
+  }
+  if (!qualityPassed) {
+    return ['Investigate quality gate failures and rebuild benchmark evidence.']
+  }
+  return ['Evidence is ready for operator review.']
+}
+
+function EvidenceList({
+  title,
+  empty,
+  items,
+  testId,
+}: {
+  title: string
+  empty: string
+  items: Array<{ key: string; primary: string; secondary?: string }>
+  testId: string
+}) {
+  return (
+    <div className="mt-5 rounded-lg border border-gray-800 bg-gray-950/70 p-4" data-testid={testId}>
+      <h3 className="text-sm font-semibold text-white">{title}</h3>
+      {items.length === 0 ? (
+        <p className="mt-2 text-sm text-gray-500">{empty}</p>
+      ) : (
+        <div className="mt-3 space-y-3">
+          {items.map((item) => (
+            <div key={item.key} className="rounded-md border border-gray-800 bg-gray-900/70 p-3">
+              <div className="break-all text-sm font-medium text-gray-100">{item.primary}</div>
+              {item.secondary && <div className="mt-1 break-all text-xs text-gray-400">{item.secondary}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function formatEvidenceItem(item: unknown): string {
+  if (typeof item === 'string') return item
+  if (item && typeof item === 'object') {
+    const record = item as Record<string, unknown>
+    return String(record.details ?? record.reason ?? record.action ?? record.check ?? JSON.stringify(record))
+  }
+  return String(item ?? 'unknown')
 }
 
 function DetailCard({ label, value, detail }: { label: string; value: string; detail: string }) {

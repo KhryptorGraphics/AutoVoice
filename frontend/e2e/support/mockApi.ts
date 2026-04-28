@@ -33,13 +33,18 @@ type MockCommonApiOptions = {
   karaokeUploadError?: string
   streamingStartError?: string
   voiceCloneError?: string
+  apiToken?: string
 }
 
 export async function mockCommonApi(page: Page, options: MockCommonApiOptions = {}) {
-  await page.addInitScript(({ streamingStartError }) => {
+  await page.addInitScript(({ streamingStartError, apiToken }) => {
     const globalAny = globalThis as typeof globalThis & {
       __AUTOVOICE_TEST_STREAMING__?: Record<string, unknown>
       AudioContext?: typeof AudioContext
+    }
+
+    if (apiToken) {
+      window.localStorage.setItem('autovoice_api_token', apiToken)
     }
 
     globalAny.__AUTOVOICE_TEST_STREAMING__ = {
@@ -121,7 +126,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     }
 
     navigator.mediaDevices.getUserMedia = async () => new FakeMediaStream() as MediaStream
-  }, { streamingStartError: options.streamingStartError ?? null })
+  }, { streamingStartError: options.streamingStartError ?? null, apiToken: options.apiToken ?? null })
 
   const profiles = [
     {
@@ -230,6 +235,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   let checkpointRollbacks = 0
   let checkpointDeletes = 0
   let lastTrainingPayload: Record<string, unknown> | null = null
+  const authorizationHeaders: string[] = []
   const conversionRecords = [
     {
       id: 'history-1',
@@ -296,6 +302,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   ]
 
   await page.route('**/api/v1/health', async (route) => {
+    authorizationHeaders.push(route.request().headers().authorization ?? '')
     return jsonResponse(route, {
       status: 'healthy',
       version: '1.0.0',
@@ -308,6 +315,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   })
 
   await page.route('**/api/v1/system/info', async (route) => {
+    authorizationHeaders.push(route.request().headers().authorization ?? '')
     return jsonResponse(route, {
       system: {
         platform: 'Jetson Thor',
@@ -319,6 +327,72 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
         device_name: 'NVIDIA Thor',
         version: '2.6.0',
       },
+    })
+  })
+
+  await page.route('**/api/v1/reports/benchmarks/latest', async (route) => {
+    authorizationHeaders.push(route.request().headers().authorization ?? '')
+    return jsonResponse(route, {
+      generated_at: '2026-04-18T00:00:00Z',
+      target_hardware: 'NVIDIA Thor',
+      provenance: {
+        schema_version: 1,
+        generator: 'mock-benchmark-dashboard',
+        git_sha: 'abc123456789',
+        source_bundles: ['reports/benchmarks/run-1/summary.json'],
+      },
+      canonical_pipelines: {
+        offline: 'quality_seedvc',
+        live: 'realtime',
+      },
+      pipelines: {
+        realtime: {
+          title: 'Realtime',
+          sample_count: 3,
+          fixture_tier: 'smoke',
+          fixture_suite: 'operator-console',
+          summary: {
+            speaker_similarity_mean: { value: 0.91, target_status: 'pass' },
+          },
+          source_bundle: 'reports/benchmarks/run-1/summary.json',
+        },
+      },
+      comparisons: {},
+      promotable_candidates: [],
+    })
+  })
+
+  await page.route('**/api/v1/reports/release-evidence/latest', async (route) => {
+    authorizationHeaders.push(route.request().headers().authorization ?? '')
+    return jsonResponse(route, {
+      generated_at: '2026-04-18T00:00:00Z',
+      status: 'blocked',
+      ready_for_release: false,
+      quality_gate_passed: true,
+      target_hardware: 'NVIDIA Thor',
+      git_sha_short: 'abc123456789',
+      blockers: ['hardware validation lanes were not executed; rerun with --execute on Jetson'],
+      artifacts: {
+        completion_matrix: 'reports/completion/latest/completion_matrix.json',
+        decision: 'reports/release-evidence/latest/release_decision.json',
+      },
+      lane_results: [
+        {
+          name: 'jetson-cuda-tensorrt',
+          status: 'skipped',
+          details: {
+            reason: 'pass --hardware on Jetson/CUDA/TensorRT hosts',
+            action: 'Run the hardware lane on Jetson.',
+          },
+        },
+      ],
+      preflight_checks: [
+        {
+          name: 'tegrastats',
+          ok: false,
+          stderr: 'tegrastats timed out',
+        },
+      ],
     })
   })
 
@@ -1084,5 +1158,6 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     getCheckpointDeletes: () => checkpointDeletes,
     getCheckpointCount: () => checkpoints.length,
     getLastTrainingPayload: () => lastTrainingPayload,
+    getAuthorizationHeaders: () => authorizationHeaders,
   }
 }

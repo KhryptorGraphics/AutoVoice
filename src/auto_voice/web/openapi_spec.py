@@ -174,11 +174,15 @@ GPU-accelerated singing voice conversion and TTS system with real-time processin
 
 ## Authentication
 
-Currently no authentication required. Production deployments should add API key authentication.
+Local development may run without authentication. Hosted/public deployments must set `AUTOVOICE_PUBLIC_DEPLOYMENT=true`,
+`AUTOVOICE_API_TOKEN` to a non-placeholder token of at least 32 characters, and explicit `CORS_ORIGINS`.
+Authenticated clients should send `Authorization: Bearer <token>` on REST requests. The browser frontend reads the
+operator token from `localStorage.autovoice_api_token` or `VITE_AUTOVOICE_API_TOKEN` for smoke environments.
 
 ## Rate Limiting
 
-No rate limiting currently enforced. Production deployments should implement rate limiting.
+Public/authenticated mode enables per-token/IP request limiting by default. Configure `RATE_LIMIT` for requests per
+minute or set `AUTOVOICE_ENABLE_RATE_LIMIT=false` only for trusted local testing.
 
 ## WebSocket Support
 
@@ -201,6 +205,15 @@ Real-time progress updates available via Socket.IO:
             {"url": "http://localhost:10000", "description": "Production server"}
         ],
         plugins=[FlaskPlugin(), MarshmallowPlugin()],
+    )
+
+    spec.components.security_scheme(
+        "BearerAuth",
+        {"type": "http", "scheme": "bearer", "bearerFormat": "AUTOVOICE_API_TOKEN"},
+    )
+    spec.components.security_scheme(
+        "AutoVoiceApiKey",
+        {"type": "apiKey", "in": "header", "name": "X-AutoVoice-API-Key"},
     )
 
     # Register schemas

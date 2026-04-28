@@ -49,6 +49,20 @@ def test_openapi_json_documents_training_control_routes(docs_client):
     assert "/api/v1/training/preview/{job_id}" in paths
 
 
+def test_openapi_json_documents_public_auth_and_rate_limit_controls(docs_client):
+    response = docs_client.get("/api/v1/openapi.json")
+    payload = response.get_json()
+
+    description = payload["info"]["description"]
+    security_schemes = payload["components"]["securitySchemes"]
+
+    assert "AUTOVOICE_API_TOKEN" in description
+    assert "Authorization: Bearer" in description
+    assert "RATE_LIMIT" in description
+    assert security_schemes["BearerAuth"]["scheme"] == "bearer"
+    assert security_schemes["AutoVoiceApiKey"]["name"] == "X-AutoVoice-API-Key"
+
+
 def test_openapi_yaml_and_swagger_ui_are_exposed(docs_client):
     yaml_response = docs_client.get("/api/v1/openapi.yaml")
     assert yaml_response.status_code == 200

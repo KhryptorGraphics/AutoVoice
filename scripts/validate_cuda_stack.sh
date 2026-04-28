@@ -43,6 +43,7 @@ run_cmd() {
 
 AUDIT_PATH="$OUTPUT_DIR/dependency-audit.json"
 LATENCY_PATH="$OUTPUT_DIR/${PIPELINE}-latency-report.md"
+GATES_PATH="$OUTPUT_DIR/hardware-lane-gates.json"
 
 echo "=== AutoVoice CUDA Stack Validation ==="
 echo "Project: $AUTOVOICE_PROJECT_ROOT"
@@ -55,8 +56,17 @@ run_cmd "$PYTHON" "$SCRIPT_DIR/verify_dependencies.py" \
     --require-tensorrt \
     --output "$AUDIT_PATH"
 
+run_cmd "$PYTHON" "$SCRIPT_DIR/validate_hardware_lane_gates.py" \
+    --pipeline "$PIPELINE" \
+    --output "$GATES_PATH"
+
 if [[ "$PIPELINE" == "all" || "$PIPELINE" == "realtime_meanvc" ]]; then
-    run_cmd "$PYTHON" "$SCRIPT_DIR/prepare_meanvc_assets.py"
+    echo "+ $PYTHON $SCRIPT_DIR/prepare_meanvc_assets.py"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        if ! "$PYTHON" "$SCRIPT_DIR/prepare_meanvc_assets.py"; then
+            echo "MeanVC asset preparation failed; realtime_meanvc is experimental and will be gated if assets remain unavailable." >&2
+        fi
+    fi
 fi
 
 run_cmd "$PYTHON" "$SCRIPT_DIR/performance_validation.py" \
@@ -65,8 +75,10 @@ run_cmd "$PYTHON" "$SCRIPT_DIR/performance_validation.py" \
     --warmup 1 \
     --runs 1 \
     --quiet \
+    --allow-experimental-skips \
     --output "$LATENCY_PATH"
 
 echo "Validation artifacts:"
 echo "  - $AUDIT_PATH"
+echo "  - $GATES_PATH"
 echo "  - $LATENCY_PATH"

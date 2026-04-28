@@ -2,7 +2,7 @@
  * WebSocket audio streaming client for real-time voice conversion.
  */
 import { io, Socket } from 'socket.io-client';
-import type { ActiveModelType, LivePipelineType } from './api';
+import { getApiAuthToken, type ActiveModelType, type LivePipelineType } from './api';
 
 export interface StreamingStats {
   latencyMs: number;
@@ -113,6 +113,7 @@ export class AudioStreamingClient {
     return new Promise((resolve, reject) => {
       this.socket = io(`${this.serverUrl}/karaoke`, {
         path: '/socket.io',
+        auth: getApiAuthToken() ? { token: getApiAuthToken() } : undefined,
       });
 
       this.socket.on('connect', () => {

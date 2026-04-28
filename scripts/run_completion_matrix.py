@@ -48,6 +48,29 @@ REQUIRED_TRT_ENGINE_FILES = (
     "vocoder.trt",
 )
 
+SUPPORTED_REAL_AUDIO_E2E_LANES = (
+    (
+        "conversion-e2e",
+        ["tests/test_adapter_integration_e2e.py", "tests/test_e2e_pipeline.py"],
+    ),
+    (
+        "karaoke-websocket-e2e",
+        ["tests/test_karaoke_websocket_context.py", "tests/test_karaoke_websocket_events.py"],
+    ),
+    (
+        "voice-profile-diarization-e2e",
+        ["tests/test_e2e_diarization.py"],
+    ),
+    (
+        "voice-profile-training-e2e",
+        ["tests/test_voice_profile_training_e2e.py"],
+    ),
+    (
+        "benchmark-audio-e2e",
+        ["tests/test_quality_benchmarking_sota.py", "tests/evaluation/test_benchmark_manifest_reporting.py"],
+    ),
+)
+
 E2E_ENVIRONMENT_GATES = {
     "CUDA": {
         "lane": "jetson-cuda-tensorrt",
@@ -167,7 +190,13 @@ def _run_command(
     log_path = lane_dir / f"{name}.log"
 
     command_env = os.environ.copy()
-    command_env.setdefault("PYTHONPATH", str(SRC_DIR))
+    existing_pythonpath = command_env.get("PYTHONPATH", "")
+    pythonpath_entries = [str(PROJECT_ROOT), str(SRC_DIR)]
+    pythonpath_entries.extend(
+        entry for entry in existing_pythonpath.split(os.pathsep)
+        if entry and entry not in pythonpath_entries
+    )
+    command_env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
     command_env.setdefault("PYTHONNOUSERSITE", "1")
     command_env.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
     if env:
@@ -400,10 +429,10 @@ def run_benchmark_evidence(report_dir: Path, *, timeout: int, dashboard_dir: Pat
         report_dir=report_dir,
         timeout=timeout,
     )
-    publish = _publish_latest_benchmark_evidence(dashboard_dir) if build.ok else LaneResult(
+    publish = LaneResult(
         "benchmark-dashboard-publish-latest",
         "skipped",
-        details={"reason": "benchmark dashboard build failed"},
+        details={"reason": "smoke benchmark evidence is not release-grade; latest is only published from --benchmark-report"},
     )
     validate_dashboard = _run_command(
         "benchmark-dashboard-validate",
@@ -479,6 +508,21 @@ def run_benchmark_evidence_from_report(
         timeout=timeout,
     )
     return [build, publish, validate_dashboard, validate_experimental]
+
+
+def run_supported_real_audio_e2e_lanes(report_dir: Path, *, timeout: int) -> list[LaneResult]:
+    """Run the supported full-mode real-audio E2E lanes and keep per-lane logs."""
+    results: list[LaneResult] = []
+    for lane_name, test_files in SUPPORTED_REAL_AUDIO_E2E_LANES:
+        results.append(
+            _run_command(
+                lane_name,
+                [sys.executable, "-m", "pytest", *test_files, "-q", "--tb=short"],
+                report_dir=report_dir,
+                timeout=timeout,
+            )
+        )
+    return results
 
 
 def run_hosted_preflight(report_dir: Path, *, timeout: int, full: bool, report_path: Path) -> LaneResult:
@@ -685,8 +729,30 @@ def run_real_compose(
     return results
 
 
-def skipped_lane(name: str, reason: str) -> LaneResult:
-    return LaneResult(name=name, status="skipped", details={"reason": reason})
+def skipped_lane(
+    name: str,
+    reason: str,
+    *,
+    owner: str = "unassigned",
+    action: str = "Rerun the lane in an environment where its prerequisites are available.",
+) -> LaneResult:
+    return LaneResult(
+        name=name,
+        status="skipped",
+        details={"reason": reason, "owner": owner, "action": action},
+    )
+
+
+def attach_hardware_gate_report(result: LaneResult, platform_report_dir: Path) -> LaneResult:
+    gate_report = platform_report_dir / "hardware-lane-gates.json"
+    if not gate_report.exists():
+        return result
+    result.artifacts["hardware_lane_gates"] = _display_path(gate_report)
+    try:
+        result.details["hardware_lane_gates"] = json.loads(gate_report.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        result.details["hardware_lane_gates_error"] = "invalid JSON"
+    return result
 
 
 def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
@@ -750,6 +816,17 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
         )
     else:
         lanes.extend(run_benchmark_evidence(report_dir, timeout=args.timeout, dashboard_dir=benchmark_archive_dir))
+
+    if args.full:
+        lanes.extend(run_supported_real_audio_e2e_lanes(report_dir, timeout=args.timeout))
+    else:
+        lanes.append(
+            skipped_lane(
+                "real-audio-e2e-lanes",
+                "pass --full on Thor to run conversion, karaoke, diarization, training, and benchmark-audio E2E lanes",
+            )
+        )
+
     lanes.append(
         run_hosted_preflight(
             report_dir,
@@ -791,19 +868,37 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.hardware:
         lanes.append(
-            _run_command(
-                "jetson-cuda-tensorrt",
-                ["bash", "scripts/validate_cuda_stack.sh", "--output-dir", str(platform_report_dir)],
-                report_dir=report_dir,
-                timeout=args.timeout,
+            attach_hardware_gate_report(
+                _run_command(
+                    "jetson-cuda-tensorrt",
+                    ["bash", "scripts/validate_cuda_stack.sh", "--output-dir", str(platform_report_dir)],
+                    report_dir=report_dir,
+                    timeout=args.timeout,
+                ),
+                platform_report_dir,
             )
         )
         lanes.append(run_tensorrt_engine_suite(report_dir, timeout=args.timeout))
         lanes.append(run_tensorrt_parity_benchmark(report_dir, timeout=args.timeout, report_path=tensorrt_parity_report))
     else:
-        lanes.append(skipped_lane("jetson-cuda-tensorrt", "pass --hardware or --full on Jetson/CUDA/TensorRT hosts"))
-        lanes.append(skipped_lane("tensorrt-engine-suite", "pass --hardware or --full with AUTOVOICE_TRT_ENGINE_DIR set"))
-        lanes.append(skipped_lane("tensorrt-checkpoint-parity", "pass --hardware or --full with checkpoint-aligned TensorRT engine metadata"))
+        lanes.append(skipped_lane(
+            "jetson-cuda-tensorrt",
+            "pass --hardware or --full on Jetson/CUDA/TensorRT hosts",
+            owner="hardware-runner",
+            action="Run completion matrix with --hardware or --full on a Jetson/CUDA host.",
+        ))
+        lanes.append(skipped_lane(
+            "tensorrt-engine-suite",
+            "pass --hardware or --full with AUTOVOICE_TRT_ENGINE_DIR set",
+            owner="hardware-runner",
+            action="Set AUTOVOICE_TRT_ENGINE_DIR to a complete TensorRT engine suite and rerun.",
+        ))
+        lanes.append(skipped_lane(
+            "tensorrt-checkpoint-parity",
+            "pass --hardware or --full with checkpoint-aligned TensorRT engine metadata",
+            owner="hardware-runner",
+            action="Restore checkpoint-aligned TensorRT metadata and rerun the parity benchmark.",
+        ))
 
     matrix = {
         "schema_version": 1,

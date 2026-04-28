@@ -132,6 +132,17 @@ def main(argv: list[str] | None = None) -> int:
         for metric in required_metrics.get(pipeline_name, []):
             if metric not in summary:
                 errors.append(f"pipeline {pipeline_name} missing required metric {metric}")
+                continue
+            metric_payload = summary.get(metric)
+            if not isinstance(metric_payload, dict):
+                errors.append(f"pipeline {pipeline_name} metric {metric} must include value/status metadata")
+                continue
+            if "value" not in metric_payload:
+                errors.append(f"pipeline {pipeline_name} metric {metric} missing value")
+            if metric_payload.get("applicable") is False and not metric_payload.get("basis"):
+                errors.append(
+                    f"pipeline {pipeline_name} non-applicable required metric {metric} must document basis"
+                )
 
     comparisons = dashboard.get("comparisons", {})
     for candidate in suite.get("candidate_pipelines", []):
@@ -145,6 +156,18 @@ def main(argv: list[str] | None = None) -> int:
     if release_evidence.get("quality_gate_passed") is not True:
         failures = release_evidence.get("quality_failures")
         errors.append(f"release evidence quality gate failed: {failures!r}")
+    exemption_keys = {
+        (str(item.get("pipeline")), str(item.get("metric")))
+        for item in release_evidence.get("metric_exemptions", []) or []
+        if isinstance(item, dict)
+    }
+    for pipeline_name, pipeline in pipelines.items():
+        for metric_name, metric_payload in (pipeline.get("summary", {}) or {}).items():
+            if isinstance(metric_payload, dict) and metric_payload.get("applicable") is False:
+                if (str(pipeline_name), str(metric_name)) not in exemption_keys:
+                    errors.append(
+                        f"release evidence missing metric_exemption for {pipeline_name}.{metric_name}"
+                    )
     if required_fixture_tiers:
         tiers = set(str(name) for name in release_evidence.get("fixture_tiers", []))
         if not tiers.intersection(required_fixture_tiers):

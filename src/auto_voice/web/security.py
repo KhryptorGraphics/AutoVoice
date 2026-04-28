@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import os
 import time
 import uuid
@@ -23,6 +24,21 @@ PUBLIC_PATHS = {
     "/ready",
     "/api/v1/health",
     "/api/v1/ready",
+}
+
+INSECURE_API_TOKENS = {
+    "autovoice",
+    "autovoice-token",
+    "changeme",
+    "change-me",
+    "default",
+    "dev",
+    "dev-token",
+    "development",
+    "password",
+    "secret",
+    "test",
+    "token",
 }
 
 YOUTUBE_HOSTS = {
@@ -118,15 +134,43 @@ def _configured_api_token(app: Flask) -> str | None:
     return None
 
 
+def _api_token_is_insecure(token: str) -> bool:
+    normalized = token.strip().lower()
+    return len(token.strip()) < 32 or normalized in INSECURE_API_TOKENS or "changeme" in normalized
+
+
+def validate_api_token_configuration(app: Flask) -> None:
+    """Fail closed when hosted/public mode uses a missing or placeholder token."""
+    if not api_auth_required(app) or app.config.get("TESTING"):
+        return
+
+    token = _configured_api_token(app)
+    if not token:
+        raise RuntimeError(
+            "AUTOVOICE_REQUIRE_API_AUTH/AUTOVOICE_PUBLIC_DEPLOYMENT requires AUTOVOICE_API_TOKEN"
+        )
+    if public_deployment_enabled(app) and _api_token_is_insecure(token):
+        raise RuntimeError(
+            "AUTOVOICE_PUBLIC_DEPLOYMENT requires a non-placeholder AUTOVOICE_API_TOKEN "
+            "with at least 32 characters"
+        )
+
+
 def _request_token() -> str | None:
     authorization = request.headers.get("Authorization", "")
     if authorization.lower().startswith("bearer "):
         return authorization.split(" ", 1)[1].strip()
-    return (
-        request.headers.get("X-AutoVoice-API-Key")
-        or request.headers.get("X-API-Key")
-        or request.args.get("api_token")
+    header_token = request.headers.get("X-AutoVoice-API-Key") or request.headers.get("X-API-Key")
+    if header_token:
+        return header_token
+
+    target_app = current_app._get_current_object() if has_app_context() else None
+    query_tokens_allowed = env_bool("AUTOVOICE_ALLOW_QUERY_API_TOKEN") or not (
+        target_app and public_deployment_enabled(target_app)
     )
+    if query_tokens_allowed:
+        return request.args.get("api_token")
+    return None
 
 
 def token_authorized(app: Flask, token: str | None = None) -> bool:
@@ -140,7 +184,8 @@ def token_authorized(app: Flask, token: str | None = None) -> bool:
 def _request_key() -> str:
     token = _request_token()
     if token:
-        return f"token:{token[:16]}"
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+        return f"token:{digest}"
     return f"ip:{request.remote_addr or 'unknown'}"
 
 
@@ -152,10 +197,7 @@ def init_production_security(app: Flask) -> None:
     """Install request ID, optional API-token auth, and public-mode rate limiting."""
     app._rate_limit_buckets = defaultdict(deque)
 
-    if api_auth_required(app) and not _configured_api_token(app) and not app.config.get("TESTING"):
-        raise RuntimeError(
-            "AUTOVOICE_REQUIRE_API_AUTH/AUTOVOICE_PUBLIC_DEPLOYMENT requires AUTOVOICE_API_TOKEN"
-        )
+    validate_api_token_configuration(app)
 
     if socketio_cors_allowed_origins(app) == "*" and public_deployment_enabled(app):
         # The helper raises unless explicitly overridden; call it here so HTTP-only
@@ -186,6 +228,21 @@ def init_production_security(app: Flask) -> None:
     @app.after_request
     def attach_request_id(response):
         response.headers["X-Request-ID"] = getattr(g, "request_id", uuid.uuid4().hex)
+        origins = parse_cors_origins(app.config.get("CORS_ORIGINS"))
+        request_origin = request.headers.get("Origin")
+        if isinstance(origins, list) and request_origin in origins:
+            response.headers["Access-Control-Allow-Origin"] = request_origin
+            response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        elif origins == "*" and not public_deployment_enabled(app):
+            response.headers["Access-Control-Allow-Origin"] = "*"
+
+        if request.method == "OPTIONS":
+            response.headers.setdefault("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+            response.headers.setdefault(
+                "Access-Control-Allow-Headers",
+                "Authorization,Content-Type,X-AutoVoice-API-Key,X-API-Key,X-Request-ID",
+            )
         return response
 
 

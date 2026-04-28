@@ -8,6 +8,7 @@
       "component_paths": [
         "src/auto_voice/inference/hq_svc_wrapper.py",
         "scripts/quality_pipeline.py",
+        "scripts/validate_hardware_lane_gates.py",
         "docs/hq-svc-patterns.md"
       ],
       "benchmark_gate": {
@@ -28,7 +29,7 @@
         },
         "packaging": {
           "artifacts": [],
-          "notes": "Requires packaged artifact and export validation."
+          "notes": "Requires packaged artifact and export validation. fairseq/local_attention remain optional experimental dependencies outside requirements-runtime.txt."
         },
         "deployability": {
           "artifacts": [],

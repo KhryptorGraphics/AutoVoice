@@ -2,16 +2,11 @@ from __future__ import annotations
 
 from auto_voice.runtime_contract import build_packaged_artifact_manifest
 from auto_voice.storage.voice_profiles import VoiceProfileStore
+from tests.fixtures.audio import write_voiced_wav
 
 
-def _write_wav(path, frames: int = 1600) -> None:
-    import wave
-
-    with wave.open(str(path), "w") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(16000)
-        wav_file.writeframes(b"\x00" * frames)
+def _write_wav(path, duration_seconds: float = 1.0) -> None:
+    write_voiced_wav(path, duration_seconds=duration_seconds, sample_rate=16000)
 
 
 def test_voice_profile_store_persists_runtime_artifact_manifest(tmp_path):
@@ -22,7 +17,7 @@ def test_voice_profile_store_persists_runtime_artifact_manifest(tmp_path):
     )
     profile_id = store.save({"name": "Test Voice"})
     sample_path = tmp_path / "sample.wav"
-    _write_wav(sample_path)
+    _write_wav(sample_path, duration_seconds=3.5)
     training_sample = store.add_training_sample(profile_id, str(sample_path), duration=3.5)
 
     manifest = build_packaged_artifact_manifest(

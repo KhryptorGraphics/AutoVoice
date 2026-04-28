@@ -192,7 +192,34 @@ def test_validate_cuda_stack_dry_run(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "dependency-audit.json" in result.stdout
+    assert "hardware-lane-gates.json" in result.stdout
     assert "all-latency-report.md" in result.stdout
+
+
+def test_hardware_lane_gate_report_records_experimental_owner_action(tmp_path):
+    output_path = tmp_path / "hardware-lane-gates.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate_hardware_lane_gates.py",
+            "--pipeline",
+            "all",
+            "--output",
+            str(output_path),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    assert report["lanes"]["hq_svc"]["support_boundary"] == "experimental:hq_svc"
+    assert report["lanes"]["hq_svc"]["owner"] == "model-runtime"
+    assert report["lanes"]["hq_svc"]["action"]
+    assert report["lanes"]["realtime_meanvc"]["support_boundary"] == "experimental:meanvc"
+    assert report["lanes"]["realtime_meanvc"]["owner"] == "model-runtime"
+    assert report["lanes"]["realtime_meanvc"]["action"]
 
 
 def test_hardware_release_evidence_runner_fails_closed_without_execute(tmp_path):
@@ -461,6 +488,39 @@ def test_completion_matrix_smoke_runner(tmp_path):
     assert audit["environment_gate_evidence"]
     assert all(entry["explained"] for entry in audit["environment_gate_evidence"])
     assert {entry["owner"] for entry in audit["environment_gate_evidence"]} >= {"hardware-runner", "training-runtime"}
+
+
+def test_completion_matrix_full_mode_defines_real_audio_e2e_lanes(monkeypatch, tmp_path):
+    import importlib.util
+
+    script_path = PROJECT_ROOT / "scripts" / "run_completion_matrix.py"
+    spec = importlib.util.spec_from_file_location("run_completion_matrix", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    captured: list[tuple[str, list[str]]] = []
+
+    def fake_run_command(name, command, *, report_dir, timeout, env=None):
+        del report_dir, timeout, env
+        captured.append((name, command))
+        return module.LaneResult(name=name, status="passed", command=command)
+
+    monkeypatch.setattr(module, "_run_command", fake_run_command)
+
+    lanes = module.run_supported_real_audio_e2e_lanes(tmp_path, timeout=30)
+
+    lane_names = {lane.name for lane in lanes}
+    assert {
+        "conversion-e2e",
+        "karaoke-websocket-e2e",
+        "voice-profile-diarization-e2e",
+        "voice-profile-training-e2e",
+        "benchmark-audio-e2e",
+    } <= lane_names
+    assert all(command[:3] == [sys.executable, "-m", "pytest"] for _, command in captured)
+    assert any("tests/test_quality_benchmarking_sota.py" in command for _, command in captured)
 
 
 def test_tensorrt_parity_benchmark_metadata_validation(tmp_path):

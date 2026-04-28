@@ -1,8 +1,17 @@
 /**
  * Karaoke API client for live voice conversion.
  */
+import { apiAuthHeaders } from './api';
 
-const API_BASE = '/api/v1/karaoke';
+const API_BASE = `${import.meta.env.VITE_API_URL || '/api/v1'}/karaoke`;
+
+async function karaokeFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const headers = apiAuthHeaders(init.headers);
+  if (!(init.body instanceof FormData) && init.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  return fetch(input, { ...init, headers });
+}
 
 export interface UploadedSong {
   song_id: string;
@@ -53,7 +62,7 @@ export async function uploadSong(file: File): Promise<UploadedSong> {
   const formData = new FormData();
   formData.append('song', file);
 
-  const response = await fetch(`${API_BASE}/upload`, {
+  const response = await karaokeFetch(`${API_BASE}/upload`, {
     method: 'POST',
     body: formData,
   });
@@ -70,7 +79,7 @@ export async function uploadSong(file: File): Promise<UploadedSong> {
  * Get song information.
  */
 export async function getSong(songId: string): Promise<UploadedSong> {
-  const response = await fetch(`${API_BASE}/songs/${songId}`);
+  const response = await karaokeFetch(`${API_BASE}/songs/${songId}`);
 
   if (!response.ok) {
     const error = await response.json();
@@ -84,9 +93,8 @@ export async function getSong(songId: string): Promise<UploadedSong> {
  * Start vocal/instrumental separation.
  */
 export async function startSeparation(songId: string): Promise<SeparationJob> {
-  const response = await fetch(`${API_BASE}/separate`, {
+  const response = await karaokeFetch(`${API_BASE}/separate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ song_id: songId }),
   });
 
@@ -102,7 +110,7 @@ export async function startSeparation(songId: string): Promise<SeparationJob> {
  * Get separation job status.
  */
 export async function getSeparationStatus(jobId: string): Promise<SeparationJob> {
-  const response = await fetch(`${API_BASE}/separate/${jobId}`);
+  const response = await karaokeFetch(`${API_BASE}/separate/${jobId}`);
 
   if (!response.ok) {
     const error = await response.json();
@@ -116,7 +124,7 @@ export async function getSeparationStatus(jobId: string): Promise<SeparationJob>
  * List available audio output devices.
  */
 export async function listDevices(): Promise<{ devices: AudioDevice[]; count: number }> {
-  const response = await fetch(`${API_BASE}/devices`);
+  const response = await karaokeFetch(`${API_BASE}/devices`);
 
   if (!response.ok) {
     throw new Error('Failed to list devices');
@@ -129,7 +137,7 @@ export async function listDevices(): Promise<{ devices: AudioDevice[]; count: nu
  * Get current output device configuration.
  */
 export async function getDeviceConfig(): Promise<DeviceConfig> {
-  const response = await fetch(`${API_BASE}/devices/output`);
+  const response = await karaokeFetch(`${API_BASE}/devices/output`);
 
   if (!response.ok) {
     throw new Error('Failed to get device config');
@@ -142,9 +150,8 @@ export async function getDeviceConfig(): Promise<DeviceConfig> {
  * Set output device configuration.
  */
 export async function setDeviceConfig(config: Partial<DeviceConfig>): Promise<DeviceConfig> {
-  const response = await fetch(`${API_BASE}/devices/output`, {
+  const response = await karaokeFetch(`${API_BASE}/devices/output`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
   });
 
@@ -160,7 +167,7 @@ export async function setDeviceConfig(config: Partial<DeviceConfig>): Promise<De
  * List available voice models.
  */
 export async function listVoiceModels(): Promise<{ models: VoiceModel[]; count: number }> {
-  const response = await fetch(`${API_BASE}/voice-models`);
+  const response = await karaokeFetch(`${API_BASE}/voice-models`);
 
   if (!response.ok) {
     throw new Error('Failed to list voice models');
@@ -173,7 +180,7 @@ export async function listVoiceModels(): Promise<{ models: VoiceModel[]; count: 
  * Get voice model details.
  */
 export async function getVoiceModel(modelId: string): Promise<VoiceModel> {
-  const response = await fetch(`${API_BASE}/voice-models/${modelId}`);
+  const response = await karaokeFetch(`${API_BASE}/voice-models/${modelId}`);
 
   if (!response.ok) {
     const error = await response.json();
@@ -190,9 +197,8 @@ export async function extractVoiceModel(
   songId: string,
   name: string
 ): Promise<{ model_id: string; name: string; type: string }> {
-  const response = await fetch(`${API_BASE}/voice-models/extract`, {
+  const response = await karaokeFetch(`${API_BASE}/voice-models/extract`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ song_id: songId, name }),
   });
 
