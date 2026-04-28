@@ -54,27 +54,47 @@ def _discover_enabled_vhosts(sites_enabled_dir: Path = Path("/etc/apache2/sites-
     return enabled
 
 
-def _check_apache_configtest(command: str = "apache2ctl") -> dict[str, Any]:
-    """Run Apache configtest when apache2ctl is available."""
-
+def _run_apache_configtest(command: list[str]) -> dict[str, Any]:
     try:
         completed = subprocess.run(
-            [command, "configtest"],
+            [*command, "configtest"],
             capture_output=True,
             text=True,
             timeout=15,
             check=False,
         )
     except FileNotFoundError:
-        return {"ok": True, "skipped": True, "reason": f"{command} not found"}
+        return {"ok": True, "skipped": True, "reason": f"{command[0]} not found"}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "apache configtest timed out"}
+        return {"ok": False, "error": "apache configtest timed out", "command": command}
 
     output = (completed.stdout + completed.stderr).strip()
     return {
         "ok": completed.returncode == 0,
         "returncode": completed.returncode,
         "output": output,
+        "command": command,
+    }
+
+
+def _check_apache_configtest(command: str = "apache2ctl") -> dict[str, Any]:
+    """Run Apache configtest when apache2ctl is available."""
+
+    direct = _run_apache_configtest([command])
+    if direct.get("ok", False):
+        return direct
+
+    # ModSecurity may require root write access to its audit log during configtest.
+    # Treat sudo success as authoritative while preserving the unprivileged failure.
+    elevated = _run_apache_configtest(["sudo", "-n", command])
+    if elevated.get("ok", False):
+        elevated["unprivileged"] = direct
+        elevated["used_elevation"] = True
+        return elevated
+
+    return {
+        **direct,
+        "elevated": elevated,
     }
 
 

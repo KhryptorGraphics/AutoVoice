@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import shutil
 import socket
 import subprocess
@@ -37,6 +38,13 @@ DISALLOWED_SKIP_TOKENS = (
     "Requires benchmark audio files",
     "Requires trained model and test samples",
     "Requires pre-built TRT engines",
+)
+
+REQUIRED_TRT_ENGINE_FILES = (
+    "content_extractor.trt",
+    "pitch_extractor.trt",
+    "decoder.trt",
+    "vocoder.trt",
 )
 
 E2E_ENVIRONMENT_GATES = {
@@ -155,23 +163,50 @@ def _run_command(
         command_env.update(env)
 
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=PROJECT_ROOT,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             env=command_env,
+            start_new_session=True,
         )
-        output = completed.stdout + completed.stderr
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                stdout, stderr = process.communicate()
+            output = (stdout or "") + (stderr or "")
+            log_path.write_text(output, encoding="utf-8")
+            return LaneResult(
+                name=name,
+                status="failed",
+                command=command,
+                duration_seconds=timeout,
+                artifacts={"log": _display_path(log_path)},
+                details={"reason": f"timed out after {timeout}s"},
+            )
+        completed_returncode = process.returncode
+        output = stdout + stderr
         log_path.write_text(output, encoding="utf-8")
-        status = "passed" if completed.returncode == 0 else "failed"
+        status = "passed" if completed_returncode == 0 else "failed"
         return LaneResult(
             name=name,
             status=status,
             command=command,
             duration_seconds=(_now() - started).total_seconds(),
-            returncode=completed.returncode,
+            returncode=completed_returncode,
             artifacts={"log": _display_path(log_path)},
         )
     except FileNotFoundError as exc:
@@ -183,17 +218,6 @@ def _run_command(
             duration_seconds=(_now() - started).total_seconds(),
             artifacts={"log": _display_path(log_path)},
             details={"reason": f"command not found: {command[0]}"},
-        )
-    except subprocess.TimeoutExpired as exc:
-        output = (exc.stdout or "") + (exc.stderr or "")
-        log_path.write_text(output, encoding="utf-8")
-        return LaneResult(
-            name=name,
-            status="failed",
-            command=command,
-            duration_seconds=timeout,
-            artifacts={"log": _display_path(log_path)},
-            details={"reason": f"timed out after {timeout}s"},
         )
 
 
@@ -481,6 +505,64 @@ def _available_port(preferred: int) -> str:
         return str(sock.getsockname()[1])
 
 
+def _discover_trt_engine_dirs() -> list[Path]:
+    """Return candidate TensorRT engine directories, preferring complete suites."""
+
+    candidates: set[Path] = set()
+    env_dir = os.environ.get("AUTOVOICE_TRT_ENGINE_DIR")
+    if env_dir:
+        candidates.add(Path(env_dir))
+    for root in (PROJECT_ROOT / "models", PROJECT_ROOT / "data", PROJECT_ROOT / "reports"):
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file() and path.suffix in {".trt", ".engine", ".plan"}:
+                candidates.add(path.parent)
+
+    def rank(path: Path) -> tuple[int, str]:
+        complete = all((path / name).exists() for name in REQUIRED_TRT_ENGINE_FILES)
+        return (0 if complete else 1, str(path))
+
+    return sorted(candidates, key=rank)
+
+
+def run_tensorrt_engine_suite(report_dir: Path, *, timeout: int) -> LaneResult:
+    candidates = _discover_trt_engine_dirs()
+    complete = [
+        path for path in candidates
+        if all((path / name).exists() for name in REQUIRED_TRT_ENGINE_FILES)
+    ]
+    if not complete:
+        missing_by_dir = {
+            _display_path(path): [
+                name for name in REQUIRED_TRT_ENGINE_FILES if not (path / name).exists()
+            ]
+            for path in candidates
+        }
+        return LaneResult(
+            name="tensorrt-engine-suite",
+            status="blocked",
+            details={
+                "reason": "No complete TensorRT engine suite found for the hardware pytest lane.",
+                "required_files": list(REQUIRED_TRT_ENGINE_FILES),
+                "candidate_dirs": [_display_path(path) for path in candidates],
+                "missing_by_dir": missing_by_dir,
+                "action": (
+                    "Build or restore content_extractor.trt, pitch_extractor.trt, "
+                    "decoder.trt, and vocoder.trt, then rerun with AUTOVOICE_TRT_ENGINE_DIR."
+                ),
+            },
+        )
+
+    return _run_command(
+        "tensorrt-engine-suite",
+        [sys.executable, "-m", "pytest", "tests/test_tensorrt_pipeline_sota.py", "-q", "--tb=short"],
+        report_dir=report_dir,
+        timeout=timeout,
+        env={"AUTOVOICE_TRT_ENGINE_DIR": str(complete[0])},
+    )
+
+
 def run_real_compose(report_dir: Path, *, timeout: int, base_url: str) -> list[LaneResult]:
     if not shutil.which("docker"):
         return [
@@ -527,7 +609,7 @@ def run_real_compose(report_dir: Path, *, timeout: int, base_url: str) -> list[L
     results.append(
         _run_command(
             "real-compose-down",
-            ["docker", "compose", "-p", project_name, "-f", "docker-compose.yaml", "down", "-v"],
+            ["docker", "compose", "-p", project_name, "-f", "docker-compose.yaml", "down"],
             report_dir=report_dir,
             timeout=timeout,
             env=env,
@@ -615,8 +697,10 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
                 timeout=args.timeout,
             )
         )
+        lanes.append(run_tensorrt_engine_suite(report_dir, timeout=args.timeout))
     else:
         lanes.append(skipped_lane("jetson-cuda-tensorrt", "pass --hardware or --full on Jetson/CUDA/TensorRT hosts"))
+        lanes.append(skipped_lane("tensorrt-engine-suite", "pass --hardware or --full with AUTOVOICE_TRT_ENGINE_DIR set"))
 
     matrix = {
         "schema_version": 1,

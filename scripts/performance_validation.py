@@ -115,6 +115,7 @@ PIPELINE_CONFIGS = {
         target_memory_gb=8.0,
         output_sample_rate=22050,
         description='Low-latency karaoke pipeline with 22kHz output',
+        gate_mcd=False,
     ),
     'quality': PipelineConfig(
         name='Quality (CoMoSVC)',
@@ -125,6 +126,7 @@ PIPELINE_CONFIGS = {
         target_memory_gb=16.0,
         output_sample_rate=24000,
         description='High-quality studio pipeline with consistency model',
+        gate_mcd=False,
     ),
     'quality_seedvc': PipelineConfig(
         name='Quality Seed-VC (DiT-CFM)',
@@ -135,6 +137,7 @@ PIPELINE_CONFIGS = {
         target_memory_gb=16.0,
         output_sample_rate=44100,
         description='SOTA quality with 10-step DiT-CFM at 44.1kHz',
+        gate_mcd=False,
     ),
     'realtime_meanvc': PipelineConfig(
         name='Realtime MeanVC (Streaming)',
