@@ -124,6 +124,8 @@ Use those only after validating against the canonical docs and live code paths.
   Use `--full` on a capable Jetson/compose/hosted runner; local smoke mode records unavailable frontend, compose, and hardware lanes as explicit skipped lanes.
 - full hardware RC evidence preflight: `python scripts/preflight_full_hardware_rc.py --output reports/release_candidates/AV-j4cd/preflight.json --benchmark-report <current-head-benchmark-report.json>`
 - full hardware RC evidence bundle: `python scripts/run_full_hardware_rc.py --benchmark-report <current-head-benchmark-report.json>`
+- `<current-head-benchmark-report.json>` must be the raw `comprehensive_report.json`; the RC runner derives `release_evidence.json`.
+- local Jetson release decision without Docker deployment: `python scripts/run_full_hardware_rc.py --bead-id local-jetson --deployment-base-url http://127.0.0.1:10600 --local-base-url http://127.0.0.1:10600 --no-require-hosted-probes --no-require-production-smoke-stems --no-run-real-compose --no-run-full-hosted-preflight --no-require-docker --require-clean-head --benchmark-report <current-head-benchmark-report.json>`
 - benchmark dashboard contract validation: `python scripts/validate_benchmark_dashboard.py`
 - hosted deployment preflight: `python scripts/validate_hosted_deployment.py --hostname autovoice.giggahost.com`
 - experimental evidence validation: `python scripts/validate_experimental_evidence.py`

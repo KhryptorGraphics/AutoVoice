@@ -1,6 +1,6 @@
 # AutoVoice Production Operations Runbook
 
-This runbook applies to private or hosted deployments. Public/commercial launch still requires policy/legal approval and current-head hardware evidence.
+This runbook applies to local, private, or hosted deployments. Public/commercial launch still requires policy/legal approval and current-head hardware evidence.
 
 ## Readiness
 
@@ -27,9 +27,35 @@ This runbook applies to private or hosted deployments. Public/commercial launch 
 
 - Use `python scripts/preflight_full_hardware_rc.py --output reports/release_candidates/AV-j4cd/preflight.json --benchmark-report <current-head-benchmark-report.json>` to record hard blockers before starting the full run.
 - Use `python scripts/run_full_hardware_rc.py --benchmark-report <current-head-benchmark-report.json>` on the Jetson/hosted runner to collect the full RC bundle.
+- `<current-head-benchmark-report.json>` must be the raw `comprehensive_report.json`; the runner derives `release_evidence.json` from that source.
 - The full runner writes immutable artifacts under `reports/release_candidates/AV-j4cd/<timestamp>-<git-sha>/`.
 - `release_decision.json` is the canonical go/no-go artifact for that run.
 - `artifact_manifest.json` records the exact completion-matrix, platform, benchmark, parity, and production-smoke artifacts captured for the decision.
+
+For single-user Local Jetson readiness without Docker deployment, run the RC
+bundle against the already-running local service URL and disable hosted/compose
+probes. Use `http://127.0.0.1:10600` for the local `main.py` service, or replace
+it with the actual local port if different:
+
+```bash
+python scripts/run_full_hardware_rc.py \
+  --bead-id local-jetson \
+  --artifact-root reports/release_candidates \
+  --benchmark-report <current-head-benchmark-report.json> \
+  --deployment-base-url http://127.0.0.1:10600 \
+  --local-base-url http://127.0.0.1:10600 \
+  --no-require-hosted-probes \
+  --no-require-production-smoke-stems \
+  --no-run-real-compose \
+  --no-run-full-hosted-preflight \
+  --require-jetson \
+  --no-require-docker \
+  --require-gitnexus \
+  --require-tensorrt-suite \
+  --require-clean-head
+```
+
+Use `reports/release_candidates/local-jetson/<timestamp>-<git-sha>/release_decision.json` as the Local Jetson release record. Mutable `reports/*/latest` directories are convenience copies only.
 
 ## Backup And Restore
 

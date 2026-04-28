@@ -587,3 +587,35 @@ def test_run_full_hardware_rc_writes_blocked_release_decision(tmp_path):
     run_dir = decision_path.parent
     assert (run_dir / "preflight.json").exists()
     assert (run_dir / "artifact_manifest.json").exists()
+
+
+def test_run_full_hardware_rc_records_local_deployment_inputs(tmp_path):
+    artifact_root = tmp_path / "release-candidates"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_full_hardware_rc.py",
+            "--artifact-root",
+            str(artifact_root),
+            "--deployment-base-url",
+            "http://127.0.0.1:10001",
+            "--no-require-production-smoke-stems",
+            "--no-run-real-compose",
+            "--no-run-full-hosted-preflight",
+            "--no-require-hosted-probes",
+            "--no-require-jetson",
+            "--no-require-docker",
+            "--no-require-tensorrt-suite",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 1, result.stderr
+    decision_path = Path(result.stdout.strip())
+    manifest = json.loads((decision_path.parent / "artifact_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["inputs"]["deployment_base_url"] == "http://127.0.0.1:10001"
+    assert manifest["inputs"]["require_production_smoke_stems"] is False
+    assert manifest["inputs"]["run_real_compose"] is False
+    assert manifest["inputs"]["run_full_hosted_preflight"] is False

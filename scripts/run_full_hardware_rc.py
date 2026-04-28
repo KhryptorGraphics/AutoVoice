@@ -107,6 +107,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bead-id", default="AV-j4cd")
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     parser.add_argument("--benchmark-report", type=Path, default=None)
+    parser.add_argument(
+        "--deployment-base-url",
+        default=None,
+        help=(
+            "Base URL for release-candidate endpoint and production-smoke checks. "
+            "Defaults to --hosted-base-url for compatibility."
+        ),
+    )
     parser.add_argument("--hosted-base-url", default=DEFAULT_HOSTED_BASE_URL)
     parser.add_argument("--local-base-url", default=DEFAULT_LOCAL_BASE_URL)
     parser.add_argument("--timeout", type=int, default=5400)
@@ -119,6 +127,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--require-hosted-probes", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--require-tensorrt-suite", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--require-clean-head", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--run-real-compose",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Boot and validate the Docker compose stack as part of the completion matrix.",
+    )
+    parser.add_argument(
+        "--run-full-hosted-preflight",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run hosted DNS/TLS/Apache preflight instead of local mock preflight.",
+    )
+    parser.add_argument(
+        "--require-production-smoke-stems",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require downloadable vocal/instrumental stems during the full production smoke lane.",
+    )
     return parser.parse_args(argv)
 
 
@@ -173,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     log_dir = run_dir / "logs"
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    deployment_base_url = args.deployment_base_url or args.hosted_base_url
     benchmark_report = _resolve_path(args.benchmark_report) if args.benchmark_report else None
     user_vocals = [_resolve_path(path) for path in (args.user_vocals or [PROJECT_ROOT / "tests/quality_samples/william_singe_pillowtalk.wav"])]
 
@@ -184,10 +211,14 @@ def main(argv: list[str] | None = None) -> int:
         "run_dir": str(run_dir),
         "inputs": {
             "benchmark_report": str(benchmark_report) if benchmark_report else None,
+            "deployment_base_url": deployment_base_url,
             "hosted_base_url": args.hosted_base_url,
             "local_base_url": args.local_base_url,
             "artist_song": str(_resolve_path(args.artist_song)),
             "user_vocals": [str(path) for path in user_vocals],
+            "require_production_smoke_stems": args.require_production_smoke_stems,
+            "run_real_compose": args.run_real_compose,
+            "run_full_hosted_preflight": args.run_full_hosted_preflight,
         },
         "artifacts": {
             "preflight": str(run_dir / "preflight.json"),
@@ -210,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
             "--output",
             str(run_dir / "preflight.json"),
             "--hosted-base-url",
-            args.hosted_base_url,
+            deployment_base_url,
             *([] if benchmark_report is None else ["--benchmark-report", str(benchmark_report)]),
             "--artist-song",
             str(_resolve_path(args.artist_song)),
@@ -233,7 +264,11 @@ def main(argv: list[str] | None = None) -> int:
             [
                 sys.executable,
                 "scripts/run_completion_matrix.py",
-                "--full",
+                "--refresh-gitnexus",
+                "--frontend",
+                "--hardware",
+                *(["--real-compose"] if args.run_real_compose else []),
+                *(["--full-hosted-preflight"] if args.run_full_hosted_preflight else []),
                 "--timeout",
                 str(args.timeout),
                 "--base-url",
@@ -273,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
                 sys.executable,
                 "scripts/validate_release_candidate.py",
                 "--base-url",
-                args.hosted_base_url,
+                deployment_base_url,
                 "--skip-compose",
                 "--report-dir",
                 str(run_dir / "platform"),
@@ -294,13 +329,13 @@ def main(argv: list[str] | None = None) -> int:
                 "--mode",
                 "full",
                 "--base-url",
-                args.hosted_base_url,
+                deployment_base_url,
                 "--output-dir",
                 str(run_dir / "production_smoke"),
                 "--artist-song",
                 str(_resolve_path(args.artist_song)),
                 *sum([["--user-vocals", str(path)] for path in user_vocals], []),
-                "--require-stems",
+                *(["--require-stems"] if args.require_production_smoke_stems else []),
                 "--require-quality-evidence",
                 "--timeout-seconds",
                 str(args.production_smoke_timeout_seconds),
