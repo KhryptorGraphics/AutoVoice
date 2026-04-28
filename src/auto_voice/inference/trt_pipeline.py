@@ -27,6 +27,27 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+class TRTBootstrapContentExtractor(torch.nn.Module):
+    """Export-stable 768-dim content extractor for canonical TRT builds.
+
+    The full ContentVec path lazy-loads a HuggingFace model during forward(),
+    which is not safe for ONNX/TensorRT export. This bootstrap extractor keeps
+    the same input/output contract as ContentVec while using the local
+    HuBERT-soft implementation that is already exportable in this codebase.
+    """
+
+    def __init__(self, output_dim: int = 768):
+        super().__init__()
+        from ..models.encoder import HuBERTSoft
+
+        self.encoder = HuBERTSoft()
+        self.projection = torch.nn.Linear(256, output_dim)
+
+    def forward(self, audio: torch.Tensor) -> torch.Tensor:
+        features = self.encoder(audio)
+        return self.projection(features)
+
+
 class ONNXExporter:
     """Export PyTorch models to ONNX format with dynamic shapes."""
 
@@ -70,6 +91,7 @@ class ONNXExporter:
             output_names=['features'],
             dynamic_axes=dynamic_axes,
             do_constant_folding=True,
+            external_data=False,
         )
 
         logger.info(f"ContentVec exported to {output_path}")
@@ -106,6 +128,7 @@ class ONNXExporter:
             output_names=['f0'],
             dynamic_axes=dynamic_axes,
             do_constant_folding=True,
+            external_data=False,
         )
 
         logger.info(f"RMVPE exported to {output_path}")
@@ -146,6 +169,7 @@ class ONNXExporter:
             output_names=['mel'],
             dynamic_axes=dynamic_axes,
             do_constant_folding=True,
+            external_data=False,
         )
 
         logger.info(f"CoMoSVC decoder exported to {output_path}")
@@ -182,6 +206,7 @@ class ONNXExporter:
             output_names=['audio'],
             dynamic_axes=dynamic_axes,
             do_constant_folding=True,
+            external_data=False,
         )
 
         logger.info(f"BigVGAN exported to {output_path}")
@@ -443,8 +468,7 @@ class TRTConversionPipeline:
         builder = TRTEngineBuilder(precision="fp16")
 
         if 'content' in components:
-            from ..models.encoder import ContentVecEncoder
-            model = ContentVecEncoder(output_dim=768, pretrained=None)
+            model = TRTBootstrapContentExtractor(output_dim=768)
             model.train(False)
             onnx_path = str(self.engine_dir / 'content_extractor.onnx')
             exporter.export_content_extractor(model, onnx_path)
@@ -632,13 +656,19 @@ class TRTConversionPipeline:
             'pitch': pitch_embeddings,
             'speaker': speaker,
         })
-        mel = decoder_out['mel']
+        mel = torch.nan_to_num(decoder_out['mel'], nan=0.0, posinf=10.0, neginf=-10.0)
+        mel = mel.clamp(-10.0, 10.0)
         report('decoding', 0.8)
 
         # Stage 5: Vocoding (TRT)
         report('vocoder', 0.8)
         vocoder_out = self.vocoder_ctx.infer({'mel': mel})
-        waveform = vocoder_out['audio'].squeeze(0)
+        waveform = torch.nan_to_num(vocoder_out['audio'], nan=0.0, posinf=1.0, neginf=-1.0)
+        waveform = waveform.squeeze(0).squeeze(0).clamp(-1.0, 1.0)
+
+        peak = waveform.abs().max()
+        if peak > 1e-6:
+            waveform = waveform * (0.95 / peak)
         report('vocoder', 1.0)
 
         elapsed = time.time() - start_time
