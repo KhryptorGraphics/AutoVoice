@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award, Search, Filter, Info } from 'lucide-react'
-import { apiService, VoiceProfile, TrainingJob, TrainingConfig, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType } from '../services/api'
+import { apiService, VoiceProfile, TrainingJob, TrainingConfig, TrainingConfigOptions, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType } from '../services/api'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { TrainingJobQueue } from '../components/TrainingJobQueue'
 import { LossCurveChart } from '../components/LossCurveChart'
@@ -50,6 +50,25 @@ function TrainingStatusBadge({ status }: { status?: TrainingStatusType }) {
   )
 }
 
+function sampleQualityStatus(sample: TrainingSample): string {
+  const metadata = {
+    ...(sample.metadata ?? {}),
+    ...(sample.extra_metadata ?? {}),
+    ...(sample.quality_metadata ?? {}),
+  }
+  const status = metadata.qa_status ?? metadata.quality_status ?? metadata.status
+  return typeof status === 'string' ? status : 'pass'
+}
+
+function isTrainableSample(sample: TrainingSample): boolean {
+  return sampleQualityStatus(sample) !== 'fail'
+}
+
+function sampleQualityLabel(sample: TrainingSample): string {
+  const status = sampleQualityStatus(sample)
+  return status === 'fail' ? 'QA failed' : status === 'unknown' ? 'QA pending' : 'QA passed'
+}
+
 interface ProfileDetailProps {
   profile: VoiceProfile
   onBack: () => void
@@ -63,6 +82,8 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const [loading, setLoading] = useState(true)
   const [isDeleting, setIsDeleting] = useState(false)
   const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>(DEFAULT_TRAINING_CONFIG)
+  const [trainingOptions, setTrainingOptions] = useState<TrainingConfigOptions | null>(null)
+  const [selectedSampleIds, setSelectedSampleIds] = useState<Set<string>>(new Set())
   const [selectedJob, setSelectedJob] = useState<TrainingJob | null>(null)
   const [startingTraining, setStartingTraining] = useState(false)
   const [activeTab, setActiveTab] = useState<'samples' | 'adapters' | 'checkpoints' | 'config' | 'jobs' | 'segments'>('samples')
@@ -104,8 +125,15 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   useEffect(() => {
     const fetchSamples = async () => {
       try {
-        const data = await apiService.listSamples(profile.profile_id)
+        const [data, options] = await Promise.all([
+          apiService.listSamples(profile.profile_id),
+          apiService.getTrainingConfigOptions().catch(() => null),
+        ])
         setSamples(data)
+        if (options) {
+          setTrainingOptions(options)
+        }
+        setSelectedSampleIds(new Set(data.filter(isTrainableSample).map(sample => sample.id)))
         await refreshProfile()
       } catch (error) {
         console.error('Failed to fetch samples:', error)
@@ -163,9 +191,15 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
       toast.error('No samples available. Upload samples first.')
       return
     }
+    if (selectedSampleIds.size === 0) {
+      toast.error('Select at least one QA-passing training sample.')
+      return
+    }
     setStartingTraining(true)
     try {
-      const sampleIds = samples.map(s => s.id)
+      const sampleIds = samples
+        .filter(sample => selectedSampleIds.has(sample.id))
+        .map(s => s.id)
       const job = await apiService.createTrainingJob(profile.profile_id, sampleIds, trainingConfig)
       setSelectedJob(job)
       await refreshProfile()
@@ -185,6 +219,9 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     try {
       const sample = await apiService.uploadSample(profile.profile_id, file)
       setSamples(prev => [...prev, sample])
+      if (isTrainableSample(sample)) {
+        setSelectedSampleIds(prev => new Set([...prev, sample.id]))
+      }
       await refreshProfile()
       toast.success('Sample uploaded successfully')
     } catch (error) {
@@ -198,6 +235,11 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     try {
       await apiService.deleteSample(profile.profile_id, sampleId)
       setSamples(prev => prev.filter(s => s.id !== sampleId))
+      setSelectedSampleIds(prev => {
+        const next = new Set(prev)
+        next.delete(sampleId)
+        return next
+      })
       await refreshProfile()
       toast.success('Sample deleted successfully')
     } catch (error) {
@@ -386,6 +428,9 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
               profileName={detailProfile.name}
               onSampleAdded={(sample) => {
                 setSamples(prev => [...prev, sample])
+                if (isTrainableSample(sample)) {
+                  setSelectedSampleIds(prev => new Set([...prev, sample.id]))
+                }
                 setShowAdvancedUpload(false)
                 void refreshProfile()
               }}
@@ -404,14 +449,63 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
             </p>
           ) : (
             <div className="space-y-2">
+              {!isSourceProfile && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-700 bg-gray-900/60 p-3" data-testid="training-sample-selection-summary">
+                  <div>
+                    <div className="text-sm font-medium text-gray-200">
+                      {selectedSampleIds.size} of {samples.filter(isTrainableSample).length} trainable samples selected
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      Failed QA samples stay visible but are excluded from training starts.
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSampleIds(new Set(samples.filter(isTrainableSample).map(sample => sample.id)))}
+                      className="px-3 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600"
+                    >
+                      Select trainable
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSampleIds(new Set())}
+                      className="px-3 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              )}
               {samples.map(sample => (
                 <div key={sample.id} className="flex items-center justify-between p-3 bg-gray-750 rounded">
                   <div className="flex items-center gap-3">
+                    {!isSourceProfile && (
+                      <input
+                        type="checkbox"
+                        checked={selectedSampleIds.has(sample.id)}
+                        disabled={!isTrainableSample(sample)}
+                        onChange={(event) => {
+                          setSelectedSampleIds(prev => {
+                            const next = new Set(prev)
+                            if (event.target.checked) {
+                              next.add(sample.id)
+                            } else {
+                              next.delete(sample.id)
+                            }
+                            return next
+                          })
+                        }}
+                        data-testid={`training-sample-select-${sample.id}`}
+                        className="h-4 w-4 accent-blue-500 disabled:opacity-40"
+                        aria-label={`Select training sample ${sample.id}`}
+                      />
+                    )}
                     <Mic size={16} className="text-gray-400" />
                     <div>
                       <div className="text-sm">{sample.audio_path.split('/').pop()}</div>
                       <div className="text-xs text-gray-500">
-                        {sample.duration_seconds.toFixed(1)}s · {sample.sample_rate}Hz
+                        {sample.duration_seconds.toFixed(1)}s · {sample.sample_rate}Hz · {sampleQualityLabel(sample)}
                       </div>
                     </div>
                   </div>
@@ -511,10 +605,11 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                 allowContinueFull={allowContinueFull}
                 fullTrainingHint={fullTrainingHint}
                 continuationHint={continuationHint}
+                options={trainingOptions}
               />
               <button
                 onClick={handleStartTraining}
-                disabled={startingTraining || samples.length === 0}
+                disabled={startingTraining || samples.length === 0 || selectedSampleIds.size === 0}
                 data-testid="start-training-button"
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed rounded"
               >
@@ -523,7 +618,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                 ) : (
                   <Play size={16} />
                 )}
-                {trainingConfig.initialization_mode === 'continue' ? 'Continue' : 'Start'} {trainingConfig.training_mode === 'full' ? 'Full Model' : 'LoRA'} Training ({samples.length} samples)
+                {trainingConfig.initialization_mode === 'continue' ? 'Continue' : 'Start'} {trainingConfig.training_mode === 'full' ? 'Full Model' : 'LoRA'} Training ({selectedSampleIds.size} samples)
               </button>
             </>
           )}

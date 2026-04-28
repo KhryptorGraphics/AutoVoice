@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Settings, Info, ChevronDown, ChevronUp } from 'lucide-react'
-import { TrainingConfig, DEFAULT_TRAINING_CONFIG } from '../services/api'
+import { TrainingConfig, TrainingConfigOptions, DEFAULT_TRAINING_CONFIG } from '../services/api'
 import clsx from 'clsx'
 
 interface TrainingConfigPanelProps {
@@ -12,6 +12,7 @@ interface TrainingConfigPanelProps {
   allowContinueFull?: boolean
   fullTrainingHint?: string
   continuationHint?: string
+  options?: TrainingConfigOptions | null
 }
 
 interface SliderInputProps {
@@ -158,6 +159,7 @@ export function TrainingConfigPanel({
   allowContinueFull = false,
   fullTrainingHint,
   continuationHint,
+  options,
 }: TrainingConfigPanelProps) {
   const [expanded, setExpanded] = useState(true)
 
@@ -192,11 +194,24 @@ export function TrainingConfigPanel({
   }, [allowContinueFull, allowContinueLora, config, onChange])
 
   const resetToDefaults = () => {
-    onChange(DEFAULT_TRAINING_CONFIG)
+    onChange(options?.defaults ?? DEFAULT_TRAINING_CONFIG)
+  }
+
+  const applyPreset = (presetId: string) => {
+    const preset = options?.presets.find((item) => item.id === presetId)
+    if (!preset) {
+      update('preset_id', presetId)
+      return
+    }
+    onChange({
+      ...config,
+      ...preset.config,
+      preset_id: preset.id,
+    })
   }
 
   return (
-    <div className="bg-gray-800 rounded-lg p-4 space-y-4">
+    <div className="bg-gray-800 rounded-lg p-4 space-y-4" data-testid="training-config-panel">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Settings size={18} className="text-gray-400" />
@@ -210,6 +225,40 @@ export function TrainingConfigPanel({
           {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
       </div>
+
+      {options?.presets?.length ? (
+        <div className="space-y-2" data-testid="training-preset-selector">
+          <label className="text-sm text-gray-400">Training Preset</label>
+          <select
+            value={config.preset_id}
+            onChange={e => applyPreset(e.target.value)}
+            disabled={disabled}
+            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          >
+            <option value="custom">Custom</option>
+            {options.presets.map(preset => (
+              <option
+                key={preset.id}
+                value={preset.id}
+                disabled={
+                  (preset.requires_full_training && !allowFullTraining)
+                  || (preset.requires_existing_full_model && !allowContinueFull)
+                  || (preset.config.initialization_mode === 'continue'
+                    && preset.config.training_mode === 'lora'
+                    && !allowContinueLora)
+                }
+              >
+                {preset.label}
+              </option>
+            ))}
+          </select>
+          {config.preset_id !== 'custom' && (
+            <p className="text-xs text-gray-500">
+              {options.presets.find((preset) => preset.id === config.preset_id)?.description}
+            </p>
+          )}
+        </div>
+      ) : null}
 
       {/* Training Mode Selector */}
       <div className="space-y-2">
@@ -358,6 +407,47 @@ export function TrainingConfigPanel({
         />
       </div>
 
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4" data-testid="training-runtime-controls">
+        <div>
+          <label className="text-sm text-gray-400 mb-1 block">Device</label>
+          <select
+            value={config.device_id}
+            onChange={e => update('device_id', e.target.value)}
+            disabled={disabled}
+            data-testid="training-device-select"
+            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          >
+            {(options?.devices ?? [{ id: 'auto', label: 'Auto CUDA device', available: true }]).map(device => (
+              <option key={device.id} value={device.id} disabled={!device.available}>
+                {device.label}{device.memory_total_gb ? ` (${device.memory_total_gb}GB)` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-sm text-gray-400 mb-1 block">Precision</label>
+          <select
+            value={config.precision}
+            onChange={e => update('precision', e.target.value as TrainingConfig['precision'])}
+            disabled={disabled}
+            data-testid="training-precision-select"
+            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          >
+            {(options?.enums.precision ?? ['fp32', 'fp16', 'bf16']).map(precision => (
+              <option key={precision} value={precision}>{precision}</option>
+            ))}
+          </select>
+        </div>
+        <NumberInput
+          label="Checkpoint Every Steps"
+          value={config.checkpoint_every_steps}
+          onChange={v => update('checkpoint_every_steps', Math.round(v))}
+          min={0}
+          tooltip="0 disables step checkpointing; smaller values provide more rollback points."
+          disabled={disabled}
+        />
+      </div>
+
       {/* Expandable advanced settings */}
       {expanded && (
         <div className="space-y-6 pt-4 border-t border-gray-700">
@@ -454,6 +544,96 @@ export function TrainingConfigPanel({
                 min={0.1}
                 tooltip="Maximum gradient norm for clipping (prevents exploding gradients)"
                 disabled={disabled}
+              />
+              <NumberInput
+                label="Validation Split"
+                value={config.validation_split}
+                onChange={v => update('validation_split', v)}
+                min={0}
+                max={0.5}
+                tooltip="Reserved fraction for validation/evidence. 0 keeps all samples in training."
+                disabled={disabled}
+              />
+            </div>
+          </div>
+
+          <div>
+            <h4 className="text-sm font-medium text-gray-300 mb-3">Advanced Optimization</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm text-gray-400 mb-1 block">Optimizer</label>
+                <select
+                  value={config.optimizer}
+                  onChange={e => update('optimizer', e.target.value as TrainingConfig['optimizer'])}
+                  disabled={disabled}
+                  data-testid="training-optimizer-select"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                >
+                  {(options?.enums.optimizer ?? ['adamw', 'adam']).map(optimizer => (
+                    <option key={optimizer} value={optimizer}>{optimizer}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-gray-400 mb-1 block">Scheduler</label>
+                <select
+                  value={config.scheduler}
+                  onChange={e => update('scheduler', e.target.value as TrainingConfig['scheduler'])}
+                  disabled={disabled}
+                  data-testid="training-scheduler-select"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                >
+                  {(options?.enums.scheduler ?? ['exponential', 'none']).map(scheduler => (
+                    <option key={scheduler} value={scheduler}>{scheduler}</option>
+                  ))}
+                </select>
+              </div>
+              <NumberInput
+                label="Weight Decay"
+                value={config.weight_decay}
+                onChange={v => update('weight_decay', v)}
+                min={0}
+                scientific
+                disabled={disabled}
+              />
+              <NumberInput
+                label="Scheduler Gamma"
+                value={config.scheduler_gamma}
+                onChange={v => update('scheduler_gamma', v)}
+                min={0.5}
+                max={1}
+                disabled={disabled || config.scheduler === 'none'}
+              />
+              <NumberInput
+                label="Adam Beta 1"
+                value={config.adam_beta1}
+                onChange={v => update('adam_beta1', v)}
+                min={0}
+                max={0.999}
+                disabled={disabled}
+              />
+              <NumberInput
+                label="Adam Beta 2"
+                value={config.adam_beta2}
+                onChange={v => update('adam_beta2', v)}
+                min={0}
+                max={0.9999}
+                disabled={disabled}
+              />
+              <NumberInput
+                label="Early Stop Patience"
+                value={config.early_stopping_patience}
+                onChange={v => update('early_stopping_patience', Math.round(v))}
+                min={0}
+                tooltip="0 disables early stopping."
+                disabled={disabled}
+              />
+              <NumberInput
+                label="Early Stop Min Delta"
+                value={config.early_stopping_min_delta}
+                onChange={v => update('early_stopping_min_delta', v)}
+                min={0}
+                disabled={disabled || config.early_stopping_patience === 0}
               />
             </div>
           </div>

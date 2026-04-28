@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +169,10 @@ class Trainer:
         self.cancel_event = None
         self.on_batch_end = None
         self.checkpoint_interval_steps = int(self.config.get('checkpoint_interval_steps', 0))
+        self.validation_split = float(self.config.get('validation_split', 0.0) or 0.0)
+        self.early_stopping_patience = int(self.config.get('early_stopping_patience', 0) or 0)
+        self.early_stopping_min_delta = float(self.config.get('early_stopping_min_delta', 0.0) or 0.0)
+        self._early_stopping_wait = 0
 
         # Shared encoders for feature extraction (frozen during training)
         # Use ContentVec backend with 768-dim output for best quality
@@ -184,14 +188,28 @@ class Trainer:
         self.speaker_embedding: Optional[torch.Tensor] = None
         self.sample_rate = self.config.get('sample_rate', 22050)
 
-        # Optimizer with proper weight decay
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=self.lr,
-            betas=(0.8, 0.99), weight_decay=0.01,
+        betas = (
+            float(self.config.get('adam_beta1', 0.8)),
+            float(self.config.get('adam_beta2', 0.99)),
         )
-        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            self.optimizer, gamma=0.999,
-        )
+        weight_decay = float(self.config.get('weight_decay', 0.01))
+        optimizer_name = str(self.config.get('optimizer', 'adamw')).lower()
+        if optimizer_name == 'adam':
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(), lr=self.lr, betas=betas, weight_decay=weight_decay,
+            )
+        else:
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(), lr=self.lr, betas=betas, weight_decay=weight_decay,
+            )
+
+        scheduler_name = str(self.config.get('scheduler', 'exponential')).lower()
+        if scheduler_name == 'none':
+            self.scheduler = None
+        else:
+            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                self.optimizer, gamma=float(self.config.get('scheduler_gamma', 0.999)),
+            )
 
     def train(self, train_dir: str, val_dir: Optional[str] = None,
               resume_from: Optional[str] = None):
@@ -200,6 +218,16 @@ class Trainer:
             self.load_checkpoint(resume_from)
 
         train_dataset = VoiceDataset(train_dir, segment_length=32768)
+        val_dataset = None
+        if not val_dir and 0.0 < self.validation_split < 1.0 and len(train_dataset) > 1:
+            val_size = max(1, int(round(len(train_dataset) * self.validation_split)))
+            train_size = len(train_dataset) - val_size
+            if train_size > 0:
+                train_dataset, val_dataset = random_split(
+                    train_dataset,
+                    [train_size, val_size],
+                    generator=torch.Generator().manual_seed(42),
+                )
         # drop_last=False when dataset < batch_size to ensure training can proceed
         actual_batch_size = min(self.batch_size, len(train_dataset))
         train_loader = DataLoader(
@@ -211,6 +239,8 @@ class Trainer:
         val_loader = None
         if val_dir and Path(val_dir).exists():
             val_dataset = VoiceDataset(val_dir, segment_length=32768)
+
+        if val_dataset is not None:
             val_loader = DataLoader(val_dataset, batch_size=self.batch_size,
                                     shuffle=False, num_workers=2)
 
@@ -223,24 +253,52 @@ class Trainer:
             epoch_loss = self._train_epoch(train_loader, epoch)
             self.train_losses.append(epoch_loss)
 
-            if val_loader and (epoch + 1) % self.save_every == 0:
+            val_loss = None
+            if val_loader:
                 val_loss = self.assess(val_loader)
                 logger.info(f"Epoch {epoch+1}: train_loss={epoch_loss:.4f}, "
                             f"val_loss={val_loss:.4f}")
-                if val_loss < self.best_loss:
-                    self.best_loss = val_loss
-                    self.save_checkpoint(self.checkpoint_dir / 'best.pth')
             else:
                 logger.info(f"Epoch {epoch+1}: train_loss={epoch_loss:.4f}")
+
+            monitored_loss = val_loss if val_loss is not None else epoch_loss
+            previous_best_loss = self.best_loss
+            should_stop = self._should_stop_early(monitored_loss)
+            if val_loader and self.best_loss < previous_best_loss:
+                self.save_checkpoint(self.checkpoint_dir / 'best.pth')
 
             if (epoch + 1) % self.save_every == 0:
                 self.save_checkpoint(
                     self.checkpoint_dir / f'checkpoint_epoch_{epoch+1}.pth')
 
-            self.scheduler.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
+
+            if should_stop:
+                logger.info(
+                    "Early stopping after epoch %s: best_loss=%.4f, current_loss=%.4f",
+                    epoch + 1,
+                    self.best_loss,
+                    monitored_loss,
+                )
+                break
 
         self.save_checkpoint(self.checkpoint_dir / 'final.pth')
         logger.info("Training complete")
+
+    def _should_stop_early(self, monitored_loss: float) -> bool:
+        """Return True when configured early stopping has run out of patience."""
+        if self.early_stopping_patience <= 0:
+            return False
+
+        improvement = self.best_loss - float(monitored_loss)
+        if improvement > self.early_stopping_min_delta:
+            self.best_loss = float(monitored_loss)
+            self._early_stopping_wait = 0
+            return False
+
+        self._early_stopping_wait += 1
+        return self._early_stopping_wait >= self.early_stopping_patience
 
     def _train_epoch(self, loader: DataLoader, epoch: int) -> float:
         self.model.train()
@@ -413,7 +471,7 @@ class Trainer:
             checkpoint = {
                 'model': self.model.state_dict(),
                 'optimizer': self.optimizer.state_dict(),
-                'scheduler': self.scheduler.state_dict(),
+                'scheduler': self.scheduler.state_dict() if self.scheduler is not None else None,
                 'global_step': self.global_step,
                 'current_epoch': self.current_epoch,
                 'best_loss': self.best_loss,
@@ -447,7 +505,7 @@ class Trainer:
             # Legacy checkpoints may have content_proj - ignore it (now using 768-dim natively)
             if 'optimizer' in checkpoint:
                 self.optimizer.load_state_dict(checkpoint['optimizer'])
-            if 'scheduler' in checkpoint:
+            if self.scheduler is not None and checkpoint.get('scheduler'):
                 self.scheduler.load_state_dict(checkpoint['scheduler'])
             logger.info(f"Loaded full checkpoint from {path}")
 

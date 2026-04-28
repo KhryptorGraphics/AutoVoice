@@ -382,12 +382,52 @@ export interface TrainingConfig {
   epochs: number
   warmup_steps: number
   max_grad_norm: number
+  // Operator/runtime controls
+  preset_id: string
+  device_id: string
+  precision: 'fp32' | 'fp16' | 'bf16'
+  optimizer: 'adamw' | 'adam'
+  weight_decay: number
+  adam_beta1: number
+  adam_beta2: number
+  scheduler: 'exponential' | 'none'
+  scheduler_gamma: number
+  checkpoint_every_steps: number
+  validation_split: number
+  early_stopping_patience: number
+  early_stopping_min_delta: number
   // EWC configuration (prevent catastrophic forgetting)
   use_ewc: boolean
   ewc_lambda: number
   // Prior preservation
   use_prior_preservation: boolean
   prior_loss_weight: number
+}
+
+export interface TrainingPreset {
+  id: string
+  label: string
+  description: string
+  requires_full_training?: boolean
+  requires_existing_full_model?: boolean
+  config: Partial<TrainingConfig>
+}
+
+export interface TrainingConfigOptions {
+  schema_version: number
+  defaults: TrainingConfig
+  limits: Record<string, { min: number; max: number }>
+  enums: {
+    training_mode: Array<'lora' | 'full'>
+    initialization_mode: Array<'scratch' | 'continue'>
+    precision: Array<'fp32' | 'fp16' | 'bf16'>
+    optimizer: Array<'adamw' | 'adam'>
+    scheduler: Array<'exponential' | 'none'>
+    lora_target_modules: string[]
+  }
+  presets: TrainingPreset[]
+  devices: Array<{ id: string; label: string; available: boolean; reason?: string; memory_total_gb?: number }>
+  full_model_unlock_minutes: number
 }
 
 // Default training config matching backend defaults
@@ -403,6 +443,19 @@ export const DEFAULT_TRAINING_CONFIG: TrainingConfig = {
   epochs: 100,
   warmup_steps: 100,
   max_grad_norm: 1.0,
+  preset_id: 'custom',
+  device_id: 'auto',
+  precision: 'fp32',
+  optimizer: 'adamw',
+  weight_decay: 0.01,
+  adam_beta1: 0.8,
+  adam_beta2: 0.99,
+  scheduler: 'exponential',
+  scheduler_gamma: 0.999,
+  checkpoint_every_steps: 1000,
+  validation_split: 0,
+  early_stopping_patience: 0,
+  early_stopping_min_delta: 0,
   use_ewc: true,
   ewc_lambda: 1000.0,
   use_prior_preservation: false,
@@ -494,6 +547,8 @@ export interface TrainingSample {
   duration_seconds: number
   sample_rate: number
   created: string
+  metadata?: Record<string, unknown>
+  quality_metadata?: Record<string, unknown>
   extra_metadata?: Record<string, unknown>
 }
 
@@ -1073,6 +1128,10 @@ class ApiService {
 
   async getTrainingJob(jobId: string): Promise<TrainingJob> {
     return this.request(`/training/jobs/${jobId}`)
+  }
+
+  async getTrainingConfigOptions(): Promise<TrainingConfigOptions> {
+    return this.request('/training/config-options')
   }
 
   async createTrainingJob(profileId: string, sampleIds: string[], config?: Partial<TrainingConfig>): Promise<TrainingJob> {

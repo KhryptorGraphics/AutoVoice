@@ -229,6 +229,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   let conversionHistoryDeletes = 0
   let checkpointRollbacks = 0
   let checkpointDeletes = 0
+  let lastTrainingPayload: Record<string, unknown> | null = null
   const conversionRecords = [
     {
       id: 'history-1',
@@ -562,7 +563,29 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
         duration_seconds: 12.5,
         sample_rate: 44100,
         created: '2026-04-18T00:00:00Z',
-        metadata: {},
+        metadata: { qa_status: 'pass' },
+      },
+      {
+        id: 'sample-2',
+        sample_id: 'sample-2',
+        profile_id: 'profile-1',
+        audio_path: '/tmp/sample-2.wav',
+        file_path: '/tmp/sample-2.wav',
+        duration_seconds: 18.25,
+        sample_rate: 44100,
+        created: '2026-04-18T00:05:00Z',
+        metadata: { qa_status: 'pass' },
+      },
+      {
+        id: 'sample-failed',
+        sample_id: 'sample-failed',
+        profile_id: 'profile-1',
+        audio_path: '/tmp/sample-failed.wav',
+        file_path: '/tmp/sample-failed.wav',
+        duration_seconds: 9.5,
+        sample_rate: 44100,
+        created: '2026-04-18T00:10:00Z',
+        metadata: { qa_status: 'fail' },
       },
     ])
   })
@@ -679,7 +702,90 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     ])
   })
 
+  await page.route('**/api/v1/training/config-options', async (route) => {
+    return jsonResponse(route, {
+      schema_version: 1,
+      defaults: {
+        training_mode: 'lora',
+        initialization_mode: 'scratch',
+        lora_rank: 8,
+        lora_alpha: 16,
+        lora_dropout: 0.1,
+        lora_target_modules: ['q_proj', 'v_proj', 'content_encoder'],
+        learning_rate: 0.0001,
+        batch_size: 4,
+        epochs: 100,
+        warmup_steps: 100,
+        max_grad_norm: 1.0,
+        preset_id: 'custom',
+        device_id: 'auto',
+        precision: 'fp32',
+        optimizer: 'adamw',
+        weight_decay: 0.01,
+        adam_beta1: 0.8,
+        adam_beta2: 0.99,
+        scheduler: 'exponential',
+        scheduler_gamma: 0.999,
+        checkpoint_every_steps: 1000,
+        validation_split: 0,
+        early_stopping_patience: 0,
+        early_stopping_min_delta: 0,
+        use_ewc: true,
+        ewc_lambda: 1000,
+        use_prior_preservation: false,
+        prior_loss_weight: 0.5,
+      },
+      limits: {},
+      enums: {
+        training_mode: ['lora', 'full'],
+        initialization_mode: ['scratch', 'continue'],
+        precision: ['fp32', 'fp16', 'bf16'],
+        optimizer: ['adamw', 'adam'],
+        scheduler: ['exponential', 'none'],
+        lora_target_modules: ['q_proj', 'v_proj', 'k_proj', 'o_proj', 'content_encoder'],
+      },
+      presets: [
+        {
+          id: 'quality_lora',
+          label: 'Quality LoRA',
+          description: 'Higher-capacity LoRA for production offline conversion quality.',
+          config: {
+            training_mode: 'lora',
+            initialization_mode: 'scratch',
+            preset_id: 'quality_lora',
+            lora_rank: 16,
+            lora_alpha: 32,
+            epochs: 120,
+            learning_rate: 0.000075,
+            batch_size: 2,
+            precision: 'fp16',
+            checkpoint_every_steps: 500,
+          },
+        },
+      ],
+      devices: [
+        { id: 'auto', label: 'Auto CUDA device', available: true },
+        { id: 'cuda:0', label: 'NVIDIA Thor', available: true, memory_total_gb: 64 },
+      ],
+      full_model_unlock_minutes: 30,
+    })
+  })
+
   await page.route(/\/api\/v1\/training\/jobs(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      lastTrainingPayload = route.request().postDataJSON() as Record<string, unknown>
+      return jsonResponse(route, {
+        job_id: 'job-created',
+        profile_id: 'profile-1',
+        status: 'running',
+        created_at: '2026-04-18T00:00:00Z',
+        started_at: '2026-04-18T00:01:00Z',
+        progress: 1,
+        sample_ids: (lastTrainingPayload.sample_ids as string[]) ?? [],
+        is_paused: false,
+        config: lastTrainingPayload.config,
+      }, 201)
+    }
     return jsonResponse(route, [
       {
         job_id: 'job-1',
@@ -977,5 +1083,6 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     getCheckpointRollbacks: () => checkpointRollbacks,
     getCheckpointDeletes: () => checkpointDeletes,
     getCheckpointCount: () => checkpoints.length,
+    getLastTrainingPayload: () => lastTrainingPayload,
   }
 }

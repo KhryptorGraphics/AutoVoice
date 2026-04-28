@@ -505,6 +505,38 @@ and asynchronous processing modes.
 
     # Training endpoints
     _spec_path(
+        path="/api/v1/training/config-options",
+        operations={
+            "get": {
+                "tags": ["Training"],
+                "summary": "Get training configuration options",
+                "description": "Return backend-supported training defaults, presets, limits, enums, and available CUDA devices for the frontend training console.",
+                "responses": {
+                    "200": {
+                        "description": "Training configuration options",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "schema_version": {"type": "integer"},
+                                        "defaults": {"type": "object"},
+                                        "limits": {"type": "object"},
+                                        "enums": {"type": "object"},
+                                        "presets": {"type": "array", "items": {"type": "object"}},
+                                        "devices": {"type": "array", "items": {"type": "object"}},
+                                        "full_model_unlock_minutes": {"type": "integer"},
+                                    },
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    )
+
+    _spec_path(
         path="/api/v1/training/jobs",
         operations={
             "get": {
@@ -566,29 +598,68 @@ and asynchronous processing modes.
                                                 "enum": ["lora", "full"],
                                                 "default": "lora"
                                             },
+                                            "initialization_mode": {
+                                                "type": "string",
+                                                "enum": ["scratch", "continue"],
+                                                "default": "scratch"
+                                            },
+                                            "preset_id": {
+                                                "type": "string",
+                                                "default": "custom"
+                                            },
+                                            "device_id": {
+                                                "type": "string",
+                                                "default": "auto"
+                                            },
+                                            "precision": {
+                                                "type": "string",
+                                                "enum": ["fp32", "fp16", "bf16"],
+                                                "default": "fp32"
+                                            },
                                             "epochs": {
                                                 "type": "integer",
                                                 "minimum": 1,
-                                                "maximum": 5000,
+                                                "maximum": 1000,
                                                 "default": 100
                                             },
                                             "batch_size": {
                                                 "type": "integer",
                                                 "minimum": 1,
-                                                "maximum": 64,
-                                                "default": 8
+                                                "maximum": 32,
+                                                "default": 4
                                             },
                                             "learning_rate": {
                                                 "type": "number",
-                                                "minimum": 0.00001,
+                                                "minimum": 0.000001,
                                                 "maximum": 0.01,
                                                 "default": 0.0001
                                             },
-                                            "adapter_type": {
+                                            "optimizer": {
                                                 "type": "string",
-                                                "enum": ["hq", "nvfp4", "unified"],
-                                                "default": "unified"
-                                            }
+                                                "enum": ["adamw", "adam"],
+                                                "default": "adamw"
+                                            },
+                                            "scheduler": {
+                                                "type": "string",
+                                                "enum": ["exponential", "none"],
+                                                "default": "exponential"
+                                            },
+                                            "checkpoint_every_steps": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "default": 1000
+                                            },
+                                            "validation_split": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 0.5,
+                                                "default": 0
+                                            },
+                                            "early_stopping_patience": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "default": 0
+                                            },
                                         }
                                     }
                                 }

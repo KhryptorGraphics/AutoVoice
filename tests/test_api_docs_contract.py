@@ -40,6 +40,7 @@ def test_openapi_json_documents_training_control_routes(docs_client):
     payload = response.get_json()
     paths = payload["paths"]
 
+    assert "/api/v1/training/config-options" in paths
     assert "/api/v1/training/jobs/{job_id}" in paths
     assert "/api/v1/training/jobs/{job_id}/cancel" in paths
     assert "/api/v1/training/jobs/{job_id}/pause" in paths

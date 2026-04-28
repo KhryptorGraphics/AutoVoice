@@ -43,3 +43,19 @@ def test_voice_profile_training_readiness_covers_threshold_states():
     assert "Full model ready" in page
     assert "30m threshold met" in page
     assert "Needs more clean vocals" in page
+
+
+def test_training_console_exposes_granular_backend_driven_controls():
+    api = _read("frontend/src/services/api.ts")
+    panel = _read("frontend/src/components/TrainingConfigPanel.tsx")
+    profile = _read("frontend/src/pages/VoiceProfilePage.tsx")
+    workflow = _read("frontend/src/pages/ConversionWorkflowPage.tsx")
+
+    assert "getTrainingConfigOptions" in api
+    assert "/training/config-options" in api
+    assert "checkpoint_every_steps" in api
+    assert "training-preset-selector" in panel
+    assert "training-runtime-controls" in panel
+    assert "training-optimizer-select" in panel
+    assert "training-sample-selection-summary" in profile
+    assert "workflow-training-sample-selector" in workflow

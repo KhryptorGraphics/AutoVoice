@@ -101,6 +101,19 @@ class TrainingConfig:
     epochs: int = 10
     warmup_steps: int = 100
     max_grad_norm: float = 1.0
+    preset_id: str = "custom"
+    device_id: str = "auto"
+    precision: str = "fp32"
+    optimizer: str = "adamw"
+    weight_decay: float = 0.01
+    adam_beta1: float = 0.8
+    adam_beta2: float = 0.99
+    scheduler: str = "exponential"
+    scheduler_gamma: float = 0.999
+    checkpoint_every_steps: int = 1000
+    validation_split: float = 0.0
+    early_stopping_patience: int = 0
+    early_stopping_min_delta: float = 0.0
 
     # EWC configuration (prevent catastrophic forgetting)
     use_ewc: bool = True
@@ -978,7 +991,15 @@ class TrainingJobManager:
                 f"Job {job_id} is not in pending state (current: {job.status})"
             )
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        requested_device = (job.config.device_id if job.config else "auto") or "auto"
+        if requested_device == "auto":
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            device = torch.device(requested_device)
+            if device.type != "cuda":
+                raise RuntimeError("Training execution requires a CUDA device")
+            if device.index is not None and device.index >= torch.cuda.device_count():
+                raise RuntimeError(f"Requested CUDA device is unavailable: {requested_device}")
 
         # Mark job as running
         gpu_device = device.index if device.type == "cuda" else None
@@ -1065,13 +1086,27 @@ class TrainingJobManager:
                     epochs = requested_epochs + resume_epoch if initialization_state["resume_checkpoint"] else requested_epochs
                     learning_rate = job.config.learning_rate if job.config else default_lr
 
+                    checkpoint_every_steps = (
+                        job.config.checkpoint_every_steps if job.config else 1000
+                    )
                     config = {
                         'epochs': epochs,
                         'learning_rate': learning_rate,
                         'batch_size': batch_size,
                         'checkpoint_dir': str(self._resolve_checkpoints_dir(job.profile_id)),
-                        'checkpoint_interval_steps': 1000,
+                        'checkpoint_interval_steps': checkpoint_every_steps,
                         'n_mels': 80,
+                        'gradient_clip': job.config.max_grad_norm if job.config else 1.0,
+                        'optimizer': job.config.optimizer if job.config else 'adamw',
+                        'weight_decay': job.config.weight_decay if job.config else 0.01,
+                        'adam_beta1': job.config.adam_beta1 if job.config else 0.8,
+                        'adam_beta2': job.config.adam_beta2 if job.config else 0.99,
+                        'scheduler': job.config.scheduler if job.config else 'exponential',
+                        'scheduler_gamma': job.config.scheduler_gamma if job.config else 0.999,
+                        'precision': job.config.precision if job.config else 'fp32',
+                        'validation_split': job.config.validation_split if job.config else 0.0,
+                        'early_stopping_patience': job.config.early_stopping_patience if job.config else 0,
+                        'early_stopping_min_delta': job.config.early_stopping_min_delta if job.config else 0.0,
                     }
 
                     model = CoMoSVCDecoder(
@@ -1185,6 +1220,7 @@ class TrainingJobManager:
                         'resume_checkpoint': initialization_state["resume_checkpoint"],
                         'resumed_from_epoch': resume_epoch if initialization_state["resume_checkpoint"] else None,
                         'artifact_reused': initialization_state["artifact_path"],
+                        'training_config': job.config.to_dict() if job.config else {},
                     }
 
                     # Mark as completed

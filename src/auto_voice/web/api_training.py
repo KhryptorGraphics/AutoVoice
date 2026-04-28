@@ -2,16 +2,126 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 from flask import Blueprint, jsonify, request
 
 _deps: Dict[str, Any] = {}
 
 
+TRAINING_CONFIG_LIMITS: Dict[str, Dict[str, float]] = {
+    'lora_rank': {'min': 1, 'max': 64},
+    'lora_alpha': {'min': 1, 'max': 256},
+    'lora_dropout': {'min': 0.0, 'max': 0.5},
+    'learning_rate': {'min': 1e-6, 'max': 1e-2},
+    'batch_size': {'min': 1, 'max': 32},
+    'epochs': {'min': 1, 'max': 1000},
+    'warmup_steps': {'min': 0, 'max': 10000},
+    'max_grad_norm': {'min': 0.1, 'max': 10.0},
+    'weight_decay': {'min': 0.0, 'max': 1.0},
+    'adam_beta1': {'min': 0.0, 'max': 0.999},
+    'adam_beta2': {'min': 0.0, 'max': 0.9999},
+    'scheduler_gamma': {'min': 0.5, 'max': 1.0},
+    'checkpoint_every_steps': {'min': 0, 'max': 100000},
+    'validation_split': {'min': 0.0, 'max': 0.5},
+    'early_stopping_patience': {'min': 0, 'max': 100},
+    'early_stopping_min_delta': {'min': 0.0, 'max': 1.0},
+    'ewc_lambda': {'min': 0.0, 'max': 100000.0},
+    'prior_loss_weight': {'min': 0.0, 'max': 1.0},
+}
+
+TRAINING_CONFIG_ENUMS = {
+    'training_mode': ['lora', 'full'],
+    'initialization_mode': ['scratch', 'continue'],
+    'precision': ['fp32', 'fp16', 'bf16'],
+    'optimizer': ['adamw', 'adam'],
+    'scheduler': ['exponential', 'none'],
+    'lora_target_modules': ['q_proj', 'v_proj', 'k_proj', 'o_proj', 'content_encoder'],
+}
+
+TRAINING_PRESETS = [
+    {
+        'id': 'fast_lora',
+        'label': 'Fast LoRA',
+        'description': 'Quick adapter training for small clean vocal sets.',
+        'config': {
+            'training_mode': 'lora',
+            'initialization_mode': 'scratch',
+            'lora_rank': 8,
+            'lora_alpha': 16,
+            'epochs': 50,
+            'learning_rate': 1e-4,
+            'batch_size': 4,
+            'precision': 'fp16',
+            'checkpoint_every_steps': 1000,
+        },
+    },
+    {
+        'id': 'quality_lora',
+        'label': 'Quality LoRA',
+        'description': 'Higher-capacity LoRA for production offline conversion quality.',
+        'config': {
+            'training_mode': 'lora',
+            'initialization_mode': 'scratch',
+            'lora_rank': 16,
+            'lora_alpha': 32,
+            'epochs': 120,
+            'learning_rate': 7.5e-5,
+            'batch_size': 2,
+            'precision': 'fp16',
+            'checkpoint_every_steps': 500,
+        },
+    },
+    {
+        'id': 'continue_lora',
+        'label': 'Continue LoRA',
+        'description': 'Resume an existing adapter from its latest checkpoint or artifact.',
+        'config': {
+            'training_mode': 'lora',
+            'initialization_mode': 'continue',
+            'epochs': 40,
+            'learning_rate': 5e-5,
+            'checkpoint_every_steps': 500,
+        },
+    },
+    {
+        'id': 'full_model_scratch',
+        'label': 'Full Model Scratch',
+        'description': 'Dedicated target-user model unlocked after 30 clean vocal minutes.',
+        'requires_full_training': True,
+        'config': {
+            'training_mode': 'full',
+            'initialization_mode': 'scratch',
+            'epochs': 500,
+            'learning_rate': 5e-5,
+            'batch_size': 1,
+            'precision': 'fp16',
+            'checkpoint_every_steps': 500,
+        },
+    },
+    {
+        'id': 'continue_full_model',
+        'label': 'Continue Full Model',
+        'description': 'Resume a dedicated full model from checkpoint or artifact.',
+        'requires_full_training': True,
+        'requires_existing_full_model': True,
+        'config': {
+            'training_mode': 'full',
+            'initialization_mode': 'continue',
+            'epochs': 120,
+            'learning_rate': 2.5e-5,
+            'batch_size': 1,
+            'precision': 'fp16',
+            'checkpoint_every_steps': 500,
+        },
+    },
+]
+
+
 def register_training_routes(api_bp: Blueprint, **deps: Any) -> None:
     """Register the training/checkpoint/retrain route family on the shared API blueprint."""
     _deps.update(deps)
+    api_bp.add_url_rule('/training/config-options', view_func=get_training_config_options, methods=['GET'])
     api_bp.add_url_rule('/training/jobs', view_func=list_training_jobs, methods=['GET'])
     api_bp.add_url_rule('/training/jobs', view_func=create_training_job, methods=['POST'])
     api_bp.add_url_rule('/training/jobs/<job_id>', view_func=get_training_job, methods=['GET'])
@@ -56,6 +166,128 @@ def _save_training_job(job: dict) -> dict:
     sanitized = _sanitize_job(job)
     _dep('get_state_store')().save_training_job(sanitized)
     return sanitized
+
+
+def _available_training_devices() -> list[dict]:
+    devices = [{'id': 'auto', 'label': 'Auto CUDA device', 'available': True}]
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            for idx in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(idx)
+                devices.append({
+                    'id': f'cuda:{idx}',
+                    'label': getattr(props, 'name', f'CUDA {idx}'),
+                    'available': True,
+                    'memory_total_gb': round(float(props.total_memory) / (1024 ** 3), 2),
+                })
+        else:
+            devices[0]['available'] = False
+            devices[0]['reason'] = 'cuda_unavailable'
+    except Exception as exc:
+        devices[0]['available'] = False
+        devices[0]['reason'] = str(exc)
+    return devices
+
+
+def get_training_config_options():
+    """Return backend-supported training controls, presets, and validation limits."""
+    return jsonify({
+        'schema_version': 1,
+        'defaults': {
+            'training_mode': 'lora',
+            'initialization_mode': 'scratch',
+            'lora_rank': 8,
+            'lora_alpha': 16,
+            'lora_dropout': 0.1,
+            'lora_target_modules': ['q_proj', 'v_proj', 'content_encoder'],
+            'learning_rate': 1e-4,
+            'batch_size': 4,
+            'epochs': 100,
+            'warmup_steps': 100,
+            'max_grad_norm': 1.0,
+            'preset_id': 'custom',
+            'device_id': 'auto',
+            'precision': 'fp32',
+            'optimizer': 'adamw',
+            'weight_decay': 0.01,
+            'adam_beta1': 0.8,
+            'adam_beta2': 0.99,
+            'scheduler': 'exponential',
+            'scheduler_gamma': 0.999,
+            'checkpoint_every_steps': 1000,
+            'validation_split': 0.0,
+            'early_stopping_patience': 0,
+            'early_stopping_min_delta': 0.0,
+            'use_ewc': True,
+            'ewc_lambda': 1000.0,
+            'use_prior_preservation': False,
+            'prior_loss_weight': 0.5,
+        },
+        'limits': TRAINING_CONFIG_LIMITS,
+        'enums': TRAINING_CONFIG_ENUMS,
+        'presets': TRAINING_PRESETS,
+        'devices': _available_training_devices(),
+        'full_model_unlock_minutes': 30,
+    })
+
+
+def _normalize_training_config_payload(config_payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    if not isinstance(config_payload, dict):
+        return None, 'config must be an object'
+
+    normalized = dict(config_payload)
+    normalized.setdefault('training_mode', 'lora')
+    normalized.setdefault('initialization_mode', 'scratch')
+    normalized.setdefault('precision', 'fp32')
+    normalized.setdefault('optimizer', 'adamw')
+    normalized.setdefault('scheduler', 'exponential')
+    normalized.setdefault('device_id', 'auto')
+    normalized.setdefault('preset_id', 'custom')
+
+    for key, allowed in TRAINING_CONFIG_ENUMS.items():
+        value = normalized.get(key)
+        if value is None:
+            continue
+        if key == 'lora_target_modules':
+            if not isinstance(value, list) or any(item not in allowed for item in value):
+                return None, f'{key} must be a list containing only: {", ".join(allowed)}'
+        elif value not in allowed:
+            return None, f'{key} must be one of: {", ".join(allowed)}'
+
+    device_id = normalized.get('device_id', 'auto')
+    if device_id != 'auto':
+        try:
+            import torch
+
+            if not isinstance(device_id, str) or not device_id.startswith('cuda:'):
+                return None, 'device_id must be "auto" or a CUDA device like "cuda:0"'
+            device_index = int(device_id.split(':', 1)[1])
+            if device_index < 0 or device_index >= torch.cuda.device_count():
+                return None, f'device_id is unavailable: {device_id}'
+        except ValueError:
+            return None, 'device_id must be "auto" or a CUDA device like "cuda:0"'
+        except Exception as exc:
+            return None, f'Unable to validate device_id: {exc}'
+
+    integer_fields = {'lora_rank', 'lora_alpha', 'batch_size', 'epochs', 'warmup_steps', 'checkpoint_every_steps', 'early_stopping_patience'}
+    for key, bounds in TRAINING_CONFIG_LIMITS.items():
+        if key not in normalized or normalized[key] is None:
+            continue
+        try:
+            value = int(normalized[key]) if key in integer_fields else float(normalized[key])
+        except (TypeError, ValueError):
+            return None, f'{key} must be numeric'
+        if value < bounds['min'] or value > bounds['max']:
+            return None, f'{key} must be between {bounds["min"]} and {bounds["max"]}'
+        normalized[key] = value
+
+    for key in ('use_ewc', 'use_prior_preservation'):
+        if key in normalized:
+            normalized[key] = bool(normalized[key])
+
+    return normalized, None
 
 
 def _queue_lora_training_job(
@@ -126,8 +358,10 @@ def create_training_job():
             return _dep('validation_error_response')('profile_id is required')
 
         config_payload = data.get('config') or {}
-        if not isinstance(config_payload, dict):
-            return _dep('validation_error_response')('config must be an object')
+        normalized_config, config_error = _normalize_training_config_payload(config_payload)
+        if config_error:
+            return _dep('validation_error_response')(config_error)
+        assert normalized_config is not None
 
         store = _dep('get_profile_store')()
         profile = _dep('ensure_profile_in_store')(profile_id)
@@ -142,18 +376,8 @@ def create_training_job():
                 'Source artist profiles are reference voices extracted from songs.'
             )
 
-        training_mode = config_payload.get('training_mode', 'lora')
-        if training_mode not in {'lora', 'full'}:
-            return _dep('validation_error_response')('training_mode must be "lora" or "full"')
-        initialization_mode = config_payload.get('initialization_mode', 'scratch')
-        if initialization_mode not in {'scratch', 'continue'}:
-            return _dep('validation_error_response')(
-                'initialization_mode must be "scratch" or "continue"'
-            )
-
-        normalized_config = dict(config_payload)
-        normalized_config['training_mode'] = training_mode
-        normalized_config['initialization_mode'] = initialization_mode
+        training_mode = normalized_config['training_mode']
+        initialization_mode = normalized_config['initialization_mode']
         job_manager = _dep('get_training_job_manager')()
 
         from ..training.job_manager import TrainingConfig

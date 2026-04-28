@@ -264,6 +264,10 @@ class TestTrainerInitialization:
             'gradient_clip': 5.0,
             'save_every': 5,
             'log_every': 50,
+            'checkpoint_interval_steps': 25,
+            'validation_split': 0.2,
+            'early_stopping_patience': 3,
+            'early_stopping_min_delta': 0.001,
         }
 
         with patch.object(model, 'to', return_value=model):
@@ -275,6 +279,10 @@ class TestTrainerInitialization:
         assert trainer.gradient_clip == 5.0
         assert trainer.save_every == 5
         assert trainer.log_every == 50
+        assert trainer.checkpoint_interval_steps == 25
+        assert trainer.validation_split == 0.2
+        assert trainer.early_stopping_patience == 3
+        assert trainer.early_stopping_min_delta == 0.001
 
     def test_cuda_device_auto_selection(self):
         """Trainer auto-selects CUDA if available."""
@@ -326,6 +334,44 @@ class TestTrainerInitialization:
 
         assert isinstance(trainer.scheduler, torch.optim.lr_scheduler.ExponentialLR)
         assert trainer.scheduler.gamma == 0.999
+
+    def test_granular_optimizer_and_scheduler_config(self):
+        """Trainer honors GUI-submitted optimizer and scheduler controls."""
+        from auto_voice.training.trainer import Trainer
+
+        model = MockModel()
+        config = {
+            'optimizer': 'adam',
+            'weight_decay': 0.02,
+            'adam_beta1': 0.7,
+            'adam_beta2': 0.95,
+            'scheduler': 'none',
+        }
+
+        with patch.object(model, 'to', return_value=model):
+            trainer = Trainer(model, config=config, device='cpu')
+
+        assert isinstance(trainer.optimizer, torch.optim.Adam)
+        assert trainer.optimizer.defaults['betas'] == (0.7, 0.95)
+        assert trainer.optimizer.defaults['weight_decay'] == 0.02
+        assert trainer.scheduler is None
+
+    def test_early_stopping_patience(self):
+        """Trainer stops after configured non-improving epochs."""
+        from auto_voice.training.trainer import Trainer
+
+        model = MockModel()
+
+        with patch.object(model, 'to', return_value=model):
+            trainer = Trainer(
+                model,
+                config={'early_stopping_patience': 2, 'early_stopping_min_delta': 0.1},
+                device='cpu',
+            )
+
+        assert trainer._should_stop_early(10.0) is False
+        assert trainer._should_stop_early(10.05) is False
+        assert trainer._should_stop_early(10.04) is True
 
     def test_initial_state(self):
         """Trainer initializes with correct initial state."""

@@ -70,11 +70,16 @@ def audio_file():
 
 def _write_wav(path: Path, duration_seconds: float = 1.0, sample_rate: int = 22050) -> None:
     frames = int(duration_seconds * sample_rate)
+    samples = (
+        (np.sin(2 * np.pi * 220 * np.arange(frames) / sample_rate) * 12000)
+        .astype(np.int16)
+        .tobytes()
+    )
     with wave.open(str(path), 'wb') as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)
         wav_file.setframerate(sample_rate)
-        wav_file.writeframes(b'\x00' * frames * 2)
+        wav_file.writeframes(samples)
 
 
 def _create_profile_with_sample(app_with_training, *, profile_id: str, profile_role: str, duration_seconds: float) -> str:
@@ -132,6 +137,18 @@ class TestListTrainingJobs:
 
 class TestCreateTrainingJob:
     """Test POST /api/v1/training/jobs endpoint."""
+
+    def test_training_config_options_documents_supported_controls(self, client):
+        response = client.get('/api/v1/training/config-options')
+
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data['schema_version'] == 1
+        assert 'quality_lora' in {preset['id'] for preset in data['presets']}
+        assert data['defaults']['optimizer'] == 'adamw'
+        assert 'checkpoint_every_steps' in data['limits']
+        assert 'fp16' in data['enums']['precision']
+        assert data['devices'][0]['id'] == 'auto'
 
     def test_create_job_missing_profile_id(self, client):
         """Returns 400 when profile_id is missing."""
@@ -232,6 +249,74 @@ class TestCreateTrainingJob:
         assert response.status_code == 400
         data = json.loads(response.data)
         assert 'Only target user profiles can be trained' in data['error']
+
+    def test_create_job_persists_granular_training_config(self, client, app_with_training, monkeypatch):
+        """Granular frontend training controls round-trip through job creation."""
+        from auto_voice.training.job_manager import TrainingJobManager
+
+        monkeypatch.setattr(TrainingJobManager, 'execute_job', lambda self, job_id: None)
+        profile_id = _create_profile_with_sample(
+            app_with_training,
+            profile_id='target-profile-granular',
+            profile_role='target_user',
+            duration_seconds=240.0,
+        )
+
+        response = client.post(
+            '/api/v1/training/jobs',
+            json={
+                'profile_id': profile_id,
+                'config': {
+                    'preset_id': 'quality_lora',
+                    'training_mode': 'lora',
+                    'initialization_mode': 'scratch',
+                    'device_id': 'auto',
+                    'precision': 'fp16',
+                    'optimizer': 'adam',
+                    'scheduler': 'none',
+                    'learning_rate': 0.0002,
+                    'batch_size': 2,
+                    'epochs': 12,
+                    'checkpoint_every_steps': 250,
+                    'validation_split': 0.2,
+                    'early_stopping_patience': 3,
+                    'early_stopping_min_delta': 0.001,
+                },
+            },
+            content_type='application/json',
+        )
+
+        assert response.status_code == 201
+        data = json.loads(response.data)
+        assert data['config']['preset_id'] == 'quality_lora'
+        assert data['config']['precision'] == 'fp16'
+        assert data['config']['optimizer'] == 'adam'
+        assert data['config']['scheduler'] == 'none'
+        assert data['config']['checkpoint_every_steps'] == 250
+        assert data['config']['validation_split'] == 0.2
+
+    def test_create_job_rejects_invalid_granular_config(self, client, app_with_training):
+        profile_id = _create_profile_with_sample(
+            app_with_training,
+            profile_id='target-profile-invalid-config',
+            profile_role='target_user',
+            duration_seconds=240.0,
+        )
+
+        response = client.post(
+            '/api/v1/training/jobs',
+            json={
+                'profile_id': profile_id,
+                'config': {
+                    'precision': 'int4',
+                },
+            },
+            content_type='application/json',
+        )
+
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert 'precision must be one of' in data['error']
 
 
 class TestGetTrainingJob:

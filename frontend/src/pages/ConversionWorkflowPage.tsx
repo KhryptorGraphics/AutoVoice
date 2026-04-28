@@ -21,10 +21,25 @@ import {
   DEFAULT_TRAINING_CONFIG,
   type OfflinePipelineType,
   type TrainingConfig,
+  type TrainingConfigOptions,
   type TrainingJob,
   type TrainingSample,
   type VoiceProfile,
 } from '../services/api'
+
+function sampleQualityStatus(sample: TrainingSample): string {
+  const metadata = {
+    ...(sample.metadata ?? {}),
+    ...(sample.extra_metadata ?? {}),
+    ...(sample.quality_metadata ?? {}),
+  }
+  const status = metadata.qa_status ?? metadata.quality_status ?? metadata.status
+  return typeof status === 'string' ? status : 'pass'
+}
+
+function isTrainableSample(sample: TrainingSample): boolean {
+  return sampleQualityStatus(sample) !== 'fail'
+}
 
 const WORKFLOW_STEPS = [
   { key: 'uploaded', label: 'Uploaded' },
@@ -227,6 +242,8 @@ export function ConversionWorkflowPage() {
   const [targetProfileDetail, setTargetProfileDetail] = useState<(VoiceProfile & { training_history: TrainingJob[] }) | null>(null)
   const [targetSamples, setTargetSamples] = useState<TrainingSample[]>([])
   const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>(DEFAULT_TRAINING_CONFIG)
+  const [trainingOptions, setTrainingOptions] = useState<TrainingConfigOptions | null>(null)
+  const [selectedTrainingSampleIds, setSelectedTrainingSampleIds] = useState<Set<string>>(new Set())
   const [startingTraining, setStartingTraining] = useState(false)
   const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null)
   const [config, setConfig] = useState<ConversionConfig>(() => {
@@ -367,19 +384,23 @@ export function ConversionWorkflowPage() {
     if (!targetProfileId) {
       setTargetProfileDetail(null)
       setTargetSamples([])
+      setSelectedTrainingSampleIds(new Set())
       return
     }
 
     let cancelled = false
     const loadTargetProfile = async () => {
       try {
-        const [detail, samples] = await Promise.all([
+        const [detail, samples, options] = await Promise.all([
           apiService.getProfileDetails(targetProfileId),
           apiService.listSamples(targetProfileId),
+          apiService.getTrainingConfigOptions().catch(() => null),
         ])
         if (cancelled) return
         setTargetProfileDetail(detail)
         setTargetSamples(samples)
+        if (options) setTrainingOptions(options)
+        setSelectedTrainingSampleIds(new Set(samples.filter(isTrainableSample).map(sample => sample.id)))
       } catch (error) {
         console.error('Failed to load workflow target profile:', error)
       }
@@ -442,9 +463,15 @@ export function ConversionWorkflowPage() {
       toast.error('No samples are attached to the resolved target profile yet.')
       return
     }
+    if (selectedTrainingSampleIds.size === 0) {
+      toast.error('Select at least one QA-passing training sample.')
+      return
+    }
     setStartingTraining(true)
     try {
-      const sampleIds = targetSamples.map((sample) => sample.id)
+      const sampleIds = targetSamples
+        .filter((sample) => selectedTrainingSampleIds.has(sample.id))
+        .map((sample) => sample.id)
       const job = await apiService.createTrainingJob(workflow.resolved_target_profile_id, sampleIds, trainingConfig)
       const updated = await apiService.attachConversionWorkflowTrainingJob(workflow.workflow_id, job.job_id)
       setWorkflow(updated)
@@ -867,7 +894,7 @@ export function ConversionWorkflowPage() {
             </div>
             <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-3">
               <div className="text-xs uppercase tracking-wide text-gray-500">Samples</div>
-              <div className="mt-1 font-medium text-gray-100">{targetSamples.length}</div>
+              <div className="mt-1 font-medium text-gray-100">{selectedTrainingSampleIds.size}/{targetSamples.filter(isTrainableSample).length}</div>
             </div>
             <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-3">
               <div className="text-xs uppercase tracking-wide text-gray-500">Clean Vocals</div>
@@ -896,13 +923,68 @@ export function ConversionWorkflowPage() {
                 : `Full-model training unlocks after 30 minutes of clean user vocals. ${Math.max(remainingMinutes, 0).toFixed(1)} minutes remaining.`
             }
             continuationHint={continuationHint}
+            options={trainingOptions}
           />
+
+          <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-4 space-y-3" data-testid="workflow-training-sample-selector">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-medium text-white">Training Samples</h3>
+                <p className="text-sm text-gray-400">
+                  {selectedTrainingSampleIds.size} QA-passing samples selected for this workflow training job.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedTrainingSampleIds(new Set(targetSamples.filter(isTrainableSample).map(sample => sample.id)))}
+                  className="px-3 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600"
+                >
+                  Select trainable
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTrainingSampleIds(new Set())}
+                  className="px-3 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {targetSamples.map(sample => (
+                <label key={sample.id} className="flex items-center justify-between gap-3 rounded bg-gray-800 px-3 py-2 text-sm">
+                  <span className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedTrainingSampleIds.has(sample.id)}
+                      disabled={!isTrainableSample(sample)}
+                      onChange={(event) => {
+                        setSelectedTrainingSampleIds(prev => {
+                          const next = new Set(prev)
+                          if (event.target.checked) next.add(sample.id)
+                          else next.delete(sample.id)
+                          return next
+                        })
+                      }}
+                      data-testid={`workflow-training-sample-select-${sample.id}`}
+                      className="h-4 w-4 accent-blue-500 disabled:opacity-40"
+                    />
+                    <span>{sample.audio_path.split('/').pop()}</span>
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    {sample.duration_seconds.toFixed(1)}s · {isTrainableSample(sample) ? 'QA pass' : 'QA failed'}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
 
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={() => void handleStartTraining()}
-              disabled={!workflow.training_readiness.ready || startingTraining}
+              disabled={!workflow.training_readiness.ready || startingTraining || selectedTrainingSampleIds.size === 0}
               className={clsx(
                 'px-4 py-3 rounded-lg font-medium',
                 !workflow.training_readiness.ready || startingTraining
