@@ -11,6 +11,7 @@ Tests verify:
 
 import pytest
 import torch
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -107,6 +108,46 @@ class TestSaveLoRAWeights:
         for key in new_state_dict:
             assert torch.allclose(new_state_dict[key], loaded[key]), \
                 f"Weights not updated for {key}"
+
+    def test_delete_profile_removes_samples_and_artifacts(
+        self,
+        store,
+        sample_profile,
+        sample_lora_state_dict,
+        tmp_path,
+    ):
+        vocals_path = tmp_path / "sample.wav"
+        with wave.open(str(vocals_path), "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(16000)
+            wav_file.writeframes(b"\x00\x00" * 16000)
+        sample = store.add_training_sample(
+            profile_id=sample_profile,
+            vocals_path=str(vocals_path),
+            source_file="sample.wav",
+            duration=1.0,
+        )
+        sample_dir = Path(store.samples_dir) / sample_profile / sample.sample_id
+        manifest_dir = Path(store.trained_models_dir) / sample_profile
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "artifact_manifest.json").write_text("{}", encoding="utf-8")
+        torch.save(sample_lora_state_dict, Path(store.trained_models_dir) / f"{sample_profile}_adapter.pt")
+        torch.save(sample_lora_state_dict, Path(store.trained_models_dir) / f"{sample_profile}_full_model.pth")
+        (Path(store.trained_models_dir) / f"{sample_profile}_runtime.engine").write_bytes(b"engine")
+        unrelated = Path(store.trained_models_dir) / "other-profile_adapter.pt"
+        torch.save(sample_lora_state_dict, unrelated)
+
+        assert sample_dir.exists()
+        assert store.delete(sample_profile) is True
+
+        assert not Path(store.profiles_dir, f"{sample_profile}.json").exists()
+        assert not sample_dir.exists()
+        assert not manifest_dir.exists()
+        assert not Path(store.trained_models_dir, f"{sample_profile}_adapter.pt").exists()
+        assert not Path(store.trained_models_dir, f"{sample_profile}_full_model.pth").exists()
+        assert not Path(store.trained_models_dir, f"{sample_profile}_runtime.engine").exists()
+        assert unrelated.exists()
 
 
 class TestLoadLoRAWeights:

@@ -23,6 +23,7 @@ def register_profile_sample_routes(api_bp: Blueprint, **deps: Any) -> None:
     api_bp.add_url_rule('/voice/profiles', view_func=get_voice_profiles, methods=['GET'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>', view_func=get_voice_profile, methods=['GET'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>', view_func=delete_voice_profile, methods=['DELETE'])
+    api_bp.add_url_rule('/voice/profiles/<profile_id>/delete', view_func=delete_voice_profile, methods=['POST'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>/adapters', view_func=get_profile_adapters, methods=['GET'])
     api_bp.add_url_rule('/profiles/<profile_id>/adapters', view_func=get_profile_adapters, methods=['GET'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>/model', view_func=get_profile_model, methods=['GET'])

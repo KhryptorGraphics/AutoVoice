@@ -396,6 +396,12 @@ class TestVoiceProfileEndpoints:
         assert response.status_code == 200
         assert response.get_json()["status"] == "success"
 
+    def test_post_delete_voice_profile_alias_success(self, client_current, app_current):
+        app_current.voice_cloner.delete_voice_profile = MagicMock(return_value=True)
+        response = client_current.post("/api/v1/voice/profiles/00000000-0000-0000-0000-000000000214/delete")
+        assert response.status_code == 200
+        assert response.get_json()["status"] == "success"
+
 
 class TestModelEndpoints:
     def test_profile_model_rejects_invalid_uuid(self, client_current):

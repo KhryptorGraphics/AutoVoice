@@ -2,8 +2,10 @@
 import json
 import logging
 import os
+import shutil
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 import numpy as np
@@ -287,7 +289,7 @@ class VoiceProfileStore:
         return profiles
 
     def delete(self, profile_id: str) -> bool:
-        """Delete a profile. Returns True if deleted, False if not found."""
+        """Delete a profile and profile-owned samples/artifacts."""
         path = self._profile_path(profile_id)
         if not os.path.exists(path):
             return False
@@ -297,8 +299,45 @@ class VoiceProfileStore:
         if os.path.exists(emb_path):
             os.remove(emb_path)
 
+        samples_path = self._samples_dir_for_profile(profile_id)
+        if os.path.exists(samples_path):
+            shutil.rmtree(samples_path)
+
+        self._delete_profile_artifacts(profile_id)
+
         logger.info(f"Deleted voice profile: {profile_id}")
         return True
+
+    def _delete_profile_artifacts(self, profile_id: str) -> None:
+        """Remove trained model artifacts owned by a profile."""
+        explicit_paths = {
+            Path(self._lora_weights_path(profile_id)),
+            Path(self._legacy_lora_weights_path(profile_id)),
+            Path(self._full_model_path(profile_id)),
+            Path(self.trained_models_dir) / f"{profile_id}_full_model.pth",
+            Path(self.trained_models_dir) / profile_id,
+        }
+        for artifact_path in explicit_paths:
+            if artifact_path.is_dir():
+                shutil.rmtree(artifact_path)
+            elif artifact_path.exists():
+                artifact_path.unlink()
+
+        trained_root = Path(self.trained_models_dir)
+        if not trained_root.exists():
+            return
+        for pattern in (
+            f"{profile_id}*.engine",
+            f"{profile_id}*.plan",
+            f"{profile_id}*.trt",
+            f"{profile_id}_*.pt",
+            f"{profile_id}_*.pth",
+        ):
+            for artifact_path in trained_root.rglob(pattern):
+                if artifact_path.is_dir():
+                    shutil.rmtree(artifact_path)
+                elif artifact_path.exists():
+                    artifact_path.unlink()
 
     def exists(self, profile_id: str) -> bool:
         """Check if a profile exists."""

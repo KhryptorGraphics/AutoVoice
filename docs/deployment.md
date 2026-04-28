@@ -141,6 +141,26 @@ Docker, public DNS/TLS, or Jetson TensorRT hardware are intentionally
 unavailable. Smoke mode still writes `reports/completion/latest/completion_matrix.json`
 and records unavailable lanes explicitly instead of hiding them.
 
+Post-release public production monitoring is handled by
+`.github/workflows/production-monitoring.yml`. It runs a nightly health smoke
+against `https://autovoice.giggahost.com` and a weekly full workflow proof that
+uploads tracked audio fixtures, trains a minimal LoRA, queues conversion,
+downloads output artifacts, and archives evidence under `reports/production_smoke`.
+Run the same checks manually with:
+
+```bash
+python scripts/run_production_smoke.py --mode health
+python scripts/run_production_smoke.py --mode full --timeout-seconds 1800
+```
+
+Rollback drills are dry-run by default and write a machine-readable command plan:
+
+```bash
+python scripts/run_rollback_drill.py \
+  --base-url https://autovoice.giggahost.com \
+  --output reports/platform/rollback-drill.json
+```
+
 The hosted preflight lane is machine-checkable:
 
 ```bash

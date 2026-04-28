@@ -1,0 +1,73 @@
+name: production-monitoring
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Production smoke mode
+        required: true
+        default: health
+        type: choice
+        options:
+          - health
+          - full
+  schedule:
+    - cron: "30 8 * * *"
+    - cron: "0 10 * * 1"
+
+jobs:
+  production-smoke:
+    runs-on: [self-hosted, linux, arm64, jetson]
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select smoke mode
+        id: smoke-mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 10 * * 1" ]; then
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=health" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run production smoke
+        env:
+          AUTOVOICE_PRODUCTION_BASE_URL: https://autovoice.giggahost.com
+        run: |
+          python scripts/run_production_smoke.py \
+            --mode "${{ steps.smoke-mode.outputs.mode }}" \
+            --base-url "$AUTOVOICE_PRODUCTION_BASE_URL" \
+            --output-dir reports/production_smoke/latest
+
+      - name: Run rollback drill dry-run
+        if: always()
+        env:
+          SECRET_KEY: rollback-drill-compose-secret
+          GRAFANA_PASSWORD: rollback-drill-grafana-password
+        run: |
+          python scripts/run_rollback_drill.py \
+            --base-url https://autovoice.giggahost.com \
+            --output reports/platform/rollback-drill.json
+
+      - name: Upload production evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-monitoring-artifacts
+          path: |
+            reports/production_smoke
+            reports/platform/rollback-drill.json
+          if-no-files-found: ignore
