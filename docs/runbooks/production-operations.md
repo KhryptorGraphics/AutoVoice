@@ -1,6 +1,9 @@
 # AutoVoice Production Operations Runbook
 
-This runbook applies to local, private, or hosted deployments. Public/commercial launch still requires policy/legal approval and current-head hardware evidence.
+This runbook applies to local, private, or hosted deployments. Public/commercial
+launch still requires policy/legal approval, account/user isolation controls,
+and current-head hardware evidence. See [../current-truth.md](../current-truth.md)
+for the readiness vocabulary.
 
 ## Readiness
 

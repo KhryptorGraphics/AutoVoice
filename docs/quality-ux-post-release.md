@@ -1,13 +1,14 @@
 # Quality and UX Post-Release Milestone
 
-This milestone turns the production-ready release into a quality-led product.
-The current system can boot, train, convert, validate release evidence, and run
-public production smoke checks. The next work should improve the evidence users
-and operators see when judging conversion quality.
+This milestone turns the local/private readiness baseline into a quality-led
+operator experience. It does not declare AutoVoice public- or commercial-
+production-ready. The current system has evidence that it can boot, train,
+convert, validate release evidence, and run hosted smoke checks, but those claims
+must be regenerated for the candidate HEAD before a release decision.
 
 ## Evidence Baseline
 
-- GitNexus was refreshed on 2026-04-28 for commit `259e7a80`.
+- GitNexus was refreshed on 2026-04-28 during the production-readiness workstream.
 - Public production full smoke passed against `https://autovoice.giggahost.com`.
 - The smoke run proved upload, workflow review resolution, minimal LoRA
   training, conversion, mix download, and profile cleanup.
@@ -16,6 +17,10 @@ and operators see when judging conversion quality.
 - The completion matrix passes, but its skip audit still records
   environment-gated CUDA, diarization, training, karaoke, TensorRT, and
   benchmark-audio E2E paths.
+
+Read this as historical or candidate-specific evidence unless the underlying
+artifact embeds the current candidate git SHA. The current release status ladder
+is defined in [current-truth.md](./current-truth.md).
 
 ## GitNexus Context
 

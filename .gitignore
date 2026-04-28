@@ -34,7 +34,10 @@ models/pretrained/
 logs/
 *.log
 /reports/
+/output/
 /output/reports/
+/local-artifacts/
+/scratch/
 
 # Temp
 .tmp/
@@ -74,6 +77,13 @@ checkpoints/
 .claude_settings.json
 .worktrees/
 .security-key
+.call_count
+.circuit_breaker_history
+.circuit_breaker_state
+.exit_signals
+.last_reset
+.ralph_session
+.ralph_session_history
 logs/security/
 .gitnexus
 frontend/test-results/

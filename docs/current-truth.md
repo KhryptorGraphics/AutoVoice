@@ -13,6 +13,33 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
 - run live karaoke sessions
 - persist local product state under `DATA_DIR`
 
+## Readiness Vocabulary And Current Status
+
+Use these terms consistently. Avoid the unqualified phrase "production-ready" in
+release notes or operator docs because it hides the support boundary.
+
+| Tier | Current status | Boundary |
+| --- | --- | --- |
+| Local-only single-user | Supported MVP target | Trusted operator machine, local `DATA_DIR`, no external users, no public ingress. |
+| Private/operator-controlled hosted | Conditional | Requires API auth, explicit CORS origins, media-consent gates, current-head health/readiness/preflight proof, and operator-owned media. |
+| Public multi-user | Not ready | Requires account auth, per-user isolation, quotas, abuse review, retention/export/deletion policy, and current-head full hardware evidence. |
+| Commercial launch | Not ready | Requires the public multi-user controls plus legal/policy approval for voice, likeness, copyright, biometric privacy, and platform terms. |
+
+Current local HEAD is not release-cleared solely because ignored `reports/*/latest`
+files exist. A readiness claim must cite artifacts whose embedded git SHA matches
+the candidate commit being released. As of this documentation pass, the checked-out
+HEAD was `01f8470f`; `reports/completion/latest/completion_matrix.json` referenced
+`9c6a056378df7585c453ecbb4d1f964345287436`, while
+`reports/release-evidence/latest/release_decision.json` referenced
+`4fb90501ddbc87201ee8d4da818f688469d06b27`. Treat those as historical evidence
+until regenerated for the current HEAD.
+
+The latest closeout and post-release quality plan are not contradictory when read
+with this vocabulary: AutoVoice has meaningful local/private deployment proof and
+post-release quality work, but public/commercial production release remains blocked
+until the release-candidate matrix, benchmark evidence, full supported pytest lanes,
+and hardware/model lanes are current-head green or explicitly gated.
+
 ## Canonical Runtime
 
 - backend entrypoint: `autovoice serve`
@@ -110,6 +137,20 @@ These are useful for archaeology but are not the current product spec:
 - older swarm/claude-flow helper scripts and notes
 
 Use those only after validating against the canonical docs and live code paths.
+
+## Artifact And Fixture Policy
+
+See [repo-hygiene.md](./repo-hygiene.md) for the full policy. The short version:
+
+- canonical source lives in `src/`, `frontend/`, `config/`, `scripts/`, `tests/`,
+  `docs/`, and explicitly tracked fixtures
+- canonical evidence is generated under ignored `reports/` paths and is valid for
+  release claims only when its embedded git SHA matches the candidate commit
+- tracked audio/model outputs are either explicit fixtures or historical samples;
+  do not add new generated media/model artifacts without documenting the owner,
+  purpose, and retention rule
+- local runtime state, scratch outputs, and swarm run artifacts belong in ignored
+  report/data paths, not in the root repository
 
 ## Current Verification Entry Points
 

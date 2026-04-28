@@ -80,7 +80,8 @@ Backend health is exposed at:
 - `config/`: runtime configuration
 - `tests/`: backend and integration tests
 - `docs/`: canonical product, API, and operator docs
-- `conductor/`, `ORCHESTRATOR*.md`, `reports/`, `academic-research/`: historical planning and research artifacts
+- `docs/repo-hygiene.md`: canonical source, fixture, artifact, and release-evidence policy
+- `conductor/`, `ORCHESTRATOR*.md`, root completion summaries, `reports/`, `output/`, `academic-research/`: historical planning, research, generated output, or release-evidence artifacts
 
 ## What Is Canonical vs Experimental
 
@@ -99,7 +100,8 @@ Still experimental or research-heavy:
 - model benchmarking and alternative pipelines outside the primary UI flows
 - large model assets that are still intentionally shipped in-repo for local-first evaluation
 - broader deployment hardening beyond a trusted local single-user setup
-- generated dependency trees and report outputs under `node_modules/`, `reports/`, and `output/reports/`
+- public multi-user or commercial launch without account isolation, quotas, abuse review, retention/export/deletion policy, current-head full hardware evidence, and legal/policy approval
+- generated dependency trees and report outputs under `node_modules/`, `reports/`, and `output/`
   are not canonical source and should remain ignored/untracked
 
 ## Verification

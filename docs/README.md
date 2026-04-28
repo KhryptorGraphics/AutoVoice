@@ -8,13 +8,14 @@ These documents describe the current MVP behavior and should be treated as the s
 
 - [../README.md](../README.md): runtime entrypoints, repo map, and current MVP scope
 - [current-truth.md](./current-truth.md): canonical product boundary, runtime, docs, and historical artifact notes
+- [repo-hygiene.md](./repo-hygiene.md): canonical source, fixture, artifact, and release-evidence policy
 - [swarm-operator-contract.md](./swarm-operator-contract.md): canonical `autovoice swarm` operating model, run taxonomy, GitNexus inputs, MemKraft writes, and lane completion rules
 - [user-guide-voice-profiles.md](./user-guide-voice-profiles.md): source-artist and target-user workflow, training lifecycle, conversion, and karaoke usage
 - [frontend-persistence-boundaries.md](./frontend-persistence-boundaries.md): what lives in browser `localStorage` versus what is owned by backend storage
 - [api/README.md](./api/README.md): REST and WebSocket API entrypoint
 - [deployment.md](./deployment.md): current compose, hosted preflight, release-candidate, and completion-matrix deployment contract
-- [production-readiness-closeout-2026-04-28.md](./production-readiness-closeout-2026-04-28.md): latest production verification results and remaining release blockers
-- [quality-ux-post-release.md](./quality-ux-post-release.md): post-release quality and operator-UX milestone backed by production smoke and benchmark evidence
+- [production-readiness-closeout-2026-04-28.md](./production-readiness-closeout-2026-04-28.md): latest production verification results, support boundary, and remaining release blockers
+- [quality-ux-post-release.md](./quality-ux-post-release.md): quality and operator-UX milestone for improving local/private readiness evidence; not a public/commercial launch declaration
 - [troubleshooting.md](./troubleshooting.md): operational debugging and recovery notes
 
 ## Reference and Design Docs

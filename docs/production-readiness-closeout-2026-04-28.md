@@ -41,4 +41,10 @@ This closeout records the current production-readiness proof for `main` after ru
 
 ## Status
 
-The project is not production-ready yet. The application, hosted deployment, frontend flows, compose stack, and CUDA dependency lane have meaningful proof, but production release must remain blocked until the benchmark quality gate and full pytest/hardware-model lanes are green or explicitly gated with documented support boundaries.
+Use the readiness vocabulary in [current-truth.md](./current-truth.md). This
+closeout is not a public/commercial production launch approval. The application,
+hosted deployment, frontend flows, compose stack, and CUDA dependency lane have
+meaningful local/private proof, but unrestricted production release remains
+blocked until the benchmark quality gate, completion matrix, full supported
+pytest lanes, and hardware/model lanes are green for the candidate HEAD or
+explicitly gated with documented support boundaries.

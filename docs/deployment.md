@@ -121,6 +121,11 @@ external prerequisites outside the repo:
 
 ## Release Candidate Workflow
 
+Release-candidate status is commit-specific. Do not infer current readiness from
+mutable `reports/*/latest` files unless the embedded git SHA matches the
+candidate HEAD. Use [current-truth.md](./current-truth.md) for the local,
+private, public, and commercial readiness vocabulary.
+
 The repo now ships two executable validation lanes:
 
 - GitHub Actions `release-candidate`: on a self-hosted Jetson runner, validate compose config, boot the real `docker-compose.yaml` backend/frontend stack, and run `scripts/validate_release_candidate.py`

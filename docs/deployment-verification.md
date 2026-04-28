@@ -1,6 +1,9 @@
 # AutoVoice Deployment Verification Checklist
 
-Use this checklist to verify your AutoVoice deployment is production-ready.
+Use this checklist as a reference for deployment verification. A deployment is
+release-ready only within the support boundary defined in
+[current-truth.md](./current-truth.md), and public/commercial launch requires
+additional governance and current-head evidence.
 
 ## Pre-Deployment
 
