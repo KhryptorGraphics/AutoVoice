@@ -563,6 +563,24 @@ def run_tensorrt_engine_suite(report_dir: Path, *, timeout: int) -> LaneResult:
     )
 
 
+def run_tensorrt_parity_benchmark(report_dir: Path, *, timeout: int) -> LaneResult:
+    report_path = PROJECT_ROOT / "reports" / "benchmarks" / "tensorrt-parity" / "latest" / "parity_report.json"
+    result = _run_command(
+        "tensorrt-checkpoint-parity",
+        [
+            sys.executable,
+            "scripts/benchmark_tensorrt_parity.py",
+            "--output",
+            str(report_path),
+        ],
+        report_dir=report_dir,
+        timeout=timeout,
+    )
+    if report_path.exists():
+        result.artifacts["parity_report"] = _display_path(report_path)
+    return result
+
+
 def run_real_compose(report_dir: Path, *, timeout: int, base_url: str) -> list[LaneResult]:
     if not shutil.which("docker"):
         return [
@@ -698,9 +716,11 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
         lanes.append(run_tensorrt_engine_suite(report_dir, timeout=args.timeout))
+        lanes.append(run_tensorrt_parity_benchmark(report_dir, timeout=args.timeout))
     else:
         lanes.append(skipped_lane("jetson-cuda-tensorrt", "pass --hardware or --full on Jetson/CUDA/TensorRT hosts"))
         lanes.append(skipped_lane("tensorrt-engine-suite", "pass --hardware or --full with AUTOVOICE_TRT_ENGINE_DIR set"))
+        lanes.append(skipped_lane("tensorrt-checkpoint-parity", "pass --hardware or --full with checkpoint-aligned TensorRT engine metadata"))
 
     matrix = {
         "schema_version": 1,

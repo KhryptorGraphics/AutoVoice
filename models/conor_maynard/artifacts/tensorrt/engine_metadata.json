@@ -10,6 +10,7 @@
   "checkpoint_epoch": 6359,
   "checkpoint_global_step": 197160,
   "checkpoint_loss": 0.20352341523093562,
+  "base_seed": 1234,
   "config": {
     "input_dim": 768,
     "hidden_dim": 1024,

@@ -296,9 +296,44 @@ def test_completion_matrix_smoke_runner(tmp_path):
     assert "priority-skip-audit" in lane_names
     assert "benchmark-dashboard-validate" in lane_names
     assert "hosted-preflight-local" in lane_names
+    assert "tensorrt-checkpoint-parity" in lane_names
 
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     assert audit["findings"] == []
     assert audit["environment_gate_evidence"]
     assert all(entry["explained"] for entry in audit["environment_gate_evidence"])
     assert {entry["owner"] for entry in audit["environment_gate_evidence"]} >= {"hardware-runner", "training-runtime"}
+
+
+def test_tensorrt_parity_benchmark_metadata_validation(tmp_path):
+    import importlib.util
+
+    script_path = PROJECT_ROOT / "scripts" / "benchmark_tensorrt_parity.py"
+    spec = importlib.util.spec_from_file_location("benchmark_tensorrt_parity", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    metadata_path = tmp_path / "engine_metadata.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "artist_key": "unit_artist",
+                "checkpoint_path": "checkpoint.pt",
+                "engine_path": "engine.trt",
+                "onnx_path": "engine.onnx",
+                "precision": "fp16",
+            }
+        ),
+        encoding="utf-8",
+    )
+    metadata = module._load_metadata(metadata_path)
+    assert metadata["artist_key"] == "unit_artist"
+
+    metadata_path.write_text(json.dumps({"artist_key": "missing"}), encoding="utf-8")
+    try:
+        module._load_metadata(metadata_path)
+    except ValueError as exc:
+        assert "missing required metadata fields" in str(exc)
+    else:
+        raise AssertionError("expected metadata validation failure")

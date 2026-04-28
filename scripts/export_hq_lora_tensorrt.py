@@ -132,10 +132,16 @@ def _checkpoint_path(spec: ArtistSpec, data_dir: str | None = None) -> Path:
     return paths["checkpoints_dir"] / "hq" / f"{spec.checkpoint_profile_id}_hq_lora.pt"
 
 
-def _load_adapter(spec: ArtistSpec, data_dir: str | None = None) -> tuple[HQVoiceLoRAAdapter, dict]:
+def _load_adapter(
+    spec: ArtistSpec,
+    data_dir: str | None = None,
+    *,
+    base_seed: int = 1234,
+) -> tuple[HQVoiceLoRAAdapter, dict]:
     checkpoint_path = _checkpoint_path(spec, data_dir)
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = payload.get("config", {})
+    torch.manual_seed(base_seed)
     model = HQVoiceLoRAAdapter(**config)
     model.load_lora_state_dict(payload["lora_state"])
     model.eval()
@@ -165,6 +171,7 @@ def export_artist(
     spec: ArtistSpec,
     workspace_size_gb: float = 2.0,
     data_dir: str | None = None,
+    base_seed: int = 1234,
 ) -> dict:
     release_dir = MODELS_DIR / spec.artist_key
     tensorrt_dir = release_dir / "artifacts" / "tensorrt"
@@ -174,7 +181,7 @@ def export_artist(
     engine_path = tensorrt_dir / "hq_voice_lora.engine"
     metadata_path = tensorrt_dir / "engine_metadata.json"
 
-    model, payload = _load_adapter(spec, data_dir=data_dir)
+    model, payload = _load_adapter(spec, data_dir=data_dir, base_seed=base_seed)
     _export_onnx(model, onnx_path)
 
     builder = TRTEngineBuilder(workspace_size_gb=workspace_size_gb)
@@ -199,6 +206,7 @@ def export_artist(
         "checkpoint_epoch": payload.get("epoch"),
         "checkpoint_global_step": payload.get("global_step"),
         "checkpoint_loss": payload.get("loss"),
+        "base_seed": base_seed,
         "config": payload.get("config", {}),
     }
     metadata_path.write_text(json.dumps(metadata, indent=2))
@@ -224,6 +232,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override root data directory (defaults to DATA_DIR or data).",
     )
+    parser.add_argument(
+        "--base-seed",
+        type=int,
+        default=1234,
+        help="Seed for deterministic frozen base-layer initialization.",
+    )
     return parser
 
 
@@ -235,6 +249,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             spec,
             workspace_size_gb=args.workspace_size_gb,
             data_dir=args.data_dir,
+            base_seed=args.base_seed,
         )
         for spec in targets
     ]
