@@ -39,8 +39,7 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
 
-def _seed_evidence_files() -> None:
-    evidence_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
+def _seed_evidence_files(evidence_dir: Path) -> None:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     generated_at = datetime.now(timezone.utc).isoformat()
     provenance = {
@@ -84,7 +83,8 @@ def _seed_evidence_files() -> None:
 
 
 def test_validate_release_candidate_script(tmp_path: Path):
-    _seed_evidence_files()
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_files(evidence_dir)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -105,6 +105,8 @@ def test_validate_release_candidate_script(tmp_path: Path):
                 "--skip-compose",
                 "--report-dir",
                 str(report_dir),
+                "--evidence-dir",
+                str(evidence_dir),
             ],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -126,7 +128,8 @@ def test_validate_release_candidate_script(tmp_path: Path):
 
 
 def test_validate_release_candidate_waits_for_endpoints(tmp_path: Path):
-    _seed_evidence_files()
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_files(evidence_dir)
     report_dir = tmp_path / "reports"
     env = os.environ.copy()
     pythonpath = str(PROJECT_ROOT / "src")
@@ -161,6 +164,8 @@ def test_validate_release_candidate_waits_for_endpoints(tmp_path: Path):
             "0.1",
             "--report-dir",
             str(report_dir),
+            "--evidence-dir",
+            str(evidence_dir),
         ],
         cwd=PROJECT_ROOT,
         capture_output=True,
@@ -212,8 +217,8 @@ def test_validate_release_candidate_supports_smoke_report_mode(tmp_path: Path):
 
 
 def test_validate_release_candidate_rejects_mismatched_evidence_git_sha(tmp_path: Path):
-    _seed_evidence_files()
-    evidence_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_files(evidence_dir)
     dashboard_path = evidence_dir / "benchmark_dashboard.json"
     release_path = evidence_dir / "release_evidence.json"
     dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
@@ -243,6 +248,8 @@ def test_validate_release_candidate_rejects_mismatched_evidence_git_sha(tmp_path
                 "--skip-compose",
                 "--report-dir",
                 str(report_dir),
+                "--evidence-dir",
+                str(evidence_dir),
             ],
             cwd=PROJECT_ROOT,
             capture_output=True,
@@ -258,8 +265,8 @@ def test_validate_release_candidate_rejects_mismatched_evidence_git_sha(tmp_path
 
 
 def test_validate_release_candidate_rejects_failing_quality_gate(tmp_path: Path):
-    _seed_evidence_files()
-    evidence_dir = PROJECT_ROOT / "reports" / "benchmarks" / "latest"
+    evidence_dir = tmp_path / "evidence"
+    _seed_evidence_files(evidence_dir)
     release_path = evidence_dir / "release_evidence.json"
     release_evidence = json.loads(release_path.read_text(encoding="utf-8"))
     release_evidence["quality_gate_passed"] = False
@@ -288,6 +295,8 @@ def test_validate_release_candidate_rejects_failing_quality_gate(tmp_path: Path)
                 "--skip-compose",
                 "--report-dir",
                 str(report_dir),
+                "--evidence-dir",
+                str(evidence_dir),
             ],
             cwd=PROJECT_ROOT,
             capture_output=True,

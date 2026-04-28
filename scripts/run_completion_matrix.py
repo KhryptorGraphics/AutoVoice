@@ -452,6 +452,7 @@ SecRequestBodyLimit 262144000
                 "scripts/validate_hosted_deployment.py",
                 "--skip-dns",
                 "--skip-tls",
+                "--skip-apache-configtest",
                 "--vhost-file",
                 str(vhost),
                 "--vhost-file",

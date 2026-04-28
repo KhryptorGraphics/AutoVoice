@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from auto_voice.inference.meanvc_pipeline import MeanVCPipeline
 from auto_voice.inference.pipeline_factory import PipelineFactory
+from auto_voice.runtime_contract import PIPELINE_DEFINITIONS
 
 
 @pytest.fixture
@@ -77,7 +78,7 @@ def test_pipeline_factory_registration():
 
     meanvc_status = status['realtime_meanvc']
     assert meanvc_status['sample_rate'] == 16000
-    assert meanvc_status['latency_target_ms'] == 80
+    assert meanvc_status['latency_target_ms'] == PIPELINE_DEFINITIONS['realtime_meanvc'].latency_target_ms
     assert 'single-step' in meanvc_status['description'].lower()
 
 

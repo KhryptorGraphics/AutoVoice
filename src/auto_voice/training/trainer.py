@@ -175,16 +175,15 @@ class Trainer:
         self._early_stopping_wait = 0
 
         # Shared encoders for feature extraction (frozen during training)
-        # Use ContentVec backend with 768-dim output for best quality
         from ..models.encoder import ContentEncoder, PitchEncoder
+        from ..models.feature_contract import feature_contract_from_model
+        self.feature_contract = feature_contract_from_model(self.model, self.config)
         self.content_encoder = ContentEncoder(
-            output_size=768,  # 768-dim ContentVec for superior speaker disentanglement
+            output_size=self.feature_contract.content_dim,
             encoder_backend='contentvec',
             device=self.device
         ).to(self.device)
-        # CoMoSVCDecoder conditions on ContentVec(768) + pitch(256).
-        # Keeping this contract explicit prevents projection shape drift.
-        self.pitch_encoder = PitchEncoder(output_size=256).to(self.device)
+        self.pitch_encoder = PitchEncoder(output_size=self.feature_contract.pitch_dim).to(self.device)
         self.speaker_embedding: Optional[torch.Tensor] = None
         self.sample_rate = self.config.get('sample_rate', 22050)
 
@@ -288,13 +287,13 @@ class Trainer:
 
     def _should_stop_early(self, monitored_loss: float) -> bool:
         """Return True when configured early stopping has run out of patience."""
-        if self.early_stopping_patience <= 0:
-            return False
-
         improvement = self.best_loss - float(monitored_loss)
         if improvement > self.early_stopping_min_delta:
             self.best_loss = float(monitored_loss)
             self._early_stopping_wait = 0
+            return False
+
+        if self.early_stopping_patience <= 0:
             return False
 
         self._early_stopping_wait += 1

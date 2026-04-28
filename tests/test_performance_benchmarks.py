@@ -31,6 +31,8 @@ import torch
 # Add source to path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
+from auto_voice.runtime_contract import PIPELINE_DEFINITIONS
+
 logger = logging.getLogger(__name__)
 
 
@@ -503,12 +505,12 @@ class TestMeanVCPipeline:
         # MeanVC on CPU may not achieve RTF < 1.0, but should be < 2.0
         assert mean_rtf < 2.0, f"RTF {mean_rtf:.3f} exceeds threshold of 2.0"
 
-    def test_chunk_latency_under_100ms(
+    def test_chunk_latency_within_runtime_contract(
         self,
         meanvc_pipeline,
         test_audio: Tuple[np.ndarray, int],
     ):
-        """Individual chunk latency should be < 100ms."""
+        """Individual chunk latency should stay within the runtime contract."""
         import librosa
 
         audio, sr = test_audio
@@ -535,8 +537,10 @@ class TestMeanVCPipeline:
 
             logger.info(f"MeanVC chunk latency: mean={mean_latency:.1f}ms, p95={p95_latency:.1f}ms")
 
-            # CPU-based, may be slower than 100ms target
-            assert mean_latency < 200, f"Mean latency {mean_latency:.1f}ms exceeds 200ms threshold"
+            latency_target = PIPELINE_DEFINITIONS['realtime_meanvc'].latency_target_ms
+            assert mean_latency < latency_target, (
+                f"Mean latency {mean_latency:.1f}ms exceeds {latency_target}ms threshold"
+            )
 
     def test_output_sample_rate_16k(
         self,

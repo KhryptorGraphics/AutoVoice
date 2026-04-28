@@ -19,6 +19,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import soundfile as sf
 import torch
 
 # Import database modules
@@ -136,6 +137,14 @@ def temp_storage():
             'profiles': profiles_dir,
             'samples': samples_dir,
         }
+
+
+def _write_test_wav(path: str | os.PathLike[str], duration: float = 1.0, sample_rate: int = 22050) -> str:
+    """Write a small valid sung-tone WAV fixture for storage quality analysis."""
+    t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    audio = (0.35 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    sf.write(str(path), audio, sample_rate)
+    return str(path)
 
 
 # ============================================================================
@@ -740,10 +749,8 @@ class TestVoiceProfileStore:
 
         profile_id = store.save({'name': 'Speaker'})
 
-        # Create temporary vocals file
         vocals_path = os.path.join(temp_storage['root'], 'vocals.wav')
-        with open(vocals_path, 'wb') as f:
-            f.write(b'fake audio data')
+        _write_test_wav(vocals_path, duration=1.0)
 
         sample = store.add_training_sample(
             profile_id=profile_id,
@@ -754,6 +761,20 @@ class TestVoiceProfileStore:
         assert sample.sample_id is not None
         assert os.path.exists(sample.vocals_path)
         assert sample.duration == 5.0
+
+    def test_add_training_sample_rejects_invalid_audio(self, temp_storage):
+        """Invalid audio should fail with a domain error, not a decoder traceback."""
+        store = VoiceProfileStore(
+            profiles_dir=temp_storage['profiles'],
+            samples_dir=temp_storage['samples'],
+        )
+        profile_id = store.save({'name': 'Speaker'})
+        vocals_path = os.path.join(temp_storage['root'], 'invalid.wav')
+        with open(vocals_path, 'wb') as f:
+            f.write(b'not a wav file')
+
+        with pytest.raises(ValueError, match="Invalid training sample audio"):
+            store.add_training_sample(profile_id, vocals_path)
 
     def test_list_training_samples(self, temp_storage):
         """Test listing training samples for a profile."""
@@ -767,8 +788,7 @@ class TestVoiceProfileStore:
         # Add multiple samples
         for i in range(3):
             vocals_path = os.path.join(temp_storage['root'], f'vocals_{i}.wav')
-            with open(vocals_path, 'wb') as f:
-                f.write(b'fake audio')
+            _write_test_wav(vocals_path, duration=1.0 + i * 0.1)
             store.add_training_sample(profile_id, vocals_path, duration=float(i))
 
         samples = store.list_training_samples(profile_id)
@@ -785,8 +805,7 @@ class TestVoiceProfileStore:
 
         for duration in [5.0, 10.0, 15.0]:
             vocals_path = os.path.join(temp_storage['root'], f'vocals_{duration}.wav')
-            with open(vocals_path, 'wb') as f:
-                f.write(b'fake audio')
+            _write_test_wav(vocals_path, duration=1.0)
             store.add_training_sample(profile_id, vocals_path, duration=duration)
 
         total = store.get_total_training_duration(profile_id)
@@ -802,8 +821,7 @@ class TestVoiceProfileStore:
         profile_id = store.save({'name': 'Speaker'})
 
         vocals_path = os.path.join(temp_storage['root'], 'vocals.wav')
-        with open(vocals_path, 'wb') as f:
-            f.write(b'fake audio')
+        _write_test_wav(vocals_path, duration=1.0)
 
         sample = store.add_training_sample(profile_id, vocals_path)
 
@@ -1095,8 +1113,7 @@ class TestStorageIntegration:
         # 3. Add training samples
         for i in range(3):
             vocals_path = os.path.join(temp_storage['root'], f'sample_{i}.wav')
-            with open(vocals_path, 'wb') as f:
-                f.write(b'audio data')
+            _write_test_wav(vocals_path, duration=1.0 + i * 0.1)
             store.add_training_sample(profile_id, vocals_path, duration=float(i + 5))
 
         # 4. Simulate training (save LoRA weights)

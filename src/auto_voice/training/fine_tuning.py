@@ -367,9 +367,18 @@ def save_lora_adapter(model: nn.Module, path: Path) -> None:
         raise ValueError("Model does not have LoRA adapters")
 
     adapter_states = {}
+    legacy_adapters = {}
     for name, adapter in model.lora_adapters.items():
-        adapter_states[f"{name}.lora_A"] = adapter.lora_A.data.cpu()
-        adapter_states[f"{name}.lora_B"] = adapter.lora_B.data.cpu()
+        lora_a = adapter.lora_A.data.cpu()
+        lora_b = adapter.lora_B.data.cpu()
+        adapter_states[f"{name}.lora_A"] = lora_a
+        adapter_states[f"{name}.lora_B"] = lora_b
+        legacy_adapters[name] = {
+            "lora_A": lora_a,
+            "lora_B": lora_b,
+            "rank": getattr(adapter, "rank", None),
+            "alpha": getattr(adapter, "alpha", None),
+        }
 
     save_dict = build_lora_checkpoint_payload(
         adapter_states,
@@ -378,6 +387,10 @@ def save_lora_adapter(model: nn.Module, path: Path) -> None:
             "adapter_names": list(model.lora_adapters.keys()),
         },
     )
+    # Preserve the legacy nested view for profile-storage and old test/runtime
+    # callers while keeping the canonical flat tensor keys as the source of truth.
+    save_dict["adapters"] = legacy_adapters
+    save_dict["config"] = getattr(model, "_lora_config", {})
     torch.save(save_dict, path)
     logger.info(f"Saved LoRA adapter to {path}")
 

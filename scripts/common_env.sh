@@ -1,16 +1,16 @@
 #!/bin/bash
 # Shared AutoVoice environment bootstrap for Jetson Thor scripts.
 
-set -euo pipefail
-
+# Resolve paths before enabling nounset; shell startup hooks such as RVM can
+# assume unset variables during `cd` and otherwise poison command substitution.
 AUTOVOICE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTOVOICE_PROJECT_ROOT="$(cd "$AUTOVOICE_SCRIPT_DIR/.." && pwd)"
+
+set -euo pipefail
 AUTOVOICE_ENV_NAME="${AUTOVOICE_ENV_NAME:-autovoice-thor}"
 if [[ -z "${AUTOVOICE_ENV_PREFIX:-}" ]]; then
     if [[ -n "${AUTOVOICE_PYTHON:-}" && -x "${AUTOVOICE_PYTHON}" ]]; then
         AUTOVOICE_ENV_PREFIX="$(cd "$(dirname "${AUTOVOICE_PYTHON}")/.." && pwd)"
-    elif [[ -n "${PYTHON:-}" && -x "${PYTHON}" ]]; then
-        AUTOVOICE_ENV_PREFIX="$(cd "$(dirname "${PYTHON}")/.." && pwd)"
     elif [[ -n "${CONDA_PREFIX:-}" && "${CONDA_DEFAULT_ENV:-}" == "$AUTOVOICE_ENV_NAME" ]]; then
         AUTOVOICE_ENV_PREFIX="${CONDA_PREFIX}"
     else
@@ -21,7 +21,7 @@ AUTOVOICE_PYTHON_DEFAULT="${AUTOVOICE_ENV_PREFIX}/bin/python"
 AUTOVOICE_DATA_DIR="${AUTOVOICE_DATA_DIR:-${DATA_DIR:-${AUTOVOICE_PROJECT_ROOT}/data}}"
 
 autovoice_activate_env() {
-    local requested_python="${PYTHON:-${AUTOVOICE_PYTHON:-$AUTOVOICE_PYTHON_DEFAULT}}"
+    local requested_python="${AUTOVOICE_PYTHON:-$AUTOVOICE_PYTHON_DEFAULT}"
 
     if [[ -x "$requested_python" ]]; then
         export PYTHON="$requested_python"

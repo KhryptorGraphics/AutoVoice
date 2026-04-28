@@ -51,7 +51,12 @@ def analyze_training_sample(
     try:
         audio, sample_rate = sf.read(str(path), dtype="float32", always_2d=False)
     except TypeError:
-        audio, sample_rate = sf.read(str(path))
+        try:
+            audio, sample_rate = sf.read(str(path))
+        except sf.LibsndfileError as exc:
+            raise ValueError(f"Invalid training sample audio: {path}") from exc
+    except sf.LibsndfileError as exc:
+        raise ValueError(f"Invalid training sample audio: {path}") from exc
     audio_np = np.asarray(audio, dtype=np.float32)
     if audio_np.ndim > 1:
         audio_np = np.mean(audio_np, axis=1 if audio_np.shape[0] > audio_np.shape[1] else 0)

@@ -356,7 +356,7 @@ Located in `models/pretrained/`:
 <!-- gitnexus:start -->
 # GitNexus MCP
 
-This project is indexed by GitNexus as **autovoice** (19325 symbols, 50413 relationships, 300 execution flows).
+This project is indexed by GitNexus as **autovoice** (19381 symbols, 50479 relationships, 300 execution flows).
 
 ## Always Start Here
 

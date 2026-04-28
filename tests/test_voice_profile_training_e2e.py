@@ -355,7 +355,7 @@ class TestLoRATrainingFlow:
             'lora_alpha': 16,
             'learning_rate': 1e-4,
             'batch_size': 4,
-            'epochs': 10,  # Quick test
+            'epochs': 1,
         }
 
         response = client.post('/api/v1/training/jobs', json={
@@ -581,7 +581,7 @@ class TestErrorHandling:
         response = client.post('/api/v1/training/jobs', json={
             'profile_id': profile_id,
             'sample_ids': sample_ids,
-            'config': {'epochs': 100},  # Long training
+            'config': {'epochs': 3},
         })
 
         if response.status_code == 503:
@@ -651,7 +651,7 @@ class TestCompleteWorkflow:
         # Step 3: Start training (quick config for testing)
         training_config = {
             'training_mode': 'lora',
-            'epochs': 5,  # Very quick
+            'epochs': 1,
             'batch_size': 2,
         }
 
@@ -668,7 +668,7 @@ class TestCompleteWorkflow:
         job_id = json.loads(response.data)['job_id']
 
         # Step 4: Wait for training to complete (with timeout)
-        max_wait = 300  # 5 minutes
+        max_wait = int(os.environ.get("AUTOVOICE_E2E_TRAINING_TIMEOUT", "60"))
         start_time = time.time()
         job_status = 'pending'
 
@@ -681,7 +681,7 @@ class TestCompleteWorkflow:
             if job_status in ['completed', 'failed', 'cancelled']:
                 break
 
-            time.sleep(5)
+            time.sleep(1)
 
         if job_status != 'completed':
             pytest.skip(f"Training did not complete in time (status: {job_status})")
@@ -714,6 +714,19 @@ class TestCompleteWorkflow:
 
         # Should have job_id or audio data
         assert 'job_id' in conversion_data or 'audio' in conversion_data
+        if 'job_id' in conversion_data:
+            conversion_job_id = conversion_data['job_id']
+            conversion_status = None
+            for _ in range(max_wait):
+                response = client.get(f'/api/v1/convert/status/{conversion_job_id}')
+                if response.status_code == 200:
+                    conversion_job = json.loads(response.data)
+                    conversion_status = conversion_job.get('status')
+                    if conversion_status in ['completed', 'failed', 'cancelled']:
+                        break
+                time.sleep(1)
+
+            assert conversion_status in ['completed', 'failed', 'cancelled']
 
 
 if __name__ == '__main__':

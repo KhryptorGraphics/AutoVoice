@@ -11,13 +11,24 @@ TDD: These tests define the expected interface before implementation.
 """
 import os
 import sys
+import importlib.util
 import pytest
 import torch
 import numpy as np
 import soundfile as sf
 
-# Mark all tests in this module as requiring CUDA
-pytestmark = [pytest.mark.cuda, pytest.mark.slow]
+HQSVC_FULL_ENABLED = os.environ.get("AUTOVOICE_HQSVC_FULL") == "1"
+HAS_FAIRSEQ = importlib.util.find_spec("fairseq") is not None
+
+# Real HQ-SVC tests require optional experimental dependencies and model assets.
+pytestmark = [
+    pytest.mark.cuda,
+    pytest.mark.slow,
+    pytest.mark.skipif(
+        not HQSVC_FULL_ENABLED or not HAS_FAIRSEQ or not torch.cuda.is_available(),
+        reason="Set AUTOVOICE_HQSVC_FULL=1 with CUDA, fairseq, and HQ-SVC assets to run real HQ-SVC tests",
+    ),
+]
 
 
 def _load_audio_with_soundfile(path: str) -> tuple[torch.Tensor, int]:

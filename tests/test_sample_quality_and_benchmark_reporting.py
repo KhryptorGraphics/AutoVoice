@@ -107,6 +107,42 @@ def test_benchmark_dashboard_and_release_evidence_round_trip(tmp_path):
     assert release["provenance"] == dashboard["provenance"]
 
 
+def test_benchmark_release_evidence_skips_non_applicable_metrics():
+    dashboard = build_benchmark_dashboard(
+        {
+            "quality_seedvc": {
+                "summary": {
+                    "sample_count": 1,
+                    "speaker_similarity_mean": 0.91,
+                    "pitch_corr_mean": 0.93,
+                    "mcd_mean": 999.0,
+                    "latency_ms_mean": 120.0,
+                },
+                "metric_applicability": {"mcd_mean": False},
+                "metric_basis": {"mcd_mean": "not_applicable_without_aligned_same_content_target"},
+            },
+            "realtime": {
+                "summary": {
+                    "sample_count": 1,
+                    "speaker_similarity_mean": 0.87,
+                    "pitch_corr_mean": 0.91,
+                    "mcd_mean": 999.0,
+                    "latency_ms_mean": 42.0,
+                },
+                "metric_applicability": {"mcd_mean": False},
+                "metric_basis": {"mcd_mean": "not_applicable_without_aligned_same_content_target"},
+            },
+        }
+    )
+    release = build_release_evidence(dashboard)
+
+    metric = dashboard["pipelines"]["quality_seedvc"]["summary"]["mcd_mean"]
+    assert metric["target_status"] == "n/a"
+    assert metric["applicable"] is False
+    assert metric["basis"] == "not_applicable_without_aligned_same_content_target"
+    assert release["quality_gate_passed"] is True
+
+
 def test_experimental_registry_benchmark_gate_requires_candidate_to_win(tmp_path):
     reports_dir = tmp_path / "reports" / "benchmarks" / "latest"
     reports_dir.mkdir(parents=True)

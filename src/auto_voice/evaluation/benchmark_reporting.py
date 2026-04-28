@@ -105,13 +105,19 @@ def build_benchmark_dashboard(
 
     for pipeline_name, payload in bundles.items():
         summary = dict(payload.get("summary", {}))
+        metric_basis = dict(payload.get("metric_basis", {}) or {})
+        metric_applicability = dict(payload.get("metric_applicability", {}) or {})
         metrics = {}
         for metric, value in summary.items():
             if isinstance(value, (int, float)):
+                applicable = bool(metric_applicability.get(metric, True))
                 metrics[metric] = {
                     "value": float(value),
-                    "target_status": _metric_status(metric, float(value)),
+                    "target_status": _metric_status(metric, float(value)) if applicable else "n/a",
+                    "applicable": applicable,
                 }
+                if metric in metric_basis:
+                    metrics[metric]["basis"] = str(metric_basis[metric])
         pipelines[pipeline_name] = {
             "title": payload.get("title", pipeline_name),
             "sample_count": int(summary.get("sample_count", payload.get("sample_count", 0) or 0)),
@@ -130,6 +136,10 @@ def build_benchmark_dashboard(
         for metric in sorted((HIGHER_IS_BETTER | LOWER_IS_BETTER) - {"latency_ms_mean"}):
             candidate_metric = candidate["summary"].get(metric, {}).get("value")
             canonical_metric = pipelines[canonical]["summary"].get(metric, {}).get("value")
+            candidate_applicable = candidate["summary"].get(metric, {}).get("applicable", True)
+            canonical_applicable = pipelines[canonical]["summary"].get(metric, {}).get("applicable", True)
+            if not candidate_applicable or not canonical_applicable:
+                continue
             if candidate_metric is None or canonical_metric is None:
                 continue
             quality_checks.append(_comparison_status(metric, candidate_metric, canonical_metric))

@@ -69,6 +69,8 @@ class PipelineMetrics:
     mcd: float = 0.0  # Mel Cepstral Distortion (lower is better)
     speaker_similarity: float = 0.0  # Cosine similarity (higher is better)
     pitch_corr: float = 0.0  # Pitch correlation (higher is better)
+    metric_basis: Dict[str, str] = field(default_factory=dict)
+    metric_applicability: Dict[str, bool] = field(default_factory=dict)
 
     # Audio metadata
     input_duration_s: float = 0.0
@@ -87,6 +89,44 @@ class PipelineMetrics:
     # Status
     success: bool = True
     error: Optional[str] = None
+
+
+def assign_conversion_quality_metrics(
+    metrics: PipelineMetrics,
+    *,
+    output_audio: np.ndarray,
+    output_sr: int,
+    source_audio: np.ndarray,
+    source_sr: int,
+    reference_audio: np.ndarray,
+    reference_sr: int,
+) -> None:
+    """Populate quality metrics with explicit conversion metric provenance.
+
+    Pitch preservation is computed against the source performance, but remains
+    informational for this smoke benchmark until an aligned pitch-preservation
+    fixture suite is selected. MCD is only a production gate for aligned
+    same-content targets, which this zero-shot benchmark does not provide.
+    """
+    metrics.speaker_similarity = compute_speaker_similarity(
+        output_audio, output_sr,
+        reference_audio, reference_sr,
+    )
+    metrics.pitch_corr = compute_pitch_correlation(
+        output_audio, output_sr,
+        source_audio, source_sr,
+    )
+    metrics.mcd = 0.0
+    metrics.metric_basis.update({
+        "speaker_similarity": "converted_output_vs_target_reference",
+        "pitch_corr": "informational_converted_output_vs_source_performance",
+        "mcd": "not_applicable_without_aligned_same_content_target",
+    })
+    metrics.metric_applicability.update({
+        "speaker_similarity": True,
+        "pitch_corr": False,
+        "mcd": False,
+    })
 
 
 @dataclass
@@ -371,17 +411,14 @@ def benchmark_realtime_pipeline(
 
         # Quality metrics
         if len(outputs) > 0:
-            metrics.mcd = compute_mcd(
-                outputs[0], metrics.output_sample_rate,
-                reference_audio, reference_sr
-            )
-            metrics.speaker_similarity = compute_speaker_similarity(
-                outputs[0], metrics.output_sample_rate,
-                reference_audio, reference_sr
-            )
-            metrics.pitch_corr = compute_pitch_correlation(
-                outputs[0], metrics.output_sample_rate,
-                reference_audio, reference_sr
+            assign_conversion_quality_metrics(
+                metrics,
+                output_audio=outputs[0],
+                output_sr=metrics.output_sample_rate,
+                source_audio=audio,
+                source_sr=sample_rate,
+                reference_audio=reference_audio,
+                reference_sr=reference_sr,
             )
 
     except Exception as e:
@@ -478,17 +515,14 @@ def benchmark_quality_pipeline(
         metrics.output_duration_s = len(output_audio) / metrics.output_sample_rate
 
         # Quality metrics
-        metrics.mcd = compute_mcd(
-            output_audio, metrics.output_sample_rate,
-            reference_audio, reference_sr
-        )
-        metrics.speaker_similarity = compute_speaker_similarity(
-            output_audio, metrics.output_sample_rate,
-            reference_audio, reference_sr
-        )
-        metrics.pitch_corr = compute_pitch_correlation(
-            output_audio, metrics.output_sample_rate,
-            reference_audio, reference_sr
+        assign_conversion_quality_metrics(
+            metrics,
+            output_audio=output_audio,
+            output_sr=metrics.output_sample_rate,
+            source_audio=audio,
+            source_sr=sample_rate,
+            reference_audio=reference_audio,
+            reference_sr=reference_sr,
         )
 
     except Exception as e:
@@ -575,17 +609,14 @@ def benchmark_seedvc_pipeline(
         metrics.output_duration_s = len(output_audio) / metrics.output_sample_rate
 
         # Quality metrics
-        metrics.mcd = compute_mcd(
-            output_audio, metrics.output_sample_rate,
-            reference_audio, reference_sr
-        )
-        metrics.speaker_similarity = compute_speaker_similarity(
-            output_audio, metrics.output_sample_rate,
-            reference_audio, reference_sr
-        )
-        metrics.pitch_corr = compute_pitch_correlation(
-            output_audio, metrics.output_sample_rate,
-            reference_audio, reference_sr
+        assign_conversion_quality_metrics(
+            metrics,
+            output_audio=output_audio,
+            output_sr=metrics.output_sample_rate,
+            source_audio=audio,
+            source_sr=sample_rate,
+            reference_audio=reference_audio,
+            reference_sr=reference_sr,
         )
 
     except Exception as e:
@@ -684,17 +715,14 @@ def benchmark_meanvc_pipeline(
         metrics.output_duration_s = len(output_audio) / metrics.output_sample_rate
 
         # Quality metrics
-        metrics.mcd = compute_mcd(
-            output_audio, metrics.output_sample_rate,
-            reference_audio, reference_sr
-        )
-        metrics.speaker_similarity = compute_speaker_similarity(
-            output_audio, metrics.output_sample_rate,
-            reference_audio, reference_sr
-        )
-        metrics.pitch_corr = compute_pitch_correlation(
-            output_audio, metrics.output_sample_rate,
-            reference_audio, reference_sr
+        assign_conversion_quality_metrics(
+            metrics,
+            output_audio=output_audio,
+            output_sr=metrics.output_sample_rate,
+            source_audio=audio,
+            source_sr=sample_rate,
+            reference_audio=reference_audio,
+            reference_sr=reference_sr,
         )
 
     except Exception as e:

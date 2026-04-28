@@ -57,11 +57,25 @@ def _bundle_from_comprehensive_report(
             "rtf_mean": float(metrics.get("rtf_mean", metrics.get("rtf", 0.0)) or 0.0),
             "vram_mb_peak": float(metrics.get("gpu_memory_peak_mb", 0.0) or 0.0),
         }
+        metric_basis = metrics.get("metric_basis") if isinstance(metrics.get("metric_basis"), dict) else {}
+        metric_applicability = (
+            metrics.get("metric_applicability")
+            if isinstance(metrics.get("metric_applicability"), dict)
+            else {}
+        )
         bundles[pipeline_name] = {
             "title": metrics.get("pipeline_name") or pipeline_name,
             "fixture_tier": fixture_tier,
             "fixture_suite": fixture_suite,
             "summary": summary,
+            "metric_basis": {
+                f"{metric_name}_mean": basis
+                for metric_name, basis in metric_basis.items()
+            },
+            "metric_applicability": {
+                f"{metric_name}_mean": bool(applicable)
+                for metric_name, applicable in metric_applicability.items()
+            },
             "source_bundle": str(report_path),
         }
     return bundles

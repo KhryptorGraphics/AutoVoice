@@ -209,6 +209,12 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
 
     if app.config.get('TESTING', False):
         reset_karaoke_test_state()
+        try:
+            from auto_voice.inference.pipeline_factory import PipelineFactory
+
+            PipelineFactory.reset_instance()
+        except Exception:
+            logger.debug("Unable to reset pipeline factory test state", exc_info=True)
 
     app.register_blueprint(api_bp)
     app.register_blueprint(karaoke_bp)

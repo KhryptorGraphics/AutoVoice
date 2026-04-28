@@ -35,6 +35,54 @@ def test_platform_scripts_have_valid_bash_syntax():
         assert result.returncode == 0, result.stderr
 
 
+def test_common_env_prefers_canonical_python_over_stale_python():
+    command = (
+        "export PYTHON=/tmp/not-autovoice-python; "
+        "source scripts/common_env.sh && "
+        "autovoice_activate_env && "
+        "printf '%s\\n%s\\n%s\\n' \"$PYTHON\" \"$PYTHONNOUSERSITE\" \"$PYTHONPATH\""
+    )
+    result = subprocess.run(
+        ["bash", "-lc", command],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            "HOME": os.environ.get("HOME", ""),
+            "PATH": os.environ.get("PATH", ""),
+            "AUTOVOICE_ENV_NAME": "autovoice-thor",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    python_path, no_user_site, pythonpath = result.stdout.strip().splitlines()
+    assert python_path.endswith("/anaconda3/envs/autovoice-thor/bin/python")
+    assert no_user_site == "1"
+    assert str(PROJECT_ROOT / "src") in pythonpath.split(":")
+
+
+def test_common_env_allows_explicit_autovoice_python_override():
+    command = (
+        "export AUTOVOICE_PYTHON=\"$OVERRIDE_PYTHON\"; "
+        "export PYTHON=/tmp/not-autovoice-python; "
+        "source scripts/common_env.sh && "
+        "autovoice_activate_env && "
+        "printf '%s\\n' \"$PYTHON\""
+    )
+    result = subprocess.run(
+        ["bash", "-lc", command],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ.copy(),
+            "OVERRIDE_PYTHON": sys.executable,
+            "AUTOVOICE_ENV_NAME": "autovoice-thor",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == sys.executable
+
+
 def test_setup_jetson_thor_dry_run(tmp_path):
     result = subprocess.run(
         [

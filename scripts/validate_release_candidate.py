@@ -188,6 +188,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compose-file", default="docker-compose.yaml", help="Compose file to validate")
     parser.add_argument("--report-dir", default="reports/platform", help="Output directory for validation artifacts")
     parser.add_argument(
+        "--evidence-dir",
+        default="reports/benchmarks/latest",
+        help="Directory containing benchmark_dashboard.json and release_evidence.json",
+    )
+    parser.add_argument(
         "--report-name",
         default="release-candidate-validation.json",
         help="Validation report filename written under --report-dir",
@@ -262,8 +267,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.skip_evidence:
         results["evidence_files"] = {"skipped": True}
     else:
-        dashboard_path = PROJECT_ROOT / "reports/benchmarks/latest/benchmark_dashboard.json"
-        release_evidence_path = PROJECT_ROOT / "reports/benchmarks/latest/release_evidence.json"
+        evidence_dir = Path(args.evidence_dir)
+        if not evidence_dir.is_absolute():
+            evidence_dir = PROJECT_ROOT / evidence_dir
+        dashboard_path = evidence_dir / "benchmark_dashboard.json"
+        release_evidence_path = evidence_dir / "release_evidence.json"
         results["evidence_files"] = _validate_evidence_payloads(
             dashboard_path,
             release_evidence_path,

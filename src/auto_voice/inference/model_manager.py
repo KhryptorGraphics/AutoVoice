@@ -63,6 +63,7 @@ class ModelManager:
         # Shared models (initialized in load())
         self._content_encoder = None
         self._pitch_encoder = None
+        self._pitch_encoder_dim = None
         self._vocoder = None
 
         # Per-speaker trained models
@@ -141,7 +142,8 @@ class ModelManager:
             self._content_encoder._load_hubert(hubert_path)
         self._content_encoder.to(self.device)
 
-        self._pitch_encoder = PitchEncoder(output_size=768).to(self.device)  # Match 768-dim
+        self._pitch_encoder = PitchEncoder(output_size=768).to(self.device)  # Default SoVitsSvc contract.
+        self._pitch_encoder_dim = 768
 
         if vocoder_type == 'bigvgan':
             self._vocoder = BigVGANVocoder(device=self.device)
@@ -220,8 +222,16 @@ class ModelManager:
         )
         f0 = np.nan_to_num(f0, nan=0.0)
         f0_tensor = torch.from_numpy(f0).float().unsqueeze(0).to(self.device)  # [1, T]
+        # 5. SoVitsSvc inference -> mel spectrogram
+        sovits = self._sovits_models[speaker_id]
+        expected_pitch_dim = int(getattr(sovits, "pitch_dim", 768))
+        if self._pitch_encoder is None or self._pitch_encoder_dim != expected_pitch_dim:
+            from ..models.encoder import PitchEncoder
+            self._pitch_encoder = PitchEncoder(output_size=expected_pitch_dim).to(self.device)
+            self._pitch_encoder_dim = expected_pitch_dim
+
         with torch.no_grad():
-            pitch = self._pitch_encoder(f0_tensor)  # [1, T, 768]
+            pitch = self._pitch_encoder(f0_tensor)
 
         # 3. Frame alignment - align content and pitch to same resolution
         target_frames = min(content.shape[1], pitch.shape[1])
@@ -240,8 +250,6 @@ class ModelManager:
         # 4. Speaker embedding (WHO should sing - target person)
         speaker = torch.from_numpy(speaker_embedding).float().unsqueeze(0).to(self.device)
 
-        # 5. SoVitsSvc inference -> mel spectrogram
-        sovits = self._sovits_models[speaker_id]
         with torch.no_grad():
             mel_pred = sovits.infer(content, pitch, speaker)  # [1, 80, target_frames]
 
