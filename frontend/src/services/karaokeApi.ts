@@ -35,9 +35,12 @@ export interface SeparationJob {
 }
 
 export interface AudioDevice {
+  device_id?: string;
   index: number;
   name: string;
+  type?: 'input' | 'output';
   channels: number;
+  sample_rate?: number;
   default_sample_rate: number;
   is_default: boolean;
 }

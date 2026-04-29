@@ -88,6 +88,7 @@ export function KaraokePage() {
   const trainedTargetProfiles = voiceProfiles.filter(
     (profile) => profile.profile_role !== 'source_artist' && isLiveReadyProfile(profile)
   );
+  const outputDevices = devices.filter((device) => device.type !== 'input');
   const selectedProfile = selectedProfileId
     ? voiceProfiles.find((profile) => profile.profile_id === selectedProfileId) ?? null
     : null;
@@ -300,7 +301,8 @@ export function KaraokePage() {
       const result = await listDevices();
       setDevices(result.devices);
       // Set defaults
-      const defaultDevice = result.devices.find((d) => d.is_default);
+      const defaultDevice = result.devices.find((d) => d.type === 'output' && d.is_default)
+        ?? result.devices.find((d) => d.type !== 'input' && d.is_default);
       if (defaultDevice) {
         setSpeakerDevice(defaultDevice.index);
         setHeadphoneDevice(defaultDevice.index);
@@ -767,8 +769,8 @@ export function KaraokePage() {
                   data-testid="karaoke-speaker-device-select"
                   className="w-full p-2 bg-gray-700 rounded"
                 >
-                  {devices.map((d) => (
-                    <option key={d.index} value={d.index}>
+                  {outputDevices.map((d) => (
+                    <option key={`${d.device_id ?? d.index}-speaker-${d.name}`} value={d.index}>
                       {d.name}
                     </option>
                   ))}
@@ -786,8 +788,8 @@ export function KaraokePage() {
                   data-testid="karaoke-headphone-device-select"
                   className="w-full p-2 bg-gray-700 rounded"
                 >
-                  {devices.map((d) => (
-                    <option key={d.index} value={d.index}>
+                  {outputDevices.map((d) => (
+                    <option key={`${d.device_id ?? d.index}-headphone-${d.name}`} value={d.index}>
                       {d.name}
                     </option>
                   ))}
