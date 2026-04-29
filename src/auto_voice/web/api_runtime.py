@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from typing import Any, Dict
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
-from .security import redact_public_paths
+from .security import env_bool, public_deployment_enabled, redact_public_paths
 
 
 def _root():
@@ -29,6 +30,7 @@ def register_runtime_routes(api_bp: Blueprint) -> None:
     api_bp.add_url_rule('/settings/app', view_func=get_app_settings, methods=['GET'])
     api_bp.add_url_rule('/settings/app', view_func=update_app_settings, methods=['PATCH'])
     api_bp.add_url_rule('/ready', view_func=readiness_check, methods=['GET'])
+    api_bp.add_url_rule('/public-commercial/readiness', view_func=public_commercial_readiness, methods=['GET'])
     api_bp.add_url_rule('/metrics', view_func=get_metrics_endpoint, methods=['GET'])
     api_bp.add_url_rule('/gpu/metrics', view_func=gpu_metrics, methods=['GET'])
     api_bp.add_url_rule('/kernels/metrics', view_func=kernel_metrics, methods=['GET'])
@@ -61,6 +63,59 @@ def register_runtime_routes(api_bp: Blueprint) -> None:
 _presets: Dict[str, Dict[str, Any]] = {}
 
 
+_PUBLIC_COMMERCIAL_REQUIREMENTS: tuple[dict[str, str], ...] = (
+    {
+        "id": "account_auth",
+        "bead_id": "AV-3rfd.18.3",
+        "title": "Account authentication and authorization",
+        "env": "AUTOVOICE_ACCOUNT_AUTH_PROVIDER",
+        "reason": "set AUTOVOICE_ACCOUNT_AUTH_PROVIDER to the supported account auth provider",
+    },
+    {
+        "id": "tenant_isolation",
+        "bead_id": "AV-3rfd.18.3",
+        "title": "Per-user tenant isolation",
+        "env": "AUTOVOICE_TENANT_ISOLATION_ENABLED",
+        "reason": "set AUTOVOICE_TENANT_ISOLATION_ENABLED=true after isolation tests pass",
+    },
+    {
+        "id": "persistent_quotas",
+        "bead_id": "AV-3rfd.18.1",
+        "title": "Persistent quotas and abuse controls",
+        "env": "AUTOVOICE_QUOTA_BACKEND",
+        "reason": "set AUTOVOICE_QUOTA_BACKEND to a persistent backend after quota tests pass",
+    },
+    {
+        "id": "abuse_review",
+        "bead_id": "AV-3rfd.18.1",
+        "title": "Abuse review workflow",
+        "env": "AUTOVOICE_ABUSE_REVIEW_ENABLED",
+        "reason": "set AUTOVOICE_ABUSE_REVIEW_ENABLED=true after operator review workflow is active",
+    },
+    {
+        "id": "hosted_evidence",
+        "bead_id": "AV-3rfd.18.4",
+        "title": "Hosted public-lane release evidence",
+        "env": "AUTOVOICE_HOSTED_PUBLIC_EVIDENCE_PATH",
+        "reason": "point AUTOVOICE_HOSTED_PUBLIC_EVIDENCE_PATH at current-head hosted evidence",
+    },
+    {
+        "id": "legal_approval",
+        "bead_id": "AV-3rfd.18.5",
+        "title": "Legal/product approval",
+        "env": "AUTOVOICE_LEGAL_APPROVAL_PATH",
+        "reason": "point AUTOVOICE_LEGAL_APPROVAL_PATH at signed approval evidence",
+    },
+    {
+        "id": "public_ingress_review",
+        "bead_id": "AV-3rfd.18.6",
+        "title": "Public ingress threat model and security review",
+        "env": "AUTOVOICE_PUBLIC_INGRESS_REVIEW_PATH",
+        "reason": "point AUTOVOICE_PUBLIC_INGRESS_REVIEW_PATH at completed threat-model/security-review evidence",
+    },
+)
+
+
 def _current_git_sha(root_dir: Path) -> str | None:
     try:
         return subprocess.check_output(
@@ -71,6 +126,65 @@ def _current_git_sha(root_dir: Path) -> str | None:
         ).strip()
     except Exception:
         return None
+
+
+def _configured_path_exists(env_name: str) -> bool:
+    raw_path = os.environ.get(env_name, "").strip()
+    return bool(raw_path) and Path(raw_path).expanduser().exists()
+
+
+def _requirement_satisfied(requirement: dict[str, str]) -> bool:
+    env_name = requirement["env"]
+    if requirement["id"] == "account_auth":
+        provider = os.environ.get(env_name, "").strip().lower()
+        return bool(provider) and provider not in {"api-token", "operator-token", "none", "local"}
+    if requirement["id"] == "persistent_quotas":
+        backend = os.environ.get(env_name, "").strip().lower()
+        return bool(backend) and backend not in {"memory", "in-memory", "in_memory", "local", "none"}
+    if requirement["id"] in {"tenant_isolation", "abuse_review"}:
+        return env_bool(env_name)
+    return _configured_path_exists(env_name)
+
+
+def public_commercial_readiness():
+    """Machine-readable public/commercial launch gate.
+
+    This endpoint intentionally tracks public launch blockers separately from
+    `/ready`, which is a runtime readiness probe for local/private operation.
+    """
+    root_dir = Path(__file__).resolve().parents[3]
+    blockers: list[dict[str, str]] = []
+    satisfied: list[dict[str, str]] = []
+
+    for requirement in _PUBLIC_COMMERCIAL_REQUIREMENTS:
+        item = {
+            "id": requirement["id"],
+            "bead_id": requirement["bead_id"],
+            "title": requirement["title"],
+            "env": requirement["env"],
+            "reason": requirement["reason"],
+        }
+        if _requirement_satisfied(requirement):
+            satisfied.append(item)
+        else:
+            blockers.append(item)
+
+    ready = not blockers
+    payload = {
+        "ready": ready,
+        "status": "ready" if ready else "blocked",
+        "scope": "public_commercial",
+        "public_deployment_mode": public_deployment_enabled(current_app),
+        "current_git_sha": _current_git_sha(root_dir),
+        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        "blockers": blockers,
+        "satisfied": satisfied,
+        "closure_rule": (
+            "Do not close AV-3rfd.18 until this endpoint is ready and the linked "
+            "evidence is archived for the candidate release commit."
+        ),
+    }
+    return jsonify(payload)
 
 
 def _decorate_evidence_payload(payload: Dict[str, Any], source_path: Path) -> Dict[str, Any]:

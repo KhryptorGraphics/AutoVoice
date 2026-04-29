@@ -7,6 +7,8 @@ gate is satisfied. This document is the working checklist for `AV-3rfd.18`.
 
 Status: blocked pending external approval and hosted evidence.
 
+Machine-readable gate: `GET /api/v1/public-commercial/readiness`.
+
 The codebase now has local/operator controls for API-token auth, CORS allowlist
 enforcement, media-consent attestations, path sandboxing, audit events, profile
 export, profile purge, redacted public-mode responses, and review-gated YouTube
@@ -46,6 +48,19 @@ commercial launch.
   program.
 - Hosted observability, rollback, support, and incident-response evidence must
   be regenerated against the candidate public deployment.
+
+## Machine-Readable Gate Inputs
+
+The launch gate endpoint reports `ready: false` until all of these inputs are
+configured and their linked evidence exists:
+
+- `AUTOVOICE_ACCOUNT_AUTH_PROVIDER`: account auth provider, not operator API-token auth.
+- `AUTOVOICE_TENANT_ISOLATION_ENABLED=true`: set only after cross-user isolation tests pass.
+- `AUTOVOICE_QUOTA_BACKEND`: persistent quota backend, not in-memory/local limits.
+- `AUTOVOICE_ABUSE_REVIEW_ENABLED=true`: set only after abuse review workflow is active.
+- `AUTOVOICE_HOSTED_PUBLIC_EVIDENCE_PATH`: current-head hosted evidence artifact.
+- `AUTOVOICE_LEGAL_APPROVAL_PATH`: signed legal/product approval artifact.
+- `AUTOVOICE_PUBLIC_INGRESS_REVIEW_PATH`: completed threat-model/security-review artifact.
 
 ## Required Public/Commercial Evidence
 

@@ -503,6 +503,47 @@ and asynchronous processing modes.
         }
     )
 
+    _spec_path(
+        path="/api/v1/public-commercial/readiness",
+        operations={
+            "get": {
+                "tags": ["System"],
+                "summary": "Public/commercial launch gate",
+                "description": (
+                    "Return the machine-readable public/commercial launch gate. "
+                    "This is separate from runtime readiness and remains blocked "
+                    "until account auth, tenant isolation, persistent quotas, "
+                    "abuse review, hosted evidence, legal approval, and public "
+                    "ingress review evidence are configured."
+                ),
+                "security": [{"BearerAuth": []}, {"AutoVoiceApiKey": []}],
+                "responses": {
+                    "200": {
+                        "description": "Public/commercial launch readiness",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "ready": {"type": "boolean"},
+                                        "status": {"type": "string"},
+                                        "scope": {"type": "string"},
+                                        "public_deployment_mode": {"type": "boolean"},
+                                        "current_git_sha": {"type": "string", "nullable": True},
+                                        "timestamp": {"type": "string"},
+                                        "blockers": {"type": "array", "items": {"type": "object"}},
+                                        "satisfied": {"type": "array", "items": {"type": "object"}},
+                                        "closure_rule": {"type": "string"},
+                                    },
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    )
+
     # Training endpoints
     _spec_path(
         path="/api/v1/training/config-options",
