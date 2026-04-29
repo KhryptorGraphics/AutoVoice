@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Youtube, Search, Download, Music, Users, Loader2, AlertCircle, CheckCircle, User, Plus, UserPlus, History, Info } from 'lucide-react'
-import { api, YouTubeVideoInfo, YouTubeDownloadResult, VoiceProfile, type YouTubeHistoryItem } from '../services/api'
+import { api, getApiAuthToken, YouTubeVideoInfo, YouTubeDownloadResult, VoiceProfile, type YouTubeHistoryItem } from '../services/api'
 import { useToastContext } from '../contexts/ToastContext'
 
 type Stage = 'idle' | 'fetching' | 'info' | 'downloading' | 'diarizing' | 'complete' | 'error'
@@ -176,30 +176,23 @@ export function YouTubeDownloadPage() {
   }
 
   const handleAddToProfile = async () => {
-    if (!downloadResult?.audio_path || !selectedProfileId) return
+    if (!downloadResult || !selectedProfileId) return
+    const audioAssetId = downloadResult.audio_asset_id ?? downloadResult.audio_path_asset_id ?? null
+    const useAssetId = Boolean(getApiAuthToken() && audioAssetId)
+    if (!useAssetId && !downloadResult.audio_path) return
 
     try {
-      const response = await fetch(`/api/v1/profiles/${selectedProfileId}/samples/from-path`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audio_path: downloadResult.audio_path,
-          metadata: {
-            title: downloadResult.title,
-            video_id: downloadResult.video_id,
-            main_artist: downloadResult.main_artist,
-            featured_artists: downloadResult.featured_artists,
-          },
-        }),
+      const sample = await api.addSampleFromPath(selectedProfileId, {
+        audio_asset_id: useAssetId ? audioAssetId : undefined,
+        audio_path: useAssetId ? undefined : downloadResult.audio_path,
+        metadata: {
+          title: downloadResult.title,
+          video_id: downloadResult.video_id,
+          main_artist: downloadResult.main_artist,
+          featured_artists: downloadResult.featured_artists,
+        },
       })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || 'Failed to add to profile')
-      }
-
-      const sample = await response.json()
-      toast.success(`Added "${downloadResult.title}" as sample ${sample.sample_id} to profile`)
+      toast.success(`Added "${downloadResult.title}" as sample ${sample.id} to profile`)
 
       // Refresh profiles to update sample count
       await loadProfiles()

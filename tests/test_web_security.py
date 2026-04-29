@@ -16,6 +16,7 @@ from auto_voice.web.security import (
     socketio_cors_allowed_origins,
     validate_api_token_configuration,
 )
+from auto_voice.web.utils import error_response, service_unavailable_response
 
 
 def test_api_token_auth_blocks_operator_endpoint(monkeypatch):
@@ -227,6 +228,40 @@ def test_auth_required_audit_events_redact_asset_paths(monkeypatch, tmp_path):
     asset = payload["events"][0]["metadata"]["assets"][0]
     assert asset["asset_id"]
     assert "path" not in asset
+
+
+def test_auth_required_mode_redacts_5xx_error_details(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    secret_path = tmp_path / "secret-model.pt"
+    app = Flask(__name__)
+
+    @app.get("/error")
+    def server_error():
+        return error_response(f"failed to load {secret_path}")
+
+    response = app.test_client().get("/error")
+    payload = response.get_json()
+
+    assert response.status_code == 500
+    assert payload == {"error": "Internal server error", "error_code": "internal_error"}
+
+
+def test_auth_required_mode_redacts_service_unavailable_details(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    secret_path = tmp_path / "secret-model.pt"
+    app = Flask(__name__)
+
+    @app.get("/unavailable")
+    def unavailable():
+        return service_unavailable_response(f"failed to load {secret_path}")
+
+    response = app.test_client().get("/unavailable")
+    payload = response.get_json()
+
+    assert response.status_code == 503
+    assert payload == {"error": "Service unavailable", "error_code": "service_unavailable"}
 
 
 def test_media_consent_rejects_false_strings(monkeypatch):

@@ -20,6 +20,15 @@ Verified current facts:
 - Completion matrix latest: `ok=false`, stale SHA `9c6a056378df7585c453ecbb4d1f964345287436`
 - Release decision latest: stale SHA `f0d37ef01f2accd031cc134b84ea8e00501a82e2`, blockers include tegrastats and unexecuted hardware lanes
 
+Implementation update from the 2026-04-29 local-only pass:
+
+- `reports/benchmarks/latest/benchmark_dashboard.json` and `release_evidence.json`
+  were regenerated locally for the then-current worktree baseline.
+- `scripts/validate_benchmark_dashboard.py --current-git-sha --release-grade` passes.
+- Completion matrix and hardware release-decision evidence remain stale and must
+  be regenerated on the target Jetson/local runner for the selected candidate
+  commit before any broader release claim.
+
 ## Orchestration Contract
 
 Use beads for all work. Each sprint starts by claiming its bead, querying GitNexus for affected flows, and storing a MemKraft note with the sprint goal, files touched, validation run, and remaining risks.

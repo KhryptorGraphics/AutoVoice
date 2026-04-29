@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import wave
 from pathlib import Path
 
 import numpy as np
@@ -9,16 +8,11 @@ import pytest
 
 from auto_voice.storage.paths import resolve_profiles_dir, resolve_samples_dir
 from auto_voice.training.job_manager import TrainingJobManager
+from tests.fixtures.audio import write_voiced_wav
 
 
 def _write_wav(path: Path, sample_rate: int = 22050, duration_seconds: float = 1.0) -> None:
-    frames = int(sample_rate * duration_seconds)
-    audio = np.zeros(frames, dtype=np.float32)
-    with wave.open(str(path), "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(sample_rate)
-        wav_file.writeframes((audio * 32767).astype(np.int16).tobytes())
+    write_voiced_wav(path, duration_seconds=duration_seconds, sample_rate=sample_rate)
 
 
 @pytest.fixture

@@ -162,10 +162,11 @@ def summarize_training_samples(samples: Iterable[Any]) -> Dict[str, Any]:
         status = str(quality.get("qa_status") or "unknown")
         status_counts[status if status in status_counts else "unknown"] += 1
         total_duration += float(getattr(sample, "duration", 0.0) or quality.get("duration_seconds") or 0.0)
-        if status != "fail":
+        if status in {"pass", "warn"}:
             trainable_duration += float(getattr(sample, "duration", 0.0) or quality.get("duration_seconds") or 0.0)
         else:
-            failing_samples.append(getattr(sample, "sample_id", "unknown"))
+            if status == "fail":
+                failing_samples.append(getattr(sample, "sample_id", "unknown"))
         for recommendation in quality.get("recommendations", []) or []:
             if recommendation not in recommendations:
                 recommendations.append(str(recommendation))

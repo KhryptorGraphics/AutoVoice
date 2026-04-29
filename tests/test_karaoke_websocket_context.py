@@ -37,6 +37,119 @@ def test_on_connect_emits_connected(ws_app):
     assert mock_emit.call_args[0][1]['client_id'] == 'client-123'
 
 
+def test_on_connect_rejects_missing_token_when_socket_auth_required(ws_app, monkeypatch):
+    from auto_voice.web.karaoke_events import KaraokeNamespace
+
+    monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    ns = KaraokeNamespace()
+
+    with ws_app.test_request_context('/socket.io'):
+        request.sid = 'client-unauthorized'
+        with patch('auto_voice.web.karaoke_events.emit') as mock_emit:
+            result = ns.on_connect()
+
+    assert result is False
+    mock_emit.assert_not_called()
+    assert 'client-unauthorized' not in ns._client_connect_time
+
+
+def test_on_connect_accepts_socket_auth_token(ws_app, monkeypatch):
+    from auto_voice.web.karaoke_events import KaraokeNamespace
+
+    monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    ns = KaraokeNamespace()
+
+    with ws_app.test_request_context('/socket.io'):
+        request.sid = 'client-authorized'
+        with patch('auto_voice.web.karaoke_events.emit') as mock_emit:
+            result = ns.on_connect({"token": "unit-token"})
+
+    assert result is None
+    assert ns._client_connect_time['client-authorized'] > 0
+    assert mock_emit.call_args[0][0] == 'connected'
+
+
+def test_karaoke_mutating_event_rejects_missing_token_when_auth_required(ws_app, monkeypatch):
+    from auto_voice.web.karaoke_events import KaraokeNamespace
+
+    monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    ns = KaraokeNamespace()
+
+    with ws_app.test_request_context('/socket.io'):
+        request.sid = 'client-unauthorized'
+        with patch('auto_voice.web.karaoke_events.emit') as mock_emit:
+            ns.on_start_session({'session_id': 'session-1', 'song_id': 'song-1'})
+
+    assert 'session-1' not in ns._sessions
+    assert mock_emit.call_args[0][0] == 'error'
+    assert mock_emit.call_args[0][1]['message'] == 'authentication required'
+
+
+def test_karaoke_mutating_event_accepts_payload_token(ws_app, monkeypatch):
+    from auto_voice.web.karaoke_events import KaraokeNamespace
+
+    monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    ns = KaraokeNamespace()
+    mock_session = MagicMock()
+    mock_session._target_model_type = None
+
+    with ws_app.test_request_context('/socket.io'):
+        request.sid = 'client-authorized'
+        with patch('auto_voice.web.karaoke_events.KaraokeSession', return_value=mock_session) as mock_cls:
+            with patch('auto_voice.web.karaoke_events.register_session'):
+                with patch('auto_voice.web.karaoke_events.emit'):
+                    ns.on_start_session({
+                        'session_id': 'session-1',
+                        'song_id': 'song-1',
+                        'token': 'unit-token',
+                    })
+
+    mock_cls.assert_called_once()
+    assert ns._sessions['session-1'] is mock_session
+
+
+def test_karaoke_set_speaker_embedding_rejects_missing_token(ws_app, monkeypatch):
+    from auto_voice.web.karaoke_events import KaraokeNamespace
+
+    monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    ns = KaraokeNamespace()
+    mock_session = MagicMock()
+    ns._sessions['session-1'] = mock_session
+
+    with ws_app.test_request_context('/socket.io'):
+        request.sid = 'client-unauthorized'
+        with patch('auto_voice.web.karaoke_events.emit') as mock_emit:
+            ns.on_set_speaker_embedding({'session_id': 'session-1'})
+
+    mock_session.set_speaker_embedding.assert_not_called()
+    assert mock_emit.call_args[0][0] == 'error'
+    assert mock_emit.call_args[0][1]['message'] == 'authentication required'
+
+
+def test_karaoke_auth_audit_records_socket_actor(ws_app, monkeypatch, tmp_path):
+    from auto_voice.web.karaoke_events import KaraokeNamespace
+    from auto_voice.web.persistence import AppStateStore
+
+    monkeypatch.setenv("AUTOVOICE_REQUIRE_API_AUTH", "true")
+    monkeypatch.setenv("AUTOVOICE_API_TOKEN", "unit-token")
+    ws_app.state_store = AppStateStore(str(tmp_path))
+    ns = KaraokeNamespace()
+
+    with ws_app.test_request_context('/socket.io'):
+        request.sid = 'client-authorized'
+        with patch('auto_voice.web.karaoke_events.emit'):
+            ns.on_connect({"token": "unit-token"})
+
+    events = ws_app.state_store.list_audit_events(event_type='karaoke.connect')
+    assert events[0]['actor'] == 'socketio:client-authorized'
+    assert events[0]['metadata']['allowed'] is True
+
+
 def test_on_disconnect_cleans_up_session_and_collector(ws_app):
     from auto_voice.web.karaoke_events import KaraokeNamespace
 

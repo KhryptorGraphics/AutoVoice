@@ -482,6 +482,11 @@ def export_voice_profile(profile_id):
         "samples": samples,
         "state": _state_store().export_profile_state(profile_id) if _state_store() else {},
         "assets": _state_store().list_assets(owner_id=profile_id) if _state_store() else [],
+        "retention": {
+            "audit_records_included": True,
+            "audit_records_retained_after_purge": True,
+            "purge_scope": "profile_state_and_registered_owned_assets",
+        },
         "exported_at": time.time(),
     }
     _audit_event(
@@ -550,6 +555,10 @@ def purge_voice_profile(profile_id):
         "profile_deleted": bool(deleted),
         "purged_asset_ids": purged_assets,
         "purge_summary": purge_summary,
+        "retention": {
+            "audit_records_retained": True,
+            "purge_scope": "profile_state_and_registered_owned_assets",
+        },
     })
 
 

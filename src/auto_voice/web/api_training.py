@@ -431,11 +431,11 @@ def create_training_job():
         ]
         trainable_samples = [
             sample for sample in selected_samples
-            if (sample.quality_metadata or {}).get('qa_status', 'unknown') != 'fail'
+            if (sample.quality_metadata or {}).get('qa_status') in {'pass', 'warn'}
         ]
         if not trainable_samples:
             return _dep('validation_error_response')(
-                'No selected training samples passed the quality gates',
+                'No selected training samples passed the quality gates. Upload or re-run QA on clean voiced samples before starting training.',
                 details=quality_summary,
                 recommendations=quality_summary.get('recommendations'),
             )

@@ -1,6 +1,6 @@
 """Shared web utilities for AutoVoice API."""
 from typing import Optional, Tuple, Any
-from flask import jsonify, current_app
+from flask import jsonify, current_app, has_app_context
 
 ALLOWED_AUDIO_EXTENSIONS = {
     'wav', 'mp3', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'wma', 'aiff', 'webm'
@@ -72,10 +72,24 @@ def service_unavailable_response(error: str, message: Optional[str] = None) -> T
         # Debug mode: ({'error': 'Conversion failed', 'message': '...'}, 503)
         # Production: ({'error': 'Conversion failed'}, 503)
     """
-    response = {'error': error}
+    if _redact_server_errors():
+        response = {'error': 'Service unavailable', 'error_code': 'service_unavailable'}
+    else:
+        response = {'error': error}
     if message and current_app.debug:
         response['message'] = message
     return jsonify(response), 503
+
+
+def _redact_server_errors() -> bool:
+    if not has_app_context() or current_app.config.get("TESTING"):
+        return False
+    try:
+        from .security import response_path_redaction_enabled
+
+        return response_path_redaction_enabled(current_app)
+    except Exception:
+        return False
 
 
 def error_response(error: str, status_code: int = 500, **kwargs) -> Tuple[Any, int]:
@@ -96,6 +110,12 @@ def error_response(error: str, status_code: int = 500, **kwargs) -> Tuple[Any, i
         return error_response("Custom error", status_code=422, detail="validation failed")
         # Returns: ({'error': 'Custom error', 'detail': 'validation failed'}, 422)
     """
-    response = {'error': error}
-    response.update(kwargs)
+    if status_code >= 500 and _redact_server_errors():
+        response = {'error': 'Internal server error', 'error_code': 'internal_error'}
+        request_id = kwargs.get('request_id')
+        if request_id is not None:
+            response['request_id'] = request_id
+    else:
+        response = {'error': error}
+        response.update(kwargs)
     return jsonify(response), status_code

@@ -61,8 +61,23 @@ contract check in CI.
 The reproducible base spec lives in:
 
 - `environment.autovoice-thor.yml`
+- `environment.autovoice-thor-linux-aarch64.lock`
 
-Use it only to create the canonical env name. Do not introduce a second AutoVoice conda env.
+Use `environment.autovoice-thor.yml` to create or update the canonical env name.
+Use `environment.autovoice-thor-linux-aarch64.lock` when replaying the exact
+conda package set captured from the Jetson Thor local environment:
+
+```bash
+conda create --name autovoice-thor-replay --file environment.autovoice-thor-linux-aarch64.lock
+```
+
+The explicit lock intentionally covers conda-managed packages only. Python
+runtime packages are still governed by `requirements.txt`,
+`requirements-runtime.txt`, and the supply-chain hash contract in
+`requirements.lock`; the current `pip freeze` output contains operator-local
+editable paths and must not be treated as a portable lock. Do not introduce a
+second AutoVoice runtime env for development or validation; use replay envs only
+for dependency forensics.
 
 ## Source-Built Dependencies
 

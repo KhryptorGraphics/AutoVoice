@@ -34,6 +34,11 @@ Public mode now exposes structured operator controls for governance workflows:
 - `DELETE /api/v1/voice/profiles/<profile_id>/purge` removes the profile and any registered owned assets tracked by the app-state registry.
 - Public-mode responses redact known filesystem path fields and replace them with `*_asset_id` fields backed by the server-side asset registry.
 
+Profile export includes recent profile-scoped audit events plus a retention block
+that states purge semantics. Profile purge removes profile-linked app-state
+records and registered owned asset references, but durable audit records are
+retained for abuse investigation and operator accountability.
+
 ## Launch Decisions Still Required
 
 - Whether hosted YouTube ingestion is allowed at all.

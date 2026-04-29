@@ -57,16 +57,19 @@ function sampleQualityStatus(sample: TrainingSample): string {
     ...(sample.quality_metadata ?? {}),
   }
   const status = metadata.qa_status ?? metadata.quality_status ?? metadata.status
-  return typeof status === 'string' ? status : 'pass'
+  return typeof status === 'string' ? status : 'unknown'
 }
 
 function isTrainableSample(sample: TrainingSample): boolean {
-  return sampleQualityStatus(sample) !== 'fail'
+  return ['pass', 'warn'].includes(sampleQualityStatus(sample))
 }
 
 function sampleQualityLabel(sample: TrainingSample): string {
   const status = sampleQualityStatus(sample)
-  return status === 'fail' ? 'QA failed' : status === 'unknown' ? 'QA pending' : 'QA passed'
+  if (status === 'fail') return 'QA failed'
+  if (status === 'warn') return 'QA warning'
+  if (status === 'pass') return 'QA passed'
+  return 'QA pending'
 }
 
 interface ProfileDetailProps {
@@ -203,7 +206,10 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
       const job = await apiService.createTrainingJob(profile.profile_id, sampleIds, trainingConfig)
       setSelectedJob(job)
       await refreshProfile()
-      toast.success('Training job started successfully')
+      if (job.rejected_sample_ids?.length) {
+        toast.warning(`${job.rejected_sample_ids.length} selected sample(s) were excluded by QA.`)
+      }
+      toast.success('Training job started with QA-approved samples')
       setActiveTab('jobs')
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Failed to start training'
@@ -456,7 +462,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                       {selectedSampleIds.size} of {samples.filter(isTrainableSample).length} trainable samples selected
                     </div>
                     <div className="text-xs text-gray-500">
-                      Failed QA samples stay visible but are excluded from training starts.
+                      Only explicit QA pass/warn samples can be selected for training; pending and failed samples stay visible for review.
                     </div>
                   </div>
                   <div className="flex gap-2">

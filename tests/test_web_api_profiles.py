@@ -128,6 +128,12 @@ def test_profile_export_and_purge_write_audit_events(client, app_with_profiles, 
 
     assert export_response.status_code == 200
     assert purge_response.status_code == 200
+    export_data = export_response.get_json()
+    purge_data = purge_response.get_json()
+    assert export_data["retention"]["audit_records_included"] is True
+    assert export_data["retention"]["audit_records_retained_after_purge"] is True
+    assert purge_data["retention"]["audit_records_retained"] is True
+    assert purge_data["retention"]["purge_scope"] == "profile_state_and_registered_owned_assets"
     events = app_with_profiles.state_store.list_audit_events(resource_id=profile_id)
     event_types = {event["event_type"] for event in events}
     assert {"export", "delete"} <= event_types

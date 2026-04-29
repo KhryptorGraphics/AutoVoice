@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional
 
 import numpy as np
 import torch
-from flask import current_app
+from flask import current_app, request
 from flask_socketio import Namespace, emit, join_room, leave_room
 
 from .karaoke_session import KaraokeSession
@@ -24,6 +24,7 @@ from .karaoke_api import (
     update_session_activity,
     _load_audio_router_config,
 )
+from .security import record_structured_audit_event, require_socketio_authorization
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,48 @@ class KaraokeNamespace(Namespace):
         self._client_connect_time: Dict[str, float] = {}  # client_id -> connect timestamp
         self._sample_collectors: Dict[str, Any] = {}  # session_id -> SampleCollector
 
+    def _audit_socket_event(
+        self,
+        action: str,
+        *,
+        session_id: str | None = None,
+        allowed: bool,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        try:
+            record_structured_audit_event(
+                action,
+                'karaoke_session',
+                app=current_app,
+                actor=f"socketio:{getattr(request, 'sid', 'unknown')}",
+                resource_id=session_id,
+                details={'allowed': allowed, **dict(details or {})},
+            )
+        except Exception:
+            logger.debug("Failed to record karaoke audit event %s", action, exc_info=True)
+
+    def _authorized_or_emit(
+        self,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        action: str = 'karaoke.event',
+    ) -> bool:
+        """Mirror HTTP/default Socket.IO token auth for karaoke events."""
+        if require_socketio_authorization(current_app, payload):
+            self._audit_socket_event(
+                action,
+                session_id=(payload or {}).get('session_id') if isinstance(payload, dict) else None,
+                allowed=True,
+            )
+            return True
+        self._audit_socket_event(
+            action,
+            session_id=(payload or {}).get('session_id') if isinstance(payload, dict) else None,
+            allowed=False,
+        )
+        emit('error', {'message': 'authentication required'})
+        return False
+
     def _build_session_snapshot(
         self,
         session: KaraokeSession,
@@ -173,17 +216,20 @@ class KaraokeNamespace(Namespace):
         except Exception as exc:
             logger.debug("Failed to persist karaoke session snapshot %s: %s", session.session_id, exc)
 
-    def on_connect(self):
+    def on_connect(self, auth: Optional[Dict[str, Any]] = None):
         """Handle client connection to karaoke namespace."""
-        from flask import request
+        if not require_socketio_authorization(current_app, auth):
+            self._audit_socket_event('karaoke.connect', allowed=False)
+            logger.warning("Rejected unauthorized /karaoke Socket.IO connection")
+            return False
         client_id = request.sid
         self._client_connect_time[client_id] = time.time()
+        self._audit_socket_event('karaoke.connect', allowed=True)
         logger.info(f"Client {client_id[:8]}... connected to /karaoke namespace")
         emit('connected', {'status': 'connected', 'client_id': client_id})
 
     def on_disconnect(self):
         """Handle client disconnection with graceful cleanup (Task 8.3)."""
-        from flask import request
         client_id = request.sid
 
         # Clean up any active session for this client
@@ -235,6 +281,8 @@ class KaraokeNamespace(Namespace):
         Args:
             data: Dict with session_id and optional voice_model_id
         """
+        if not self._authorized_or_emit(data, action='karaoke.join_session'):
+            return
         session_id = data.get('session_id')
         if not session_id:
             emit('error', {'message': 'session_id is required'})
@@ -253,6 +301,8 @@ class KaraokeNamespace(Namespace):
         Args:
             data: Dict with session_id
         """
+        if not self._authorized_or_emit(data, action='karaoke.leave_session'):
+            return
         session_id = data.get('session_id')
         if session_id:
             leave_room(session_id)
@@ -273,7 +323,8 @@ class KaraokeNamespace(Namespace):
                 - collect_samples: Optional bool to enable training sample collection
                 - pipeline_type: 'realtime' or 'realtime_meanvc' for live conversion (default: realtime)
         """
-        from flask import request
+        if not self._authorized_or_emit(data, action='karaoke.start_session'):
+            return
 
         session_id = data.get('session_id')
         song_id = data.get('song_id')
@@ -446,6 +497,8 @@ class KaraokeNamespace(Namespace):
         Args:
             data: Dict with session_id
         """
+        if not self._authorized_or_emit(data, action='karaoke.stop_session'):
+            return
         session_id = data.get('session_id')
         if not session_id:
             return
@@ -505,7 +558,8 @@ class KaraokeNamespace(Namespace):
                 - audio: Base64-encoded PCM float32 audio
                 - timestamp: Client timestamp for sync
         """
-        from flask import request
+        if not self._authorized_or_emit(data, action='karaoke.audio_chunk'):
+            return
 
         session_id = data.get('session_id')
         if not session_id:
@@ -581,6 +635,9 @@ class KaraokeNamespace(Namespace):
         Args:
             data: Dict with session_id and speaker_embedding (base64)
         """
+        if not self._authorized_or_emit(data, action='karaoke.set_speaker_embedding'):
+            return
+
         session_id = data.get('session_id')
         session = self._sessions.get(session_id)
 

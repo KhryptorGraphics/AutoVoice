@@ -27,12 +27,18 @@ release notes or operator docs because it hides the support boundary.
 
 Current local HEAD is not release-cleared solely because ignored `reports/*/latest`
 files exist. A readiness claim must cite artifacts whose embedded git SHA matches
-the candidate commit being released. As of this documentation pass, the checked-out
-HEAD was `01f8470f`; `reports/completion/latest/completion_matrix.json` referenced
-`9c6a056378df7585c453ecbb4d1f964345287436`, while
-`reports/release-evidence/latest/release_decision.json` referenced
-`4fb90501ddbc87201ee8d4da818f688469d06b27`. Treat those as historical evidence
-until regenerated for the current HEAD.
+the candidate commit being released. During the 2026-04-29 local-only pass,
+`reports/benchmarks/latest/benchmark_dashboard.json` and
+`reports/benchmarks/latest/release_evidence.json` were regenerated for the
+then-current worktree baseline and passed
+`scripts/validate_benchmark_dashboard.py --current-git-sha --release-grade`.
+Because these latest files are ignored runtime artifacts, rerun that validator
+after selecting the final release candidate commit. `reports/completion/latest/
+completion_matrix.json` still references `9c6a056378df7585c453ecbb4d1f964345287436`,
+and `reports/release-evidence/latest/release_decision.json` still references
+`f0d37ef01f2accd031cc134b84ea8e00501a82e2`. Treat completion-matrix and
+hardware release-decision artifacts as historical until regenerated for the
+candidate commit.
 
 The latest closeout and post-release quality plan are not contradictory when read
 with this vocabulary: AutoVoice has meaningful local/private deployment proof and
@@ -149,6 +155,10 @@ See [repo-hygiene.md](./repo-hygiene.md) for the full policy. The short version:
 - generated media/model outputs under `output/` are not tracked; do not add new
   generated media/model artifacts without documenting the owner, purpose, and
   retention rule as an explicit fixture exception
+- voice-profile export includes profile metadata, training samples, profile-scoped
+  app-state, registered owned asset references, and recent audit events; purge
+  removes profile-linked app-state plus registered owned asset references while
+  retaining durable audit records
 - local runtime state, scratch outputs, and swarm run artifacts belong in ignored
   report/data paths, not in the root repository
 

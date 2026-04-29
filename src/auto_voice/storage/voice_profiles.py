@@ -643,12 +643,12 @@ class VoiceProfileStore:
         return sum(s.duration for s in samples)
 
     def list_trainable_samples(self, profile_id: str) -> List[TrainingSample]:
-        """Return samples that passed or warned through the QA gate."""
+        """Return samples with explicit pass/warn QA state."""
         samples = self.list_training_samples(profile_id)
         return [
             sample
             for sample in samples
-            if (sample.quality_metadata or {}).get("qa_status", "unknown") != "fail"
+            if (sample.quality_metadata or {}).get("qa_status") in {"pass", "warn"}
         ]
 
     def get_training_quality_summary(self, profile_id: str) -> Dict[str, Any]:

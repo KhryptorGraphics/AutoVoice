@@ -31,6 +31,18 @@ async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promi
   return fetch(input, { ...init, headers })
 }
 
+function appendMediaAttestation(formData: FormData): void {
+  formData.append('consent_confirmed', 'true')
+  formData.append('source_media_policy_confirmed', 'true')
+}
+
+function mediaAttestationPayload(): { consent_confirmed: true; source_media_policy_confirmed: true } {
+  return {
+    consent_confirmed: true,
+    source_media_policy_confirmed: true,
+  }
+}
+
 // WebSocket event types
 export type WSEventType =
   | 'conversion_progress'
@@ -282,6 +294,8 @@ export interface TrainingJob {
   completed_at?: string
   progress: number
   sample_ids: string[]
+  rejected_sample_ids?: string[]
+  training_quality_summary?: Record<string, unknown>
   error?: string
   is_paused?: boolean
   results?: {
@@ -1130,6 +1144,7 @@ class ApiService {
   async createVoiceProfile(audioFile: File, name?: string, userId?: string): Promise<VoiceProfile> {
     const formData = new FormData()
     formData.append('reference_audio', audioFile)
+    appendMediaAttestation(formData)
     if (name) formData.append('name', name)
     if (userId) formData.append('user_id', userId)
 
@@ -1275,6 +1290,7 @@ class ApiService {
     const formData = new FormData()
     formData.append('audio', audioFile)
     formData.append('profile_id', profileId)
+    appendMediaAttestation(formData)
     if (settings?.preset) formData.append('preset', settings.preset)
     if (settings?.vocal_volume != null) formData.append('vocal_volume', String(settings.vocal_volume))
     if (settings?.instrumental_volume != null) formData.append('instrumental_volume', String(settings.instrumental_volume))
@@ -1314,6 +1330,7 @@ class ApiService {
   ): Promise<ConversionWorkflow> {
     const formData = new FormData()
     formData.append('artist_song', artistSong)
+    appendMediaAttestation(formData)
     userVocalFiles.forEach((file) => formData.append('user_vocals', file))
     if (options?.target_profile_id) {
       formData.append('target_profile_id', options.target_profile_id)
@@ -1412,6 +1429,7 @@ class ApiService {
   async uploadSample(profileId: string, audioFile: File, metadata?: Record<string, unknown>): Promise<TrainingSample> {
     const formData = new FormData()
     formData.append('audio', audioFile)
+    appendMediaAttestation(formData)
     if (metadata) formData.append('metadata', JSON.stringify(metadata))
 
     const response = await apiFetch(`${API_BASE}/profiles/${profileId}/samples`, {
@@ -1444,6 +1462,7 @@ class ApiService {
     formData.append('file', file)
     formData.append('profile_id', profileId)
     formData.append('auto_split', 'true')
+    appendMediaAttestation(formData)
 
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest()
@@ -1716,6 +1735,7 @@ class ApiService {
         extract_segments: extractSegments,
         profile_role: options?.profileRole,
         metadata: options?.metadata,
+        ...mediaAttestationPayload(),
       }),
     })
   }
@@ -1773,6 +1793,25 @@ class ApiService {
         sample_rate: options?.sample_rate ?? 44100,
         run_diarization: options?.run_diarization ?? false,
         filter_to_main_artist: options?.filter_to_main_artist ?? false,
+        ...mediaAttestationPayload(),
+      }),
+    })
+  }
+
+  async addSampleFromPath(
+    profileId: string,
+    payload: {
+      audio_path?: string | null
+      audio_asset_id?: string | null
+      metadata?: Record<string, unknown>
+      skip_separation?: boolean
+    }
+  ): Promise<TrainingSample> {
+    return this.request(`/profiles/${profileId}/samples/from-path`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...mediaAttestationPayload(),
+        ...payload,
       }),
     })
   }
@@ -1899,6 +1938,8 @@ export interface YouTubeVideoInfo {
 export interface YouTubeDownloadResult {
   success: boolean
   audio_path: string | null
+  audio_asset_id?: string | null
+  audio_path_asset_id?: string | null
   title: string
   duration: number
   main_artist: string | null
@@ -1924,6 +1965,8 @@ export interface YouTubeDownloadResult {
   }
   diarization_error?: string
   filtered_audio_path?: string | null
+  filtered_asset_id?: string | null
+  filtered_audio_asset_id?: string | null
   main_speaker_id?: string | null
   filtered_duration?: number
 }

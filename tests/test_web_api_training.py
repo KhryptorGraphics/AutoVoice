@@ -20,6 +20,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests.fixtures.audio import write_voiced_wav
+
 
 @pytest.fixture
 def app_with_training():
@@ -69,17 +71,7 @@ def audio_file():
 
 
 def _write_wav(path: Path, duration_seconds: float = 1.0, sample_rate: int = 22050) -> None:
-    frames = int(duration_seconds * sample_rate)
-    samples = (
-        (np.sin(2 * np.pi * 220 * np.arange(frames) / sample_rate) * 12000)
-        .astype(np.int16)
-        .tobytes()
-    )
-    with wave.open(str(path), 'wb') as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(sample_rate)
-        wav_file.writeframes(samples)
+    write_voiced_wav(path, duration_seconds=duration_seconds, sample_rate=sample_rate)
 
 
 def _create_profile_with_sample(app_with_training, *, profile_id: str, profile_role: str, duration_seconds: float) -> str:
@@ -294,6 +286,39 @@ class TestCreateTrainingJob:
         assert data['config']['scheduler'] == 'none'
         assert data['config']['checkpoint_every_steps'] == 250
         assert data['config']['validation_split'] == 0.2
+
+    def test_create_job_rejects_unknown_quality_samples(self, client, app_with_training, monkeypatch):
+        """Training starts require explicit pass/warn QA, not missing legacy metadata."""
+        from auto_voice.storage.paths import resolve_profiles_dir, resolve_samples_dir
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
+        from auto_voice.training.job_manager import TrainingJobManager
+
+        monkeypatch.setattr(TrainingJobManager, 'execute_job', lambda self, job_id: None)
+        profile_id = _create_profile_with_sample(
+            app_with_training,
+            profile_id='target-profile-unknown-qa',
+            profile_role='target_user',
+            duration_seconds=240.0,
+        )
+        store = VoiceProfileStore(
+            profiles_dir=str(resolve_profiles_dir(data_dir=app_with_training.config['DATA_DIR'])),
+            samples_dir=str(resolve_samples_dir(data_dir=app_with_training.config['DATA_DIR'])),
+        )
+        sample = store.list_training_samples(profile_id)[0]
+        metadata_path = Path(sample.vocals_path).parent / 'metadata.json'
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop('quality_metadata', None)
+        metadata_path.write_text(json.dumps(metadata))
+
+        response = client.post(
+            '/api/v1/training/jobs',
+            json={'profile_id': profile_id, 'sample_ids': [sample.sample_id]},
+            content_type='application/json',
+        )
+
+        assert response.status_code == 400
+        data = json.loads(response.data)
+        assert 'quality gates' in data['error']
 
     def test_create_job_rejects_invalid_granular_config(self, client, app_with_training):
         profile_id = _create_profile_with_sample(

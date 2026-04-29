@@ -11,7 +11,16 @@ import { StatusBanner } from '../components/StatusBanner'
 import { SystemConfigPanel } from '../components/SystemConfigPanel'
 import { TensorRTControls } from '../components/TensorRTControls'
 import { useToastContext } from '../contexts/ToastContext'
-import { apiService, type AppSettings, type BenchmarkDashboard, type LivePipelineType, type OfflinePipelineType, type ReleaseEvidence } from '../services/api'
+import {
+  API_TOKEN_STORAGE_KEY,
+  apiService,
+  getApiAuthToken,
+  type AppSettings,
+  type BenchmarkDashboard,
+  type LivePipelineType,
+  type OfflinePipelineType,
+  type ReleaseEvidence,
+} from '../services/api'
 
 const OFFLINE_PIPELINES: Array<{ value: OfflinePipelineType; label: string }> = [
   { value: 'quality_seedvc', label: 'quality_seedvc' },
@@ -28,6 +37,8 @@ const LIVE_PIPELINES: Array<{ value: LivePipelineType; label: string }> = [
 export function SystemStatusPage() {
   const queryClient = useQueryClient()
   const toast = useToastContext()
+  const [apiTokenInput, setApiTokenInput] = useState('')
+  const [apiTokenConfigured, setApiTokenConfigured] = useState(false)
   const [runtimePrefs, setRuntimePrefs] = useState<Pick<AppSettings, 'preferred_offline_pipeline' | 'preferred_live_pipeline'>>({
     preferred_offline_pipeline: 'quality_seedvc',
     preferred_live_pipeline: 'realtime',
@@ -78,6 +89,12 @@ export function SystemStatusPage() {
     },
     refetchInterval: 5000,
   })
+
+  useEffect(() => {
+    const token = getApiAuthToken()
+    setApiTokenInput(token ?? '')
+    setApiTokenConfigured(Boolean(token))
+  }, [])
 
   useEffect(() => {
     if (!data?.appSettings) {
@@ -206,85 +223,144 @@ export function SystemStatusPage() {
               <GPUMonitor refreshInterval={2000} />
             </div>
 
-            <section className="rounded-xl border border-gray-800 bg-gray-900/80 p-6 shadow-lg">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-lg font-semibold text-white">Runtime Defaults</h2>
-                  <p className="mt-1 text-sm text-gray-400">
-                    Set the canonical offline and live pipelines used by the rest of the app.
-                  </p>
-                </div>
-                {runtimePrefsDirty && (
-                  <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-200">
-                    Unsaved
+            <section className="space-y-6">
+              <div className="rounded-xl border border-gray-800 bg-gray-900/80 p-6 shadow-lg" data-testid="api-token-status-panel">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-semibold text-white">API Token</h2>
+                    <p className="mt-1 text-sm text-gray-400">
+                      Configure the browser token for auth-enabled local/private runs.
+                    </p>
+                  </div>
+                  <span className={clsx(
+                    'rounded-full px-3 py-1 text-xs font-medium',
+                    apiTokenConfigured ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200'
+                  )}>
+                    {apiTokenConfigured ? 'Token configured' : 'No browser token'}
                   </span>
-                )}
+                </div>
+                <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                  <input
+                    type="password"
+                    value={apiTokenInput}
+                    onChange={(event) => setApiTokenInput(event.target.value)}
+                    placeholder="Paste AUTOVOICE_API_TOKEN"
+                    className="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500"
+                    aria-label="AutoVoice API token"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const token = apiTokenInput.trim()
+                      if (token) {
+                        window.localStorage.setItem(API_TOKEN_STORAGE_KEY, token)
+                        setApiTokenConfigured(true)
+                        toast.success('API token saved for this browser')
+                      } else {
+                        window.localStorage.removeItem(API_TOKEN_STORAGE_KEY)
+                        setApiTokenConfigured(false)
+                        toast.success('API token cleared')
+                      }
+                    }}
+                    className="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500"
+                  >
+                    Save token
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.localStorage.removeItem(API_TOKEN_STORAGE_KEY)
+                      setApiTokenInput('')
+                      setApiTokenConfigured(false)
+                      toast.success('API token cleared')
+                    }}
+                    className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 hover:bg-gray-700"
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
 
-              <div className="mt-6 space-y-4">
-                <div>
-                  <label className="mb-2 block text-sm text-gray-400">Offline default</label>
-                  <select
-                    data-testid="system-offline-pipeline-select"
-                    value={runtimePrefs.preferred_offline_pipeline}
-                    onChange={(event) => setRuntimePrefs((prev) => ({
-                      ...prev,
-                      preferred_offline_pipeline: event.target.value as OfflinePipelineType,
-                    }))}
-                    className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white"
-                  >
-                    {OFFLINE_PIPELINES.map((pipeline) => (
-                      <option key={pipeline.value} value={pipeline.value}>
-                        {pipeline.label}
-                      </option>
-                    ))}
-                  </select>
+              <div className="rounded-xl border border-gray-800 bg-gray-900/80 p-6 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold text-white">Runtime Defaults</h2>
+                    <p className="mt-1 text-sm text-gray-400">
+                      Set the canonical offline and live pipelines used by the rest of the app.
+                    </p>
+                  </div>
+                  {runtimePrefsDirty && (
+                    <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-200">
+                      Unsaved
+                    </span>
+                  )}
                 </div>
 
-                <div>
-                  <label className="mb-2 block text-sm text-gray-400">Live default</label>
-                  <select
-                    data-testid="system-live-pipeline-select"
-                    value={runtimePrefs.preferred_live_pipeline}
-                    onChange={(event) => setRuntimePrefs((prev) => ({
-                      ...prev,
-                      preferred_live_pipeline: event.target.value as LivePipelineType,
-                    }))}
-                    className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white"
+                <div className="mt-6 space-y-4">
+                  <div>
+                    <label className="mb-2 block text-sm text-gray-400">Offline default</label>
+                    <select
+                      data-testid="system-offline-pipeline-select"
+                      value={runtimePrefs.preferred_offline_pipeline}
+                      onChange={(event) => setRuntimePrefs((prev) => ({
+                        ...prev,
+                        preferred_offline_pipeline: event.target.value as OfflinePipelineType,
+                      }))}
+                      className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white"
+                    >
+                      {OFFLINE_PIPELINES.map((pipeline) => (
+                        <option key={pipeline.value} value={pipeline.value}>
+                          {pipeline.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm text-gray-400">Live default</label>
+                    <select
+                      data-testid="system-live-pipeline-select"
+                      value={runtimePrefs.preferred_live_pipeline}
+                      onChange={(event) => setRuntimePrefs((prev) => ({
+                        ...prev,
+                        preferred_live_pipeline: event.target.value as LivePipelineType,
+                      }))}
+                      className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white"
+                    >
+                      {LIVE_PIPELINES.map((pipeline) => (
+                        <option key={pipeline.value} value={pipeline.value}>
+                          {pipeline.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <button
+                    type="button"
+                    data-testid="system-runtime-save"
+                    disabled={!runtimePrefsDirty || updateRuntimeMutation.isPending}
+                    onClick={() => updateRuntimeMutation.mutate(runtimePrefs)}
+                    className="inline-flex items-center gap-2 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {LIVE_PIPELINES.map((pipeline) => (
-                      <option key={pipeline.value} value={pipeline.value}>
-                        {pipeline.label}
-                      </option>
-                    ))}
-                  </select>
+                    <SlidersHorizontal className="h-4 w-4" />
+                    {updateRuntimeMutation.isPending ? 'Saving defaults...' : 'Save runtime defaults'}
+                  </button>
                 </div>
 
-                <button
-                  type="button"
-                  data-testid="system-runtime-save"
-                  disabled={!runtimePrefsDirty || updateRuntimeMutation.isPending}
-                  onClick={() => updateRuntimeMutation.mutate(runtimePrefs)}
-                  className="inline-flex items-center gap-2 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-gray-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <SlidersHorizontal className="h-4 w-4" />
-                  {updateRuntimeMutation.isPending ? 'Saving defaults...' : 'Save runtime defaults'}
-                </button>
-              </div>
-
-              <div className="mt-6 grid grid-cols-1 gap-3 border-t border-gray-800 pt-6 text-sm text-gray-300">
-                <DetailPanel label="Device sample rate" value={`${data.deviceConfig.sample_rate} Hz`} />
-                <DetailPanel
-                  label="Audience routing"
-                  value={data.audioRouterConfig.speaker_enabled ? `Speaker ${String(data.audioRouterConfig.speaker_device ?? 'default')}` : 'Disabled'}
-                />
-                <DetailPanel
-                  label="Monitor routing"
-                  value={data.audioRouterConfig.headphone_enabled ? `Headphone ${String(data.audioRouterConfig.headphone_device ?? 'default')}` : 'Disabled'}
-                />
-                <DetailPanel label="Platform" value={data.systemStatus.device} />
-                <DetailPanel label="Python" value={data.systemStatus.python_version.split(' ')[0]} />
-                <DetailPanel label="Separator" value={data.separationConfig.model} />
+                <div className="mt-6 grid grid-cols-1 gap-3 border-t border-gray-800 pt-6 text-sm text-gray-300">
+                  <DetailPanel label="Device sample rate" value={`${data.deviceConfig.sample_rate} Hz`} />
+                  <DetailPanel
+                    label="Audience routing"
+                    value={data.audioRouterConfig.speaker_enabled ? `Speaker ${String(data.audioRouterConfig.speaker_device ?? 'default')}` : 'Disabled'}
+                  />
+                  <DetailPanel
+                    label="Monitor routing"
+                    value={data.audioRouterConfig.headphone_enabled ? `Headphone ${String(data.audioRouterConfig.headphone_device ?? 'default')}` : 'Disabled'}
+                  />
+                  <DetailPanel label="Platform" value={data.systemStatus.device} />
+                  <DetailPanel label="Python" value={data.systemStatus.python_version.split(' ')[0]} />
+                  <DetailPanel label="Separator" value={data.separationConfig.model} />
+                </div>
               </div>
             </section>
           </div>
@@ -409,9 +485,10 @@ function BenchmarkEvidencePanel({
         />
       ) : (
         <>
-          <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-4">
+          <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-5">
             <DetailCard label="Generated" value={generatedAt ? new Date(generatedAt).toLocaleString() : 'Unknown'} detail={freshness ?? 'No timestamp'} />
             <DetailCard label="Release status" value={statusLabel} detail={releaseEvidence.git_sha_short ? `sha ${releaseEvidence.git_sha_short}` : 'No git SHA'} />
+            <DetailCard label="Quality gate" value={qualityPassed ? 'Quality gate passed' : 'Quality gate blocked'} detail={`${pipelines.length} benchmark pipelines`} />
             <DetailCard label="Hardware" value={hardwareReady ? 'Ready' : 'Needs validation'} detail={releaseEvidence.target_hardware ?? dashboard.target_hardware ?? 'Unknown hardware'} />
             <DetailCard label="Lane issues" value={`${failedLanes.length} failed / ${skippedLanes.length} skipped`} detail={`${laneResults.length} lanes reported`} />
           </div>

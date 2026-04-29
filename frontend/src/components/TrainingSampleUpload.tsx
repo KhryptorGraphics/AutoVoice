@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Upload, Loader2, Users, Filter, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Upload, Loader2, Users, CheckCircle, AlertTriangle } from 'lucide-react';
 import { apiService, TrainingSample } from '../services/api';
 import { DiarizationTimeline } from './DiarizationTimeline';
 
@@ -25,7 +25,7 @@ interface TrainingSampleUploadProps {
   onSampleAdded: (sample: TrainingSample) => void;
 }
 
-type UploadStage = 'idle' | 'uploading' | 'diarizing' | 'review' | 'filtering' | 'complete';
+type UploadStage = 'idle' | 'uploading' | 'diarizing' | 'review' | 'complete';
 
 export function TrainingSampleUpload({
   profileId,
@@ -105,18 +105,14 @@ export function TrainingSampleUpload({
     setError(null);
 
     try {
-      // First upload the sample
+      // Backend speaker extraction for this flow is not wired yet; keep the UI truthful.
       const sample = await apiService.uploadSample(profileId, file);
-
-      // Then filter it to only include selected speaker segments
-      // Note: This requires the backend to support filtering during upload
-      // For now, we'll upload and then the user can manually filter
 
       setStage('complete');
       onSampleAdded(sample);
       resetState();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upload and filter sample');
+      setError(err instanceof Error ? err.message : 'Failed to upload sample for review');
       setIsFiltering(false);
     }
   };
@@ -155,8 +151,9 @@ export function TrainingSampleUpload({
 
         <p className="text-zinc-400 text-sm">
           This audio contains {diarizationResult.num_speakers} different speakers.
-          Select which speaker to use for training {profileName ? `"${profileName}"` : 'this profile'},
-          or upload all audio without filtering.
+          Select the intended speaker for {profileName ? `"${profileName}"` : 'this profile'} review notes,
+          then upload the original audio.
+          Automatic speaker-only extraction is not available in this upload flow yet.
         </p>
 
         {/* Timeline preview */}
@@ -209,10 +206,8 @@ export function TrainingSampleUpload({
           >
             {isFiltering ? (
               <Loader2 className="animate-spin" size={18} />
-            ) : (
-              <Filter size={18} />
-            )}
-            Upload Filtered Audio
+            ) : null}
+            Upload for Manual Review
           </button>
           <button
             onClick={handleSkipFilter}
@@ -289,7 +284,7 @@ export function TrainingSampleUpload({
             <span className="font-medium">Detect multiple speakers</span>
           </div>
           <p className="text-zinc-400 text-xs mt-0.5">
-            Analyze audio and filter out other singers (duets, features, harmonies)
+            Analyze audio for speaker review before upload. This does not automatically remove other singers yet.
           </p>
         </div>
       </label>
