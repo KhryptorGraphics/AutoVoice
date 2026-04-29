@@ -364,7 +364,7 @@ def test_trt_conversion_pipeline_build_missing_engines(
     mock_exporter_class.return_value = mock_exporter
 
     # Patch model imports
-    with patch('auto_voice.models.encoder.ContentVecEncoder'), \
+    with patch('auto_voice.inference.trt_pipeline.TRTBootstrapContentExtractor'), \
          patch('auto_voice.models.pitch.RMVPEPitchExtractor'), \
          patch('auto_voice.models.svc_decoder.CoMoSVCDecoder'), \
          patch('auto_voice.models.vocoder.BigVGANGenerator'):

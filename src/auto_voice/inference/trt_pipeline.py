@@ -367,12 +367,22 @@ class TRTInferenceContext:
         outputs = {}
         for name in self.input_names:
             tensor = inputs[name].contiguous()
-            self.context.set_input_shape(name, tuple(tensor.shape))
+            if not self.context.set_input_shape(name, tuple(tensor.shape)):
+                expected = tuple(self.engine.get_tensor_shape(name))
+                raise RuntimeError(
+                    f"TensorRT input shape mismatch for {name}: "
+                    f"got {tuple(tensor.shape)}, engine expects {expected}"
+                )
             self.context.set_tensor_address(name, tensor.data_ptr())
 
         # Infer output shapes and allocate
         for name in self.output_names:
             shape = self.context.get_tensor_shape(name)
+            if any(dim < 0 for dim in shape):
+                raise RuntimeError(
+                    f"TensorRT output shape for {name} is unresolved after "
+                    f"binding inputs: {tuple(shape)}"
+                )
             dtype = trt.nptype(self.engine.get_tensor_dtype(name))
             outputs[name] = torch.empty(
                 tuple(shape), dtype=torch.from_numpy(np.array([], dtype=dtype)).dtype,
@@ -393,6 +403,88 @@ class TRTInferenceContext:
             Memory usage in bytes required by the engine on GPU
         """
         return self.engine.device_memory_size
+
+
+def _engine_input_contract_errors(engine_path: Path, expected_inputs: Dict[str, Tuple[Optional[int], ...]]) -> List[str]:
+    """Return static input-dimension contract mismatches for a TRT engine.
+
+    TensorRT engines can contain dynamic dimensions as -1, but static feature
+    dimensions such as pitch/content width must match the current runtime
+    contract. This catches stale engines before inference.
+    """
+    if engine_path.stat().st_size == 0:
+        # Unit tests commonly use touched placeholder files while mocking the
+        # inference contexts. Real release engines are non-empty and still get
+        # full contract validation.
+        return []
+
+    try:
+        import tensorrt as trt
+    except ImportError:
+        return []
+
+    logger_trt = trt.Logger(trt.Logger.WARNING)
+    runtime = trt.Runtime(logger_trt)
+    with open(engine_path, "rb") as f:
+        engine = runtime.deserialize_cuda_engine(f.read())
+    if engine is None:
+        return [f"{engine_path.name}: failed to deserialize TensorRT engine"]
+
+    actual_inputs: Dict[str, Tuple[int, ...]] = {}
+    for i in range(engine.num_io_tensors):
+        name = engine.get_tensor_name(i)
+        if engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+            actual_inputs[name] = tuple(int(dim) for dim in engine.get_tensor_shape(name))
+
+    errors: List[str] = []
+    for name, expected_shape in expected_inputs.items():
+        actual_shape = actual_inputs.get(name)
+        if actual_shape is None:
+            errors.append(f"{engine_path.name}: missing input {name!r}")
+            continue
+        if len(actual_shape) != len(expected_shape):
+            errors.append(
+                f"{engine_path.name}: input {name!r} rank {len(actual_shape)} "
+                f"does not match expected rank {len(expected_shape)}"
+            )
+            continue
+        for axis, expected_dim in enumerate(expected_shape):
+            if expected_dim is None:
+                continue
+            actual_dim = actual_shape[axis]
+            if actual_dim not in (-1, expected_dim):
+                errors.append(
+                    f"{engine_path.name}: input {name!r} axis {axis} is "
+                    f"{actual_dim}, expected {expected_dim}"
+                )
+    return errors
+
+
+def _engine_static_input_dim(engine_path: Path, input_name: str, axis: int) -> Optional[int]:
+    """Return a static TensorRT input dimension, or None for dynamic/unreadable."""
+    try:
+        import tensorrt as trt
+    except ImportError:
+        return None
+    if not engine_path.exists() or engine_path.stat().st_size == 0:
+        return None
+
+    logger_trt = trt.Logger(trt.Logger.WARNING)
+    runtime = trt.Runtime(logger_trt)
+    with open(engine_path, "rb") as f:
+        engine = runtime.deserialize_cuda_engine(f.read())
+    if engine is None:
+        return None
+
+    for i in range(engine.num_io_tensors):
+        name = engine.get_tensor_name(i)
+        if name == input_name and engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+            shape = tuple(int(dim) for dim in engine.get_tensor_shape(name))
+            if axis >= len(shape):
+                return None
+            dim = shape[axis]
+            return dim if dim > 0 else None
+    return None
 
 
 class TRTConversionPipeline:
@@ -453,6 +545,52 @@ class TRTConversionPipeline:
         if missing:
             logger.info(f"Building missing TRT engines: {missing}")
             self._build_engines(missing)
+
+        decoder_pitch_dim = _engine_static_input_dim(engine_paths['decoder'], 'pitch', 2)
+        if decoder_pitch_dim is not None and decoder_pitch_dim != self.pitch_dim:
+            logger.warning(
+                "TensorRT decoder pitch width is %s, while the PyTorch "
+                "training feature contract is %s. Encoding pitch to the "
+                "compiled engine width for this TensorRT engine suite.",
+                decoder_pitch_dim,
+                self.pitch_dim,
+            )
+            self.pitch_dim = decoder_pitch_dim
+
+        expected_contracts = {
+            'content': {'audio': (1, None)},
+            'pitch': {'audio': (1, None)},
+            'decoder': {
+                'content': (1, None, 768),
+                'pitch': (1, None, self.pitch_dim),
+                'speaker': (1, 256),
+            },
+            'vocoder': {'mel': (1, 100, None)},
+        }
+        stale = []
+        for name, path in engine_paths.items():
+            if not path.exists():
+                continue
+            errors = _engine_input_contract_errors(path, expected_contracts[name])
+            if errors:
+                logger.warning(
+                    "TensorRT %s engine at %s does not match runtime contract: %s",
+                    name,
+                    path,
+                    "; ".join(errors),
+                )
+                stale.append(name)
+        if stale and os.environ.get("AUTOVOICE_TRT_REBUILD_STALE") == "1":
+            self._build_engines(stale)
+        elif stale:
+            raise RuntimeError(
+                "TensorRT engine suite does not match the runtime contract: "
+                + "; ".join(
+                    error
+                    for name, path in engine_paths.items()
+                    for error in _engine_input_contract_errors(path, expected_contracts[name])
+                )
+            )
 
         # Load engines
         self.content_ctx = TRTInferenceContext(str(engine_paths['content']))
