@@ -15,7 +15,7 @@ The current implementation adds enforceable public-mode gates but does not make 
 ## Remaining Blockers
 
 - Full hardware/Jetson evidence must be regenerated for the current commit when hardware lanes are in scope.
-- The current local/no-Docker completion matrix is green at `reports/completion/20260429T113605Z-fb7b4c12/` for source git SHA `fb7b4c123b2d0d50735deabef6ecc8754a52351e`.
+- The current local/no-Docker completion matrix is green at `reports/completion/phase1-20260429T120750Z-900adba1/` for source git SHA `900adba105b1a60a281c2d3433020c7f0f143a6b`.
 - Current benchmark latest artifacts validate against that source SHA. `reports/completion/latest/` remains a historical pointer until deliberately republished.
 - MeanVC remains an experimental, explicit opt-in performance lane. Default local-only pytest now skips it with owner/action metadata unless `AUTOVOICE_MEANVC_FULL=1` and the required runtime assets are present.
 - TensorRT runtime availability and TensorRT engine availability are separate states. The local `autovoice-thor` environment has TensorRT installed, but GPU optimization still requires built engine artifacts under the configured engine directory.
