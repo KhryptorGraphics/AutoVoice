@@ -26,32 +26,37 @@ release notes or operator docs because it hides the support boundary.
 | Commercial launch | Not ready | Requires the public multi-user controls plus legal/policy approval for voice, likeness, copyright, biometric privacy, and platform terms. |
 
 The latest local evidence source SHA is
-`222c8882804d726fea2339e7831b7511bfb5a005`. A readiness claim must cite
+`fb7b4c123b2d0d50735deabef6ecc8754a52351e`. A readiness claim must cite
 artifacts whose embedded git SHA matches the candidate commit being released;
 rerun the evidence commands after the final release commit is selected. During
 the 2026-04-29 local-only pass, the immutable completion matrix at
-`reports/completion/20260429T081623Z-222c8882/completion_matrix.json` passed
+`reports/completion/20260429T113605Z-fb7b4c12/completion_matrix.json` passed
 with `ok: true` for local/no-Docker lanes, and the release-grade benchmark
-evidence under `reports/local-evidence/20260429T081623Z-222c8882/benchmarks/`
+evidence under `reports/local-evidence/20260429T113605Z-fb7b4c12/benchmarks/`
 matched the same commit. `reports/benchmarks/latest/benchmark_dashboard.json`
 and `reports/benchmarks/latest/release_evidence.json` also validated against
 that source SHA with `scripts/validate_benchmark_dashboard.py --current-git-sha
 --release-grade`.
 
-The same pass ran the full local pytest suite. It exposed Docker deployment
-errors that are outside the current local-only scope and a contaminated
-`SECRET_KEY` invocation that was later rerun cleanly. MeanVC performance remains
+The same pass ran the supported local completion matrix in `autovoice-thor`.
+It passed GitNexus refresh, skip-audit policy, backend contract smoke tests,
+compose-config validation without Docker deployment, benchmark dashboard build
+and validation, experimental evidence validation, local hosted preflight,
+frontend lint/typecheck/build, and the frontend browser smoke lane. Real audio
+E2E, real compose, release-candidate compose, Jetson CUDA/TensorRT, TensorRT
+engine, and TensorRT checkpoint parity lanes remain explicit skipped lanes unless
+their hardware/deployment scope is enabled. MeanVC performance remains
 experimental and is no longer a default local-only readiness gate; run it
 explicitly with `AUTOVOICE_MEANVC_FULL=1` and the prepared MeanVC assets when
-promoting that lane. Follow-up targeted gates passed for TensorRT status, LoRA
-loading, secret-key security, frontend typecheck/lint/build, and the local live
-browser workflow spec.
+promoting that lane.
 
 Do not treat every `latest` pointer as authoritative. `reports/completion/latest/
-completion_matrix.json` still references `9c6a056378df7585c453ecbb4d1f964345287436`,
-and `reports/release-evidence/latest/release_decision.json` still references
-`f0d37ef01f2accd031cc134b84ea8e00501a82e2`. Treat those two pointers as
-historical until deliberately republished for the candidate commit.
+completion_matrix.json` still references `9c6a056378df7585c453ecbb4d1f964345287436`.
+Treat that pointer as historical until deliberately republished for the candidate
+commit. `reports/release-evidence/latest/release_decision.json` now references
+`fb7b4c123b2d0d50735deabef6ecc8754a52351e`, but release decisions are still
+scoped by the local/no-Docker support boundary unless hardware/deployment lanes
+are explicitly enabled.
 
 The latest closeout and post-release quality plan are not contradictory when read
 with this vocabulary: AutoVoice has meaningful local/private deployment proof and
