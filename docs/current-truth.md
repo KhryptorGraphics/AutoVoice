@@ -25,20 +25,31 @@ release notes or operator docs because it hides the support boundary.
 | Public multi-user | Not ready | Requires account auth, per-user isolation, quotas, abuse review, retention/export/deletion policy, and current-head full hardware evidence. |
 | Commercial launch | Not ready | Requires the public multi-user controls plus legal/policy approval for voice, likeness, copyright, biometric privacy, and platform terms. |
 
-Current local HEAD is not release-cleared solely because ignored `reports/*/latest`
-files exist. A readiness claim must cite artifacts whose embedded git SHA matches
-the candidate commit being released. During the 2026-04-29 local-only pass,
-`reports/benchmarks/latest/benchmark_dashboard.json` and
-`reports/benchmarks/latest/release_evidence.json` were regenerated for the
-then-current worktree baseline and passed
-`scripts/validate_benchmark_dashboard.py --current-git-sha --release-grade`.
-Because these latest files are ignored runtime artifacts, rerun that validator
-after selecting the final release candidate commit. `reports/completion/latest/
+The latest local evidence source SHA is
+`222c8882804d726fea2339e7831b7511bfb5a005`. A readiness claim must cite
+artifacts whose embedded git SHA matches the candidate commit being released;
+rerun the evidence commands after the final release commit is selected. During
+the 2026-04-29 local-only pass, the immutable completion matrix at
+`reports/completion/20260429T081623Z-222c8882/completion_matrix.json` passed
+with `ok: true` for local/no-Docker lanes, and the release-grade benchmark
+evidence under `reports/local-evidence/20260429T081623Z-222c8882/benchmarks/`
+matched the same commit. `reports/benchmarks/latest/benchmark_dashboard.json`
+and `reports/benchmarks/latest/release_evidence.json` also validated against
+that source SHA with `scripts/validate_benchmark_dashboard.py --current-git-sha
+--release-grade`.
+
+The same pass ran the full local pytest suite. It exposed Docker deployment
+errors that are outside the current local-only scope, a MeanVC performance
+threshold miss, and a contaminated `SECRET_KEY` invocation that was later
+rerun cleanly. Follow-up targeted gates passed for TensorRT status, LoRA loading,
+secret-key security, frontend typecheck/lint/build, and the local live browser
+workflow spec.
+
+Do not treat every `latest` pointer as authoritative. `reports/completion/latest/
 completion_matrix.json` still references `9c6a056378df7585c453ecbb4d1f964345287436`,
 and `reports/release-evidence/latest/release_decision.json` still references
-`f0d37ef01f2accd031cc134b84ea8e00501a82e2`. Treat completion-matrix and
-hardware release-decision artifacts as historical until regenerated for the
-candidate commit.
+`f0d37ef01f2accd031cc134b84ea8e00501a82e2`. Treat those two pointers as
+historical until deliberately republished for the candidate commit.
 
 The latest closeout and post-release quality plan are not contradictory when read
 with this vocabulary: AutoVoice has meaningful local/private deployment proof and

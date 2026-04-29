@@ -103,7 +103,8 @@ export function TensorRTControls({ compact = false }: TensorRTControlsProps) {
     )
   }
 
-  const isAvailable = status?.available ?? false
+  const isRuntimeAvailable = status?.runtime_available ?? status?.available ?? false
+  const hasBuiltEngines = status?.engines_available ?? status?.available ?? false
   const isBuildInProgress = status?.build_in_progress || buildMutation.isPending
 
   return (
@@ -114,7 +115,7 @@ export function TensorRTControls({ compact = false }: TensorRTControlsProps) {
           <h3 className="font-semibold">TensorRT Optimization</h3>
         </div>
         <div className="flex items-center gap-2">
-          {isAvailable ? (
+          {isRuntimeAvailable ? (
             <span className="flex items-center gap-1 text-xs text-green-400">
               <CheckCircle size={12} />
               Available
@@ -135,16 +136,25 @@ export function TensorRTControls({ compact = false }: TensorRTControlsProps) {
         </div>
       </div>
 
-      {!isAvailable ? (
+      {!isRuntimeAvailable ? (
         <div className="text-center py-4">
           <Zap size={32} className="mx-auto text-gray-500 mb-2" />
           <div className="text-sm text-gray-400">TensorRT not available</div>
           <div className="text-xs text-gray-500 mt-1">
             Install TensorRT and rebuild to enable GPU optimization
           </div>
+          {status?.runtime_error && (
+            <div className="text-xs text-red-400 mt-2">{status.runtime_error}</div>
+          )}
         </div>
       ) : (
         <>
+          {!hasBuiltEngines && (
+            <div className="rounded-lg border border-yellow-700/60 bg-yellow-950/30 p-3 text-sm text-yellow-100">
+              TensorRT is installed, but no optimized engines have been built yet. Build the selected engines to enable GPU optimization.
+            </div>
+          )}
+
           {/* Precision Selector */}
           <div className="space-y-2">
             <label className="text-sm text-gray-400">Precision Mode</label>
@@ -339,9 +349,9 @@ export function TensorRTControls({ compact = false }: TensorRTControlsProps) {
       )}
 
       {/* Version Info */}
-      {status?.version && (
+      {(status?.runtime_version || status?.version) && (
         <div className="pt-2 border-t border-gray-700 text-xs text-gray-500">
-          TensorRT version: {status.version}
+          TensorRT version: {status.runtime_version || status.version}
         </div>
       )}
     </div>

@@ -43,7 +43,7 @@ def sample_profile_with_weights(store):
 
     # Create sample LoRA weights matching decoder structure
     lora_state = {
-        "input_proj.adapter.lora_A": torch.randn(8, 1024),
+        "input_proj.adapter.lora_A": torch.randn(8, 1536),
         "input_proj.adapter.lora_B": torch.randn(512, 8),
         "speaker_film.gamma_proj.adapter.lora_A": torch.randn(8, 256),
         "speaker_film.gamma_proj.adapter.lora_B": torch.randn(512, 8),

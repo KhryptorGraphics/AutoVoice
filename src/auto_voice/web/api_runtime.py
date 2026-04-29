@@ -792,8 +792,27 @@ def get_tensorrt_status():
         engines = root._engine_inventory()
         jobs = root._list_background_jobs(job_type='tensorrt_build')
         active_job = next((job for job in jobs if job.get('status') in {'queued', 'running'}), None)
+        runtime_available = False
+        runtime_version = None
+        runtime_error = None
+        try:
+            from ..export import tensorrt_engine
+
+            runtime_available = bool(tensorrt_engine.TRT_AVAILABLE)
+            if runtime_available and tensorrt_engine.trt is not None:
+                runtime_version = getattr(tensorrt_engine.trt, "__version__", None)
+        except Exception as exc:
+            runtime_error = str(exc)
+
         return jsonify({
+            # Backwards compatible engine-inventory flag. New clients should use
+            # runtime_available and engines_available to avoid conflating install
+            # state with whether optimized engine artifacts have been built.
             'available': len(engines) > 0,
+            'runtime_available': runtime_available,
+            'runtime_version': runtime_version,
+            'runtime_error': runtime_error,
+            'engines_available': len(engines) > 0,
             'engines': engines,
             'cuda_available': root.TORCH_AVAILABLE and root.torch.cuda.is_available(),
             'build_in_progress': active_job is not None,

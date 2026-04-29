@@ -35,7 +35,7 @@ export interface SeparationJob {
 }
 
 export interface AudioDevice {
-  device_id?: string;
+  device_id?: string | number;
   index: number;
   name: string;
   type?: 'input' | 'output';

@@ -113,8 +113,24 @@ def test_tensorrt_status_reports_engine_inventory(client_models, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["available"] is True
+    assert payload["engines_available"] is True
+    assert "runtime_available" in payload
     assert [engine["name"] for engine in payload["engines"]] == ["encoder.engine", "decoder.plan"]
     assert payload["cuda_available"] is False
+
+
+def test_tensorrt_status_distinguishes_runtime_from_engine_inventory(client_models, monkeypatch):
+    from auto_voice.web import api as web_api
+
+    monkeypatch.setattr(web_api, "_engine_inventory", lambda: [])
+
+    response = client_models.get("/api/v1/models/tensorrt/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["available"] is False
+    assert payload["engines_available"] is False
+    assert isinstance(payload["runtime_available"], bool)
 
 
 def test_tensorrt_build_and_rebuild_use_defaults_and_overrides(client_models, monkeypatch):

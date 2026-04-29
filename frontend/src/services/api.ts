@@ -707,6 +707,11 @@ export interface LoadedModel {
 // TensorRT engine status
 export interface TensorRTStatus {
   available: boolean
+  runtime_available?: boolean
+  runtime_version?: string
+  runtime_error?: string | null
+  engines_available?: boolean
+  cuda_available?: boolean
   version?: string
   engines: {
     name: string
