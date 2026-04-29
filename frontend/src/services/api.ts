@@ -1813,6 +1813,41 @@ class ApiService {
     })
   }
 
+  async startYouTubeIngest(
+    url: string,
+    options?: {
+      format?: 'wav' | 'mp3' | 'flac'
+      sample_rate?: number
+    }
+  ): Promise<YouTubeIngestJob> {
+    return this.request<YouTubeIngestJob>('/youtube/ingest', {
+      method: 'POST',
+      body: JSON.stringify({
+        url,
+        format: options?.format ?? 'wav',
+        sample_rate: options?.sample_rate ?? 44100,
+        separate_vocals: true,
+        run_diarization: true,
+        match_existing_profiles: true,
+        ...mediaAttestationPayload(),
+      }),
+    })
+  }
+
+  async getYouTubeIngest(jobId: string): Promise<YouTubeIngestJob> {
+    return this.request<YouTubeIngestJob>(`/youtube/ingest/${jobId}`)
+  }
+
+  async confirmYouTubeIngest(
+    jobId: string,
+    decisions: YouTubeIngestDecision[]
+  ): Promise<YouTubeIngestConfirmation> {
+    return this.request<YouTubeIngestConfirmation>(`/youtube/ingest/${jobId}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ decisions }),
+    })
+  }
+
   async addSampleFromPath(
     profileId: string,
     payload: {
@@ -1984,6 +2019,89 @@ export interface YouTubeDownloadResult {
   filtered_audio_asset_id?: string | null
   main_speaker_id?: string | null
   filtered_duration?: number
+}
+
+export interface YouTubeProfileMatch {
+  profile_id: string
+  name: string
+  profile_role?: ProfileRole
+  similarity: number
+  active_model_type?: string | null
+  has_trained_model?: boolean
+  sample_count?: number
+}
+
+export interface YouTubeSpeakerSuggestion {
+  speaker_id: string
+  suggested_name: string
+  duration: number
+  segment_count: number
+  matches: YouTubeProfileMatch[]
+  recommended_action: 'assign_existing' | 'create_new'
+  recommended_profile_id?: string | null
+  identity_confidence: 'voice_match' | 'metadata_unverified' | string
+  match_error?: string | null
+}
+
+export interface YouTubeIngestJob {
+  job_id: string
+  job_type: 'youtube_ingest'
+  status: 'queued' | 'running' | 'completed' | 'failed' | string
+  progress: number
+  stage?: string
+  message?: string
+  error?: string | null
+  payload?: Record<string, unknown>
+  result?: {
+    job_id: string
+    url: string
+    metadata: {
+      title: string
+      duration: number
+      main_artist: string | null
+      featured_artists: string[]
+      is_cover: boolean
+      original_artist: string | null
+      song_title: string | null
+      thumbnail_url: string | null
+      video_id: string | null
+    }
+    assets: {
+      audio?: { path?: string | null; asset_id?: string | null }
+      vocals?: { path?: string | null; asset_id?: string | null }
+      instrumental?: { path?: string | null; asset_id?: string | null }
+    }
+    diarization_id: string
+    diarization_result: NonNullable<YouTubeDownloadResult['diarization_result']> & {
+      audio_duration?: number
+    }
+    suggestions: YouTubeSpeakerSuggestion[]
+    review_required: boolean
+  }
+  confirmation?: YouTubeIngestConfirmation
+}
+
+export interface YouTubeIngestDecision {
+  speaker_id: string
+  action: 'assign_existing' | 'create_new' | 'skip'
+  profile_id?: string
+  name?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface YouTubeIngestConfirmation {
+  job_id: string
+  diarization_id: string
+  applied: Array<{
+    speaker_id: string
+    action: 'assign_existing' | 'create_new'
+    profile_id: string
+    name?: string
+    sample_id?: string
+    duration?: number
+  }>
+  skipped: Array<{ speaker_id: string; action: 'skip' }>
+  status: string
 }
 
 export const apiService = new ApiService()

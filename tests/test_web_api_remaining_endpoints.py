@@ -1556,6 +1556,139 @@ class TestYoutubeAnalysisAndQualityRoutes:
         assert payload["success"] is True
         assert payload["diarization_error"] == "diarizer unavailable"
 
+    def test_youtube_ingest_runs_review_only_pipeline_and_confirms_profile_actions(
+        self, client_remaining, app_remaining, tmp_path, monkeypatch
+    ):
+        from auto_voice.web import api as web_api
+        import auto_voice.audio.separation as separation_module
+        import auto_voice.audio.speaker_diarization as diarization_module
+
+        web_api.YOUTUBE_DOWNLOADER_AVAILABLE = True
+
+        existing_profile_id = "source-existing"
+        _create_profile(
+            app_remaining,
+            profile_id=existing_profile_id,
+            role="source_artist",
+            name="Known Artist",
+        )
+        app_remaining.voice_cloner.store.save_speaker_embedding(
+            existing_profile_id,
+            np.ones(4, dtype=np.float32),
+        )
+
+        class FakeDownloader:
+            def download(self, url, audio_format="wav", sample_rate=44100):
+                audio_path = tmp_path / "download.wav"
+                _write_wav(audio_path, sample_rate=sample_rate, duration_seconds=2.0)
+                return SimpleNamespace(
+                    success=True,
+                    audio_path=str(audio_path),
+                    title="Known Artist feat New Artist - Song",
+                    duration=2.0,
+                    main_artist="Known Artist",
+                    featured_artists=["New Artist"],
+                    is_cover=False,
+                    original_artist=None,
+                    song_title="Song",
+                    thumbnail_url=None,
+                    video_id="ingest123",
+                    error=None,
+                )
+
+        class FakeSeparator:
+            def separate(self, audio, sr):
+                return {
+                    "vocals": np.zeros(int(sr * 2), dtype=np.float32),
+                    "instrumental": np.zeros(int(sr * 2), dtype=np.float32),
+                }
+
+        class FakeSpeakerDiarizer:
+            def diarize(self, audio_path):
+                return _FakeDiarizationResult(
+                    segments=[
+                        _FakeSegment(0.0, 1.0, "SPEAKER_00"),
+                        _FakeSegment(1.0, 2.0, "SPEAKER_01"),
+                    ],
+                    audio_duration=2.0,
+                    num_speakers=2,
+                )
+
+            def extract_speaker_embedding(self, audio_path, start=None, end=None):
+                if start == 0.0:
+                    return np.ones(4, dtype=np.float32)
+                return -np.ones(4, dtype=np.float32)
+
+            def extract_speaker_audio(self, audio_path, diarization=None, speaker_id=None, output_path=None):
+                target = Path(output_path) if output_path else tmp_path / f"{speaker_id}_extracted.wav"
+                _write_wav(target)
+                return target
+
+        def run_sync(job_id, runner, payload):
+            web_api._update_background_job(job_id, status="running", progress=5)
+            result = runner(job_id, payload)
+            web_api._update_background_job(
+                job_id,
+                status="completed",
+                progress=100,
+                result=result,
+            )
+
+        monkeypatch.setattr(web_api, "get_youtube_downloader", lambda: FakeDownloader())
+        monkeypatch.setattr(web_api, "_submit_background_job", run_sync)
+        monkeypatch.setattr(separation_module, "VocalSeparator", FakeSeparator)
+        monkeypatch.setattr(diarization_module, "SpeakerDiarizer", FakeSpeakerDiarizer)
+
+        response = client_remaining.post(
+            "/api/v1/youtube/ingest",
+            json={
+                "url": "https://www.youtube.com/watch?v=ingest123",
+                "format": "wav",
+                "sample_rate": 22050,
+                "consent_confirmed": True,
+                "source_media_policy_confirmed": True,
+            },
+        )
+
+        assert response.status_code == 202
+        job_id = response.get_json()["job_id"]
+
+        status_response = client_remaining.get(f"/api/v1/youtube/ingest/{job_id}")
+        assert status_response.status_code == 200
+        job = status_response.get_json()
+        assert job["status"] == "completed"
+        assert job["result"]["diarization_result"]["num_speakers"] == 2
+        suggestions = job["result"]["suggestions"]
+        assert suggestions[0]["recommended_action"] == "assign_existing"
+        assert suggestions[0]["recommended_profile_id"] == existing_profile_id
+        assert suggestions[1]["recommended_action"] == "create_new"
+        assert app_remaining.voice_cloner.store.list_training_samples(existing_profile_id) == []
+
+        confirm_response = client_remaining.post(
+            f"/api/v1/youtube/ingest/{job_id}/confirm",
+            json={
+                "decisions": [
+                    {
+                        "speaker_id": "SPEAKER_00",
+                        "action": "assign_existing",
+                        "profile_id": existing_profile_id,
+                    },
+                    {
+                        "speaker_id": "SPEAKER_01",
+                        "action": "create_new",
+                        "name": "New Artist",
+                    },
+                ]
+            },
+        )
+
+        assert confirm_response.status_code == 200
+        confirmation = confirm_response.get_json()
+        assert len(confirmation["applied"]) == 2
+        assert app_remaining.voice_cloner.store.list_training_samples(existing_profile_id)
+        profiles = app_remaining.voice_cloner.store.list_profiles()
+        assert any(profile.get("name") == "New Artist" for profile in profiles)
+
     def test_identify_retrain_analysis_artist_separation_and_quality_routes(
         self, client_remaining, app_remaining, tmp_path, monkeypatch
     ):

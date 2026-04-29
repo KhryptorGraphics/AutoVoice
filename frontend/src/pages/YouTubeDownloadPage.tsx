@@ -1,15 +1,34 @@
 import { useState, useEffect } from 'react'
 import { Youtube, Search, Download, Music, Users, Loader2, AlertCircle, CheckCircle, User, Plus, UserPlus, History, Info } from 'lucide-react'
-import { api, getApiAuthToken, YouTubeVideoInfo, YouTubeDownloadResult, VoiceProfile, type YouTubeHistoryItem } from '../services/api'
+import { api, getApiAuthToken, YouTubeVideoInfo, YouTubeDownloadResult, VoiceProfile, type YouTubeHistoryItem, type YouTubeIngestDecision, type YouTubeIngestJob } from '../services/api'
 import { useToastContext } from '../contexts/ToastContext'
 
-type Stage = 'idle' | 'fetching' | 'info' | 'downloading' | 'diarizing' | 'complete' | 'error'
+type Stage = 'idle' | 'fetching' | 'info' | 'downloading' | 'ingesting' | 'diarizing' | 'complete' | 'error'
 type DownloadStep = 'download' | 'diarize' | 'complete'
 
 interface ArtistToCreate {
   name: string
   speakerId?: string
   selected: boolean
+}
+
+function buildDefaultIngestDecisions(job: YouTubeIngestJob): Record<string, YouTubeIngestDecision> {
+  const next: Record<string, YouTubeIngestDecision> = {}
+  for (const suggestion of job.result?.suggestions ?? []) {
+    const shouldAssign = suggestion.recommended_action === 'assign_existing' && suggestion.recommended_profile_id
+    next[suggestion.speaker_id] = {
+      speaker_id: suggestion.speaker_id,
+      action: shouldAssign ? 'assign_existing' : 'create_new',
+      profile_id: shouldAssign ? suggestion.recommended_profile_id ?? undefined : undefined,
+      name: shouldAssign ? undefined : suggestion.suggested_name,
+      metadata: {
+        source: 'youtube_ingest_review',
+        suggested_name: suggestion.suggested_name,
+        identity_confidence: suggestion.identity_confidence,
+      },
+    }
+  }
+  return next
 }
 
 export function YouTubeDownloadPage() {
@@ -28,12 +47,39 @@ export function YouTubeDownloadPage() {
   const [downloadStep, setDownloadStep] = useState<DownloadStep>('download')
   const [filterToMainArtist, setFilterToMainArtist] = useState(false)
   const [downloadHistory, setDownloadHistory] = useState<YouTubeHistoryItem[]>([])
+  const [ingestJob, setIngestJob] = useState<YouTubeIngestJob | null>(null)
+  const [ingestDecisions, setIngestDecisions] = useState<Record<string, YouTubeIngestDecision>>({})
+  const [confirmingIngest, setConfirmingIngest] = useState(false)
 
   // Load profiles on mount
   useEffect(() => {
     loadProfiles()
     void loadDownloadHistory()
   }, [])
+
+  useEffect(() => {
+    if (!ingestJob || !['queued', 'running'].includes(ingestJob.status)) return
+
+    const timer = window.setInterval(() => {
+      void api.getYouTubeIngest(ingestJob.job_id).then((job) => {
+        setIngestJob(job)
+        if (job.status === 'completed' && job.result) {
+          setStage('info')
+          setIngestDecisions(buildDefaultIngestDecisions(job))
+          void loadDownloadHistory()
+        }
+        if (job.status === 'failed') {
+          setStage('error')
+          setError(job.error || 'YouTube auto-ingest failed')
+        }
+      }).catch((err) => {
+        setStage('error')
+        setError(err instanceof Error ? err.message : 'Failed to poll YouTube auto-ingest')
+      })
+    }, 2000)
+
+    return () => window.clearInterval(timer)
+  }, [ingestJob])
 
   const loadProfiles = async () => {
     try {
@@ -63,6 +109,8 @@ export function YouTubeDownloadPage() {
     setError(null)
     setVideoInfo(null)
     setDownloadResult(null)
+    setIngestJob(null)
+    setIngestDecisions({})
 
     try {
       const info = await api.getYouTubeVideoInfo(url)
@@ -151,6 +199,63 @@ export function YouTubeDownloadPage() {
       setError(errorMsg)
       toast.error(errorMsg)
       setStage('error')
+    }
+  }
+
+  const handleStartIngest = async () => {
+    if (!videoInfo) return
+
+    setStage('ingesting')
+    setError(null)
+    setIngestJob(null)
+    setIngestDecisions({})
+
+    try {
+      const job = await api.startYouTubeIngest(url, { format: audioFormat })
+      setIngestJob(job)
+      toast.success('YouTube auto-ingest started')
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to start YouTube auto-ingest'
+      setError(errorMsg)
+      toast.error(errorMsg)
+      setStage('error')
+    }
+  }
+
+  const updateIngestDecision = (speakerId: string, updates: Partial<YouTubeIngestDecision>) => {
+    setIngestDecisions(prev => ({
+      ...prev,
+      [speakerId]: {
+        ...prev[speakerId],
+        speaker_id: speakerId,
+        ...updates,
+      },
+    }))
+  }
+
+  const handleConfirmIngest = async () => {
+    if (!ingestJob?.result) return
+    const decisions = Object.values(ingestDecisions)
+    if (decisions.length === 0) {
+      setError('No speaker decisions to confirm')
+      return
+    }
+
+    setConfirmingIngest(true)
+    setError(null)
+
+    try {
+      const confirmation = await api.confirmYouTubeIngest(ingestJob.job_id, decisions)
+      const refreshed = await api.getYouTubeIngest(ingestJob.job_id)
+      setIngestJob({ ...refreshed, confirmation })
+      await loadProfiles()
+      toast.success(`Applied ${confirmation.applied.length} speaker decision(s)`)
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to confirm YouTube ingest'
+      setError(errorMsg)
+      toast.error(errorMsg)
+    } finally {
+      setConfirmingIngest(false)
     }
   }
 
@@ -277,6 +382,8 @@ export function YouTubeDownloadPage() {
     setUrl('')
     setVideoInfo(null)
     setDownloadResult(null)
+    setIngestJob(null)
+    setIngestDecisions({})
     setError(null)
   }
 
@@ -306,13 +413,13 @@ export function YouTubeDownloadPage() {
             onChange={(e) => setUrl(e.target.value)}
             placeholder="https://www.youtube.com/watch?v=..."
             className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
-            disabled={stage === 'fetching' || stage === 'downloading'}
+            disabled={stage === 'fetching' || stage === 'downloading' || stage === 'ingesting'}
             onKeyDown={(e) => e.key === 'Enter' && handleFetchInfo()}
             aria-label="YouTube URL input"
           />
           <button
             onClick={handleFetchInfo}
-            disabled={stage === 'fetching' || stage === 'downloading'}
+            disabled={stage === 'fetching' || stage === 'downloading' || stage === 'ingesting'}
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-lg flex items-center gap-2"
           >
             {stage === 'fetching' ? (
@@ -337,7 +444,7 @@ export function YouTubeDownloadPage() {
       )}
 
       {/* Video Info Card */}
-      {videoInfo && (stage === 'info' || stage === 'downloading' || stage === 'complete') && (
+      {videoInfo && (stage === 'info' || stage === 'downloading' || stage === 'ingesting' || stage === 'complete') && (
         <div className="bg-gray-800 rounded-lg p-6 mb-6">
           <div className="flex gap-6">
             {/* Thumbnail */}
@@ -490,13 +597,48 @@ export function YouTubeDownloadPage() {
                 )}
               </div>
 
-              <button
-                onClick={handleDownload}
-                className="w-full px-4 py-3 bg-green-600 hover:bg-green-700 rounded-lg flex items-center justify-center gap-2 font-medium"
-              >
-                <Download size={20} />
-                Download Audio
-              </button>
+              <div className="grid gap-3 md:grid-cols-2">
+                <button
+                  onClick={handleDownload}
+                  className="w-full px-4 py-3 bg-green-600 hover:bg-green-700 rounded-lg flex items-center justify-center gap-2 font-medium"
+                >
+                  <Download size={20} />
+                  Download Audio
+                </button>
+                <button
+                  onClick={handleStartIngest}
+                  className="w-full px-4 py-3 bg-red-600 hover:bg-red-700 rounded-lg flex items-center justify-center gap-2 font-medium"
+                >
+                  <Users size={20} />
+                  Auto Ingest + Match Profiles
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 mt-3">
+                Auto ingest downloads audio, splits vocals/instrumental, diarizes the vocals, and suggests profile matches. It will not create or modify profiles until you review and confirm.
+              </p>
+            </div>
+          )}
+
+          {/* Auto ingest progress */}
+          {ingestJob && ['queued', 'running'].includes(ingestJob.status) && (
+            <div className="mt-6 pt-6 border-t border-gray-700">
+              <h3 className="font-medium mb-3 flex items-center gap-2">
+                <Loader2 size={18} className="animate-spin text-red-400" />
+                Auto Ingest Running
+              </h3>
+              <div className="flex items-center justify-between text-sm text-gray-400 mb-2">
+                <span>{ingestJob.message || ingestJob.stage || 'Processing...'}</span>
+                <span>{ingestJob.progress || 0}%</span>
+              </div>
+              <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-red-500 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.max(5, Math.min(100, ingestJob.progress || 5))}%` }}
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-2">
+                Current stage: {ingestJob.stage || ingestJob.status}
+              </p>
             </div>
           )}
 
@@ -596,6 +738,180 @@ export function YouTubeDownloadPage() {
                 </div>
               </div>
             </div>
+          )}
+        </div>
+      )}
+
+      {/* Auto Ingest Review */}
+      {ingestJob?.status === 'completed' && ingestJob.result && (
+        <div className="bg-gray-800 rounded-lg p-6 mb-6">
+          <div className="flex items-center gap-3 mb-4">
+            <CheckCircle className="text-green-400" size={24} />
+            <div>
+              <h3 className="text-lg font-medium">Auto Ingest Ready for Review</h3>
+              <p className="text-sm text-gray-400">
+                Review speaker-to-profile decisions before anything is created or assigned.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3 mb-4">
+            <div className="bg-gray-700 rounded-lg p-3">
+              <p className="text-xs text-gray-400">Vocals Stem</p>
+              <p className="text-sm font-medium text-white">
+                {ingestJob.result.assets.vocals?.asset_id ? 'Registered' : 'Saved'}
+              </p>
+            </div>
+            <div className="bg-gray-700 rounded-lg p-3">
+              <p className="text-xs text-gray-400">Instrumental Stem</p>
+              <p className="text-sm font-medium text-white">
+                {ingestJob.result.assets.instrumental?.asset_id ? 'Registered' : 'Saved'}
+              </p>
+            </div>
+            <div className="bg-gray-700 rounded-lg p-3">
+              <p className="text-xs text-gray-400">Speakers</p>
+              <p className="text-sm font-medium text-white">
+                {ingestJob.result.diarization_result.num_speakers}
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {ingestJob.result.suggestions.map((suggestion) => {
+              const decision = ingestDecisions[suggestion.speaker_id] || {
+                speaker_id: suggestion.speaker_id,
+                action: 'create_new' as const,
+                name: suggestion.suggested_name,
+              }
+              const bestMatch = suggestion.matches[0]
+
+              return (
+                <div key={suggestion.speaker_id} className="bg-gray-700 rounded-lg p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                    <div>
+                      <h4 className="font-medium flex items-center gap-2">
+                        <Users size={16} className="text-purple-400" />
+                        {suggestion.speaker_id}
+                      </h4>
+                      <p className="text-sm text-gray-400">
+                        {formatDuration(suggestion.duration)} across {suggestion.segment_count} segment(s)
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm text-gray-300">{suggestion.suggested_name}</p>
+                      <p className="text-xs text-gray-500">
+                        {suggestion.identity_confidence === 'voice_match'
+                          ? 'Voice match suggested'
+                          : 'Metadata label, unverified'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {bestMatch && (
+                    <div className="bg-gray-800/70 rounded p-3 mb-3 text-sm">
+                      <span className="text-gray-400">Best existing match: </span>
+                      <span className="font-medium">{bestMatch.name}</span>
+                      <span className="text-gray-500"> ({Math.round(bestMatch.similarity * 100)}%)</span>
+                    </div>
+                  )}
+
+                  {suggestion.match_error && (
+                    <p className="text-sm text-yellow-300 mb-3">
+                      Voice matching warning: {suggestion.match_error}
+                    </p>
+                  )}
+
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div>
+                      <label htmlFor={`decision-${suggestion.speaker_id}`} className="block text-xs text-gray-400 mb-1">
+                        Action
+                      </label>
+                      <select
+                        id={`decision-${suggestion.speaker_id}`}
+                        value={decision.action}
+                        onChange={(event) => {
+                          const action = event.target.value as YouTubeIngestDecision['action']
+                          updateIngestDecision(suggestion.speaker_id, {
+                            action,
+                            profile_id: action === 'assign_existing'
+                              ? suggestion.recommended_profile_id || bestMatch?.profile_id || ''
+                              : undefined,
+                            name: action === 'create_new' ? suggestion.suggested_name : undefined,
+                          })
+                        }}
+                        className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 focus:outline-none focus:border-blue-500"
+                      >
+                        <option value="assign_existing">Assign to existing profile</option>
+                        <option value="create_new">Create new source profile</option>
+                        <option value="skip">Skip this speaker</option>
+                      </select>
+                    </div>
+
+                    {decision.action === 'assign_existing' && (
+                      <div className="md:col-span-2">
+                        <label htmlFor={`profile-${suggestion.speaker_id}`} className="block text-xs text-gray-400 mb-1">
+                          Existing profile
+                        </label>
+                        <select
+                          id={`profile-${suggestion.speaker_id}`}
+                          value={decision.profile_id || ''}
+                          onChange={(event) => updateIngestDecision(suggestion.speaker_id, { profile_id: event.target.value })}
+                          className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 focus:outline-none focus:border-blue-500"
+                        >
+                          <option value="">Select a source profile...</option>
+                          {profiles.map((profile) => (
+                            <option key={profile.profile_id} value={profile.profile_id}>
+                              {profile.name || profile.profile_id}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {decision.action === 'create_new' && (
+                      <div className="md:col-span-2">
+                        <label htmlFor={`name-${suggestion.speaker_id}`} className="block text-xs text-gray-400 mb-1">
+                          New source profile name
+                        </label>
+                        <input
+                          id={`name-${suggestion.speaker_id}`}
+                          value={decision.name || ''}
+                          onChange={(event) => updateIngestDecision(suggestion.speaker_id, { name: event.target.value })}
+                          className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 focus:outline-none focus:border-blue-500"
+                          placeholder="Artist or speaker name"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {ingestJob.confirmation ? (
+            <div className="mt-4 bg-green-900/30 border border-green-700 rounded-lg p-3">
+              <p className="text-sm text-green-300">
+                Applied {ingestJob.confirmation.applied.length} decision(s); skipped {ingestJob.confirmation.skipped.length}.
+              </p>
+            </div>
+          ) : (
+            <button
+              onClick={handleConfirmIngest}
+              disabled={confirmingIngest}
+              className="mt-4 w-full px-4 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded-lg flex items-center justify-center gap-2 font-medium"
+            >
+              {confirmingIngest ? (
+                <>
+                  <Loader2 size={18} className="animate-spin" />
+                  Applying Decisions...
+                </>
+              ) : (
+                <>
+                  <UserPlus size={18} />
+                  Confirm Reviewed Profile Actions
+                </>
+              )}
+            </button>
           )}
         </div>
       )}
