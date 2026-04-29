@@ -205,6 +205,7 @@ Done when repo hygiene checks, GitNexus graph, and docs agree without historical
 ## Phase 7 - Optional Public/Commercial Track
 
 Only start this after local-only release evidence is green or if the scope changes.
+Track the launch gate in [public-commercial-launch-gate.md](./public-commercial-launch-gate.md).
 
 Required work:
 

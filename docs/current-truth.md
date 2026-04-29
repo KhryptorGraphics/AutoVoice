@@ -8,6 +8,9 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
 
 - create and manage target-user voice profiles
 - ingest source-artist material from uploaded songs
+- ingest YouTube source material through a review-gated workflow that downloads
+  audio, splits vocals/instrumental, diarizes vocals, suggests profile matches,
+  and only creates or assigns source profiles after operator confirmation
 - train target-user profiles
 - run offline conversion jobs
 - run live karaoke sessions

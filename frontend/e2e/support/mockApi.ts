@@ -231,6 +231,9 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   let youtubeInfoRequests = 0
   let youtubeDownloadRequests = 0
   let youtubeAddToProfileRequests = 0
+  let youtubeIngestStartRequests = 0
+  let youtubeIngestPollRequests = 0
+  let youtubeIngestConfirmRequests = 0
   let conversionHistoryDeletes = 0
   let checkpointRollbacks = 0
   let checkpointDeletes = 0
@@ -755,6 +758,118 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     })
   })
 
+  await page.route('**/api/v1/youtube/ingest', async (route) => {
+    youtubeIngestStartRequests += 1
+    return jsonResponse(route, {
+      job_id: 'youtube-ingest-1',
+      job_type: 'youtube_ingest',
+      status: 'running',
+      progress: 45,
+      stage: 'diarization',
+      message: 'Running speaker diarization',
+      error: null,
+    })
+  })
+
+  const completedIngestJob = {
+    job_id: 'youtube-ingest-1',
+    job_type: 'youtube_ingest',
+    status: 'completed',
+    progress: 100,
+    stage: 'review',
+    message: 'Ready for review',
+    error: null,
+    result: {
+      job_id: 'youtube-ingest-1',
+      url: 'https://youtu.be/smoke-video',
+      metadata: {
+        title: 'Smoke Song',
+        duration: 142,
+        main_artist: 'Smoke Artist',
+        featured_artists: ['New Featured Artist'],
+        is_cover: false,
+        original_artist: null,
+        song_title: 'Smoke Song',
+        thumbnail_url: null,
+        video_id: 'smoke-video',
+      },
+      assets: {
+        audio: { path: '/tmp/autovoice-youtube-smoke.wav', asset_id: 'asset-audio-1' },
+        vocals: { path: '/tmp/autovoice-youtube-smoke-vocals.wav', asset_id: 'asset-vocals-1' },
+        instrumental: { path: '/tmp/autovoice-youtube-smoke-instrumental.wav', asset_id: 'asset-instrumental-1' },
+      },
+      diarization_id: 'diarization-1',
+      diarization_result: {
+        num_speakers: 2,
+        audio_duration: 142,
+        segments: [
+          { speaker_id: 'SPEAKER_00', start: 0, end: 60, duration: 60 },
+          { speaker_id: 'SPEAKER_01', start: 62, end: 118, duration: 56 },
+        ],
+      },
+      suggestions: [
+        {
+          speaker_id: 'SPEAKER_00',
+          suggested_name: 'Smoke Artist',
+          duration: 60,
+          segment_count: 1,
+          matches: [{ profile_id: 'profile-1', name: 'Smoke Profile', similarity: 0.91 }],
+          recommended_action: 'assign_existing',
+          recommended_profile_id: 'profile-1',
+          identity_confidence: 'voice_match',
+          match_error: null,
+        },
+        {
+          speaker_id: 'SPEAKER_01',
+          suggested_name: 'New Featured Artist',
+          duration: 56,
+          segment_count: 1,
+          matches: [],
+          recommended_action: 'create_new',
+          recommended_profile_id: null,
+          identity_confidence: 'metadata_unverified',
+          match_error: null,
+        },
+      ],
+      review_required: true,
+    },
+  }
+
+  await page.route('**/api/v1/youtube/ingest/youtube-ingest-1', async (route) => {
+    youtubeIngestPollRequests += 1
+    return jsonResponse(route, completedIngestJob)
+  })
+
+  await page.route('**/api/v1/youtube/ingest/youtube-ingest-1/confirm', async (route) => {
+    youtubeIngestConfirmRequests += 1
+    const body = route.request().postDataJSON() as { decisions?: Array<{ action: string; speaker_id: string; name?: string }> }
+    const createdName = body.decisions?.find(decision => decision.speaker_id === 'SPEAKER_01')?.name ?? 'New Featured Artist'
+    return jsonResponse(route, {
+      job_id: 'youtube-ingest-1',
+      diarization_id: 'diarization-1',
+      applied: [
+        {
+          speaker_id: 'SPEAKER_00',
+          action: 'assign_existing',
+          profile_id: 'profile-1',
+          name: 'Smoke Profile',
+          sample_id: 'sample-ingest-1',
+          duration: 60,
+        },
+        {
+          speaker_id: 'SPEAKER_01',
+          action: 'create_new',
+          profile_id: 'profile-new-1',
+          name: createdName,
+          sample_id: 'sample-ingest-2',
+          duration: 56,
+        },
+      ],
+      skipped: [],
+      status: 'applied',
+    })
+  })
+
   await page.route(/\/api\/v1\/youtube\/history(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'DELETE') {
       return route.fulfill({ status: 204 })
@@ -1152,6 +1267,9 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     getYouTubeInfoRequests: () => youtubeInfoRequests,
     getYouTubeDownloadRequests: () => youtubeDownloadRequests,
     getYouTubeAddToProfileRequests: () => youtubeAddToProfileRequests,
+    getYouTubeIngestStartRequests: () => youtubeIngestStartRequests,
+    getYouTubeIngestPollRequests: () => youtubeIngestPollRequests,
+    getYouTubeIngestConfirmRequests: () => youtubeIngestConfirmRequests,
     getConversionHistoryDeletes: () => conversionHistoryDeletes,
     getConversionRecordCount: () => conversionRecords.length,
     getCheckpointRollbacks: () => checkpointRollbacks,

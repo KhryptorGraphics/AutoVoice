@@ -24,6 +24,39 @@ test.describe('Production closeout browser flows', () => {
     await expect(page.getByText(/Added "Smoke Song" as sample sample-youtube-1/)).toBeVisible()
   })
 
+  test('runs YouTube auto ingest through review before applying profile actions', async ({ page }) => {
+    const mockedApi = await mockCommonApi(page)
+
+    await page.goto('/youtube')
+
+    await page.getByLabel('YouTube URL input').fill('https://youtu.be/smoke-video')
+    await page.getByRole('button', { name: 'Fetch Info' }).click()
+    await expect(page.getByText('Smoke Song').first()).toBeVisible()
+
+    await page.getByRole('button', { name: 'Auto Ingest + Match Profiles' }).click()
+    await expect(page.getByText('Auto Ingest Running')).toBeVisible()
+    await expect(page.getByText('Auto Ingest Ready for Review')).toBeVisible({ timeout: 5_000 })
+
+    await expect(page.getByText('Vocals Stem')).toBeVisible()
+    await expect(page.getByText('Instrumental Stem')).toBeVisible()
+    await expect(page.getByText('SPEAKER_00')).toBeVisible()
+    await expect(page.getByText('SPEAKER_01')).toBeVisible()
+    await expect(page.getByText('Best existing match:')).toBeVisible()
+
+    await expect(page.locator('#decision-SPEAKER_00')).toHaveValue('assign_existing')
+    await expect(page.locator('#profile-SPEAKER_00')).toHaveValue('profile-1')
+    await expect(page.locator('#decision-SPEAKER_01')).toHaveValue('create_new')
+    await page.locator('#name-SPEAKER_01').fill('Reviewed Featured Artist')
+
+    await expect.poll(() => mockedApi.getYouTubeIngestConfirmRequests()).toBe(0)
+    await page.getByRole('button', { name: 'Confirm Reviewed Profile Actions' }).click()
+
+    await expect.poll(() => mockedApi.getYouTubeIngestStartRequests()).toBe(1)
+    await expect.poll(() => mockedApi.getYouTubeIngestPollRequests()).toBeGreaterThan(0)
+    await expect.poll(() => mockedApi.getYouTubeIngestConfirmRequests()).toBe(1)
+    await expect(page.getByText('Applied 2 decision(s); skipped 0.')).toBeVisible()
+  })
+
   test('confirms checkpoint rollback and deletion from a profile', async ({ page }) => {
     const mockedApi = await mockCommonApi(page)
 

@@ -16,6 +16,7 @@ These documents describe the current MVP behavior and should be treated as the s
 - [deployment.md](./deployment.md): current compose, hosted preflight, release-candidate, and completion-matrix deployment contract
 - [production-readiness-closeout-2026-04-28.md](./production-readiness-closeout-2026-04-28.md): latest production verification results, support boundary, and remaining release blockers
 - [quality-ux-post-release.md](./quality-ux-post-release.md): quality and operator-UX milestone for improving local/private readiness evidence; not a public/commercial launch declaration
+- [public-commercial-launch-gate.md](./public-commercial-launch-gate.md): `AV-3rfd.18` launch blockers and evidence required before public/commercial readiness can be claimed
 - [troubleshooting.md](./troubleshooting.md): operational debugging and recovery notes
 
 ## Reference and Design Docs
