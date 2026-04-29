@@ -29,17 +29,15 @@ release notes or operator docs because it hides the support boundary.
 | Commercial launch | Not ready | Requires the public multi-user controls plus legal/policy approval for voice, likeness, copyright, biometric privacy, and platform terms. |
 
 The latest local evidence source SHA is
-`0324dc67623dc04f9b54e1858ab60c8fdede5f90`. A readiness claim must cite
+`459a6465c4d0d8283a01b99e27aeea0b0ce76ec4`. A readiness claim must cite
 artifacts whose embedded git SHA matches the candidate commit being released;
 rerun the evidence commands after the final release commit is selected. During
-the 2026-04-29 local-only pass, the immutable completion matrix at
-`reports/completion/phase3-completion-20260429T121702Z-0324dc67/completion_matrix.json` passed
+the 2026-04-29 local-only pass, the current completion matrix at
+`reports/completion/local-current-20260429T141731Z-459a6465c4d0/completion_matrix.json` passed
 with `ok: true` for local/no-Docker lanes, and the release-grade benchmark
-evidence under `reports/local-evidence/phase3-20260429T121649Z-0324dc67/artifacts/benchmarks/`
-matched the same commit. `reports/benchmarks/latest/benchmark_dashboard.json`
-and `reports/benchmarks/latest/release_evidence.json` also validated against
-that source SHA with `scripts/validate_benchmark_dashboard.py --current-git-sha
---release-grade`.
+evidence in `reports/benchmarks/latest/benchmark_dashboard.json` and
+`reports/benchmarks/latest/release_evidence.json` was republished to that same
+source SHA.
 
 The same pass ran the supported local completion matrix in `autovoice-thor`.
 It passed GitNexus refresh, skip-audit policy, backend contract smoke tests,
@@ -56,10 +54,8 @@ promoting that lane.
 Do not treat every `latest` pointer as authoritative. `reports/completion/latest/
 completion_matrix.json` still references `9c6a056378df7585c453ecbb4d1f964345287436`.
 Treat that pointer as historical until deliberately republished for the candidate
-commit. `reports/release-evidence/latest/release_decision.json` now references
-`0324dc67623dc04f9b54e1858ab60c8fdede5f90`, but release decisions are still
-scoped by the local/no-Docker support boundary unless hardware/deployment lanes
-are explicitly enabled.
+commit. Release decisions remain scoped by the local/no-Docker support boundary
+unless hardware/deployment lanes are explicitly enabled.
 
 The latest closeout and post-release quality plan are not contradictory when read
 with this vocabulary: AutoVoice has meaningful local/private deployment proof and
