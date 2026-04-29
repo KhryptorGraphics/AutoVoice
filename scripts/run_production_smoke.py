@@ -389,14 +389,17 @@ def _cleanup_profiles(base_url: str, profile_ids: set[str]) -> list[dict[str, An
     for profile_id in sorted(profile_ids):
         result = _json_request("DELETE", base_url, f"/api/v1/voice/profiles/{profile_id}")
         method = "DELETE"
-        if result.status == 403:
+        if result.status in {403, 503}:
             result = _json_request("POST", base_url, f"/api/v1/voice/profiles/{profile_id}/delete", {})
             method = "POST"
+        ok = result.status in {200, 404}
         results.append({
             "profile_id": profile_id,
             "method": method,
             "status": result.status,
-            "ok": result.status in {200, 404},
+            "ok": ok,
+            "blocking": result.status not in {200, 404, 503},
+            "warning": None if ok else "temporary cleanup failure; profile may need manual deletion",
         })
     return results
 
@@ -599,7 +602,7 @@ def run_full_smoke(args: argparse.Namespace, output_dir: Path) -> dict[str, Any]
             cleanup.extend(_cleanup_profiles(args.base_url, created_profile_ids))
         if report is not None:
             downloads_ok = all(download["ok"] for download in downloads)
-            cleanup_ok = args.no_cleanup or all(entry["ok"] for entry in cleanup)
+            cleanup_ok = args.no_cleanup or all(entry["ok"] or not entry.get("blocking", True) for entry in cleanup)
             stem_ok = bool(report.get("stem_assertions", {}).get("ok", True))
             quality_ok = bool(report.get("quality_metrics", {}).get("all_downloads_ok", downloads_ok))
             report["ok"] = downloads_ok and cleanup_ok and stem_ok and quality_ok

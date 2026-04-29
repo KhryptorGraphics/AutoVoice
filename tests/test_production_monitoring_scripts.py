@@ -249,6 +249,64 @@ def test_production_smoke_full_mode_exercises_workflow_and_cleanup(tmp_path):
     assert set(_SmokeHandler.deleted_profiles) == {"target-smoke", "source-smoke"}
 
 
+def test_production_smoke_cleanup_503_is_nonblocking_warning(tmp_path):
+    class CleanupUnavailableHandler(_SmokeHandler):
+        def do_DELETE(self):  # noqa: N802
+            if self.path.startswith("/api/v1/voice/profiles/"):
+                self._send_json(503, {"error": "temporary cleanup unavailable"})
+            else:
+                self._send_json(404, {"error": self.path})
+
+        def do_POST(self):  # noqa: N802
+            if self.path.startswith("/api/v1/voice/profiles/") and self.path.endswith("/delete"):
+                self._send_json(503, {"error": "temporary cleanup unavailable"})
+                return
+            super().do_POST()
+
+    CleanupUnavailableHandler.resolved_reviews = False
+    CleanupUnavailableHandler.deleted_profiles = []
+    artist_song = tmp_path / "artist.wav"
+    user_vocals = tmp_path / "user.wav"
+    _write_wav(artist_song)
+    _write_wav(user_vocals)
+    server, base_url = _serve(CleanupUnavailableHandler)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/run_production_smoke.py",
+                "--mode",
+                "full",
+                "--base-url",
+                base_url,
+                "--artist-song",
+                str(artist_song),
+                "--user-vocals",
+                str(user_vocals),
+                "--output-dir",
+                str(tmp_path / "latest"),
+                "--run-id",
+                "cleanup-503",
+                "--poll-interval",
+                "0.01",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    report = json.loads((tmp_path / "latest" / "cleanup-503" / "production_smoke.json").read_text())
+    assert report["ok"] is True
+    assert report["full"]["ok"] is True
+    assert report["full"]["cleanup"]
+    assert all(entry["status"] == 503 for entry in report["full"]["cleanup"])
+    assert all(entry["ok"] is False for entry in report["full"]["cleanup"])
+    assert all(entry["blocking"] is False for entry in report["full"]["cleanup"])
+
+
 def test_production_smoke_full_mode_fails_when_required_stems_missing(tmp_path):
     class NoStemHandler(_SmokeHandler):
         def do_GET(self):  # noqa: N802
