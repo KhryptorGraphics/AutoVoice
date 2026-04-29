@@ -16,6 +16,12 @@ import pytest
 import numpy as np
 import torch
 
+from auto_voice.models.feature_contract import (
+    DEFAULT_CONTENT_DIM,
+    DEFAULT_PITCH_DIM,
+    DEFAULT_SPEAKER_DIM,
+)
+
 
 class TestSimpleDecoder:
     """Tests for the lightweight SimpleDecoder for realtime inference."""
@@ -25,14 +31,16 @@ class TestSimpleDecoder:
         from auto_voice.inference.realtime_pipeline import SimpleDecoder
 
         decoder = SimpleDecoder(
-            content_dim=768,
-            pitch_dim=256,
-            speaker_dim=256,
+            content_dim=DEFAULT_CONTENT_DIM,
+            pitch_dim=DEFAULT_PITCH_DIM,
+            speaker_dim=DEFAULT_SPEAKER_DIM,
             n_mels=80,
             hidden_dim=256,
         )
 
-        assert decoder.content_dim == 768
+        assert decoder.content_dim == DEFAULT_CONTENT_DIM
+        assert decoder.pitch_dim == DEFAULT_PITCH_DIM
+        assert decoder.speaker_dim == DEFAULT_SPEAKER_DIM
         assert decoder.n_mels == 80
         assert decoder.hidden_dim == 256
 
@@ -44,9 +52,9 @@ class TestSimpleDecoder:
         decoder = SimpleDecoder().to(device)
 
         B, T = 1, 50
-        content = torch.randn(B, T, 768, device=device)
-        pitch = torch.randn(B, T, 256, device=device)
-        speaker = torch.randn(B, 256, device=device)
+        content = torch.randn(B, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(B, T, DEFAULT_PITCH_DIM, device=device)
+        speaker = torch.randn(B, DEFAULT_SPEAKER_DIM, device=device)
 
         mel = decoder(content, pitch, speaker)
 
@@ -66,9 +74,9 @@ class TestSimpleDecoder:
         decoder.eval()
 
         B, T = 1, 50
-        content = torch.randn(B, T, 768, device=device)
-        pitch = torch.randn(B, T, 256, device=device)
-        speaker = torch.randn(B, 256, device=device)
+        content = torch.randn(B, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(B, T, DEFAULT_PITCH_DIM, device=device)
+        speaker = torch.randn(B, DEFAULT_SPEAKER_DIM, device=device)
 
         for _ in range(5):
             with torch.no_grad():
@@ -101,6 +109,8 @@ class TestRealtimePipeline:
         assert pipeline.output_sample_rate == 22050
         assert pipeline._content_encoder is not None
         assert pipeline._pitch_extractor is not None
+        assert pipeline._pitch_encoder.output_size == DEFAULT_PITCH_DIM
+        assert pipeline._decoder.pitch_dim == DEFAULT_PITCH_DIM
         assert pipeline._decoder is not None
         assert pipeline._vocoder is not None
 

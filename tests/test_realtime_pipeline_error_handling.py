@@ -14,6 +14,11 @@ import torch
 from unittest.mock import patch, MagicMock
 
 from auto_voice.inference.realtime_pipeline import RealtimePipeline, SimpleDecoder
+from auto_voice.models.feature_contract import (
+    DEFAULT_CONTENT_DIM,
+    DEFAULT_PITCH_DIM,
+    DEFAULT_SPEAKER_DIM,
+)
 
 
 class TestSimpleDecoderValidation:
@@ -22,18 +27,18 @@ class TestSimpleDecoderValidation:
     def test_decoder_forward_shape(self):
         """Test decoder forward pass produces correct output shape."""
         decoder = SimpleDecoder(
-            content_dim=768,
-            pitch_dim=256,
-            speaker_dim=256,
+            content_dim=DEFAULT_CONTENT_DIM,
+            pitch_dim=DEFAULT_PITCH_DIM,
+            speaker_dim=DEFAULT_SPEAKER_DIM,
             n_mels=80,
             hidden_dim=256,
         )
 
         batch_size = 2
         n_frames = 100
-        content = torch.randn(batch_size, n_frames, 768)
-        pitch = torch.randn(batch_size, n_frames, 256)
-        speaker = torch.randn(batch_size, 256)
+        content = torch.randn(batch_size, n_frames, DEFAULT_CONTENT_DIM)
+        pitch = torch.randn(batch_size, n_frames, DEFAULT_PITCH_DIM)
+        speaker = torch.randn(batch_size, DEFAULT_SPEAKER_DIM)
 
         mel = decoder(content, pitch, speaker)
 
@@ -291,11 +296,11 @@ class TestSimpleDecoderFilm:
         """Test that different speakers produce different outputs."""
         decoder = SimpleDecoder()
 
-        content = torch.randn(1, 50, 768)
-        pitch = torch.randn(1, 50, 256)
+        content = torch.randn(1, 50, DEFAULT_CONTENT_DIM)
+        pitch = torch.randn(1, 50, DEFAULT_PITCH_DIM)
 
-        speaker1 = torch.randn(1, 256)
-        speaker2 = torch.randn(1, 256)
+        speaker1 = torch.randn(1, DEFAULT_SPEAKER_DIM)
+        speaker2 = torch.randn(1, DEFAULT_SPEAKER_DIM)
 
         mel1 = decoder(content, pitch, speaker1)
         mel2 = decoder(content, pitch, speaker2)
@@ -307,9 +312,9 @@ class TestSimpleDecoderFilm:
         """Test that same speaker produces same output."""
         decoder = SimpleDecoder()
 
-        content = torch.randn(1, 50, 768)
-        pitch = torch.randn(1, 50, 256)
-        speaker = torch.randn(1, 256)
+        content = torch.randn(1, 50, DEFAULT_CONTENT_DIM)
+        pitch = torch.randn(1, 50, DEFAULT_PITCH_DIM)
+        speaker = torch.randn(1, DEFAULT_SPEAKER_DIM)
 
         mel1 = decoder(content, pitch, speaker)
         mel2 = decoder(content, pitch, speaker)

@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from auto_voice.inference.realtime_pipeline import RealtimePipeline
+from auto_voice.models.feature_contract import DEFAULT_PITCH_DIM
 
 
 def _bare_pipeline(device="cpu"):
@@ -101,7 +102,7 @@ def test_clear_speaker_and_zero_frame_processing_paths():
     pipeline._content_encoder.encode.return_value = torch.randn(1, 0, 768)
     pipeline._pitch_extractor = MagicMock()
     pipeline._pitch_extractor.extract.return_value = torch.randn(1, 10)
-    pipeline._pitch_encoder = MagicMock(return_value=torch.randn(1, 10, 256))
+    pipeline._pitch_encoder = MagicMock(return_value=torch.randn(1, 10, DEFAULT_PITCH_DIM))
 
     output = RealtimePipeline.process_chunk(pipeline, np.ones(1600, dtype=np.float32))
 
@@ -117,7 +118,7 @@ def test_process_chunk_normalizes_non_peak_outputs_and_handles_generic_failures(
     pipeline._content_encoder.encode.return_value = torch.randn(1, 5, 768)
     pipeline._pitch_extractor = MagicMock()
     pipeline._pitch_extractor.extract.return_value = torch.randn(1, 5)
-    pipeline._pitch_encoder = MagicMock(return_value=torch.randn(1, 5, 256))
+    pipeline._pitch_encoder = MagicMock(return_value=torch.randn(1, 5, DEFAULT_PITCH_DIM))
     pipeline._decoder = MagicMock(return_value=torch.randn(1, 80, 5))
     pipeline._vocoder = MagicMock()
     pipeline._vocoder.synthesize.return_value = torch.tensor([[0.25, -0.5]], dtype=torch.float32)

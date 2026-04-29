@@ -22,6 +22,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..models.feature_contract import (
+    DEFAULT_CONTENT_DIM,
+    DEFAULT_PITCH_DIM,
+    DEFAULT_SPEAKER_DIM,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +44,7 @@ class SimpleDecoder(nn.Module):
 
     Args:
         content_dim: ContentVec feature dimension (default 768)
-        pitch_dim: Pitch embedding dimension (default 256)
+        pitch_dim: Pitch embedding dimension (default 768)
         speaker_dim: Speaker embedding dimension (default 256)
         n_mels: Output mel spectrogram bins (default 80 for HiFiGAN)
         hidden_dim: Hidden layer dimension (default 256)
@@ -46,9 +52,9 @@ class SimpleDecoder(nn.Module):
 
     def __init__(
         self,
-        content_dim: int = 768,
-        pitch_dim: int = 256,
-        speaker_dim: int = 256,
+        content_dim: int = DEFAULT_CONTENT_DIM,
+        pitch_dim: int = DEFAULT_PITCH_DIM,
+        speaker_dim: int = DEFAULT_SPEAKER_DIM,
         n_mels: int = 80,
         hidden_dim: int = 256,
     ):
@@ -187,7 +193,7 @@ class RealtimePipeline:
             from ..models.encoder import ContentVecEncoder
 
             self._content_encoder = ContentVecEncoder(
-                output_dim=768,
+                output_dim=DEFAULT_CONTENT_DIM,
                 layer=12,
                 pretrained=model_id,
                 device=self.device,
@@ -223,7 +229,7 @@ class RealtimePipeline:
             )
             self._pitch_extractor.to(self.device)
 
-            self._pitch_encoder = PitchEncoder(output_size=256)
+            self._pitch_encoder = PitchEncoder(output_size=DEFAULT_PITCH_DIM)
             self._pitch_encoder.to(self.device)
 
             logger.debug("RMVPE pitch extractor initialized")
@@ -247,9 +253,9 @@ class RealtimePipeline:
         """
         try:
             self._decoder = SimpleDecoder(
-                content_dim=768,
-                pitch_dim=256,
-                speaker_dim=256,
+                content_dim=DEFAULT_CONTENT_DIM,
+                pitch_dim=DEFAULT_PITCH_DIM,
+                speaker_dim=DEFAULT_SPEAKER_DIM,
                 n_mels=80,
                 hidden_dim=256,
             )
