@@ -373,11 +373,11 @@ class SOTAConversionPipeline:
         )
 
     def _encode_pitch(self, f0: torch.Tensor) -> torch.Tensor:
-        """Encode F0 values to 256-dim pitch embeddings.
+        """Encode F0 values to the decoder pitch embedding width.
 
         Uses Fourier features to create a rich representation of pitch:
         1. Convert F0 to log2 scale and normalize to [0, 1]
-        2. Generate 128 sin + 128 cos harmonics (256 total dimensions)
+        2. Generate sin/cos harmonics up to the decoder pitch dimension
         3. Return phase-shifted sinusoids that encode pitch continuously
 
         This approach provides a continuous pitch representation that's more
@@ -388,7 +388,7 @@ class SOTAConversionPipeline:
             f0: [B, T] F0 in Hz (unvoiced frames should be 0 or low values)
 
         Returns:
-            [B, T, 256] pitch embeddings using Fourier features
+            [B, T, decoder.pitch_dim] pitch embeddings using Fourier features
         """
         B, T = f0.shape
 
@@ -398,16 +398,17 @@ class SOTAConversionPipeline:
         log_f0_norm = (log_f0 - 5.6) / (10.1 - 5.6)
         log_f0_norm = log_f0_norm.clamp(0, 1)
 
-        # Create pitch features: log_f0 + harmonics (Fourier features)
-        freqs = torch.arange(1, 129, device=f0.device).float()  # 128 freqs
-        # [B, T, 128] sin features + [B, T, 128] cos features = 256-dim
+        # Create pitch features: sin/cos harmonics sized to the decoder contract.
+        pitch_dim = int(getattr(self.decoder, "pitch_dim", 768))
+        half_dim = max(1, pitch_dim // 2)
+        freqs = torch.arange(1, half_dim + 1, device=f0.device).float()
         phase = log_f0_norm.unsqueeze(-1) * freqs.unsqueeze(0).unsqueeze(0) * torch.pi
         pitch_embed = torch.cat([
             torch.sin(phase),
             torch.cos(phase),
-        ], dim=-1)  # [B, T, 256]
+        ], dim=-1)
 
-        return pitch_embed
+        return pitch_embed[:, :, :pitch_dim]
 
     def convert(self, audio: torch.Tensor, sample_rate: int,
                 speaker_embedding: torch.Tensor,
@@ -419,7 +420,7 @@ class SOTAConversionPipeline:
         1. Vocal separation using MelBandRoFormer at 44.1kHz
         2. Content feature extraction using ContentVec at 16kHz
         3. Pitch extraction using RMVPE at 16kHz
-        4. Frame alignment and pitch encoding to 256-dim
+        4. Frame alignment and pitch encoding to the decoder pitch contract
         5. Mel spectrogram generation using CoMoSVC decoder
         6. Waveform synthesis using BigVGAN vocoder at 24kHz
 
@@ -511,8 +512,8 @@ class SOTAConversionPipeline:
             )
             logger.debug("Applied HQ adapter transformation to content features")
 
-        # Encode pitch to 256-dim embeddings
-        pitch_embeddings = self._encode_pitch(f0_aligned)  # [1, N, 256]
+        # Encode pitch to the decoder pitch contract.
+        pitch_embeddings = self._encode_pitch(f0_aligned)
 
         # Stage 4: SVC decoding (mel generation)
         report('decoding', 0.6)

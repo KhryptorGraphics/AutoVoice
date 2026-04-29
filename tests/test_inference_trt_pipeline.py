@@ -25,6 +25,7 @@ from auto_voice.inference.trt_pipeline import (
     TRTInferenceContext,
     TRTConversionPipeline,
 )
+from auto_voice.models.feature_contract import DEFAULT_PITCH_DIM
 
 
 # ============================================================================
@@ -460,7 +461,7 @@ def test_trt_encode_pitch():
         f0 = torch.randn(1, 100).abs() + 50  # Ensure positive F0
         pitch_embeddings = pipeline._encode_pitch(f0)
 
-        assert pitch_embeddings.shape == (1, 100, 256)
+        assert pitch_embeddings.shape == (1, 100, DEFAULT_PITCH_DIM)
 
 
 @patch('auto_voice.inference.trt_pipeline.TRTInferenceContext')

@@ -1111,7 +1111,7 @@ class TrainingJobManager:
 
                     model = CoMoSVCDecoder(
                         content_dim=768,
-                        pitch_dim=256,
+                        pitch_dim=768,
                         speaker_dim=256,
                         n_mels=80,
                         hidden_dim=512,

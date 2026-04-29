@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,13 +61,45 @@ def register_runtime_routes(api_bp: Blueprint) -> None:
 _presets: Dict[str, Dict[str, Any]] = {}
 
 
+def _current_git_sha(root_dir: Path) -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root_dir,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return None
+
+
+def _decorate_evidence_payload(payload: Dict[str, Any], source_path: Path) -> Dict[str, Any]:
+    """Add operator-facing provenance fields derived from the real artifact path."""
+    root_dir = Path(__file__).resolve().parents[3]
+    current_sha = _current_git_sha(root_dir)
+    provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
+    evidence_sha = payload.get("git_sha") or provenance.get("git_sha")
+    decorated = dict(payload)
+    decorated["source_path"] = str(source_path.relative_to(root_dir)) if source_path.is_relative_to(root_dir) else str(source_path)
+    if current_sha:
+        decorated["current_git_sha"] = current_sha
+        decorated["current_git_sha_short"] = current_sha[:12]
+    if evidence_sha:
+        decorated["git_sha"] = evidence_sha
+        decorated["git_sha_short"] = str(evidence_sha)[:12]
+    if current_sha and evidence_sha:
+        decorated["is_stale"] = current_sha != evidence_sha
+    return decorated
+
+
 def get_latest_benchmark_dashboard():
     """Return the latest canonical benchmark dashboard JSON."""
     root = _root()
     dashboard_path = root._reports_dir() / "benchmarks" / "latest" / "benchmark_dashboard.json"
     if not dashboard_path.exists():
         return root.not_found_response('Benchmark dashboard not found')
-    return jsonify(json.loads(dashboard_path.read_text(encoding='utf-8')))
+    payload = json.loads(dashboard_path.read_text(encoding='utf-8'))
+    return jsonify(_decorate_evidence_payload(payload, dashboard_path))
 
 
 def get_latest_release_evidence():
@@ -77,7 +110,8 @@ def get_latest_release_evidence():
         report_path = root._reports_dir() / "benchmarks" / "latest" / "release_evidence.json"
     if not report_path.exists():
         return root.not_found_response('Release evidence not found')
-    return jsonify(json.loads(report_path.read_text(encoding='utf-8')))
+    payload = json.loads(report_path.read_text(encoding='utf-8'))
+    return jsonify(_decorate_evidence_payload(payload, report_path))
 
 
 def list_audit_events():

@@ -21,6 +21,10 @@ def test_operator_console_surfaces_benchmark_evidence_states():
     assert "data-testid=\"benchmark-evidence-panel\"" in page
     assert "Benchmark evidence unavailable" in page
     assert "Quality gate passed" in page
+    assert "SHA freshness" in page
+    assert "Stale SHA" in page
+    assert "current_git_sha_short" in api
+    assert "is_stale" in api
     assert "fixture_tier" in page
 
 

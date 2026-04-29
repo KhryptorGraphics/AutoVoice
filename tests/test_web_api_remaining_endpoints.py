@@ -827,7 +827,11 @@ class TestSampleAndDiarizationEndpoints:
         dashboard_path = reports_dir / "benchmark_dashboard.json"
         evidence_path = reports_dir / "release_evidence.json"
         dashboard_path.write_text(json.dumps({"generated_at": "now", "pipelines": {}, "comparisons": {}}))
-        evidence_path.write_text(json.dumps({"generated_at": "now", "quality_gate_passed": True}))
+        evidence_path.write_text(json.dumps({
+            "generated_at": "now",
+            "quality_gate_passed": True,
+            "provenance": {"git_sha": "deadbeef"},
+        }))
 
         try:
             dashboard_response = client_remaining.get("/api/v1/reports/benchmarks/latest")
@@ -835,8 +839,15 @@ class TestSampleAndDiarizationEndpoints:
 
             assert dashboard_response.status_code == 200
             assert evidence_response.status_code == 200
-            assert dashboard_response.get_json()["generated_at"] == "now"
-            assert evidence_response.get_json()["quality_gate_passed"] is True
+            dashboard_payload = dashboard_response.get_json()
+            evidence_payload = evidence_response.get_json()
+            assert dashboard_payload["generated_at"] == "now"
+            assert dashboard_payload["source_path"].endswith("benchmark_dashboard.json")
+            assert "current_git_sha_short" in dashboard_payload
+            assert evidence_payload["quality_gate_passed"] is True
+            assert evidence_payload["git_sha_short"] == "deadbeef"
+            assert evidence_payload["is_stale"] is True
+            assert evidence_payload["source_path"].endswith("release_evidence.json")
         finally:
             dashboard_path.unlink(missing_ok=True)
             evidence_path.unlink(missing_ok=True)

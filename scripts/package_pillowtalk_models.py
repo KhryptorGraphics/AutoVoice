@@ -300,7 +300,7 @@ def _package_release(
         artifacts={
             "profile_json": copied_profile_json,
             "speaker_embedding": copied_profile_embedding,
-            "adapter": copied_base,
+            "seedvc_base": copied_base,
             "hq_lora": copied_hq,
             "nvfp4_lora": copied_nvfp4,
             "tensorrt_engine": _existing_path_str(tensorrt_engine),

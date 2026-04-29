@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from auto_voice.runtime_contract import (
     CANONICAL_LIVE_PIPELINE,
     CANONICAL_OFFLINE_PIPELINE,
@@ -42,7 +44,8 @@ def test_packaged_artifact_manifest_round_trip(tmp_path: Path):
         artifacts={
             "profile_json": "models/test/profile.json",
             "speaker_embedding": "models/test/speaker_embedding.npy",
-            "adapter": "models/test/artifacts/adapter.pt",
+            "adapter": None,
+            "full_model": None,
             "tensorrt_engine": None,
         },
         metadata={
@@ -66,6 +69,49 @@ def test_packaged_artifact_manifest_round_trip(tmp_path: Path):
             "duration_seconds": 12.5,
         }
     ]
+
+
+def test_realtime_training_manifest_declares_serving_contract():
+    manifest = build_packaged_artifact_manifest(
+        profile_id="profile-123",
+        display_name="Test Artist",
+        model_family="realtime",
+        canonical_pipeline="realtime",
+        sample_rate=22050,
+        speaker_embedding_dim=256,
+        mel_bins=80,
+        artifacts={
+            "profile_json": "models/test/profile.json",
+            "speaker_embedding": "models/test/speaker_embedding.npy",
+            "adapter": "models/test/artifacts/adapter.pt",
+            "full_model": None,
+        },
+    )
+
+    payload = manifest.to_dict()
+
+    assert payload["compatibility"]["serving_contract"] == "trained_profile_realtime_only"
+    assert payload["compatibility"]["supported_pipelines"] == ["realtime"]
+    assert "quality_seedvc" in payload["compatibility"]["unsupported_pipelines"]
+
+
+def test_quality_seedvc_manifest_rejects_trained_artifacts():
+    with pytest.raises(ValueError, match="does not consume trained"):
+        build_packaged_artifact_manifest(
+            profile_id="profile-123",
+            display_name="Test Artist",
+            model_family="seed_vc",
+            canonical_pipeline="quality_seedvc",
+            sample_rate=44100,
+            speaker_embedding_dim=256,
+            mel_bins=80,
+            artifacts={
+                "profile_json": "models/test/profile.json",
+                "speaker_embedding": "models/test/speaker_embedding.npy",
+                "adapter": "models/test/artifacts/adapter.pt",
+                "full_model": None,
+            },
+        )
 
 
 def test_normalize_reference_audio_entries_deduplicates_and_normalizes(tmp_path: Path):

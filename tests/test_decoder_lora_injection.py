@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 
 from auto_voice.models.svc_decoder import CoMoSVCDecoder
+from auto_voice.models.feature_contract import DEFAULT_CONTENT_DIM, DEFAULT_PITCH_DIM, DEFAULT_SPEAKER_DIM
 from auto_voice.training.fine_tuning import LoRALinear
 
 
@@ -33,9 +34,9 @@ def sample_inputs(device):
     """Create sample inputs for decoder."""
     batch_size = 2
     seq_len = 100
-    content = torch.randn(batch_size, seq_len, 768, device=device)
-    pitch = torch.randn(batch_size, seq_len, 256, device=device)
-    speaker = torch.randn(batch_size, 256, device=device)
+    content = torch.randn(batch_size, seq_len, DEFAULT_CONTENT_DIM, device=device)
+    pitch = torch.randn(batch_size, seq_len, DEFAULT_PITCH_DIM, device=device)
+    speaker = torch.randn(batch_size, DEFAULT_SPEAKER_DIM, device=device)
     return content, pitch, speaker
 
 

@@ -430,16 +430,25 @@ function BenchmarkEvidencePanel({
   const freshness = generatedAt ? evidenceFreshness(generatedAt) : null
   const releaseReady = releaseEvidence?.ready_for_release ?? releaseEvidence?.ready
   const qualityPassed = releaseEvidence?.quality_gate_passed ?? Boolean(releaseReady)
+  const evidenceGitSha = releaseEvidence?.git_sha ?? releaseEvidence?.provenance?.git_sha ?? dashboard?.git_sha ?? dashboard?.provenance?.git_sha
+  const evidenceGitShaShort = releaseEvidence?.git_sha_short ?? shortSha(evidenceGitSha)
+  const currentGitSha = releaseEvidence?.current_git_sha ?? dashboard?.current_git_sha
+  const currentGitShaShort = releaseEvidence?.current_git_sha_short ?? dashboard?.current_git_sha_short ?? shortSha(currentGitSha)
+  const isStale = releaseEvidence?.is_stale ?? dashboard?.is_stale ?? (
+    Boolean(currentGitSha && evidenceGitSha && currentGitSha !== evidenceGitSha)
+  )
   const laneResults = releaseEvidence?.lane_results ?? []
   const failedLanes = laneResults.filter((lane) => lane.status === 'failed' || lane.ok === false)
   const skippedLanes = laneResults.filter((lane) => lane.status === 'skipped' || lane.details?.skipped === true)
   const blockers = releaseEvidence?.blockers ?? []
   const preflightChecks = releaseEvidence?.preflight_checks ?? []
   const failedPreflightChecks = preflightChecks.filter((check) => check.ok === false && check.skipped !== true)
-  const artifactEntries = [
+  const artifactEntries: Array<[string, string | undefined]> = [
     ...Object.entries(releaseEvidence?.artifacts ?? {}),
-    ['benchmark_dashboard', 'reports/benchmarks/latest/benchmark_dashboard.json'],
-    ['benchmark_release_evidence', 'reports/benchmarks/latest/release_evidence.json'],
+    ['release_evidence_source', releaseEvidence?.source_path] as [string, string | undefined],
+    ['benchmark_dashboard_source', dashboard?.source_path] as [string, string | undefined],
+    ['benchmark_dashboard', 'reports/benchmarks/latest/benchmark_dashboard.json'] as [string, string],
+    ['benchmark_release_evidence', 'reports/benchmarks/latest/release_evidence.json'] as [string, string],
     ...(dashboard?.provenance?.source_bundles ?? []).map((bundle, index) => [`source_bundle_${index + 1}`, bundle] as [string, string]),
   ].filter(([, value], index, entries) => value && entries.findIndex(([, candidate]) => candidate === value) === index)
   const nextActions = buildEvidenceActions({
@@ -450,6 +459,7 @@ function BenchmarkEvidencePanel({
     skippedLanes,
     failedPreflightChecks,
     qualityPassed,
+    isStale,
   })
   const statusLabel = releaseEvidence?.status
     ?? (releaseReady === true ? 'go' : releaseReady === false ? 'blocked' : qualityPassed ? 'quality passed' : 'needs evidence')
@@ -485,9 +495,10 @@ function BenchmarkEvidencePanel({
         />
       ) : (
         <>
-          <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-5">
+          <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-6">
             <DetailCard label="Generated" value={generatedAt ? new Date(generatedAt).toLocaleString() : 'Unknown'} detail={freshness ?? 'No timestamp'} />
-            <DetailCard label="Release status" value={statusLabel} detail={releaseEvidence.git_sha_short ? `sha ${releaseEvidence.git_sha_short}` : 'No git SHA'} />
+            <DetailCard label="Release status" value={statusLabel} detail={evidenceGitShaShort ? `evidence ${evidenceGitShaShort}` : 'No evidence SHA'} />
+            <DetailCard label="SHA freshness" value={isStale ? 'Stale SHA' : 'Current SHA'} detail={currentGitShaShort ? `head ${currentGitShaShort}` : 'No current SHA'} />
             <DetailCard label="Quality gate" value={qualityPassed ? 'Quality gate passed' : 'Quality gate blocked'} detail={`${pipelines.length} benchmark pipelines`} />
             <DetailCard label="Hardware" value={hardwareReady ? 'Ready' : 'Needs validation'} detail={releaseEvidence.target_hardware ?? dashboard.target_hardware ?? 'Unknown hardware'} />
             <DetailCard label="Lane issues" value={`${failedLanes.length} failed / ${skippedLanes.length} skipped`} detail={`${laneResults.length} lanes reported`} />
@@ -574,6 +585,7 @@ function buildEvidenceActions({
   skippedLanes,
   failedPreflightChecks,
   qualityPassed,
+  isStale,
 }: {
   hasDashboard: boolean
   hasReleaseEvidence: boolean
@@ -582,9 +594,13 @@ function buildEvidenceActions({
   skippedLanes: NonNullable<ReleaseEvidence['lane_results']>
   failedPreflightChecks: NonNullable<ReleaseEvidence['preflight_checks']>
   qualityPassed: boolean
+  isStale: boolean
 }): string[] {
   if (!hasDashboard || !hasReleaseEvidence) {
     return ['Generate benchmark dashboard and release evidence before promotion.']
+  }
+  if (isStale) {
+    return ['Regenerate benchmark and release evidence for the current Git HEAD.']
   }
   if (blockers.length > 0) {
     return blockers.map(formatEvidenceItem)
@@ -660,6 +676,10 @@ function evidenceFreshness(generatedAt: string): string {
   if (ageHours < 1) return 'Generated less than 1h ago'
   if (ageHours < 48) return `Generated ${ageHours.toFixed(0)}h ago`
   return `Generated ${(ageHours / 24).toFixed(1)}d ago`
+}
+
+function shortSha(sha?: string | null): string | null {
+  return sha ? sha.slice(0, 12) : null
 }
 
 function formatMetric(value?: number): string {

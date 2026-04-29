@@ -60,6 +60,13 @@ and hardware/model lanes are current-head green or explicitly gated.
 - canonical offline pipeline: `quality_seedvc`
 - canonical fast/live pipeline: `realtime`
 - experimental pipelines: `quality`, `quality_shortcut`, `realtime_meanvc`
+- supported local train/serve contract: LoRA and full-model training artifacts
+  are packaged for the canonical `realtime` serving path only. The canonical
+  `quality_seedvc` offline path is reference-audio driven and must not be treated
+  as consuming trained LoRA/full-model artifacts.
+- canonical training feature contract: ContentVec content embeddings are 768
+  dims, RMVPE/PitchEncoder pitch embeddings are 768 dims, and speaker embeddings
+  are 256 dims. CoMoSVC training jobs and regression tests must use that contract.
 - experimental quality upgrades remain behind the evidence gate defined in
   `config/experimental_evidence.json` and validated by
   `python scripts/validate_experimental_evidence.py`

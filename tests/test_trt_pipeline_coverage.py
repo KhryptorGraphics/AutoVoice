@@ -5,6 +5,8 @@ import numpy as np
 from unittest.mock import MagicMock, patch, PropertyMock
 from pathlib import Path
 
+from auto_voice.models.feature_contract import DEFAULT_PITCH_DIM
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -52,6 +54,7 @@ def trt_pipeline(mock_trt_inference_context, mock_separator, tmp_path):
         pipeline.vocoder_ctx = mock_trt_inference_context
         pipeline.separator = mock_separator
         pipeline.engine_dir = tmp_path
+        pipeline.pitch_dim = DEFAULT_PITCH_DIM
         return pipeline
 
 
@@ -206,15 +209,16 @@ class TestTRTPipelineEncodePitch:
     def test_output_shape(self, trt_pipeline):
         f0 = torch.rand(1, 100) * 200 + 80  # valid F0 range
         out = trt_pipeline._encode_pitch(f0)
-        assert out.shape == (1, 100, 256)
+        assert out.shape == (1, 100, DEFAULT_PITCH_DIM)
 
     def test_contains_sin_and_cos(self, trt_pipeline):
         f0 = torch.rand(1, 50) * 200 + 80
         out = trt_pipeline._encode_pitch(f0)
-        sin_part = out[:, :, :128]
-        cos_part = out[:, :, 128:]
-        assert sin_part.shape == (1, 50, 128)
-        assert cos_part.shape == (1, 50, 128)
+        half_dim = DEFAULT_PITCH_DIM // 2
+        sin_part = out[:, :, :half_dim]
+        cos_part = out[:, :, half_dim:]
+        assert sin_part.shape == (1, 50, half_dim)
+        assert cos_part.shape == (1, 50, half_dim)
 
     def test_gradient_flows(self, trt_pipeline):
         f0 = torch.rand(1, 20) * 200 + 80
@@ -232,7 +236,7 @@ class TestTRTPipelineEncodePitch:
     def test_batch_size_2(self, trt_pipeline):
         f0 = torch.rand(2, 50) * 200 + 80
         out = trt_pipeline._encode_pitch(f0)
-        assert out.shape == (2, 50, 256)
+        assert out.shape == (2, 50, DEFAULT_PITCH_DIM)
 
 
 class TestTRTPipelineConvert:

@@ -365,6 +365,12 @@ export interface BenchmarkPipelineEvidence {
 
 export interface BenchmarkDashboard {
   generated_at: string
+  source_path?: string
+  git_sha?: string | null
+  git_sha_short?: string | null
+  current_git_sha?: string | null
+  current_git_sha_short?: string | null
+  is_stale?: boolean
   provenance?: {
     schema_version?: number
     generator?: string
@@ -388,6 +394,10 @@ export interface BenchmarkDashboard {
 
 export interface ReleaseEvidence {
   generated_at: string
+  source_path?: string
+  current_git_sha?: string | null
+  current_git_sha_short?: string | null
+  is_stale?: boolean
   quality_gate_passed?: boolean
   ready?: boolean
   ready_for_release?: boolean

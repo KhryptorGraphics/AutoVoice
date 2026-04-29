@@ -16,6 +16,7 @@ from auto_voice.evaluation.benchmark_reporting import (
 )
 from auto_voice.experimental_registry import evaluate_evidence_gates
 from auto_voice.training.sample_quality import analyze_training_sample, summarize_training_samples
+from tests.fixtures.audio import write_voiced_wav
 
 
 def _write_audio(path: Path, samples: np.ndarray, sample_rate: int = 22050) -> None:
@@ -31,6 +32,18 @@ def test_analyze_training_sample_flags_silence_and_short_audio(tmp_path):
     assert quality["qa_status"] == "fail"
     assert "effectively_silent" in quality["issues"]
     assert quality["provenance"] == "unit-test"
+
+
+def test_analyze_training_sample_accepts_voiced_fixture(tmp_path):
+    audio_path = tmp_path / "voiced.wav"
+    write_voiced_wav(audio_path, duration_seconds=2.0, sample_rate=22050)
+
+    quality = analyze_training_sample(audio_path, provenance="unit-test")
+
+    assert quality["qa_status"] in {"pass", "warn"}
+    assert quality["duration_seconds"] >= 1.5
+    assert "effectively_silent" not in quality["issues"]
+    assert "sample_too_short" not in quality["issues"]
 
 
 def test_summarize_training_samples_reports_recommendations():
@@ -331,6 +344,107 @@ def test_validate_benchmark_dashboard_requires_basis_for_non_applicable_metric(t
     assert completed.returncode == 1
     payload = json.loads(completed.stdout)
     assert any("non-applicable required metric mcd_mean must document basis" in err for err in payload["errors"])
+
+
+def test_validate_benchmark_dashboard_requires_configured_metric_exemption(tmp_path):
+    reports_dir = tmp_path / "reports" / "benchmarks" / "latest"
+    reports_dir.mkdir(parents=True)
+    suite_path = tmp_path / "benchmark_suites.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "canonical_pipelines": {"offline": "quality_seedvc", "live": "realtime"},
+                "required_pipelines": ["quality_seedvc"],
+                "required_metrics": {"quality_seedvc": ["mcd_mean"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = write_benchmark_dashboard(
+        {
+            "quality_seedvc": {
+                "title": "quality_seedvc",
+                "summary": {"sample_count": 1, "mcd_mean": 999.0},
+                "metric_applicability": {"mcd_mean": False},
+                "metric_basis": {"mcd_mean": "not_applicable_without_aligned_same_content_target"},
+            },
+        },
+        reports_dir,
+    )
+
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "validate_benchmark_dashboard.py"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+            "--dashboard",
+            result["dashboard_path"],
+            "--release-evidence",
+            result["release_evidence_path"],
+            "--suite-config",
+            str(suite_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 1
+    payload = json.loads(completed.stdout)
+    assert any("non-applicable required metric mcd_mean is not allowed" in err for err in payload["errors"])
+
+
+def test_validate_benchmark_dashboard_accepts_configured_metric_exemption(tmp_path):
+    reports_dir = tmp_path / "reports" / "benchmarks" / "latest"
+    reports_dir.mkdir(parents=True)
+    suite_path = tmp_path / "benchmark_suites.json"
+    suite_path.write_text(
+        json.dumps(
+            {
+                "canonical_pipelines": {"offline": "quality_seedvc", "live": "realtime"},
+                "required_pipelines": ["quality_seedvc"],
+                "required_metrics": {"quality_seedvc": ["mcd_mean"]},
+                "allowed_metric_exemptions": [
+                    {
+                        "pipeline": "quality_seedvc",
+                        "metric": "mcd_mean",
+                        "basis": "not_applicable_without_aligned_same_content_target",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = write_benchmark_dashboard(
+        {
+            "quality_seedvc": {
+                "title": "quality_seedvc",
+                "summary": {"sample_count": 1, "mcd_mean": 999.0},
+                "metric_applicability": {"mcd_mean": False},
+                "metric_basis": {"mcd_mean": "not_applicable_without_aligned_same_content_target"},
+            },
+        },
+        reports_dir,
+    )
+
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "validate_benchmark_dashboard.py"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+            "--dashboard",
+            result["dashboard_path"],
+            "--release-evidence",
+            result["release_evidence_path"],
+            "--suite-config",
+            str(suite_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_validate_benchmark_dashboard_rejects_tmp_source_and_sha_drift(tmp_path):

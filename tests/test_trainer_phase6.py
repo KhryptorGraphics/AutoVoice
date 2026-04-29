@@ -30,13 +30,14 @@ class FakePitchEncoder(nn.Module):
 
     def __init__(self, *args, **kwargs):
         super().__init__()
+        self.output_size = int(kwargs.get("output_size", 256))
 
     def to(self, device):
         return self
 
     def forward(self, f0):
         batch_size = f0.shape[0]
-        return torch.ones(batch_size, 4, 256, device=f0.device)
+        return torch.ones(batch_size, 4, self.output_size, device=f0.device)
 
 
 class TrainingTestModel(nn.Module):
@@ -46,7 +47,7 @@ class TrainingTestModel(nn.Module):
         super().__init__()
         self.scale = nn.Parameter(torch.tensor(1.0))
         self.content_dim = 768
-        self.pitch_dim = 256
+        self.pitch_dim = 768
         self.speaker_dim = 4
 
     def forward(self, content, pitch, speaker, spec=None):
@@ -114,16 +115,16 @@ class TestTrainingLoopOrchestration:
                 device='cpu',
             )
 
-        assert seen["output_size"] == 256
+        assert seen["output_size"] == 768
 
     def test_train_epoch_reports_feature_shape_mismatch(self, trainer_factory):
         trainer = trainer_factory()
         trainer.speaker_embedding = torch.ones(4)
         trainer.pitch_encoder.forward = MagicMock(
-            return_value=torch.ones(2, 4, 768)
+            return_value=torch.ones(2, 4, 256)
         )
 
-        with pytest.raises(RuntimeError, match='pitch_dim=768 expected 256'):
+        with pytest.raises(RuntimeError, match='pitch_dim=256 expected 768'):
             trainer._train_epoch([make_batch()], epoch=0)
 
     def test_train_resumes_and_adjusts_small_batch_size(self, trainer_factory):

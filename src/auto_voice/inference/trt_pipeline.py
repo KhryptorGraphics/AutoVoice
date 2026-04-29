@@ -24,6 +24,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
+from ..models.feature_contract import DEFAULT_PITCH_DIM
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,9 +150,9 @@ class ONNXExporter:
         model.train(False)
         device = next(model.parameters()).device
 
-        # Dummy inputs: content [B, T, 768], pitch [B, T, 256], speaker [B, 256]
+        # Dummy inputs follow the model feature contract.
         dummy_content = torch.randn(1, 100, 768, device=device)
-        dummy_pitch = torch.randn(1, 100, 256, device=device)
+        dummy_pitch = torch.randn(1, 100, getattr(model, "pitch_dim", 768), device=device)
         dummy_speaker = torch.randn(1, 256, device=device)
 
         dynamic_axes = {
@@ -416,6 +418,7 @@ class TRTConversionPipeline:
 
         self.engine_dir = Path(engine_dir)
         self.device = device or torch.device('cuda')
+        self.pitch_dim = DEFAULT_PITCH_DIM
 
         # Load engines (or build if missing)
         self._load_or_build_engines()
@@ -505,7 +508,7 @@ class TRTConversionPipeline:
                 str(self.engine_dir / 'decoder.trt'),
                 dynamic_shapes={
                     'content': [(1, 10, 768), (1, 100, 768), (1, 1000, 768)],
-                    'pitch': [(1, 10, 256), (1, 100, 256), (1, 1000, 256)],
+                    'pitch': [(1, 10, 768), (1, 100, 768), (1, 1000, 768)],
                     'speaker': [(1, 256), (1, 256), (1, 256)],
                 }
             )
@@ -566,25 +569,27 @@ class TRTConversionPipeline:
         raise RuntimeError(f"Unexpected audio shape: {audio.shape}")
 
     def _encode_pitch(self, f0: torch.Tensor) -> torch.Tensor:
-        """Encode F0 contour to 256-dimensional pitch embeddings.
+        """Encode F0 contour to the configured pitch embedding width.
 
         Converts fundamental frequency (F0) values to sinusoidal pitch
-        embeddings using log-scaled frequency with 128 sine and 128 cosine
+        embeddings using log-scaled frequency with sine and cosine
         components. This representation is used by the CoMoSVC decoder.
 
         Args:
             f0: [B, T] fundamental frequency tensor in Hz
 
         Returns:
-            [B, T, 256] pitch embedding tensor (128 sin + 128 cos)
+            [B, T, pitch_dim] pitch embedding tensor
         """
         B, T = f0.shape
         log_f0 = torch.log2(f0.clamp(min=1.0))
         log_f0_norm = (log_f0 - 5.6) / (10.1 - 5.6)
         log_f0_norm = log_f0_norm.clamp(0, 1)
-        freqs = torch.arange(1, 129, device=f0.device).float()
+        pitch_dim = int(getattr(self, "pitch_dim", DEFAULT_PITCH_DIM))
+        half_dim = max(1, pitch_dim // 2)
+        freqs = torch.arange(1, half_dim + 1, device=f0.device).float()
         phase = log_f0_norm.unsqueeze(-1) * freqs * torch.pi
-        return torch.cat([torch.sin(phase), torch.cos(phase)], dim=-1)
+        return torch.cat([torch.sin(phase), torch.cos(phase)], dim=-1)[:, :, :pitch_dim]
 
     def convert(self, audio: torch.Tensor, sample_rate: int,
                 speaker_embedding: torch.Tensor,

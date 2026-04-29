@@ -2,7 +2,7 @@
 
 Implements a consistency model decoder based on CoMoSVC (ISCSLP 2024).
 Uses Bidirectional Dilated Convolutions (BiDilConv) conditioned on
-content features (768-dim ContentVec), pitch embeddings (256-dim),
+content features (768-dim ContentVec), pitch embeddings (768-dim),
 and speaker embeddings (256-dim mel-statistics).
 
 Key design:
@@ -19,6 +19,8 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from .feature_contract import DEFAULT_CONTENT_DIM, DEFAULT_PITCH_DIM, DEFAULT_SPEAKER_DIM
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +111,7 @@ class CoMoSVCDecoder(nn.Module):
     real-time use and multi-step for higher quality.
 
     Architecture:
-    - Input projection: content(768) + pitch(256) → hidden_dim
+    - Input projection: content(768) + pitch(768) → hidden_dim
     - Speaker conditioning: FiLM modulation
     - BiDilConv backbone: 8 layers, exponential dilation
     - Output projection: hidden_dim → n_mels(100)
@@ -118,8 +120,8 @@ class CoMoSVCDecoder(nn.Module):
     Reference: CoMoSVC (ISCSLP 2024)
     """
 
-    def __init__(self, content_dim: int = 768, pitch_dim: int = 256,
-                 speaker_dim: int = 256, n_mels: int = 100,
+    def __init__(self, content_dim: int = DEFAULT_CONTENT_DIM, pitch_dim: int = DEFAULT_PITCH_DIM,
+                 speaker_dim: int = DEFAULT_SPEAKER_DIM, n_mels: int = 100,
                  hidden_dim: int = 512, n_layers: int = 8,
                  device: Optional[torch.device] = None):
         super().__init__()

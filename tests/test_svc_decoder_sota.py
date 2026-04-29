@@ -3,13 +3,15 @@
 Validates the CoMoSVC consistency model decoder with:
 - Single-step inference (consistency distillation)
 - BiDilConv decoder architecture
-- Content (768-dim) + pitch (256-dim) + speaker (256-dim) conditioning
+- Content (768-dim) + pitch (768-dim) + speaker (256-dim) conditioning
 - Mel spectrogram output for BigVGAN vocoder
 - Speaker similarity preservation
 - Pitch preservation through conversion
 """
 import pytest
 import torch
+
+from auto_voice.models.feature_contract import DEFAULT_CONTENT_DIM, DEFAULT_PITCH_DIM, DEFAULT_SPEAKER_DIM
 
 
 class TestCoMoSVCDecoder:
@@ -24,9 +26,9 @@ class TestCoMoSVCDecoder:
         """Default initialization."""
         from auto_voice.models.svc_decoder import CoMoSVCDecoder
         decoder = CoMoSVCDecoder()
-        assert decoder.content_dim == 768  # ContentVec Layer 12
-        assert decoder.pitch_dim == 256  # PitchEncoder output
-        assert decoder.speaker_dim == 256  # mel-statistics embedding
+        assert decoder.content_dim == DEFAULT_CONTENT_DIM  # ContentVec Layer 12
+        assert decoder.pitch_dim == DEFAULT_PITCH_DIM  # Canonical training pitch contract
+        assert decoder.speaker_dim == DEFAULT_SPEAKER_DIM  # mel-statistics embedding
         assert decoder.n_mels == 100  # BigVGAN input
 
     def test_forward_shape(self):
@@ -36,9 +38,9 @@ class TestCoMoSVCDecoder:
         decoder = CoMoSVCDecoder(device=device).to(device)
 
         T = 50  # 50 frames
-        content = torch.randn(1, T, 768, device=device)
-        pitch = torch.randn(1, T, 256, device=device)
-        speaker = torch.randn(1, 256, device=device)  # Global speaker embedding
+        content = torch.randn(1, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(1, T, DEFAULT_PITCH_DIM, device=device)
+        speaker = torch.randn(1, DEFAULT_SPEAKER_DIM, device=device)  # Global speaker embedding
 
         mel = decoder(content, pitch, speaker)
         assert mel.shape == (1, 100, T)  # [B, n_mels, T]
@@ -50,9 +52,9 @@ class TestCoMoSVCDecoder:
         decoder = CoMoSVCDecoder(device=device).to(device)
 
         T = 30
-        content = torch.randn(1, T, 768, device=device)
-        pitch = torch.randn(1, T, 256, device=device)
-        speaker = torch.randn(1, 256, device=device)
+        content = torch.randn(1, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(1, T, DEFAULT_PITCH_DIM, device=device)
+        speaker = torch.randn(1, DEFAULT_SPEAKER_DIM, device=device)
 
         # Single-step (default) should work
         mel = decoder.infer(content, pitch, speaker, n_steps=1)
@@ -66,9 +68,9 @@ class TestCoMoSVCDecoder:
         decoder = CoMoSVCDecoder(device=device).to(device)
 
         T = 30
-        content = torch.randn(1, T, 768, device=device)
-        pitch = torch.randn(1, T, 256, device=device)
-        speaker = torch.randn(1, 256, device=device)
+        content = torch.randn(1, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(1, T, DEFAULT_PITCH_DIM, device=device)
+        speaker = torch.randn(1, DEFAULT_SPEAKER_DIM, device=device)
 
         mel_1step = decoder.infer(content, pitch, speaker, n_steps=1)
         mel_4step = decoder.infer(content, pitch, speaker, n_steps=4)
@@ -84,9 +86,9 @@ class TestCoMoSVCDecoder:
         decoder = CoMoSVCDecoder(device=device).to(device)
 
         T = 40
-        content = torch.randn(2, T, 768, device=device)
-        pitch = torch.randn(2, T, 256, device=device)
-        speaker = torch.randn(2, 256, device=device)
+        content = torch.randn(2, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(2, T, DEFAULT_PITCH_DIM, device=device)
+        speaker = torch.randn(2, DEFAULT_SPEAKER_DIM, device=device)
 
         mel = decoder(content, pitch, speaker)
         assert mel.shape == (2, 100, T)
@@ -98,9 +100,9 @@ class TestCoMoSVCDecoder:
         decoder = CoMoSVCDecoder(device=device).to(device)
 
         T = 50
-        content = torch.randn(1, T, 768, device=device)
-        pitch = torch.randn(1, T, 256, device=device)
-        speaker = torch.randn(1, 256, device=device)
+        content = torch.randn(1, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(1, T, DEFAULT_PITCH_DIM, device=device)
+        speaker = torch.randn(1, DEFAULT_SPEAKER_DIM, device=device)
 
         mel = decoder(content, pitch, speaker)
         assert torch.isfinite(mel).all()
@@ -112,9 +114,9 @@ class TestCoMoSVCDecoder:
         decoder = CoMoSVCDecoder(device=device).to(device)
 
         T = 30
-        content = torch.randn(1, T, 768, device=device)
-        pitch = torch.randn(1, T, 256, device=device)
-        speaker = torch.randn(1, 256, device=device)
+        content = torch.randn(1, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(1, T, DEFAULT_PITCH_DIM, device=device)
+        speaker = torch.randn(1, DEFAULT_SPEAKER_DIM, device=device)
 
         mel = decoder(content, pitch, speaker)
         assert mel.device == content.device
@@ -151,7 +153,7 @@ class TestSpeakerConditioning:
         """Speaker embedding should be 256-dim (mel-statistics)."""
         from auto_voice.models.svc_decoder import CoMoSVCDecoder
         decoder = CoMoSVCDecoder()
-        assert decoder.speaker_dim == 256
+        assert decoder.speaker_dim == DEFAULT_SPEAKER_DIM
 
     def test_different_speakers_different_output(self):
         """Different speaker embeddings should produce different mels."""
@@ -160,10 +162,10 @@ class TestSpeakerConditioning:
         decoder = CoMoSVCDecoder(device=device).to(device)
 
         T = 30
-        content = torch.randn(1, T, 768, device=device)
-        pitch = torch.randn(1, T, 256, device=device)
-        speaker_a = torch.randn(1, 256, device=device)
-        speaker_b = torch.randn(1, 256, device=device)
+        content = torch.randn(1, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(1, T, DEFAULT_PITCH_DIM, device=device)
+        speaker_a = torch.randn(1, DEFAULT_SPEAKER_DIM, device=device)
+        speaker_b = torch.randn(1, DEFAULT_SPEAKER_DIM, device=device)
 
         mel_a = decoder(content, pitch, speaker_a)
         mel_b = decoder(content, pitch, speaker_b)
@@ -178,9 +180,9 @@ class TestSpeakerConditioning:
         decoder.eval()
 
         T = 30
-        content = torch.randn(1, T, 768, device=device)
-        pitch = torch.randn(1, T, 256, device=device)
-        speaker = torch.randn(1, 256, device=device)
+        content = torch.randn(1, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch = torch.randn(1, T, DEFAULT_PITCH_DIM, device=device)
+        speaker = torch.randn(1, DEFAULT_SPEAKER_DIM, device=device)
 
         with torch.no_grad():
             torch.manual_seed(42)
@@ -201,10 +203,10 @@ class TestPitchPreservation:
         decoder = CoMoSVCDecoder(device=device).to(device)
 
         T = 30
-        content = torch.randn(1, T, 768, device=device)
-        pitch_low = torch.randn(1, T, 256, device=device) * 0.5
-        pitch_high = torch.randn(1, T, 256, device=device) * 2.0
-        speaker = torch.randn(1, 256, device=device)
+        content = torch.randn(1, T, DEFAULT_CONTENT_DIM, device=device)
+        pitch_low = torch.randn(1, T, DEFAULT_PITCH_DIM, device=device) * 0.5
+        pitch_high = torch.randn(1, T, DEFAULT_PITCH_DIM, device=device) * 2.0
+        speaker = torch.randn(1, DEFAULT_SPEAKER_DIM, device=device)
 
         mel_low = decoder(content, pitch_low, speaker)
         mel_high = decoder(content, pitch_high, speaker)

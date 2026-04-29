@@ -28,6 +28,28 @@
       "latency_ms_mean"
     ]
   },
+  "allowed_metric_exemptions": [
+    {
+      "pipeline": "quality_seedvc",
+      "metric": "pitch_corr_mean",
+      "basis": "informational_converted_output_vs_source_performance"
+    },
+    {
+      "pipeline": "quality_seedvc",
+      "metric": "mcd_mean",
+      "basis": "not_applicable_without_aligned_same_content_target"
+    },
+    {
+      "pipeline": "realtime",
+      "metric": "pitch_corr_mean",
+      "basis": "informational_converted_output_vs_source_performance"
+    },
+    {
+      "pipeline": "realtime",
+      "metric": "mcd_mean",
+      "basis": "not_applicable_without_aligned_same_content_target"
+    }
+  ],
   "candidate_pipelines": [
     "hq_svc",
     "nsf_harmonic_enhancement",

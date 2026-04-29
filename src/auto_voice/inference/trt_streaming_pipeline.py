@@ -15,6 +15,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
+from ..models.feature_contract import DEFAULT_PITCH_DIM
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +54,7 @@ class TRTStreamingPipeline:
 
         # Device
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.pitch_dim = DEFAULT_PITCH_DIM
 
         # TRT contexts (lazy-loaded)
         self._content_ctx = None
@@ -173,24 +176,26 @@ class TRTStreamingPipeline:
         return audio
 
     def _encode_pitch(self, f0: torch.Tensor) -> torch.Tensor:
-        """Encode F0 to pitch embeddings using sinusoidal encoding.
+        """Encode F0 to the configured pitch embedding width.
 
-        Converts fundamental frequency values to 256-dimensional pitch embeddings
-        using log-scaled sinusoidal position encoding (128 sin + 128 cos components).
+        Converts fundamental frequency values to sinusoidal pitch embeddings
+        using log-scaled sinusoidal position encoding.
 
         Args:
             f0: Fundamental frequency tensor of shape (batch, frames) in Hz
 
         Returns:
-            Pitch embeddings of shape (batch, frames, 256)
+            Pitch embeddings of shape (batch, frames, pitch_dim)
         """
         B, T = f0.shape
         log_f0 = torch.log2(f0.clamp(min=1.0))
         log_f0_norm = (log_f0 - 5.6) / (10.1 - 5.6)
         log_f0_norm = log_f0_norm.clamp(0, 1)
-        freqs = torch.arange(1, 129, device=f0.device).float()
+        pitch_dim = int(getattr(self, "pitch_dim", DEFAULT_PITCH_DIM))
+        half_dim = max(1, pitch_dim // 2)
+        freqs = torch.arange(1, half_dim + 1, device=f0.device).float()
         phase = log_f0_norm.unsqueeze(-1) * freqs * torch.pi
-        return torch.cat([torch.sin(phase), torch.cos(phase)], dim=-1)
+        return torch.cat([torch.sin(phase), torch.cos(phase)], dim=-1)[:, :, :pitch_dim]
 
     def process_chunk(
         self,

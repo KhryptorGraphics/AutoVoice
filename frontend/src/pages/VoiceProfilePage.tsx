@@ -740,8 +740,8 @@ function TrainingReadinessPanel({
   const progress = Math.min((cleanVocalMinutes / 30) * 100, 100)
   const nextAction = allowFullTraining
     ? hasFullModel
-      ? 'Continue full-model training for higher live-mode fidelity.'
-      : 'Train a dedicated full model from scratch for better song and live conversion accuracy.'
+      ? 'Continue full-model training for higher realtime serving fidelity.'
+      : 'Train a dedicated realtime full model from scratch. Offline Seed-VC still uses reference audio, not this artifact.'
     : hasAdapterModel
       ? 'Keep collecting clean singing vocals while continuing LoRA refinement.'
       : 'Train a LoRA first, then keep uploading clean singing until full-model training unlocks.'
@@ -779,11 +779,13 @@ function TrainingReadinessPanel({
       <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
         <ReadinessStep label="LoRA" state={hasAdapterModel ? 'ready' : 'recommended'} detail={hasAdapterModel ? 'Adapter exists' : 'Best first training path'} />
         <ReadinessStep label="Full model" state={allowFullTraining ? 'ready' : 'locked'} detail={allowFullTraining ? '30m threshold met' : 'Needs more clean vocals'} />
-        <ReadinessStep label="Live mode" state={hasFullModel ? 'ready' : 'recommended'} detail={hasFullModel ? 'Dedicated model available' : 'Improves after full model'} />
+        <ReadinessStep label="Realtime serving" state={hasFullModel ? 'ready' : 'recommended'} detail={hasFullModel ? 'Dedicated model available' : 'LoRA/full models serve realtime only'} />
       </div>
 
       <div className="mt-4 flex flex-col gap-3 rounded-lg bg-gray-900 p-3 md:flex-row md:items-center md:justify-between">
-        <p className="text-sm text-gray-300">{nextAction}</p>
+        <p className="text-sm text-gray-300">
+          {nextAction} Quality Seed-VC offline conversion remains reference-audio driven.
+        </p>
         {allowFullTraining && (
           <button
             type="button"

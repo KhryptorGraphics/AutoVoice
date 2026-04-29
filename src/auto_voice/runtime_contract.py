@@ -101,6 +101,8 @@ PIPELINE_DEFINITIONS: dict[str, PipelineDefinition] = {
 
 CANONICAL_OFFLINE_PIPELINE = "quality_seedvc"
 CANONICAL_LIVE_PIPELINE = "realtime"
+TRAINED_PROFILE_SERVING_PIPELINE = "realtime"
+REFERENCE_AUDIO_OFFLINE_PIPELINE = "quality_seedvc"
 
 OFFLINE_PIPELINES = {
     pipeline.pipeline_type
@@ -270,6 +272,18 @@ def build_packaged_artifact_manifest(
         raise ValueError(
             f"Canonical packaged artifacts must use a canonical pipeline, got {canonical_pipeline}"
         )
+    if model_family != pipeline.model_family:
+        raise ValueError(
+            f"Packaged artifact model_family {model_family!r} does not match "
+            f"pipeline {canonical_pipeline!r} model_family {pipeline.model_family!r}"
+        )
+    if canonical_pipeline == REFERENCE_AUDIO_OFFLINE_PIPELINE and (
+        artifacts.get("adapter") or artifacts.get("full_model")
+    ):
+        raise ValueError(
+            "quality_seedvc is reference-audio driven and does not consume trained "
+            "LoRA adapter or full-model artifacts"
+        )
     if speaker_embedding_dim <= 0:
         raise ValueError("speaker_embedding_dim must be positive")
     if mel_bins <= 0:
@@ -279,6 +293,17 @@ def build_packaged_artifact_manifest(
     compatibility_payload.setdefault("supported_pipelines", [canonical_pipeline])
     compatibility_payload.setdefault("supported_runtime_backends", [pipeline.runtime_backend])
     compatibility_payload.setdefault("supports_tensorrt", bool(artifacts.get("tensorrt_engine")))
+    if canonical_pipeline == TRAINED_PROFILE_SERVING_PIPELINE:
+        compatibility_payload.setdefault("serving_contract", "trained_profile_realtime_only")
+        compatibility_payload.setdefault(
+            "unsupported_pipelines",
+            {
+                REFERENCE_AUDIO_OFFLINE_PIPELINE: (
+                    "Seed-VC offline conversion uses target reference audio and does not "
+                    "consume trained LoRA/full-model artifacts."
+                )
+            },
+        )
 
     return PackagedArtifactManifest(
         schema_version=1,
@@ -321,12 +346,23 @@ def validate_packaged_artifact_manifest(payload: Mapping[str, Any]) -> Dict[str,
         raise ValueError(
             f"Packaged artifact manifest must target a canonical pipeline, got {canonical_pipeline}"
         )
+    if str(payload["model_family"]) != pipeline.model_family:
+        raise ValueError(
+            f"Packaged artifact model_family {payload['model_family']!r} does not match "
+            f"pipeline {canonical_pipeline!r} model_family {pipeline.model_family!r}"
+        )
 
     normalized = dict(payload)
     normalized["sample_rate"] = int(payload["sample_rate"])
     normalized["speaker_embedding_dim"] = int(payload["speaker_embedding_dim"])
     normalized["mel_bins"] = int(payload["mel_bins"])
     normalized["artifacts"] = dict(payload["artifacts"])
+    if canonical_pipeline == REFERENCE_AUDIO_OFFLINE_PIPELINE and (
+        normalized["artifacts"].get("adapter") or normalized["artifacts"].get("full_model")
+    ):
+        raise ValueError(
+            "quality_seedvc manifests cannot declare trained LoRA adapter or full-model artifacts"
+        )
     normalized["compatibility"] = dict(payload["compatibility"])
     normalized["metadata"] = dict(payload.get("metadata", {}))
     if "reference_audio" in normalized["metadata"]:

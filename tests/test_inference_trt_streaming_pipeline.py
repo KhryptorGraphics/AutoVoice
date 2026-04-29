@@ -19,6 +19,7 @@ import pytest
 import torch
 
 from auto_voice.inference.trt_streaming_pipeline import TRTStreamingPipeline
+from auto_voice.models.feature_contract import DEFAULT_PITCH_DIM
 
 
 # ============================================================================
@@ -764,7 +765,7 @@ def test_encode_pitch_normal(temp_engine_dir):
 
     pitch_embeddings = pipeline._encode_pitch(f0)
 
-    assert pitch_embeddings.shape == (1, 100, 256)
+    assert pitch_embeddings.shape == (1, 100, DEFAULT_PITCH_DIM)
     assert not torch.isnan(pitch_embeddings).any()
 
 
@@ -777,7 +778,7 @@ def test_encode_pitch_zero_values(temp_engine_dir):
     pitch_embeddings = pipeline._encode_pitch(f0)
 
     # Should clamp to minimum and produce valid embeddings
-    assert pitch_embeddings.shape == (1, 100, 256)
+    assert pitch_embeddings.shape == (1, 100, DEFAULT_PITCH_DIM)
     assert not torch.isnan(pitch_embeddings).any()
 
 
@@ -789,7 +790,7 @@ def test_encode_pitch_high_values(temp_engine_dir):
 
     pitch_embeddings = pipeline._encode_pitch(f0)
 
-    assert pitch_embeddings.shape == (1, 100, 256)
+    assert pitch_embeddings.shape == (1, 100, DEFAULT_PITCH_DIM)
     assert not torch.isnan(pitch_embeddings).any()
 
 

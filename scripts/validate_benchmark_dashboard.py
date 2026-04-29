@@ -116,6 +116,11 @@ def main(argv: list[str] | None = None) -> int:
         str(name): [str(metric) for metric in metrics]
         for name, metrics in (suite.get("required_metrics", {}) or {}).items()
     }
+    allowed_exemptions = {
+        (str(item.get("pipeline")), str(item.get("metric"))): str(item.get("basis", ""))
+        for item in suite.get("allowed_metric_exemptions", []) or []
+        if isinstance(item, dict)
+    }
     minimum_sample_count = int(suite.get("minimum_sample_count", 1))
     required_fixture_tiers = [str(name) for name in suite.get("required_fixture_tiers", [])]
 
@@ -139,10 +144,23 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             if "value" not in metric_payload:
                 errors.append(f"pipeline {pipeline_name} metric {metric} missing value")
-            if metric_payload.get("applicable") is False and not metric_payload.get("basis"):
-                errors.append(
-                    f"pipeline {pipeline_name} non-applicable required metric {metric} must document basis"
-                )
+            if metric_payload.get("applicable") is False:
+                basis = str(metric_payload.get("basis") or "")
+                exemption_key = (pipeline_name, metric)
+                expected_basis = allowed_exemptions.get(exemption_key)
+                if not basis:
+                    errors.append(
+                        f"pipeline {pipeline_name} non-applicable required metric {metric} must document basis"
+                    )
+                elif expected_basis is None:
+                    errors.append(
+                        f"pipeline {pipeline_name} non-applicable required metric {metric} is not allowed by suite config"
+                    )
+                elif basis != expected_basis:
+                    errors.append(
+                        f"pipeline {pipeline_name} non-applicable required metric {metric} basis {basis!r} "
+                        f"does not match suite exemption basis {expected_basis!r}"
+                    )
 
     comparisons = dashboard.get("comparisons", {})
     for candidate in suite.get("candidate_pipelines", []):

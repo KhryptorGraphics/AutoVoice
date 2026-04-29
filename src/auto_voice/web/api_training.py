@@ -59,7 +59,7 @@ TRAINING_PRESETS = [
     {
         'id': 'quality_lora',
         'label': 'Quality LoRA',
-        'description': 'Higher-capacity LoRA for production offline conversion quality.',
+        'description': 'Higher-capacity LoRA for the supported realtime train/serve path.',
         'config': {
             'training_mode': 'lora',
             'initialization_mode': 'scratch',
