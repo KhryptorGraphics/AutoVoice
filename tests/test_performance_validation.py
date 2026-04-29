@@ -83,6 +83,18 @@ def test_realtime_meanvc_skip_requires_explicit_full_opt_in(monkeypatch, tmp_pat
     assert gate["missing_assets"] == []
 
 
+def test_realtime_meanvc_pytest_lane_defaults_to_explicit_experimental_skip(monkeypatch):
+    monkeypatch.delenv("AUTOVOICE_MEANVC_FULL", raising=False)
+
+    gate = experimental_skip_gate("realtime_meanvc")
+
+    assert gate is not None
+    assert gate["support_boundary"] == "experimental:meanvc"
+    assert gate["owner"] == "model-runtime"
+    assert "AUTOVOICE_MEANVC_FULL=1" in gate["reason"]
+    assert "validate_cuda_stack.sh --pipeline realtime_meanvc" in gate["action"]
+
+
 def test_realtime_meanvc_skipped_report_is_explicit():
     result = BenchmarkResult(
         pipeline_name="Realtime MeanVC (Streaming)",

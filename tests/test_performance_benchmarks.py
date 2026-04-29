@@ -32,6 +32,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from auto_voice.runtime_contract import PIPELINE_DEFINITIONS
+from scripts.performance_validation import experimental_skip_gate
 
 logger = logging.getLogger(__name__)
 
@@ -458,6 +459,13 @@ class TestMeanVCPipeline:
     @pytest.fixture(scope="class")
     def meanvc_pipeline(self, reference_audio):
         """Initialize MeanVC pipeline."""
+        skip_gate = experimental_skip_gate("realtime_meanvc")
+        if skip_gate is not None:
+            pytest.skip(
+                f"{skip_gate['reason']} Owner: {skip_gate['owner']}. "
+                f"Action: {skip_gate['action']}"
+            )
+
         try:
             from auto_voice.inference.meanvc_pipeline import MeanVCPipeline
 

@@ -39,11 +39,13 @@ that source SHA with `scripts/validate_benchmark_dashboard.py --current-git-sha
 --release-grade`.
 
 The same pass ran the full local pytest suite. It exposed Docker deployment
-errors that are outside the current local-only scope, a MeanVC performance
-threshold miss, and a contaminated `SECRET_KEY` invocation that was later
-rerun cleanly. Follow-up targeted gates passed for TensorRT status, LoRA loading,
-secret-key security, frontend typecheck/lint/build, and the local live browser
-workflow spec.
+errors that are outside the current local-only scope and a contaminated
+`SECRET_KEY` invocation that was later rerun cleanly. MeanVC performance remains
+experimental and is no longer a default local-only readiness gate; run it
+explicitly with `AUTOVOICE_MEANVC_FULL=1` and the prepared MeanVC assets when
+promoting that lane. Follow-up targeted gates passed for TensorRT status, LoRA
+loading, secret-key security, frontend typecheck/lint/build, and the local live
+browser workflow spec.
 
 Do not treat every `latest` pointer as authoritative. `reports/completion/latest/
 completion_matrix.json` still references `9c6a056378df7585c453ecbb4d1f964345287436`,

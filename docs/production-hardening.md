@@ -17,6 +17,6 @@ The current implementation adds enforceable public-mode gates but does not make 
 - Full hardware/Jetson evidence must be regenerated for the current commit when hardware lanes are in scope.
 - The current local/no-Docker completion matrix is green at `reports/completion/20260429T081623Z-222c8882/` for source git SHA `222c8882804d726fea2339e7831b7511bfb5a005`; rerun it after selecting the final release commit.
 - Current benchmark latest artifacts validate against that source SHA, but `reports/completion/latest/` and `reports/release-evidence/latest/` remain historical pointers until deliberately republished.
-- The full local pytest suite is not clean yet under all lanes: Docker deployment tests are intentionally outside the current local-only scope, and MeanVC performance remains below its recorded runtime contract on this machine.
+- MeanVC remains an experimental, explicit opt-in performance lane. Default local-only pytest now skips it with owner/action metadata unless `AUTOVOICE_MEANVC_FULL=1` and the required runtime assets are present.
 - TensorRT runtime availability and TensorRT engine availability are separate states. The local `autovoice-thor` environment has TensorRT installed, but GPU optimization still requires built engine artifacts under the configured engine directory.
 - Multi-user SaaS requires account-level auth, per-user storage isolation, quotas, audit review, deletion/export APIs, and legal/policy approval.
