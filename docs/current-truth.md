@@ -26,13 +26,13 @@ release notes or operator docs because it hides the support boundary.
 | Commercial launch | Not ready | Requires the public multi-user controls plus legal/policy approval for voice, likeness, copyright, biometric privacy, and platform terms. |
 
 The latest local evidence source SHA is
-`900adba105b1a60a281c2d3433020c7f0f143a6b`. A readiness claim must cite
+`0324dc67623dc04f9b54e1858ab60c8fdede5f90`. A readiness claim must cite
 artifacts whose embedded git SHA matches the candidate commit being released;
 rerun the evidence commands after the final release commit is selected. During
 the 2026-04-29 local-only pass, the immutable completion matrix at
-`reports/completion/phase1-20260429T120750Z-900adba1/completion_matrix.json` passed
+`reports/completion/phase3-completion-20260429T121702Z-0324dc67/completion_matrix.json` passed
 with `ok: true` for local/no-Docker lanes, and the release-grade benchmark
-evidence under `reports/local-evidence/phase0-20260429T120415Z-900adba1/artifacts/benchmarks/`
+evidence under `reports/local-evidence/phase3-20260429T121649Z-0324dc67/artifacts/benchmarks/`
 matched the same commit. `reports/benchmarks/latest/benchmark_dashboard.json`
 and `reports/benchmarks/latest/release_evidence.json` also validated against
 that source SHA with `scripts/validate_benchmark_dashboard.py --current-git-sha
@@ -54,7 +54,7 @@ Do not treat every `latest` pointer as authoritative. `reports/completion/latest
 completion_matrix.json` still references `9c6a056378df7585c453ecbb4d1f964345287436`.
 Treat that pointer as historical until deliberately republished for the candidate
 commit. `reports/release-evidence/latest/release_decision.json` now references
-`900adba105b1a60a281c2d3433020c7f0f143a6b`, but release decisions are still
+`0324dc67623dc04f9b54e1858ab60c8fdede5f90`, but release decisions are still
 scoped by the local/no-Docker support boundary unless hardware/deployment lanes
 are explicitly enabled.
 
