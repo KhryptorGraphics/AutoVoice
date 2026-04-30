@@ -80,6 +80,56 @@ def _form_media_consent_payload() -> Dict[str, bool]:
     }
 
 
+def _soundfile_info_duration(audio_path: str) -> float:
+    if not _dep('soundfile_available'):
+        return 0.0
+    try:
+        return float(_dep('soundfile').info(audio_path).duration)
+    except Exception:
+        return 0.0
+
+
+def _normalize_uploaded_training_audio(audio_path: str) -> str:
+    """Return a PCM WAV path suitable for profile training sample storage."""
+    extension = Path(audio_path).suffix.lower()
+    if extension == ".wav" and _soundfile_info_duration(audio_path) > 0:
+        return audio_path
+
+    if not _dep('soundfile_available'):
+        raise ValueError("Uploaded training sample audio could not be decoded because soundfile is unavailable")
+
+    sf = _dep('soundfile')
+    try:
+        audio, sample_rate = sf.read(audio_path, dtype="float32", always_2d=False)
+    except Exception:
+        try:
+            import librosa
+
+            audio, sample_rate = librosa.load(audio_path, sr=None, mono=True)
+        except Exception as exc:
+            raise ValueError("Uploaded training sample audio could not be decoded into PCM WAV") from exc
+
+    try:
+        import numpy as np
+
+        audio_np = np.asarray(audio, dtype=np.float32)
+        if audio_np.ndim > 1:
+            audio_np = np.mean(audio_np, axis=1 if audio_np.shape[0] > audio_np.shape[1] else 0)
+        audio_np = audio_np.squeeze()
+    except Exception as exc:
+        raise ValueError("Uploaded training sample audio could not be normalized") from exc
+
+    if int(sample_rate or 0) <= 0 or audio_np.size == 0:
+        raise ValueError("Uploaded training sample audio is empty or has an invalid sample rate")
+
+    normalized_path = f"{os.path.splitext(audio_path)[0]}.decoded.wav"
+    try:
+        sf.write(normalized_path, audio_np, int(sample_rate))
+    except Exception as exc:
+        raise ValueError("Uploaded training sample audio could not be written as PCM WAV") from exc
+    return normalized_path
+
+
 def _ensure_profile_for_song_upload(profile_id: str) -> bool:
     try:
         _dep('ensure_profile_in_store')(profile_id)
@@ -912,18 +962,19 @@ def upload_sample(profile_id: str):
                 metadata = json.loads(request.form.get('metadata'))
             except json.JSONDecodeError:
                 pass
+        if not isinstance(metadata, dict):
+            metadata = {}
 
-        duration = 0.0
-        if _dep('soundfile_available'):
-            try:
-                duration = float(_dep('soundfile').info(file_path).duration)
-            except Exception:
-                duration = 0.0
+        try:
+            training_audio_path = _normalize_uploaded_training_audio(file_path)
+            duration = _soundfile_info_duration(training_audio_path)
+        except ValueError as exc:
+            return _dep('validation_error_response')(str(exc))
 
         store = _dep('get_profile_store')()
         training_sample = store.add_training_sample(
             profile_id=profile_id,
-            vocals_path=file_path,
+            vocals_path=training_audio_path,
             source_file=metadata.get('source_file') or filename,
             duration=duration,
             extra_metadata={

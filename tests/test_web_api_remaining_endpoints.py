@@ -569,6 +569,59 @@ class TestSampleAndDiarizationEndpoints:
         assert payload["profile_id"] == profile_id
         assert payload["metadata"]["note"] == "clean"
 
+    def test_upload_browser_capture_webm_normalizes_to_training_wav(self, client_remaining, app_remaining):
+        profile_id = "00000000-0000-0000-0000-000000000321"
+        _create_profile(app_remaining, profile_id=profile_id)
+
+        response = client_remaining.post(
+            f"/api/v1/profiles/{profile_id}/samples",
+            data={
+                "audio": (_wav_bytes(duration_seconds=1.2), "browser-take.webm"),
+                "metadata": json.dumps(
+                    {
+                        "source": "browser_singalong_capture",
+                        "source_file": "song-123",
+                        "source_song_id": "song-123",
+                        "quality_metadata": {
+                            "browser_capture": {
+                                "status": "warn",
+                                "issues": ["decode_unavailable"],
+                                "recommendations": ["server decode required"],
+                                "durationSeconds": 1.2,
+                                "blobSizeBytes": 2048,
+                                "decoded": False,
+                            }
+                        },
+                    }
+                ),
+            },
+            content_type="multipart/form-data",
+        )
+
+        assert response.status_code == 201
+        payload = response.get_json()
+        assert payload["metadata"]["source"] == "browser_singalong_capture"
+        assert payload["metadata"]["source_song_id"] == "song-123"
+        assert payload["quality_metadata"]["browser_capture"]["status"] == "warn"
+        stored_sample = app_remaining.voice_cloner.store.list_training_samples(profile_id)[0]
+        assert stored_sample.vocals_path.endswith("vocals.wav")
+
+    def test_upload_browser_capture_invalid_audio_returns_validation_error(self, client_remaining, app_remaining):
+        profile_id = "00000000-0000-0000-0000-000000000322"
+        _create_profile(app_remaining, profile_id=profile_id)
+
+        response = client_remaining.post(
+            f"/api/v1/profiles/{profile_id}/samples",
+            data={
+                "audio": (io.BytesIO(b"not-audio"), "browser-take.webm"),
+                "metadata": json.dumps({"source": "browser_singalong_capture"}),
+            },
+            content_type="multipart/form-data",
+        )
+
+        assert response.status_code == 400
+        assert "could not be decoded" in response.get_json()["error"]
+
     def test_add_sample_from_path_skip_separation(self, client_remaining, app_remaining, tmp_path):
         profile_id = "00000000-0000-0000-0000-000000000312"
         _create_profile(app_remaining, profile_id=profile_id)

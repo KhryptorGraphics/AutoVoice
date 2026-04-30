@@ -14,6 +14,9 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
 - train target-user profiles
 - run offline conversion jobs
 - run live karaoke sessions
+- record browser sing-along takes for target-user profiles from the computer
+  using the web UI, with browser-side input/output selection and local take
+  quality checks before attach
 - persist local product state under `DATA_DIR`
 
 ## Readiness Vocabulary And Current Status
@@ -92,6 +95,12 @@ and hardware/model lanes are current-head green or explicitly gated.
   under `reports/completion/latest/`; use `--real-audio` for deterministic
   local real-audio E2E without Docker, and use `--live-youtube` only with
   `AUTOVOICE_LIVE_YOUTUBE_URL` set to operator-owned media
+- local HTTPS browser-capture testing is started with `scripts/local_https_dev.sh`;
+  the helper generates a self-signed certificate, serves the backend with
+  `autovoice serve --ssl-cert --ssl-key`, and configures the Vite frontend to
+  proxy to the HTTPS backend. Same-machine HTTPS can be validated locally; true
+  browser-device validation from another LAN computer remains a separate manual
+  LAN acceptance step.
 
 ## Vendor Model Repos
 

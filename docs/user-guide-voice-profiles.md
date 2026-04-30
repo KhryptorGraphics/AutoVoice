@@ -69,12 +69,22 @@ Use this when another computer on the local network is the singer's workstation:
 - serve AutoVoice over HTTPS on the LAN so browser microphone APIs are available
 - select the browser headset mic and browser headphone output in the sing-along panel
 - record while the user sings along to the original full song
+- wait for the local take-quality check to pass or warn; failed takes are blocked
 - preview the take before attaching it to a selected `target_user` profile
 
 This browser-device selector is separate from the server-side karaoke audio
 router. The server router still controls devices attached to the machine running
 AutoVoice; the browser recorder controls devices attached to the computer using
 the web UI.
+
+For local HTTPS testing, start both services with:
+
+```bash
+scripts/local_https_dev.sh
+```
+
+The helper uses a self-signed certificate. A browser on another trusted LAN
+machine must accept or trust that certificate before microphone capture works.
 
 ### 4. Train a LoRA
 

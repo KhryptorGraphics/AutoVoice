@@ -45,6 +45,16 @@ def _serve_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
         default=None,
         help="Directory for durable application data",
     )
+    parser.add_argument(
+        "--ssl-cert",
+        default=None,
+        help="Path to a TLS certificate for local HTTPS serving",
+    )
+    parser.add_argument(
+        "--ssl-key",
+        default=None,
+        help="Path to the TLS private key for local HTTPS serving",
+    )
 
 
 def _swarm_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -162,6 +172,26 @@ def _load_config(args: argparse.Namespace) -> Dict[str, Any]:
     return config
 
 
+def _resolve_ssl_context(args: argparse.Namespace) -> tuple[str, str] | None:
+    """Resolve an optional Flask-SocketIO SSL context from CLI args or env."""
+    ssl_cert = args.ssl_cert or os.environ.get("AUTOVOICE_SSL_CERT")
+    ssl_key = args.ssl_key or os.environ.get("AUTOVOICE_SSL_KEY")
+
+    if bool(ssl_cert) != bool(ssl_key):
+        raise SystemExit("Both --ssl-cert and --ssl-key are required to enable HTTPS")
+
+    if not ssl_cert or not ssl_key:
+        return None
+
+    cert_path = Path(ssl_cert).expanduser()
+    key_path = Path(ssl_key).expanduser()
+    missing = [str(path) for path in (cert_path, key_path) if not path.exists()]
+    if missing:
+        raise SystemExit(f"TLS file not found: {', '.join(missing)}")
+
+    return str(cert_path), str(key_path)
+
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
 
@@ -222,11 +252,23 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         raise SystemExit(f"Unsupported command: {args.command}")
 
     config = _load_config(args)
+    ssl_context = _resolve_ssl_context(args)
     app, socketio = create_app(config=config)
     setup_signal_handlers(app, socketio)
 
-    logger.info("Starting AutoVoice on %s:%s", args.host, args.port)
-    socketio.run(app, host=args.host, port=args.port, debug=bool(config.get("DEBUG")))
+    logger.info(
+        "Starting AutoVoice on %s:%s%s",
+        args.host,
+        args.port,
+        " with HTTPS" if ssl_context else "",
+    )
+    socketio.run(
+        app,
+        host=args.host,
+        port=args.port,
+        debug=bool(config.get("DEBUG")),
+        ssl_context=ssl_context,
+    )
     return 0
 
 

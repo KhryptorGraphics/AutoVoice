@@ -6,6 +6,8 @@ AutoVoice is a local-first singing voice conversion and karaoke stack. The curre
 
 - Offline song conversion to a trained voice profile
 - Live karaoke sessions over Socket.IO
+- Browser sing-along capture for recording a local/LAN user's microphone while
+  playing the source song through that user's browser output device
 - Voice profile and training job management
 - Persistent local product state under `DATA_DIR`
 - React frontend for the supported MVP flows
@@ -39,6 +41,18 @@ npm run dev
 ```
 
 By default the frontend proxies `/api` and `/socket.io` to `http://localhost:5000`. Override with `VITE_BACKEND_URL` if needed.
+
+Local HTTPS for browser microphone capture:
+
+```bash
+scripts/local_https_dev.sh
+```
+
+This starts the backend on `https://<host>:5443` and the frontend on
+`https://<host>:3443` with a self-signed certificate in `.local/https/`. Use it
+for same-machine HTTPS testing now and for trusted LAN browser testing after
+the browser accepts or trusts the generated certificate. Override the advertised
+browser host with `AUTOVOICE_LAN_HOST=<lan-ip-or-hostname>` when needed.
 
 Supported local CUDA targets:
 

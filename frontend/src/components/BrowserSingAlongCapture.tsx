@@ -13,6 +13,10 @@ import {
   setAudioOutputDevice,
   type BrowserAudioDevice,
 } from '../services/browserAudioCapture'
+import {
+  analyzeBrowserRecordingTake,
+  type BrowserTakeQualityReport,
+} from '../services/browserAudioQuality'
 
 interface BrowserSingAlongCaptureProps {
   song: UploadedSong
@@ -60,6 +64,8 @@ export function BrowserSingAlongCapture({
   const [takeBlob, setTakeBlob] = useState<Blob | null>(null)
   const [takeUrl, setTakeUrl] = useState<string | null>(null)
   const [takeDuration, setTakeDuration] = useState(0)
+  const [takeQuality, setTakeQuality] = useState<BrowserTakeQualityReport | null>(null)
+  const [qualityChecking, setQualityChecking] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sinkStatus, setSinkStatus] = useState<'idle' | 'selected' | 'default' | 'unsupported' | 'error'>('idle')
@@ -136,6 +142,8 @@ export function BrowserSingAlongCapture({
     setTakeUrl(null)
     setTakeBlob(null)
     setTakeDuration(0)
+    setTakeQuality(null)
+    setQualityChecking(false)
     setStatus(null)
   }, [])
 
@@ -319,7 +327,41 @@ export function BrowserSingAlongCapture({
         if (audioRef.current) {
           audioRef.current.currentTime = 0
         }
-        setStatus('Take recorded. Preview it before attaching to the profile.')
+        setTakeQuality(null)
+        setQualityChecking(true)
+        setStatus('Take recorded. Checking local quality before attach.')
+        void analyzeBrowserRecordingTake(blob, duration)
+          .then((report) => {
+            if (takeUrlRef.current !== url) return
+            setTakeQuality(report)
+            if (report.status === 'fail') {
+              setError('Recorded take failed local quality checks. Discard it and record a longer, audible take.')
+              setStatus(null)
+            } else {
+              setStatus(
+                report.status === 'pass'
+                  ? 'Take passed local quality checks. Preview it before attaching.'
+                  : 'Take recorded with local quality warnings. Preview it before attaching.',
+              )
+            }
+          })
+          .catch(() => {
+            if (takeUrlRef.current !== url) return
+            setTakeQuality({
+              status: 'warn',
+              issues: ['quality_check_failed'],
+              recommendations: ['Preview the take and retry if it sounds incorrect.'],
+              durationSeconds: duration,
+              blobSizeBytes: blob.size,
+              decoded: false,
+            })
+            setStatus('Take recorded, but the browser quality check could not complete. Preview it before attaching.')
+          })
+          .finally(() => {
+            if (takeUrlRef.current === url) {
+              setQualityChecking(false)
+            }
+          })
       }
 
       const audio = audioRef.current
@@ -341,6 +383,10 @@ export function BrowserSingAlongCapture({
     if (!takeBlob || !selectedProfileId) {
       return
     }
+    if (!takeQuality || takeQuality.status === 'fail') {
+      setError('Record a take that passes local quality checks before attaching it.')
+      return
+    }
 
     setAttaching(true)
     setError(null)
@@ -360,6 +406,9 @@ export function BrowserSingAlongCapture({
           inputDevices.find((device) => device.deviceId === selectedInputId)?.label ?? null,
         browser_output_device_label:
           outputDevices.find((device) => device.deviceId === selectedOutputId)?.label ?? null,
+        quality_metadata: {
+          browser_capture: takeQuality,
+        },
       })
       releaseTake()
       setStatus('Recorded take attached to the selected profile.')
@@ -516,7 +565,10 @@ export function BrowserSingAlongCapture({
               Recording {formatDuration(elapsedSeconds)}
             </span>
           ) : takeBlob ? (
-            <span>Recorded take: {formatDuration(takeDuration)} · {(takeBlob.size / 1024).toFixed(1)} KB</span>
+            <span>
+              Recorded take: {formatDuration(takeDuration)} · {(takeBlob.size / 1024).toFixed(1)} KB
+              {qualityChecking ? ' · checking quality' : ''}
+            </span>
           ) : (
             <span>Enable the mic, select devices, then record a take.</span>
           )}
@@ -549,7 +601,7 @@ export function BrowserSingAlongCapture({
               <audio src={takeUrl} controls data-testid="browser-capture-take-preview" className="max-w-xs" />
               <button
                 onClick={attachTake}
-                disabled={attaching}
+                disabled={attaching || qualityChecking || !takeQuality || takeQuality.status === 'fail'}
                 data-testid="browser-capture-attach"
                 className="flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 font-medium hover:bg-green-700 disabled:bg-gray-700"
               >
@@ -583,6 +635,31 @@ export function BrowserSingAlongCapture({
         <div className="mt-4 flex items-center gap-2 rounded-lg border border-green-700 bg-green-950/30 p-3 text-sm text-green-100">
           <CheckCircle size={16} />
           {status}
+        </div>
+      )}
+      {takeQuality && (
+        <div
+          className={clsx(
+            'mt-4 rounded-lg border p-3 text-sm',
+            takeQuality.status === 'fail'
+              ? 'border-red-700 bg-red-950/40 text-red-100'
+              : takeQuality.status === 'warn'
+                ? 'border-yellow-700 bg-yellow-950/40 text-yellow-100'
+                : 'border-green-700 bg-green-950/30 text-green-100',
+          )}
+          data-testid="browser-capture-quality-status"
+        >
+          <div className="font-medium">Local take check: {takeQuality.status}</div>
+          {takeQuality.issues.length > 0 && (
+            <div className="mt-1 text-xs">
+              Issues: {takeQuality.issues.join(', ')}
+            </div>
+          )}
+          {takeQuality.recommendations.length > 0 && (
+            <div className="mt-1 text-xs">
+              Next: {takeQuality.recommendations[0]}
+            </div>
+          )}
         </div>
       )}
       {error && (
