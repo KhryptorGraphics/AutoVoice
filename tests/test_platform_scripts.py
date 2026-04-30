@@ -248,6 +248,34 @@ def test_hardware_release_evidence_runner_fails_closed_without_execute(tmp_path)
     assert "hardware validation lanes were not executed" in " ".join(decision["blockers"])
 
 
+def test_hardware_release_evidence_accepts_streaming_tegrastats_probe(monkeypatch):
+    import importlib.util
+
+    script_path = PROJECT_ROOT / "scripts/run_hardware_release_evidence.py"
+    spec = importlib.util.spec_from_file_location("run_hardware_release_evidence", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def fake_run(*_args, **_kwargs):
+        error = subprocess.TimeoutExpired(["tegrastats", "--interval", "1000"], 3)
+        error.stdout = "RAM 100/1000MB CPU [1%@1000] gpu@35C\n"
+        error.stderr = ""
+        raise error
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = module._run(
+        ["tegrastats", "--interval", "1000"],
+        timeout=3,
+        timeout_ok_when_output=True,
+    )
+
+    assert result["ok"] is True
+    assert result["timed_out"] is True
+    assert "RAM 100/1000MB" in result["stdout"]
+
+
 def test_full_hardware_rc_preflight_records_actionable_blockers(tmp_path):
     output_path = tmp_path / "preflight.json"
     result = subprocess.run(

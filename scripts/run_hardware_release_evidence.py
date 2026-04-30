@@ -17,7 +17,15 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _run(command: list[str], *, timeout: int = 60) -> dict[str, Any]:
+def _tail_output(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")[-4000:]
+    return str(value)[-4000:]
+
+
+def _run(command: list[str], *, timeout: int = 60, timeout_ok_when_output: bool = False) -> dict[str, Any]:
     started = time.time()
     try:
         result = subprocess.run(
@@ -30,12 +38,25 @@ def _run(command: list[str], *, timeout: int = 60) -> dict[str, Any]:
         return {
             "command": command,
             "returncode": result.returncode,
-            "stdout": result.stdout[-4000:],
-            "stderr": result.stderr[-4000:],
+            "stdout": _tail_output(result.stdout),
+            "stderr": _tail_output(result.stderr),
             "duration_seconds": round(time.time() - started, 3),
             "ok": result.returncode == 0,
         }
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        stdout = _tail_output(getattr(exc, "stdout", None) or getattr(exc, "output", None))
+        stderr = _tail_output(getattr(exc, "stderr", None))
+        ok = timeout_ok_when_output and bool(stdout.strip())
+        return {
+            "command": command,
+            "returncode": None,
+            "stdout": stdout,
+            "stderr": stderr or str(exc),
+            "duration_seconds": round(time.time() - started, 3),
+            "ok": ok,
+            "timed_out": True,
+        }
+    except OSError as exc:
         return {
             "command": command,
             "returncode": None,
@@ -86,7 +107,10 @@ def _preflight() -> tuple[list[dict[str, Any]], list[str]]:
             }
         else:
             timeout = 3 if name == "tegrastats" else 20
-            check = {"name": name, **_run(command, timeout=timeout)}
+            check = {
+                "name": name,
+                **_run(command, timeout=timeout, timeout_ok_when_output=(name == "tegrastats")),
+            }
         checks.append(check)
         if not check["ok"]:
             blockers.append(f"{name} preflight failed")
