@@ -42,6 +42,7 @@ def register_youtube_routes(api_bp: Blueprint) -> None:
 
 _youtube_downloader: Optional['YouTubeDownloader'] = None
 _INGEST_MATCH_THRESHOLD = 0.72
+_DUPLICATE_WARNING_THRESHOLD = 0.82
 
 
 def get_youtube_downloader() -> 'YouTubeDownloader':
@@ -152,6 +153,11 @@ def _build_ingest_suggestions(
             match_error = str(exc)
 
         best_match = matches[0] if matches else None
+        duplicate_candidates = [
+            match
+            for match in matches
+            if float(match.get('similarity') or 0.0) >= _DUPLICATE_WARNING_THRESHOLD
+        ]
         suggestions.append({
             'speaker_id': speaker_id,
             'suggested_name': _suggested_speaker_name(index, speaker_id, metadata),
@@ -173,6 +179,9 @@ def _build_ingest_suggestions(
                 if best_match and float(best_match.get('similarity') or 0.0) >= _INGEST_MATCH_THRESHOLD
                 else 'metadata_unverified'
             ),
+            'duplicate_warning': bool(duplicate_candidates),
+            'duplicate_candidates': duplicate_candidates,
+            'duplicate_threshold': _DUPLICATE_WARNING_THRESHOLD,
             'match_error': match_error,
         })
 

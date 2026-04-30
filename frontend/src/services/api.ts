@@ -632,6 +632,8 @@ export const QUALITY_PRESETS: Record<QualityPreset, { n_steps: number; denoise: 
 export interface TrainingSample {
   id: string
   profile_id: string
+  profile_name?: string
+  profile_role?: ProfileRole
   audio_path: string
   duration_seconds: number
   sample_rate: number
@@ -639,6 +641,74 @@ export interface TrainingSample {
   metadata?: Record<string, unknown>
   quality_metadata?: Record<string, unknown>
   extra_metadata?: Record<string, unknown>
+  source?: string
+  consent_status?: string
+  rms_loudness?: number | null
+  silence_ratio?: number | null
+  clipping_ratio?: number | null
+  trainable?: boolean
+  quality_status?: 'pass' | 'warn' | 'fail' | 'unknown' | string
+  issues?: string[]
+  recommendations?: string[]
+}
+
+export interface SampleReviewResponse {
+  samples: TrainingSample[]
+  count: number
+  summary: {
+    trainable: number
+    blocked: number
+    quality_status_counts: Record<string, number>
+  }
+}
+
+export interface DuplicateProfileCandidate {
+  profile_id: string
+  name: string
+  profile_role?: ProfileRole
+  similarity: number
+}
+
+export interface DuplicateProfileCheck {
+  profile_id: string
+  threshold: number
+  candidates: DuplicateProfileCandidate[]
+  duplicate_warning: boolean
+}
+
+export interface LocalProductionReadiness {
+  ready: boolean
+  git_sha?: string | null
+  release_evidence_available: boolean
+  checks: Array<{ id: string; label: string; ok: boolean }>
+  commands: Record<string, string>
+  paths: Record<string, string>
+}
+
+export interface BackupManifest {
+  version: number
+  git_sha?: string | null
+  created_at: string
+  included_paths: string[]
+  files: Array<{ path: string; size_bytes: number; sha256: string }>
+  checksums: Record<string, string>
+  restore_warnings: string[]
+}
+
+export interface BackupExportResponse {
+  status: string
+  backup_path: string
+  download_url?: string
+  manifest: BackupManifest
+}
+
+export interface BackupImportResponse {
+  status: 'dry_run' | 'applied' | string
+  dry_run: boolean
+  manifest: BackupManifest
+  restore_warnings: string[]
+  restored_paths: string[]
+  restored_count: number
 }
 
 // Quality metrics for completed conversions
@@ -1128,6 +1198,10 @@ class ApiService {
     return this.request('/reports/release-evidence/latest')
   }
 
+  async getLocalProductionReadiness(): Promise<LocalProductionReadiness> {
+    return this.request('/readiness/local-production')
+  }
+
   async getAppSettings(): Promise<AppSettings> {
     return this.request('/settings/app')
   }
@@ -1178,6 +1252,10 @@ class ApiService {
   async listProfiles(userId?: string): Promise<VoiceProfile[]> {
     const params = userId ? `?user_id=${userId}` : ''
     return this.request(`/voice/profiles${params}`)
+  }
+
+  async checkDuplicateProfiles(profileId: string, threshold = 0.82): Promise<DuplicateProfileCheck> {
+    return this.request(`/voice/profiles/duplicate-check?profile_id=${encodeURIComponent(profileId)}&threshold=${threshold}`)
   }
 
   async deleteProfile(profileId: string): Promise<void> {
@@ -1461,6 +1539,14 @@ class ApiService {
 
   async listSamples(profileId: string): Promise<TrainingSample[]> {
     return this.request(`/profiles/${profileId}/samples`)
+  }
+
+  async listSampleReview(filters: { quality_status?: string; trainable?: boolean } = {}): Promise<SampleReviewResponse> {
+    const params = new URLSearchParams()
+    if (filters.quality_status) params.set('quality_status', filters.quality_status)
+    if (typeof filters.trainable === 'boolean') params.set('trainable', String(filters.trainable))
+    const query = params.toString()
+    return this.request(`/samples/review${query ? `?${query}` : ''}`)
   }
 
   async getSample(profileId: string, sampleId: string): Promise<TrainingSample> {
@@ -1852,6 +1938,34 @@ class ApiService {
     })
   }
 
+  async exportLocalBackup(): Promise<BackupExportResponse> {
+    return this.request('/backup/export', { method: 'POST' })
+  }
+
+  async importLocalBackupDryRun(backup: File): Promise<BackupImportResponse> {
+    const formData = new FormData()
+    formData.append('backup', backup)
+    formData.append('apply', 'false')
+    const response = await apiFetch(`${API_BASE}/backup/import`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!response.ok) throw new Error(`Import dry-run failed: ${response.status}`)
+    return response.json()
+  }
+
+  async importLocalBackupApply(backup: File): Promise<BackupImportResponse> {
+    const formData = new FormData()
+    formData.append('backup', backup)
+    formData.append('apply', 'true')
+    const response = await apiFetch(`${API_BASE}/backup/import`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!response.ok) throw new Error(`Import apply failed: ${response.status}`)
+    return response.json()
+  }
+
   async addSampleFromPath(
     profileId: string,
     payload: {
@@ -2044,6 +2158,9 @@ export interface YouTubeSpeakerSuggestion {
   recommended_action: 'assign_existing' | 'create_new'
   recommended_profile_id?: string | null
   identity_confidence: 'voice_match' | 'metadata_unverified' | string
+  duplicate_warning?: boolean
+  duplicate_candidates?: YouTubeProfileMatch[]
+  duplicate_threshold?: number
   match_error?: string | null
 }
 

@@ -1,5 +1,5 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Activity, Headphones, HelpCircle, History, Mic, Music, User, Users, Youtube } from 'lucide-react'
+import { Activity, Headphones, HelpCircle, History, ListChecks, Mic, Music, User, Users, Youtube } from 'lucide-react'
 import clsx from 'clsx'
 
 import { ToastProvider } from './contexts/ToastContext'
@@ -9,6 +9,7 @@ import HelpPage from './pages/HelpPage'
 import { KaraokePage } from './pages/KaraokePage'
 import { DiarizationResultsPage } from './pages/DiarizationResultsPage'
 import { SingAlongPage } from './pages/SingAlongPage'
+import { SampleInboxPage } from './pages/SampleInboxPage'
 import { SystemStatusPage } from './pages/SystemStatusPage'
 import { VoiceProfilePage } from './pages/VoiceProfilePage'
 import { YouTubeDownloadPage } from './pages/YouTubeDownloadPage'
@@ -19,6 +20,7 @@ export default function App() {
     { to: '/karaoke', label: 'Karaoke', icon: Mic },
     { to: '/singalong', label: 'Sing Along', icon: Headphones },
     { to: '/profiles', label: 'Profiles', icon: User },
+    { to: '/samples', label: 'Samples', icon: ListChecks },
     { to: '/youtube', label: 'YouTube', icon: Youtube },
     { to: '/diarization', label: 'Diarization', icon: Users },
     { to: '/history', label: 'History', icon: History },
@@ -60,6 +62,7 @@ export default function App() {
             <Route path="/karaoke" element={<KaraokePage />} />
             <Route path="/singalong" element={<SingAlongPage />} />
             <Route path="/profiles" element={<VoiceProfilePage />} />
+            <Route path="/samples" element={<SampleInboxPage />} />
             <Route path="/youtube" element={<YouTubeDownloadPage />} />
             <Route path="/diarization" element={<DiarizationResultsPage />} />
             <Route path="/history" element={<ConversionHistoryPage />} />

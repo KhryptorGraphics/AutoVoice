@@ -125,6 +125,31 @@ export function YouTubeDownloadPage() {
     }
   }
 
+  const handleStartAutoIngestFromUrl = async () => {
+    if (!url.trim()) {
+      setError('Please enter a YouTube URL')
+      return
+    }
+
+    setStage('ingesting')
+    setError(null)
+    setVideoInfo(null)
+    setDownloadResult(null)
+    setIngestJob(null)
+    setIngestDecisions({})
+
+    try {
+      const job = await api.startYouTubeIngest(url, { format: audioFormat })
+      setIngestJob(job)
+      toast.success('YouTube auto-ingest started')
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to start YouTube auto-ingest'
+      setError(errorMsg)
+      toast.error(errorMsg)
+      setStage('error')
+    }
+  }
+
   const handleDownload = async () => {
     if (!videoInfo) return
 
@@ -203,7 +228,7 @@ export function YouTubeDownloadPage() {
   }
 
   const handleStartIngest = async () => {
-    if (!videoInfo) return
+    if (!url.trim()) return
 
     setStage('ingesting')
     setError(null)
@@ -403,7 +428,7 @@ export function YouTubeDownloadPage() {
           </span>
         </label>
         <p className="text-xs text-gray-500 mb-2">
-          Paste any YouTube video URL to download audio for voice conversion training
+          Paste a YouTube URL to start the full reviewed ingest pipeline. Download-only remains available after fetching info.
         </p>
         <div className="flex gap-3">
           <input
@@ -414,20 +439,28 @@ export function YouTubeDownloadPage() {
             placeholder="https://www.youtube.com/watch?v=..."
             className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
             disabled={stage === 'fetching' || stage === 'downloading' || stage === 'ingesting'}
-            onKeyDown={(e) => e.key === 'Enter' && handleFetchInfo()}
+            onKeyDown={(e) => e.key === 'Enter' && handleStartAutoIngestFromUrl()}
             aria-label="YouTube URL input"
           />
           <button
-            onClick={handleFetchInfo}
+            onClick={handleStartAutoIngestFromUrl}
             disabled={stage === 'fetching' || stage === 'downloading' || stage === 'ingesting'}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-lg flex items-center gap-2"
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 rounded-lg flex items-center gap-2"
           >
-            {stage === 'fetching' ? (
+            {stage === 'ingesting' ? (
               <Loader2 size={20} className="animate-spin" />
             ) : (
-              <Search size={20} />
+              <Users size={20} />
             )}
-            Fetch Info
+            Auto Ingest
+          </button>
+          <button
+            onClick={handleFetchInfo}
+            disabled={stage === 'fetching' || stage === 'downloading' || stage === 'ingesting'}
+            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 rounded-lg flex items-center gap-2"
+          >
+            {stage === 'fetching' ? <Loader2 size={20} className="animate-spin" /> : <Search size={20} />}
+            Manual
           </button>
         </div>
       </div>
@@ -515,7 +548,7 @@ export function YouTubeDownloadPage() {
           {/* Download Options */}
           {stage === 'info' && (
             <div className="mt-6 pt-6 border-t border-gray-700">
-              <h3 className="font-medium mb-4">Download Options</h3>
+              <h3 className="font-medium mb-4">Advanced Manual Options</h3>
 
               <div className="space-y-4 mb-4">
                 <div className="grid grid-cols-2 gap-4">
@@ -812,6 +845,12 @@ export function YouTubeDownloadPage() {
                       <span className="text-gray-400">Best existing match: </span>
                       <span className="font-medium">{bestMatch.name}</span>
                       <span className="text-gray-500"> ({Math.round(bestMatch.similarity * 100)}%)</span>
+                    </div>
+                  )}
+
+                  {suggestion.duplicate_warning && (
+                    <div className="bg-yellow-900/30 border border-yellow-700 rounded p-3 mb-3 text-sm text-yellow-100">
+                      Likely duplicate source profile detected at or above 82% similarity. Review the selected existing profile before creating a new one.
                     </div>
                   )}
 

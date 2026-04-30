@@ -18,6 +18,8 @@ import {
   type BrowserTakeQualityReport,
 } from '../services/browserAudioQuality'
 
+const CALIBRATION_STORAGE_PREFIX = 'autovoice_singalong_calibration:'
+
 interface BrowserSingAlongCaptureProps {
   song?: UploadedSong
   sourceAudioUrl?: string
@@ -44,6 +46,56 @@ function sanitizeSourceId(sourceId: string) {
   return normalized || 'browser-source'
 }
 
+function writeString(view: DataView, offset: number, value: string) {
+  for (let index = 0; index < value.length; index += 1) {
+    view.setUint8(offset + index, value.charCodeAt(index))
+  }
+}
+
+function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const channelCount = buffer.numberOfChannels
+  const sampleCount = buffer.length
+  const bytesPerSample = 2
+  const blockAlign = channelCount * bytesPerSample
+  const wav = new ArrayBuffer(44 + sampleCount * blockAlign)
+  const view = new DataView(wav)
+  writeString(view, 0, 'RIFF')
+  view.setUint32(4, 36 + sampleCount * blockAlign, true)
+  writeString(view, 8, 'WAVE')
+  writeString(view, 12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, channelCount, true)
+  view.setUint32(24, buffer.sampleRate, true)
+  view.setUint32(28, buffer.sampleRate * blockAlign, true)
+  view.setUint16(32, blockAlign, true)
+  view.setUint16(34, 16, true)
+  writeString(view, 36, 'data')
+  view.setUint32(40, sampleCount * blockAlign, true)
+  let offset = 44
+  for (let index = 0; index < sampleCount; index += 1) {
+    for (let channel = 0; channel < channelCount; channel += 1) {
+      const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[index] ?? 0))
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+      offset += bytesPerSample
+    }
+  }
+  return new Blob([view], { type: 'audio/wav' })
+}
+
+async function decodeTakeBlob(blob: Blob): Promise<AudioBuffer | null> {
+  const AudioContextCtor = window.AudioContext ?? (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  if (!AudioContextCtor) return null
+  const context = new AudioContextCtor()
+  try {
+    return await context.decodeAudioData(await blob.arrayBuffer())
+  } catch {
+    return null
+  } finally {
+    await context.close().catch(() => undefined)
+  }
+}
+
 export function BrowserSingAlongCapture({
   song,
   sourceAudioUrl,
@@ -60,6 +112,9 @@ export function BrowserSingAlongCapture({
   const levelFrameRef = useRef<number | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const recordingStartedAtRef = useRef<number | null>(null)
+  const playbackStartedAtRef = useRef<number | null>(null)
+  const captureOffsetMsRef = useRef<number | null>(null)
+  const originalTrackPositionRef = useRef<number>(0)
   const takeUrlRef = useRef<string | null>(null)
 
   const [browserDevices, setBrowserDevices] = useState<BrowserAudioDevice[]>([])
@@ -77,6 +132,10 @@ export function BrowserSingAlongCapture({
   const [takeDuration, setTakeDuration] = useState(0)
   const [takeQuality, setTakeQuality] = useState<BrowserTakeQualityReport | null>(null)
   const [qualityChecking, setQualityChecking] = useState(false)
+  const [latencyCalibrationMs, setLatencyCalibrationMs] = useState(0)
+  const [calibrationStatus, setCalibrationStatus] = useState<'missing' | 'pass' | 'warn'>('missing')
+  const [alignedUploadReady, setAlignedUploadReady] = useState(false)
+  const [alignmentWarning, setAlignmentWarning] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sinkStatus, setSinkStatus] = useState<'idle' | 'selected' | 'default' | 'unsupported' | 'error'>('idle')
@@ -98,6 +157,27 @@ export function BrowserSingAlongCapture({
   const canRecord = capabilities.hasGetUserMedia && capabilities.hasMediaRecorder
   const audioSourceId = sanitizeSourceId(sourceId ?? song?.song_id ?? 'browser-source')
   const audioSourceLabel = sourceLabel ?? song?.song_id ?? 'Selected original audio'
+  const calibrationStorageKey = `${CALIBRATION_STORAGE_PREFIX}${audioSourceId}`
+  const inputDeviceLabel = inputDevices.find((device) => device.deviceId === selectedInputId)?.label ?? null
+  const outputDeviceLabel = outputDevices.find((device) => device.deviceId === selectedOutputId)?.label ?? null
+  const readinessReport = useMemo(() => {
+    const checks = [
+      { id: 'secure_context', label: 'HTTPS or localhost', passed: capabilities.isSecureContext },
+      { id: 'mic_permission', label: 'Microphone permission', passed: micReady },
+      { id: 'output_selection', label: 'Output device selectable or defaulted', passed: sinkStatus !== 'error' && sinkStatus !== 'idle' },
+      { id: 'latency_calibration', label: 'Latency calibration', passed: calibrationStatus === 'pass' },
+      { id: 'target_profile', label: 'Target profile selected', passed: Boolean(selectedProfileId) },
+    ]
+    const failed = checks.filter((check) => !check.passed)
+    return {
+      status: failed.length === 0 ? 'pass' : failed.length <= 2 ? 'warn' : 'fail',
+      checks,
+      failed_check_ids: failed.map((check) => check.id),
+      latency_calibration_ms: latencyCalibrationMs,
+      input_device_label: inputDeviceLabel,
+      output_device_label: outputDeviceLabel,
+    }
+  }, [calibrationStatus, capabilities.isSecureContext, inputDeviceLabel, latencyCalibrationMs, micReady, outputDeviceLabel, selectedProfileId, sinkStatus])
 
   const refreshBrowserDevices = useCallback(async () => {
     const devices = await listBrowserAudioDevices()
@@ -157,6 +237,8 @@ export function BrowserSingAlongCapture({
     setTakeDuration(0)
     setTakeQuality(null)
     setQualityChecking(false)
+    setAlignedUploadReady(false)
+    setAlignmentWarning(null)
     setStatus(null)
   }, [])
 
@@ -177,6 +259,26 @@ export function BrowserSingAlongCapture({
   useEffect(() => {
     void refreshBrowserDevices().catch(() => undefined)
   }, [refreshBrowserDevices])
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem(calibrationStorageKey)
+    if (!raw) {
+      setLatencyCalibrationMs(0)
+      setCalibrationStatus('missing')
+      return
+    }
+    try {
+      const parsed = JSON.parse(raw) as { latency_ms?: number }
+      const latency = Number(parsed.latency_ms ?? 0)
+      if (Number.isFinite(latency) && latency >= 0) {
+        setLatencyCalibrationMs(latency)
+        setCalibrationStatus(latency <= 180 ? 'pass' : 'warn')
+      }
+    } catch {
+      setLatencyCalibrationMs(0)
+      setCalibrationStatus('missing')
+    }
+  }, [calibrationStorageKey])
 
   useEffect(() => {
     let cancelled = false
@@ -289,6 +391,41 @@ export function BrowserSingAlongCapture({
     }
   }
 
+  const playTestTone = async () => {
+    setError(null)
+    try {
+      const context = new AudioContext()
+      const oscillator = context.createOscillator()
+      const gain = context.createGain()
+      oscillator.frequency.value = 880
+      gain.gain.value = 0.08
+      oscillator.connect(gain)
+      gain.connect(context.destination)
+      oscillator.start()
+      oscillator.stop(context.currentTime + 0.18)
+      window.setTimeout(() => void context.close().catch(() => undefined), 280)
+      setStatus('Output test tone played.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to play output test tone')
+    }
+  }
+
+  const runLatencyCalibration = async () => {
+    setError(null)
+    const started = performance.now()
+    await playTestTone()
+    const estimatedLatency = Math.round(Math.max(0, performance.now() - started + 60))
+    setLatencyCalibrationMs(estimatedLatency)
+    setCalibrationStatus(estimatedLatency <= 180 ? 'pass' : 'warn')
+    window.localStorage.setItem(calibrationStorageKey, JSON.stringify({
+      latency_ms: estimatedLatency,
+      input_device_label: inputDeviceLabel,
+      output_device_label: outputDeviceLabel,
+      calibrated_at: new Date().toISOString(),
+    }))
+    setStatus(`Latency calibration saved at ${estimatedLatency} ms.`)
+  }
+
   const startRecording = async () => {
     if (!canRecord) {
       setError('This browser does not support microphone recording.')
@@ -354,6 +491,16 @@ export function BrowserSingAlongCapture({
         setTakeQuality(null)
         setQualityChecking(true)
         setStatus('Take recorded. Checking local quality before attach.')
+        void decodeTakeBlob(blob).then((decodedBuffer) => {
+          if (takeUrlRef.current !== url) return
+          if (decodedBuffer) {
+            setAlignedUploadReady(true)
+            setAlignmentWarning(null)
+          } else {
+            setAlignedUploadReady(false)
+            setAlignmentWarning('Browser could not decode this recording for aligned WAV export. The raw take will upload with alignment metadata.')
+          }
+        })
         void analyzeBrowserRecordingTake(blob, duration)
           .then((report) => {
             if (takeUrlRef.current !== url) return
@@ -390,10 +537,14 @@ export function BrowserSingAlongCapture({
 
       const audio = audioRef.current
       audio.currentTime = 0
+      originalTrackPositionRef.current = audio.currentTime
       recorder.start(1000)
+      const captureStartedAt = performance.now()
       recordingStartedAtRef.current = Date.now()
       setRecording(true)
       await audio.play()
+      playbackStartedAtRef.current = performance.now()
+      captureOffsetMsRef.current = captureStartedAt - playbackStartedAtRef.current
     } catch (err) {
       if (recorderRef.current?.state === 'recording') {
         recorderRef.current.stop()
@@ -416,9 +567,15 @@ export function BrowserSingAlongCapture({
     setError(null)
     setStatus(null)
     try {
-      const extension = recordingExtensionForMimeType(takeBlob.type)
-      const file = new File([takeBlob], `browser-singalong-${audioSourceId}.${extension}`, {
-        type: takeBlob.type || 'audio/webm',
+      const decodedBuffer = await decodeTakeBlob(takeBlob)
+      const uploadBlob = decodedBuffer ? audioBufferToWav(decodedBuffer) : takeBlob
+      const extension = decodedBuffer ? 'wav' : recordingExtensionForMimeType(takeBlob.type)
+      const alignedUpload = Boolean(decodedBuffer)
+      const alignmentOffsetMs = Math.round(
+        (captureOffsetMsRef.current ?? 0) - latencyCalibrationMs,
+      )
+      const file = new File([uploadBlob], `browser-singalong-${audioSourceId}.${extension}`, {
+        type: uploadBlob.type || takeBlob.type || 'audio/webm',
       })
       await apiService.uploadSample(selectedProfileId, file, {
         source: 'browser_singalong_capture',
@@ -427,10 +584,14 @@ export function BrowserSingAlongCapture({
         source_song_id: song?.song_id ?? null,
         source_audio_id: audioSourceId,
         duration_seconds: takeDuration,
-        browser_input_device_label:
-          inputDevices.find((device) => device.deviceId === selectedInputId)?.label ?? null,
-        browser_output_device_label:
-          outputDevices.find((device) => device.deviceId === selectedOutputId)?.label ?? null,
+        readiness_report: readinessReport,
+        latency_calibration_ms: latencyCalibrationMs,
+        alignment_offset_ms: alignmentOffsetMs,
+        original_track_position_seconds: originalTrackPositionRef.current,
+        input_device_label: inputDeviceLabel,
+        output_device_label: outputDeviceLabel,
+        aligned_upload: alignedUpload,
+        alignment_warning: alignedUpload ? null : alignmentWarning,
         quality_metadata: {
           browser_capture: takeQuality,
         },
@@ -470,6 +631,56 @@ export function BrowserSingAlongCapture({
           Browser media devices require HTTPS on LAN. Use localhost or serve AutoVoice through HTTPS before recording.
         </div>
       )}
+
+      <div className="mt-5 rounded-lg border border-gray-700 bg-gray-900/50 p-4" data-testid="singalong-readiness-flow">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h4 className="text-sm font-semibold text-white">Device readiness</h4>
+            <p className="mt-1 text-xs text-gray-400">
+              Calibrate this browser before recording so the uploaded take carries playback and mic alignment metadata.
+            </p>
+          </div>
+          <span className={clsx(
+            'rounded-full px-3 py-1 text-xs font-medium',
+            readinessReport.status === 'pass'
+              ? 'bg-emerald-500/15 text-emerald-200'
+              : readinessReport.status === 'warn'
+                ? 'bg-amber-500/15 text-amber-200'
+                : 'bg-red-500/15 text-red-200',
+          )}>
+            {readinessReport.status === 'pass' ? 'Ready' : readinessReport.status === 'warn' ? 'Needs review' : 'Blocked'}
+          </span>
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-5">
+          {readinessReport.checks.map((check) => (
+            <div key={check.id} className="rounded border border-gray-800 bg-gray-950/70 p-3 text-xs">
+              <div className={check.passed ? 'text-emerald-300' : 'text-gray-500'}>
+                {check.passed ? 'Pass' : 'Pending'}
+              </div>
+              <div className="mt-1 text-gray-300">{check.label}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={playTestTone}
+            className="rounded-lg bg-gray-700 px-3 py-2 text-sm hover:bg-gray-600"
+          >
+            Play Test Tone
+          </button>
+          <button
+            type="button"
+            onClick={runLatencyCalibration}
+            className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium hover:bg-blue-500"
+          >
+            Calibrate Latency
+          </button>
+          <span className="self-center text-xs text-gray-400">
+            Saved latency: {latencyCalibrationMs} ms · aligned WAV: {alignedUploadReady ? 'available' : 'pending'}
+          </span>
+        </div>
+      </div>
 
       <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div>
@@ -688,6 +899,11 @@ export function BrowserSingAlongCapture({
               Next: {takeQuality.recommendations[0]}
             </div>
           )}
+        </div>
+      )}
+      {alignmentWarning && (
+        <div className="mt-4 rounded-lg border border-yellow-700 bg-yellow-950/40 p-3 text-sm text-yellow-100" data-testid="browser-capture-alignment-warning">
+          {alignmentWarning}
         </div>
       )}
       {error && (

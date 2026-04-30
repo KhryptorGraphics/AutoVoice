@@ -34,6 +34,7 @@ def register_profile_sample_routes(api_bp: Blueprint, **deps: Any) -> None:
     _deps.update(deps)
     api_bp.add_url_rule('/voice/clone', view_func=clone_voice, methods=['POST'])
     api_bp.add_url_rule('/voice/profiles', view_func=get_voice_profiles, methods=['GET'])
+    api_bp.add_url_rule('/voice/profiles/duplicate-check', view_func=check_duplicate_profiles, methods=['GET'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>', view_func=get_voice_profile, methods=['GET'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>', view_func=delete_voice_profile, methods=['DELETE'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>/delete', view_func=delete_voice_profile, methods=['POST'])
@@ -52,6 +53,7 @@ def register_profile_sample_routes(api_bp: Blueprint, **deps: Any) -> None:
     api_bp.add_url_rule('/profiles/<profile_id>/samples', view_func=list_samples, methods=['GET'])
     api_bp.add_url_rule('/profiles/<profile_id>/samples', view_func=upload_sample, methods=['POST'])
     api_bp.add_url_rule('/profiles/<profile_id>/samples/from-path', view_func=add_sample_from_path, methods=['POST'])
+    api_bp.add_url_rule('/samples/review', view_func=list_sample_review, methods=['GET'])
     api_bp.add_url_rule('/profiles/<profile_id>/songs', view_func=upload_song, methods=['POST'])
     api_bp.add_url_rule('/separation/<job_id>/status', view_func=get_separation_status, methods=['GET'])
     api_bp.add_url_rule('/profiles/<profile_id>/samples/<sample_id>', view_func=get_sample, methods=['GET'])
@@ -164,19 +166,58 @@ def _ensure_profile_for_song_upload(profile_id: str) -> bool:
 def _serialize_training_sample(profile_id: str, training_sample: Any) -> Dict[str, Any]:
     quality_metadata = dict(getattr(training_sample, 'quality_metadata', {}) or {})
     extra_metadata = dict(getattr(training_sample, 'extra_metadata', {}) or {})
+    audio_metrics = _audio_file_metrics(getattr(training_sample, 'vocals_path', ''))
+    duration_seconds = float(
+        getattr(training_sample, 'duration', 0.0)
+        or quality_metadata.get('duration_seconds')
+        or 0.0
+    )
+    active_ratio = quality_metadata.get('active_ratio')
+    silence_ratio = (
+        max(0.0, min(1.0, 1.0 - float(active_ratio)))
+        if active_ratio is not None
+        else None
+    )
+    rms_loudness = (
+        quality_metadata.get('rms_loudness')
+        if quality_metadata.get('rms_loudness') is not None
+        else quality_metadata.get('rmsAmplitude')
+    )
+    if rms_loudness is None:
+        rms_loudness = quality_metadata.get('rms_amplitude')
+    if rms_loudness is None:
+        rms_loudness = audio_metrics.get('rms_loudness')
+    clipping_ratio = (
+        quality_metadata.get('clipping_ratio')
+        if quality_metadata.get('clipping_ratio') is not None
+        else quality_metadata.get('clippingRatio')
+    )
+    if clipping_ratio is None:
+        clipping_ratio = audio_metrics.get('clipping_ratio', 0.0)
+    quality_status = str(quality_metadata.get('qa_status') or 'unknown')
+    trainable = quality_status in {'pass', 'warn'}
     return {
         'id': training_sample.sample_id,
         'sample_id': training_sample.sample_id,
         'profile_id': profile_id,
         'audio_path': training_sample.vocals_path,
         'file_path': training_sample.vocals_path,
-        'duration_seconds': training_sample.duration,
-        'duration': training_sample.duration,
-        'sample_rate': 44100,
+        'duration_seconds': duration_seconds,
+        'duration': duration_seconds,
+        'sample_rate': int(quality_metadata.get('sample_rate') or 44100),
         'created': training_sample.created_at,
         'created_at': training_sample.created_at,
         'source_file': training_sample.source_file,
         'filename': os.path.basename(training_sample.vocals_path),
+        'source': extra_metadata.get('source') or quality_metadata.get('provenance') or training_sample.source_file,
+        'consent_status': extra_metadata.get('consent_status') or 'confirmed',
+        'rms_loudness': rms_loudness,
+        'silence_ratio': silence_ratio,
+        'clipping_ratio': clipping_ratio,
+        'trainable': trainable,
+        'quality_status': quality_status,
+        'issues': list(quality_metadata.get('issues') or []),
+        'recommendations': list(quality_metadata.get('recommendations') or []),
         'metadata': {
             'source_file': training_sample.source_file,
             'instrumental_path': training_sample.instrumental_path,
@@ -254,8 +295,15 @@ def clone_voice():
         )
 
         response_data = result.copy()
+        duplicate_candidates = _duplicate_candidates_for_profile(
+            response_data.get('profile_id'),
+            threshold=0.82,
+            limit=5,
+        )
         response_data.pop('embedding', None)
         response_data['status'] = 'success'
+        response_data['duplicate_candidates'] = duplicate_candidates
+        response_data['duplicate_warning'] = bool(duplicate_candidates)
         for field in ['profile_id', 'audio_duration', 'user_id', 'name', 'vocal_range', 'created_at']:
             if field not in response_data:
                 response_data[field] = result.get(field)
@@ -308,6 +356,134 @@ def clone_voice():
                 os.unlink(tmp_file.name)
             except OSError:
                 pass
+
+
+def _audio_file_metrics(audio_path: str) -> dict[str, float]:
+    """Best-effort file metrics for legacy samples missing QA sidecar fields."""
+    try:
+        if not _dep('soundfile_available'):
+            return {}
+        soundfile = _dep('soundfile')
+        audio, _sample_rate = soundfile.read(audio_path, dtype='float32', always_2d=False)
+        import numpy as np
+
+        audio_np = np.asarray(audio, dtype=np.float32)
+        if audio_np.ndim > 1:
+            audio_np = np.mean(audio_np, axis=1 if audio_np.shape[0] > audio_np.shape[1] else 0)
+        audio_np = audio_np.squeeze()
+        if not audio_np.size:
+            return {'rms_loudness': 0.0, 'clipping_ratio': 0.0}
+        abs_audio = np.abs(audio_np)
+        return {
+            'rms_loudness': float(np.sqrt(np.mean(np.square(audio_np)))),
+            'clipping_ratio': float(np.mean(abs_audio >= 0.99)),
+        }
+    except Exception:
+        return {}
+
+
+def _profile_embedding(store: Any, profile_id: str):
+    """Load the primary voice-cloner embedding for duplicate checks."""
+    try:
+        import numpy as np
+
+        path = store._embedding_path(profile_id)
+        if os.path.exists(path):
+            return np.load(path)
+    except Exception:
+        return None
+    return None
+
+
+def _rank_profile_embedding_matches(
+    profile_id: str,
+    *,
+    profile_role: Optional[str] = None,
+    threshold: float = 0.0,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    store = _dep('get_profile_store')()
+    embedding = _profile_embedding(store, profile_id)
+    if embedding is None:
+        return []
+
+    try:
+        import numpy as np
+
+        current = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        current_norm = float(np.linalg.norm(current))
+        if current_norm > 0:
+            current = current / current_norm
+
+        matches: list[dict[str, Any]] = []
+        for profile in store.list_profiles():
+            candidate_id = profile.get('profile_id')
+            if not candidate_id or candidate_id == profile_id:
+                continue
+            if profile_role and profile.get('profile_role') != profile_role:
+                continue
+            candidate = _profile_embedding(store, candidate_id)
+            if candidate is None:
+                continue
+            candidate_np = np.asarray(candidate, dtype=np.float32).reshape(-1)
+            candidate_norm = float(np.linalg.norm(candidate_np))
+            if candidate_norm > 0:
+                candidate_np = candidate_np / candidate_norm
+            min_len = min(len(current), len(candidate_np))
+            if min_len <= 0:
+                continue
+            similarity = float(np.dot(current[:min_len], candidate_np[:min_len]))
+            if similarity < threshold:
+                continue
+            matches.append({
+                'profile_id': candidate_id,
+                'name': profile.get('name') or candidate_id,
+                'profile_role': profile.get('profile_role'),
+                'similarity': similarity,
+            })
+        matches.sort(key=lambda item: item['similarity'], reverse=True)
+        return matches[: max(limit, 0)]
+    except Exception:
+        _dep('logger').warning("Failed to rank duplicate candidates for %s", profile_id, exc_info=True)
+        return []
+
+
+def _duplicate_candidates_for_profile(
+    profile_id: Optional[str],
+    *,
+    threshold: float = 0.82,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    if not profile_id:
+        return []
+    try:
+        profile = _dep('get_profile_store')().load(profile_id)
+    except Exception:
+        profile = {}
+    return _rank_profile_embedding_matches(
+        profile_id,
+        profile_role=profile.get('profile_role'),
+        threshold=threshold,
+        limit=limit,
+    )
+
+
+def check_duplicate_profiles():
+    """Return likely duplicate profiles for an existing profile id."""
+    profile_id = (request.args.get('profile_id') or '').strip()
+    if not profile_id:
+        return _dep('validation_error_response')('profile_id is required')
+    try:
+        threshold = float(request.args.get('threshold') or 0.82)
+    except (TypeError, ValueError):
+        return _dep('validation_error_response')('threshold must be a number')
+    candidates = _duplicate_candidates_for_profile(profile_id, threshold=threshold)
+    return jsonify({
+        'profile_id': profile_id,
+        'threshold': threshold,
+        'candidates': candidates,
+        'duplicate_warning': bool(candidates),
+    })
 
 
 def get_voice_profiles():
@@ -920,6 +1096,50 @@ def list_samples(profile_id: str):
     return jsonify(_redact_profile_payload(list(samples.values()), profile_id))
 
 
+def list_sample_review():
+    """List all training samples with normalized quality fields for operator review."""
+    logger = _dep('logger')
+    try:
+        store = _dep('get_profile_store')()
+        profile_id_filter = request.args.get('profile_id')
+        status_filter = request.args.get('quality_status')
+        trainable_filter = request.args.get('trainable')
+        samples: list[dict[str, Any]] = []
+
+        for profile in store.list_profiles():
+            profile_id = profile.get('profile_id')
+            if not profile_id:
+                continue
+            if profile_id_filter and profile_id_filter != profile_id:
+                continue
+            for sample in store.list_training_samples(profile_id):
+                payload = _serialize_training_sample(profile_id, sample)
+                payload['profile_name'] = profile.get('name') or profile_id
+                payload['profile_role'] = profile.get('profile_role')
+                if status_filter and payload.get('quality_status') != status_filter:
+                    continue
+                if trainable_filter in {'true', 'false'} and bool(payload.get('trainable')) != (trainable_filter == 'true'):
+                    continue
+                samples.append(payload)
+
+        samples.sort(key=lambda item: str(item.get('created_at') or ''), reverse=True)
+        return jsonify({
+            'samples': samples,
+            'count': len(samples),
+            'summary': {
+                'trainable': sum(1 for item in samples if item.get('trainable')),
+                'blocked': sum(1 for item in samples if not item.get('trainable')),
+                'quality_status_counts': {
+                    status: sum(1 for item in samples if item.get('quality_status') == status)
+                    for status in {'pass', 'warn', 'fail', 'unknown'}
+                },
+            },
+        })
+    except Exception as e:
+        logger.error("Sample review listing failed: %s", e, exc_info=True)
+        return _dep('service_unavailable_response')('Failed to list training samples', message=str(e))
+
+
 def upload_sample(profile_id: str):
     """Upload a new training sample for a profile."""
     logger = _dep('logger')
@@ -980,6 +1200,13 @@ def upload_sample(profile_id: str):
             extra_metadata={
                 'source': metadata.get('source', 'upload'),
                 'provenance': metadata.get('provenance') or filename,
+                'readiness_report': metadata.get('readiness_report'),
+                'latency_calibration_ms': metadata.get('latency_calibration_ms'),
+                'alignment_offset_ms': metadata.get('alignment_offset_ms'),
+                'original_track_position_seconds': metadata.get('original_track_position_seconds'),
+                'input_device_label': metadata.get('input_device_label') or metadata.get('browser_input_device_label'),
+                'output_device_label': metadata.get('output_device_label') or metadata.get('browser_output_device_label'),
+                'aligned_upload': metadata.get('aligned_upload'),
             },
             quality_metadata=metadata.get('quality_metadata'),
         )

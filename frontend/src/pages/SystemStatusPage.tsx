@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, AlertTriangle, BarChart3, CheckCircle2, Package, RefreshCw, SlidersHorizontal, XCircle, Zap } from 'lucide-react'
+import { Activity, AlertTriangle, BarChart3, CheckCircle2, Download, Package, RefreshCw, ShieldCheck, SlidersHorizontal, Upload, XCircle, Zap } from 'lucide-react'
 import clsx from 'clsx'
 
 import { AudioDeviceSelector } from '../components/AudioDeviceSelector'
@@ -17,6 +17,7 @@ import {
   getApiAuthToken,
   type AppSettings,
   type BenchmarkDashboard,
+  type LocalProductionReadiness,
   type LivePipelineType,
   type OfflinePipelineType,
   type ReleaseEvidence,
@@ -59,6 +60,7 @@ export function SystemStatusPage() {
         pipelineStatus,
         benchmarkDashboard,
         releaseEvidence,
+        localProductionReadiness,
       ] = await Promise.all([
         apiService.getSystemStatus(),
         apiService.getModelsInfo(),
@@ -71,6 +73,7 @@ export function SystemStatusPage() {
         apiService.getPipelineStatus(),
         apiService.getLatestBenchmarkDashboard().catch(() => null),
         apiService.getLatestReleaseEvidence().catch(() => null),
+        apiService.getLocalProductionReadiness().catch(() => null),
       ])
 
       return {
@@ -85,6 +88,7 @@ export function SystemStatusPage() {
         pipelineStatus,
         benchmarkDashboard,
         releaseEvidence,
+        localProductionReadiness,
       }
     },
     refetchInterval: 5000,
@@ -382,6 +386,8 @@ export function SystemStatusPage() {
             releaseEvidence={data.releaseEvidence}
           />
 
+          <LocalProductionWizard readiness={data.localProductionReadiness} />
+
           <section className="rounded-xl border border-gray-800 bg-gray-900/80 p-6 shadow-lg">
             <h2 className="text-lg font-semibold text-white">Pipeline Matrix</h2>
             <p className="mt-1 text-sm text-gray-400">
@@ -573,6 +579,139 @@ function BenchmarkEvidencePanel({
           </div>
         </>
       )}
+    </section>
+  )
+}
+
+function LocalProductionWizard({ readiness }: { readiness: LocalProductionReadiness | null }) {
+  const toast = useToastContext()
+  const [backupFile, setBackupFile] = useState<File | null>(null)
+  const [backupStatus, setBackupStatus] = useState<string | null>(null)
+  const [backupApplying, setBackupApplying] = useState(false)
+
+  const exportBackup = async () => {
+    try {
+      const result = await apiService.exportLocalBackup()
+      setBackupStatus(`Exported ${result.manifest.files.length} files to ${result.backup_path}`)
+      toast.success('Local backup exported')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Backup export failed')
+    }
+  }
+
+  const dryRunImport = async () => {
+    if (!backupFile) return
+    try {
+      const result = await apiService.importLocalBackupDryRun(backupFile)
+      setBackupStatus(`Dry-run read ${result.manifest.files.length} files. Apply only after reviewing warnings.`)
+      toast.success('Backup dry-run complete')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Backup dry-run failed')
+    }
+  }
+
+  const applyImport = async () => {
+    if (!backupFile) return
+    setBackupApplying(true)
+    try {
+      const result = await apiService.importLocalBackupApply(backupFile)
+      setBackupStatus(`Restored ${result.restored_count} files from backup bundle.`)
+      toast.success('Backup restore applied')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Backup restore failed')
+    } finally {
+      setBackupApplying(false)
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-gray-800 bg-gray-900/80 p-6 shadow-lg" data-testid="local-production-wizard">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
+            <ShieldCheck className="h-5 w-5 text-emerald-300" />
+            Local Production Wizard
+          </h2>
+          <p className="mt-1 text-sm text-gray-400">
+            Local-only readiness, backup/restore, and exact evidence commands for this workstation.
+          </p>
+        </div>
+        <span className={clsx(
+          'rounded-full px-3 py-1 text-xs font-medium',
+          readiness?.ready ? 'bg-emerald-500/15 text-emerald-200' : 'bg-amber-500/15 text-amber-200',
+        )}>
+          {readiness?.ready ? 'Local ready' : 'Needs attention'}
+        </span>
+      </div>
+
+      <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {(readiness?.checks ?? []).map((check) => (
+          <div key={check.id} className="rounded-lg border border-gray-800 bg-gray-950/70 p-3">
+            <div className={check.ok ? 'text-emerald-300' : 'text-amber-300'}>
+              {check.ok ? 'Pass' : 'Review'}
+            </div>
+            <div className="mt-1 text-sm text-gray-300">{check.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="rounded-lg border border-gray-800 bg-gray-950/70 p-4">
+          <h3 className="text-sm font-semibold text-white">Evidence commands</h3>
+          <div className="mt-3 space-y-2 text-xs text-gray-300">
+            {Object.entries(readiness?.commands ?? {}).map(([name, command]) => (
+              <div key={name}>
+                <div className="text-gray-500">{name}</div>
+                <code className="mt-1 block break-all rounded bg-gray-900 p-2 text-cyan-200">{command}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-gray-800 bg-gray-950/70 p-4">
+          <h3 className="text-sm font-semibold text-white">Backup and restore</h3>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={exportBackup}
+              className="inline-flex items-center gap-2 rounded-lg bg-cyan-600 px-3 py-2 text-sm font-medium text-white hover:bg-cyan-500"
+            >
+              <Download className="h-4 w-4" />
+              Export Backup
+            </button>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700">
+              <Upload className="h-4 w-4" />
+              Select Bundle
+              <input
+                type="file"
+                accept=".zip,application/zip"
+                className="hidden"
+                onChange={(event) => setBackupFile(event.target.files?.[0] ?? null)}
+              />
+            </label>
+            <button
+              type="button"
+              disabled={!backupFile}
+              onClick={dryRunImport}
+              className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 disabled:opacity-50"
+            >
+              Dry Run
+            </button>
+            <button
+              type="button"
+              disabled={!backupFile || backupApplying}
+              onClick={applyImport}
+              className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+            >
+              Apply Restore
+            </button>
+          </div>
+          <div className="mt-3 text-xs text-gray-500">
+            {backupFile ? backupFile.name : readiness?.paths.backup_dir ?? 'No backup bundle selected'}
+          </div>
+          {backupStatus && <div className="mt-3 text-sm text-gray-300">{backupStatus}</div>}
+        </div>
+      </div>
     </section>
   )
 }
