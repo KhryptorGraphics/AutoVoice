@@ -776,7 +776,11 @@ class TestSampleAndDiarizationEndpoints:
         )
 
         assert response.status_code == 202
-        job_id = response.get_json()["job_id"]
+        upload_payload = response.get_json()
+        job_id = upload_payload["job_id"]
+        original_asset_id = upload_payload["original_audio_asset_id"]
+        assert original_asset_id
+        assert upload_payload["original_audio_url"] == f"/api/v1/singalong/sources/{original_asset_id}/audio"
 
         status_response = client_remaining.get(f"/api/v1/separation/{job_id}/status")
         assert status_response.status_code == 200
@@ -787,9 +791,72 @@ class TestSampleAndDiarizationEndpoints:
         assert payload["status"] == "complete"
         assert payload["vocals_path"] is not None
         assert payload["sample_id"] is not None
+        assert payload["original_audio_asset_id"] == original_asset_id
         stored_sample = app_remaining.voice_cloner.store.list_training_samples(profile_id)[0]
         assert stored_sample.sample_id == payload["sample_id"]
         assert stored_sample.quality_metadata["qa_status"] in {"pass", "fail", "warn"}
+        assert stored_sample.extra_metadata["original_audio_asset_id"] == original_asset_id
+        assert stored_sample.extra_metadata["original_path"].endswith("song.wav")
+
+        sources_response = client_remaining.get(f"/api/v1/singalong/sources?profile_id={profile_id}")
+        assert sources_response.status_code == 200
+        sources = sources_response.get_json()["sources"]
+        assert any(source["asset_id"] == original_asset_id for source in sources)
+
+        audio_response = client_remaining.get(f"/api/v1/singalong/sources/{original_asset_id}/audio")
+        assert audio_response.status_code == 200
+        assert audio_response.data
+
+    def test_convert_song_preserves_original_for_singalong(
+        self, client_remaining, app_remaining
+    ):
+        profile_id = "00000000-0000-0000-0000-000000000316"
+        profile = _create_profile(app_remaining, profile_id=profile_id)
+        profile.update({
+            "has_trained_model": True,
+            "has_adapter_model": True,
+            "selected_adapter": "unified",
+        })
+        app_remaining.voice_cloner.store.save(profile)
+        _materialize_trained_artifact(app_remaining, profile_id, "adapter")
+
+        captured = {}
+
+        class FakeJobManager:
+            def create_job(self, file_path, target_profile_id, settings):
+                captured["file_path"] = file_path
+                captured["profile_id"] = target_profile_id
+                captured["settings"] = settings
+                return "conversion-job-1"
+
+        app_remaining.job_manager = FakeJobManager()
+        app_remaining.singing_conversion_pipeline = object()
+
+        response = client_remaining.post(
+            "/api/v1/convert/song",
+            data={
+                "audio": (_wav_bytes(), "lead.wav"),
+                "profile_id": profile_id,
+            },
+            content_type="multipart/form-data",
+        )
+
+        assert response.status_code == 202
+        payload = response.get_json()
+        original_asset_id = payload["original_audio_asset_id"]
+        assert original_asset_id
+        assert payload["original_audio_url"] == f"/api/v1/singalong/sources/{original_asset_id}/audio"
+        assert captured["profile_id"] == profile_id
+        assert captured["settings"]["original_audio_asset_id"] == original_asset_id
+        assert Path(captured["file_path"]).exists()
+        assert Path(captured["file_path"]).name.endswith("_lead.wav")
+
+        asset = app_remaining.state_store.get_asset(original_asset_id)
+        assert asset["metadata"]["job_id"] == "conversion-job-1"
+        assert asset["metadata"]["profile_id"] == profile_id
+
+        sources = client_remaining.get(f"/api/v1/singalong/sources?profile_id={profile_id}").get_json()["sources"]
+        assert any(source["asset_id"] == original_asset_id for source in sources)
 
     def test_upload_sample_requires_media_consent_when_enabled(
         self, client_remaining, app_remaining, monkeypatch
@@ -1468,8 +1535,14 @@ class TestYoutubeAnalysisAndQualityRoutes:
         assert payload["success"] is True
         assert payload["diarization_result"]["num_speakers"] == 2
         assert payload["filtered_audio_path"].endswith("_filtered.wav")
+        assert payload["original_audio_asset_id"]
+        assert payload["original_audio_url"].endswith(f"/{payload['original_audio_asset_id']}/audio")
 
         items = client_remaining.get("/api/v1/youtube/history").get_json()
+        assert items[0]["audioAssetId"] == payload["original_audio_asset_id"]
+        assert items[0]["originalAudioUrl"] == payload["original_audio_url"]
+        sources = client_remaining.get("/api/v1/singalong/sources").get_json()["sources"]
+        assert any(source["asset_id"] == payload["original_audio_asset_id"] for source in sources)
         item_id = items[0]["id"]
         assert client_remaining.delete(f"/api/v1/youtube/history/{item_id}").status_code == 204
         assert client_remaining.delete("/api/v1/youtube/history").status_code == 204
@@ -1711,6 +1784,9 @@ class TestYoutubeAnalysisAndQualityRoutes:
         job = status_response.get_json()
         assert job["status"] == "completed"
         assert job["result"]["diarization_result"]["num_speakers"] == 2
+        original_asset_id = job["result"]["assets"]["audio"]["asset_id"]
+        assert original_asset_id
+        assert job["result"]["assets"]["audio"]["audio_url"] == f"/api/v1/singalong/sources/{original_asset_id}/audio"
         suggestions = job["result"]["suggestions"]
         assert suggestions[0]["recommended_action"] == "assign_existing"
         assert suggestions[0]["recommended_profile_id"] == existing_profile_id
@@ -1738,9 +1814,20 @@ class TestYoutubeAnalysisAndQualityRoutes:
         assert confirm_response.status_code == 200
         confirmation = confirm_response.get_json()
         assert len(confirmation["applied"]) == 2
-        assert app_remaining.voice_cloner.store.list_training_samples(existing_profile_id)
+        existing_samples = app_remaining.voice_cloner.store.list_training_samples(existing_profile_id)
+        assert existing_samples
+        assert existing_samples[0].extra_metadata["original_audio_asset_id"] == original_asset_id
         profiles = app_remaining.voice_cloner.store.list_profiles()
-        assert any(profile.get("name") == "New Artist" for profile in profiles)
+        new_profile = next(profile for profile in profiles if profile.get("name") == "New Artist")
+
+        sources_response = client_remaining.get(f"/api/v1/singalong/sources?profile_id={existing_profile_id}")
+        assert sources_response.status_code == 200
+        sources = sources_response.get_json()["sources"]
+        assert any(source["asset_id"] == original_asset_id for source in sources)
+        new_profile_sources = client_remaining.get(
+            f"/api/v1/singalong/sources?profile_id={new_profile['profile_id']}"
+        ).get_json()["sources"]
+        assert any(source["asset_id"] == original_asset_id for source in new_profile_sources)
 
     def test_identify_retrain_analysis_artist_separation_and_quality_routes(
         self, client_remaining, app_remaining, tmp_path, monkeypatch

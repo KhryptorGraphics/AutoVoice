@@ -92,10 +92,41 @@ def _register_youtube_asset(path: str, *, kind: str, job_id: str, metadata: dict
         kind=kind,
         owner_id=job_id,
         metadata={
+            'singalong_available': kind == 'youtube_audio',
+            'role': 'original_song' if kind == 'youtube_audio' else kind,
             'source': 'youtube_ingest',
             'job_id': job_id,
             **metadata,
         },
+    )
+
+
+def _singalong_source_url(asset_id: str) -> str:
+    return f"/api/v1/singalong/sources/{asset_id}/audio"
+
+
+def _link_original_asset_to_profiles(asset_id: str | None, profile_ids: list[str]) -> None:
+    if not asset_id or not profile_ids:
+        return
+    state_store = _root()._get_state_store()
+    asset = state_store.get_asset(asset_id)
+    if not asset:
+        return
+
+    metadata = dict(asset.get('metadata') or {})
+    existing_profile_ids = list(metadata.get('profile_ids') or [])
+    for profile_id in profile_ids:
+        if profile_id and profile_id not in existing_profile_ids:
+            existing_profile_ids.append(profile_id)
+    metadata['profile_ids'] = existing_profile_ids
+    if existing_profile_ids and not metadata.get('profile_id'):
+        metadata['profile_id'] = existing_profile_ids[0]
+
+    state_store.register_asset(
+        asset['path'],
+        kind=str(asset.get('kind') or 'youtube_audio'),
+        owner_id=asset.get('owner_id'),
+        metadata=metadata,
     )
 
 
@@ -297,7 +328,11 @@ def _run_youtube_ingest(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         'url': url,
         'metadata': metadata,
         'assets': {
-            'audio': {'path': result.audio_path, 'asset_id': audio_asset['asset_id']},
+            'audio': {
+                'path': result.audio_path,
+                'asset_id': audio_asset['asset_id'],
+                'audio_url': _singalong_source_url(audio_asset['asset_id']),
+            },
             'vocals': {'path': vocals_path, 'asset_id': vocals_asset['asset_id']},
             'instrumental': {'path': instrumental_path, 'asset_id': instrumental_asset['asset_id']},
         },
@@ -323,6 +358,8 @@ def _run_youtube_ingest(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         'numSpeakers': diarization.num_speakers,
         'timestamp': root._utcnow_iso(),
         'audioPath': result.audio_path,
+        'audioAssetId': audio_asset['asset_id'],
+        'originalAudioUrl': _singalong_source_url(audio_asset['asset_id']),
         'vocalsPath': vocals_path,
         'instrumentalPath': instrumental_path,
         'videoId': result.video_id,
@@ -446,6 +483,15 @@ def confirm_youtube_ingest(job_id: str):
         diarization_id = result.get('diarization_id')
         if not diarization_id:
             return root.validation_error_response('Ingest job has no diarization result')
+        original_audio_asset_id = (
+            ((result.get('assets') or {}).get('audio') or {}).get('asset_id')
+            or ((job.get('payload') or {}).get('audio_asset_id'))
+        )
+        original_audio_url = (
+            _singalong_source_url(original_audio_asset_id)
+            if original_audio_asset_id
+            else None
+        )
 
         from auto_voice.audio.speaker_diarization import (
             DiarizationResult,
@@ -489,6 +535,8 @@ def confirm_youtube_ingest(job_id: str):
                     request_metadata={
                         'source': 'youtube_ingest_review',
                         'ingest_job_id': job_id,
+                        'original_audio_asset_id': original_audio_asset_id,
+                        'original_audio_url': original_audio_url,
                         'identity_confidence': 'operator_reviewed',
                         **(decision.get('metadata') or {}),
                     },
@@ -542,6 +590,8 @@ def confirm_youtube_ingest(job_id: str):
                         'ingest_job_id': job_id,
                         'diarization_id': diarization_id,
                         'speaker_id': speaker_id,
+                        'original_audio_asset_id': original_audio_asset_id,
+                        'original_audio_url': original_audio_url,
                         'identity_confidence': 'operator_reviewed',
                         **(decision.get('metadata') or {}),
                     },
@@ -571,6 +621,10 @@ def confirm_youtube_ingest(job_id: str):
             'skipped': skipped,
             'status': 'success',
         }
+        _link_original_asset_to_profiles(
+            original_audio_asset_id,
+            [item['profile_id'] for item in applied if item.get('profile_id')],
+        )
         _update_youtube_ingest_job(job_id, confirmed_at=root._utcnow_iso(), confirmation=confirmation)
         _audit_event(
             'youtube.ingest_confirmed',
@@ -902,8 +956,35 @@ def youtube_download():
 
         try:
             state_store = root._get_state_store()
+            history_id = f"{int(time.time())}-{result.video_id or uuid.uuid4().hex[:8]}"
+            audio_asset = None
+            if result.audio_path:
+                audio_asset = state_store.register_asset(
+                    result.audio_path,
+                    kind='youtube_audio',
+                    owner_id=history_id,
+                    metadata={
+                        'singalong_available': True,
+                        'role': 'original_song',
+                        'source': 'youtube_download',
+                        'history_id': history_id,
+                        'url': url,
+                        'title': result.title,
+                        'duration': result.duration,
+                        'main_artist': result.main_artist,
+                        'featured_artists': result.featured_artists or [],
+                        'song_title': result.song_title,
+                        'original_artist': result.original_artist,
+                        'thumbnail_url': result.thumbnail_url,
+                        'video_id': result.video_id,
+                        'filename': Path(result.audio_path).name,
+                    },
+                )
+                response['audio_asset_id'] = audio_asset['asset_id']
+                response['original_audio_asset_id'] = audio_asset['asset_id']
+                response['original_audio_url'] = _singalong_source_url(audio_asset['asset_id'])
             history_item = {
-                'id': f"{int(time.time())}-{result.video_id or uuid.uuid4().hex[:8]}",
+                'id': history_id,
                 'url': url,
                 'title': result.title,
                 'mainArtist': result.main_artist,
@@ -912,6 +993,8 @@ def youtube_download():
                 'numSpeakers': response.get('diarization_result', {}).get('num_speakers', 0),
                 'timestamp': root._utcnow_iso(),
                 'audioPath': result.audio_path,
+                'audioAssetId': audio_asset['asset_id'] if audio_asset else None,
+                'originalAudioUrl': response.get('original_audio_url'),
                 'filteredPath': response.get('filtered_audio_path'),
                 'videoId': result.video_id,
             }

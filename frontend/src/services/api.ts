@@ -147,6 +147,8 @@ export interface ConversionRecord {
   targetVoice?: string
   quality?: string
   originalFileName?: string
+  original_audio_asset_id?: string | null
+  original_audio_url?: string | null
   notes?: string
   resultUrl?: string
 }
@@ -163,6 +165,7 @@ export interface YouTubeHistoryItem {
   audioPath: string | null
   filteredPath: string | null
   audioAssetId?: string | null
+  originalAudioUrl?: string | null
   filteredAssetId?: string | null
   videoId?: string | null
 }
@@ -899,6 +902,8 @@ export interface ConversionJobResponse {
   requested_pipeline?: PipelineType
   resolved_pipeline?: PipelineType
   runtime_backend?: string
+  original_audio_asset_id?: string | null
+  original_audio_url?: string | null
 }
 
 // Extended conversion status (from GET /convert/status/{job_id})
@@ -1065,6 +1070,22 @@ export interface SystemInfo {
   model_loaded?: boolean
   models?: string[]
   status?: string
+}
+
+export interface SingAlongSource {
+  asset_id: string
+  kind: string
+  owner_id?: string | null
+  filename: string
+  label: string
+  source?: string | null
+  profile_id?: string | null
+  job_id?: string | null
+  song_id?: string | null
+  video_id?: string | null
+  duration?: number | null
+  audio_url: string
+  updated_at?: number
 }
 
 // Custom error classes for better error handling
@@ -1621,8 +1642,29 @@ class ApiService {
     error?: string
     vocals_path?: string
     instrumental_path?: string
+    original_audio_asset_id?: string | null
+    original_audio_url?: string | null
   }> {
-    return this.request(`/separation/status/${jobId}`)
+    return this.request(`/separation/${jobId}/status`)
+  }
+
+  async listSingAlongSources(profileId?: string): Promise<SingAlongSource[]> {
+    const params = new URLSearchParams()
+    if (profileId) params.set('profile_id', profileId)
+    const query = params.toString()
+    const payload = await this.request<{ sources: SingAlongSource[]; count: number }>(
+      `/singalong/sources${query ? `?${query}` : ''}`,
+    )
+    return payload.sources
+  }
+
+  async fetchSingAlongSourceAudio(assetId: string): Promise<Blob> {
+    const response = await apiFetch(`${API_BASE}/singalong/sources/${encodeURIComponent(assetId)}/audio`)
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: response.statusText }))
+      throw new ApiError(error.error || 'Failed to load original audio', response.status)
+    }
+    return response.blob()
   }
 
   // User Presets
@@ -2107,6 +2149,8 @@ export interface YouTubeDownloadResult {
   success: boolean
   audio_path: string | null
   audio_asset_id?: string | null
+  original_audio_asset_id?: string | null
+  original_audio_url?: string | null
   audio_path_asset_id?: string | null
   title: string
   duration: number
@@ -2188,7 +2232,7 @@ export interface YouTubeIngestJob {
       video_id: string | null
     }
     assets: {
-      audio?: { path?: string | null; asset_id?: string | null }
+      audio?: { path?: string | null; asset_id?: string | null; audio_url?: string | null }
       vocals?: { path?: string | null; asset_id?: string | null }
       instrumental?: { path?: string | null; asset_id?: string | null }
     }

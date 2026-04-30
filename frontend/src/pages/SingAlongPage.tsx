@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { Headphones, Mic, Music, UploadCloud } from 'lucide-react'
+import { Headphones, Loader2, Mic, Music, RefreshCw, UploadCloud } from 'lucide-react'
 
 import { BrowserSingAlongCapture } from '../components/BrowserSingAlongCapture'
 import { StatusBanner } from '../components/StatusBanner'
 import { useToastContext } from '../contexts/ToastContext'
-import { apiService, type VoiceProfile } from '../services/api'
+import { apiService, type SingAlongSource, type VoiceProfile } from '../services/api'
 
 type BrowserAudioSource = {
-  file: File
   url: string
   id: string
+  label: string
+  detail: string
 }
 
 const ACCEPTED_AUDIO_TYPES = '.wav,.mp3,.m4a,.flac,.ogg,.webm,audio/*'
@@ -37,6 +38,11 @@ export function SingAlongPage() {
   const [profilesLoading, setProfilesLoading] = useState(true)
   const [profilesError, setProfilesError] = useState<string | null>(null)
   const [source, setSource] = useState<BrowserAudioSource | null>(null)
+  const [savedSources, setSavedSources] = useState<SingAlongSource[]>([])
+  const [savedSourcesLoading, setSavedSourcesLoading] = useState(false)
+  const [savedSourcesError, setSavedSourcesError] = useState<string | null>(null)
+  const [selectedSavedSourceId, setSelectedSavedSourceId] = useState('')
+  const [savedSourceApplying, setSavedSourceApplying] = useState(false)
   const { error: toastError } = useToastContext()
 
   const targetProfileCount = useMemo(
@@ -62,6 +68,25 @@ export function SingAlongPage() {
     void loadProfiles()
   }, [loadProfiles])
 
+  const loadSavedSources = useCallback(async () => {
+    setSavedSourcesLoading(true)
+    setSavedSourcesError(null)
+    try {
+      const sources = await apiService.listSingAlongSources()
+      setSavedSources(sources)
+      setSelectedSavedSourceId((current) => current || sources[0]?.asset_id || '')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load saved originals'
+      setSavedSourcesError(message)
+    } finally {
+      setSavedSourcesLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadSavedSources()
+  }, [loadSavedSources])
+
   useEffect(() => {
     return () => {
       if (source?.url) {
@@ -76,10 +101,33 @@ export function SingAlongPage() {
       return
     }
     setSource({
-      file,
       url: URL.createObjectURL(file),
       id: makeSourceId(file),
+      label: file.name,
+      detail: `${file.type || 'audio file'} · ${formatBytes(file.size)}`,
     })
+  }
+
+  const handleSavedSourceSelect = async () => {
+    const savedSource = savedSources.find((candidate) => candidate.asset_id === selectedSavedSourceId)
+    if (!savedSource) {
+      return
+    }
+    setSavedSourceApplying(true)
+    try {
+      const blob = await apiService.fetchSingAlongSourceAudio(savedSource.asset_id)
+      setSource({
+        url: URL.createObjectURL(blob),
+        id: savedSource.asset_id,
+        label: savedSource.label || savedSource.filename,
+        detail: `${savedSource.source || savedSource.kind} · ${savedSource.filename}`,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load saved original'
+      toastError(message)
+    } finally {
+      setSavedSourceApplying(false)
+    }
   }
 
   return (
@@ -141,15 +189,64 @@ export function SingAlongPage() {
               <UploadCloud className="mt-0.5 h-5 w-5 text-sky-300" />
               <div>
                 <div className="font-medium text-white">
-                  {source ? source.file.name : 'Choose the full song the singer will hear.'}
+                  {source ? source.label : 'Choose the full song the singer will hear.'}
                 </div>
                 <div className="mt-1 text-xs text-gray-400">
                   {source
-                    ? `${source.file.type || 'audio file'} · ${formatBytes(source.file.size)}`
+                    ? source.detail
                     : 'Supported formats depend on the current browser, usually WAV, MP3, M4A, FLAC, OGG, and WebM.'}
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-gray-700 bg-gray-900/70 p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <label className="text-sm font-semibold text-gray-200" htmlFor="singalong-saved-original">
+                Saved original audio
+              </label>
+              <button
+                type="button"
+                onClick={loadSavedSources}
+                disabled={savedSourcesLoading}
+                className="inline-flex items-center gap-2 rounded-lg border border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
+                aria-label="Refresh saved original audio"
+              >
+                {savedSourcesLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                Refresh
+              </button>
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <select
+                id="singalong-saved-original"
+                value={selectedSavedSourceId}
+                onChange={(event) => setSelectedSavedSourceId(event.target.value)}
+                disabled={savedSourcesLoading || savedSources.length === 0}
+                className="min-w-0 flex-1 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 disabled:opacity-60"
+                data-testid="singalong-saved-original-select"
+              >
+                {savedSources.length === 0 ? (
+                  <option value="">No saved originals</option>
+                ) : (
+                  savedSources.map((savedSource) => (
+                    <option key={savedSource.asset_id} value={savedSource.asset_id}>
+                      {savedSource.label || savedSource.filename}
+                    </option>
+                  ))
+                )}
+              </select>
+              <button
+                type="button"
+                onClick={handleSavedSourceSelect}
+                disabled={!selectedSavedSourceId || savedSourceApplying}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid="singalong-use-saved-original"
+              >
+                {savedSourceApplying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Music className="h-4 w-4" />}
+                Use saved
+              </button>
+            </div>
+            {savedSourcesError && <p className="mt-2 text-xs text-red-300">{savedSourcesError}</p>}
           </div>
         </section>
 
@@ -179,7 +276,7 @@ export function SingAlongPage() {
         <BrowserSingAlongCapture
           sourceAudioUrl={source.url}
           sourceId={source.id}
-          sourceLabel={source.file.name}
+          sourceLabel={source.label}
           profiles={profiles}
           disabled={profilesLoading}
           onSampleAttached={loadProfiles}

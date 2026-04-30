@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import tempfile
 import threading
@@ -11,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
 from .security import (
@@ -56,6 +57,9 @@ def register_profile_sample_routes(api_bp: Blueprint, **deps: Any) -> None:
     api_bp.add_url_rule('/samples/review', view_func=list_sample_review, methods=['GET'])
     api_bp.add_url_rule('/profiles/<profile_id>/songs', view_func=upload_song, methods=['POST'])
     api_bp.add_url_rule('/separation/<job_id>/status', view_func=get_separation_status, methods=['GET'])
+    api_bp.add_url_rule('/separation/status/<job_id>', view_func=get_separation_status, methods=['GET'])
+    api_bp.add_url_rule('/singalong/sources', view_func=list_singalong_sources, methods=['GET'])
+    api_bp.add_url_rule('/singalong/sources/<asset_id>/audio', view_func=get_singalong_source_audio, methods=['GET'])
     api_bp.add_url_rule('/profiles/<profile_id>/samples/<sample_id>', view_func=get_sample, methods=['GET'])
     api_bp.add_url_rule('/profiles/<profile_id>/samples/<sample_id>', view_func=delete_sample, methods=['DELETE'])
 
@@ -69,6 +73,12 @@ _profile_samples: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 # In-memory storage for song separation jobs
 _separation_jobs: Dict[str, Dict[str, Any]] = {}
+SINGALONG_SOURCE_KINDS = {
+    'uploaded_song_original',
+    'youtube_audio',
+    'source_audio',
+    'conversion_original',
+}
 
 
 def _form_bool(name: str) -> bool:
@@ -607,6 +617,63 @@ def delete_voice_profile(profile_id):
 def _state_store():
     getter = _deps.get('get_state_store')
     return getter() if getter else None
+
+
+def _singalong_source_url(asset_id: str) -> str:
+    return f"/api/v1/singalong/sources/{asset_id}/audio"
+
+
+def _register_original_audio_asset(
+    path: str,
+    *,
+    kind: str,
+    owner_id: str | None,
+    metadata: Dict[str, Any],
+) -> Dict[str, Any] | None:
+    store = _state_store()
+    if store is None:
+        return None
+    return store.register_asset(
+        path,
+        kind=kind,
+        owner_id=owner_id,
+        metadata={
+            'singalong_available': True,
+            'role': 'original_song',
+            **metadata,
+        },
+    )
+
+
+def _serialize_singalong_source(asset: Dict[str, Any]) -> Dict[str, Any] | None:
+    path = asset.get('path')
+    if not path:
+        return None
+    try:
+        resolved = Path(str(path)).expanduser().resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+    if not resolved.exists() or not resolved.is_file() or not _dep('allowed_file')(resolved.name):
+        return None
+
+    metadata = dict(asset.get('metadata') or {})
+    asset_id = str(asset.get('asset_id'))
+    return {
+        'asset_id': asset_id,
+        'kind': asset.get('kind'),
+        'owner_id': asset.get('owner_id'),
+        'filename': metadata.get('filename') or resolved.name,
+        'label': metadata.get('title') or metadata.get('filename') or resolved.name,
+        'source': metadata.get('source'),
+        'profile_id': metadata.get('profile_id'),
+        'profile_ids': list(metadata.get('profile_ids') or []),
+        'job_id': metadata.get('job_id'),
+        'song_id': metadata.get('song_id'),
+        'video_id': metadata.get('video_id'),
+        'duration': metadata.get('duration'),
+        'audio_url': _singalong_source_url(asset_id),
+        'updated_at': asset.get('updated_at'),
+    }
 
 
 _AUDIT_ACTION_OVERRIDES = {
@@ -1416,6 +1483,19 @@ def upload_song(profile_id: str):
         file.save(file_path)
 
         auto_split = request.form.get('auto_split', 'true').lower() == 'true'
+        original_asset = _register_original_audio_asset(
+            file_path,
+            kind='uploaded_song_original',
+            owner_id=profile_id,
+            metadata={
+                'source': 'uploaded_song',
+                'profile_id': profile_id,
+                'job_id': job_id,
+                'song_id': song_id,
+                'filename': filename,
+                'title': os.path.splitext(filename)[0],
+            },
+        )
 
         separation_job = {
             'job_id': job_id,
@@ -1424,6 +1504,12 @@ def upload_song(profile_id: str):
             'profile_id': profile_id,
             'filename': filename,
             'file_path': file_path,
+            'original_audio_asset_id': original_asset.get('asset_id') if original_asset else None,
+            'original_audio_url': (
+                _singalong_source_url(original_asset['asset_id'])
+                if original_asset
+                else None
+            ),
             'status': 'pending' if auto_split else 'complete',
             'progress': 0,
             'message': 'Queued for vocal separation' if auto_split else 'Uploaded without separation',
@@ -1505,6 +1591,14 @@ def upload_song(profile_id: str):
                             'source_song': song_id,
                             'source': 'uploaded_song',
                             'provenance': filename,
+                            'original_path': file_path,
+                            'original_audio_asset_id': original_asset.get('asset_id') if original_asset else None,
+                            'original_audio_url': (
+                                _singalong_source_url(original_asset['asset_id'])
+                                if original_asset
+                                else None
+                            ),
+                            'separation_job_id': job_id,
                             'separated': True,
                         },
                     )
@@ -1557,6 +1651,8 @@ def upload_song(profile_id: str):
         return jsonify({
             'job_id': job_id,
             'song_id': song_id,
+            'original_audio_asset_id': _separation_jobs[job_id].get('original_audio_asset_id'),
+            'original_audio_url': _separation_jobs[job_id].get('original_audio_url'),
             'status': _separation_jobs[job_id]['status'],
             'message': _separation_jobs[job_id]['message']
         }), 202
@@ -1572,6 +1668,57 @@ def get_separation_status(job_id: str):
     if not job:
         return _dep('not_found_response')('Job not found')
     return jsonify(_redact_profile_payload(job, job.get("profile_id")))
+
+
+def list_singalong_sources():
+    """List preserved original songs available for browser sing-along playback."""
+    store = _state_store()
+    if store is None:
+        return jsonify({'sources': [], 'count': 0})
+
+    profile_id = request.args.get('profile_id')
+    sources = []
+    for asset in store.list_assets():
+        if asset.get('kind') not in SINGALONG_SOURCE_KINDS:
+            continue
+        metadata = dict(asset.get('metadata') or {})
+        if (
+            profile_id
+            and asset.get('owner_id') != profile_id
+            and metadata.get('profile_id') != profile_id
+            and profile_id not in (metadata.get('profile_ids') or [])
+        ):
+            continue
+        source = _serialize_singalong_source(asset)
+        if source is not None:
+            sources.append(source)
+    sources.sort(key=lambda item: item.get('updated_at') or 0, reverse=True)
+    return jsonify({'sources': sources, 'count': len(sources)})
+
+
+def get_singalong_source_audio(asset_id: str):
+    """Stream a preserved original song asset for browser sing-along playback."""
+    store = _state_store()
+    if store is None:
+        return _dep('not_found_response')('Asset not found')
+    asset = store.get_asset(asset_id)
+    if not asset or asset.get('kind') not in SINGALONG_SOURCE_KINDS:
+        return _dep('not_found_response')('Asset not found')
+
+    source = _serialize_singalong_source(asset)
+    if source is None:
+        return _dep('not_found_response')('Original audio is no longer available')
+
+    path = Path(str(asset['path'])).expanduser().resolve()
+    mimetype, _ = mimetypes.guess_type(str(path))
+    return send_file(
+        path,
+        mimetype=mimetype or 'application/octet-stream',
+        as_attachment=False,
+        download_name=secure_filename(source.get('filename') or path.name),
+        conditional=True,
+        max_age=0,
+    )
 
 
 def get_sample(profile_id: str, sample_id: str):

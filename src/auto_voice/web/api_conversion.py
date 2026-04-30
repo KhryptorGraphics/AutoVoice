@@ -6,7 +6,6 @@ import base64
 import io
 import json
 import os
-import tempfile
 import uuid
 from typing import Any, Dict
 
@@ -20,6 +19,32 @@ def _root():
     from . import api as api_root
 
     return api_root
+
+
+def _singalong_source_url(asset_id: str) -> str:
+    return f"/api/v1/singalong/sources/{asset_id}/audio"
+
+
+def _register_conversion_original_asset(
+    path: str,
+    *,
+    owner_id: str,
+    metadata: Dict[str, Any],
+) -> Dict[str, Any] | None:
+    try:
+        return _root()._get_state_store().register_asset(
+            path,
+            kind='conversion_original',
+            owner_id=owner_id,
+            metadata={
+                'singalong_available': True,
+                'role': 'original_song',
+                **metadata,
+            },
+        )
+    except Exception:
+        _root().logger.warning("Failed to register conversion original asset", exc_info=True)
+        return None
 
 
 def register_conversion_routes(api_bp: Blueprint) -> None:
@@ -420,22 +445,32 @@ def convert_song():
         pipeline_type,
     )
 
-    tmp_file = None
+    source_path = None
     job_manager = getattr(current_app, 'job_manager', None)
     singing_pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
 
     try:
-        used_job_manager = False
-
         secure_name = secure_filename(song_file.filename)
-        tmp_file = tempfile.NamedTemporaryFile(
-            suffix=os.path.splitext(secure_name)[1],
-            delete=False,
+        source_id = str(uuid.uuid4())
+        source_dir = os.path.join(root.UPLOAD_FOLDER, 'conversions', 'originals', profile_id)
+        os.makedirs(source_dir, exist_ok=True)
+        source_path = os.path.join(source_dir, f"{source_id}_{secure_name}")
+        song_file.save(source_path)
+        original_asset = _register_conversion_original_asset(
+            source_path,
+            owner_id=profile_id,
+            metadata={
+                'source': 'conversion_upload',
+                'profile_id': profile_id,
+                'source_id': source_id,
+                'filename': secure_name,
+                'title': os.path.splitext(secure_name)[0],
+            },
         )
-        song_file.save(tmp_file.name)
+        original_asset_id = original_asset.get('asset_id') if original_asset else None
+        original_audio_url = _singalong_source_url(original_asset_id) if original_asset_id else None
 
         if job_manager:
-            used_job_manager = True
             settings_dict = {
                 'vocal_volume': vocal_volume,
                 'instrumental_volume': instrumental_volume,
@@ -448,8 +483,20 @@ def convert_song():
                 'resolved_pipeline': resolved_pipeline,
                 'runtime_backend': runtime_backend,
                 'active_model_type': active_model_type,
+                'original_filename': secure_name,
+                'original_audio_asset_id': original_asset_id,
+                'original_audio_url': original_audio_url,
             }
-            job_id = job_manager.create_job(tmp_file.name, profile_id, settings_dict)
+            job_id = job_manager.create_job(source_path, profile_id, settings_dict)
+            if original_asset:
+                _register_conversion_original_asset(
+                    source_path,
+                    owner_id=profile_id,
+                    metadata={
+                        **dict(original_asset.get('metadata') or {}),
+                        'job_id': job_id,
+                    },
+                )
 
             root.logger.info("Created async job %s for song conversion", job_id)
             try:
@@ -472,6 +519,8 @@ def convert_song():
                 'requested_pipeline': requested_pipeline,
                 'resolved_pipeline': resolved_pipeline,
                 'runtime_backend': runtime_backend,
+                'original_audio_asset_id': original_asset_id,
+                'original_audio_url': original_audio_url,
             }), 202
 
         if not singing_pipeline:
@@ -490,7 +539,7 @@ def convert_song():
                 )
 
             result = root.run_offline_realtime_conversion(
-                tmp_file.name,
+                source_path,
                 speaker_embedding,
                 pitch_shift=pitch_shift,
             )
@@ -501,10 +550,12 @@ def convert_song():
                 'runtime_backend': runtime_backend,
                 'profile_id': profile_id,
                 'active_model_type': active_model_type,
+                'original_audio_asset_id': original_asset_id,
+                'original_audio_url': original_audio_url,
             })
         else:
             result = singing_pipeline.convert_song(
-                song_path=tmp_file.name,
+                song_path=source_path,
                 target_profile_id=profile_id,
                 vocal_volume=vocal_volume,
                 instrumental_volume=instrumental_volume,
@@ -519,6 +570,8 @@ def convert_song():
                 'runtime_backend': runtime_backend,
                 'active_model_type': active_model_type,
                 'adapter_type': adapter_type,
+                'original_audio_asset_id': original_asset_id,
+                'original_audio_url': original_audio_url,
             })
 
         if not isinstance(result, dict):
@@ -615,7 +668,18 @@ def convert_song():
             'requested_pipeline': requested_pipeline,
             'resolved_pipeline': result['metadata'].get('resolved_pipeline', resolved_pipeline),
             'runtime_backend': result['metadata'].get('runtime_backend', runtime_backend),
+            'original_audio_asset_id': original_asset_id,
+            'original_audio_url': original_audio_url,
         }
+        if original_asset:
+            _register_conversion_original_asset(
+                source_path,
+                owner_id=profile_id,
+                metadata={
+                    **dict(original_asset.get('metadata') or {}),
+                    'job_id': response_data['job_id'],
+                },
+            )
 
         try:
             f0_contour = result.get('f0_contour')
@@ -754,11 +818,7 @@ def convert_song():
             message=str(exc),
         )
     finally:
-        if tmp_file and os.path.exists(tmp_file.name) and not used_job_manager:
-            try:
-                os.unlink(tmp_file.name)
-            except OSError:
-                pass
+        pass
 
 
 def get_conversion_status(job_id):
