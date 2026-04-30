@@ -1,5 +1,5 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Activity, HelpCircle, History, Mic, Music, User, Users, Youtube } from 'lucide-react'
+import { Activity, Headphones, HelpCircle, History, Mic, Music, User, Users, Youtube } from 'lucide-react'
 import clsx from 'clsx'
 
 import { ToastProvider } from './contexts/ToastContext'
@@ -8,6 +8,7 @@ import { ConversionWorkflowPage } from './pages/ConversionWorkflowPage'
 import HelpPage from './pages/HelpPage'
 import { KaraokePage } from './pages/KaraokePage'
 import { DiarizationResultsPage } from './pages/DiarizationResultsPage'
+import { SingAlongPage } from './pages/SingAlongPage'
 import { SystemStatusPage } from './pages/SystemStatusPage'
 import { VoiceProfilePage } from './pages/VoiceProfilePage'
 import { YouTubeDownloadPage } from './pages/YouTubeDownloadPage'
@@ -16,6 +17,7 @@ export default function App() {
   const navItems = [
     { to: '/', label: 'Convert', icon: Music },
     { to: '/karaoke', label: 'Karaoke', icon: Mic },
+    { to: '/singalong', label: 'Sing Along', icon: Headphones },
     { to: '/profiles', label: 'Profiles', icon: User },
     { to: '/youtube', label: 'YouTube', icon: Youtube },
     { to: '/diarization', label: 'Diarization', icon: Users },
@@ -28,9 +30,9 @@ export default function App() {
     <ToastProvider position="top-right">
       <div className="min-h-screen bg-gray-900 text-white">
         <nav className="bg-gray-800 border-b border-gray-700">
-          <div className="max-w-7xl mx-auto px-4 flex items-center h-14">
-            <span className="text-xl font-bold text-blue-400 mr-8">AutoVoice</span>
-            <div className="flex gap-1">
+          <div className="max-w-7xl mx-auto px-4 flex items-center h-14 overflow-x-auto">
+            <span className="text-xl font-bold text-blue-400 mr-8 shrink-0">AutoVoice</span>
+            <div className="flex gap-1 whitespace-nowrap">
               {navItems.map(({ to, label, icon: Icon }) => (
                 <NavLink
                   key={to}
@@ -56,6 +58,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<ConversionWorkflowPage />} />
             <Route path="/karaoke" element={<KaraokePage />} />
+            <Route path="/singalong" element={<SingAlongPage />} />
             <Route path="/profiles" element={<VoiceProfilePage />} />
             <Route path="/youtube" element={<YouTubeDownloadPage />} />
             <Route path="/diarization" element={<DiarizationResultsPage />} />

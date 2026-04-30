@@ -19,7 +19,10 @@ import {
 } from '../services/browserAudioQuality'
 
 interface BrowserSingAlongCaptureProps {
-  song: UploadedSong
+  song?: UploadedSong
+  sourceAudioUrl?: string
+  sourceId?: string
+  sourceLabel?: string
   profiles: VoiceProfile[]
   disabled?: boolean
   onSampleAttached?: () => Promise<void> | void
@@ -36,8 +39,16 @@ function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((track) => track.stop())
 }
 
+function sanitizeSourceId(sourceId: string) {
+  const normalized = sourceId.trim().replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '')
+  return normalized || 'browser-source'
+}
+
 export function BrowserSingAlongCapture({
   song,
+  sourceAudioUrl,
+  sourceId,
+  sourceLabel,
   profiles,
   disabled = false,
   onSampleAttached,
@@ -85,6 +96,8 @@ export function BrowserSingAlongCapture({
   )
   const capabilities = getBrowserAudioCapabilities(audioRef.current)
   const canRecord = capabilities.hasGetUserMedia && capabilities.hasMediaRecorder
+  const audioSourceId = sanitizeSourceId(sourceId ?? song?.song_id ?? 'browser-source')
+  const audioSourceLabel = sourceLabel ?? song?.song_id ?? 'Selected original audio'
 
   const refreshBrowserDevices = useCallback(async () => {
     const devices = await listBrowserAudioDevices()
@@ -170,8 +183,23 @@ export function BrowserSingAlongCapture({
     let objectUrl: string | null = null
 
     const loadSongAudio = async () => {
-      setLoadingSongAudio(true)
+      releaseTake()
       setError(null)
+
+      if (sourceAudioUrl) {
+        setSongAudioUrl(sourceAudioUrl)
+        setLoadingSongAudio(false)
+        return
+      }
+
+      if (!song?.song_id) {
+        setSongAudioUrl(null)
+        setLoadingSongAudio(false)
+        setError('Select an original audio file before recording.')
+        return
+      }
+
+      setLoadingSongAudio(true)
       try {
         const blob = await fetchSongAudio(song.song_id)
         if (cancelled) return
@@ -190,7 +218,6 @@ export function BrowserSingAlongCapture({
     }
 
     void loadSongAudio()
-    releaseTake()
 
     return () => {
       cancelled = true
@@ -198,7 +225,7 @@ export function BrowserSingAlongCapture({
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [releaseTake, song.song_id])
+  }, [releaseTake, song?.song_id, sourceAudioUrl])
 
   useEffect(() => {
     return () => {
@@ -206,11 +233,8 @@ export function BrowserSingAlongCapture({
       stopStream(streamRef.current)
       stopLevelMeter()
       releaseTake()
-      if (songAudioUrl) {
-        URL.revokeObjectURL(songAudioUrl)
-      }
     }
-  }, [releaseTake, songAudioUrl, stopLevelMeter, stopRecording])
+  }, [releaseTake, stopLevelMeter, stopRecording])
 
   useEffect(() => {
     if (!recording) {
@@ -393,14 +417,15 @@ export function BrowserSingAlongCapture({
     setStatus(null)
     try {
       const extension = recordingExtensionForMimeType(takeBlob.type)
-      const file = new File([takeBlob], `browser-singalong-${song.song_id}.${extension}`, {
+      const file = new File([takeBlob], `browser-singalong-${audioSourceId}.${extension}`, {
         type: takeBlob.type || 'audio/webm',
       })
       await apiService.uploadSample(selectedProfileId, file, {
         source: 'browser_singalong_capture',
         provenance: 'browser-client sing-along recording',
-        source_file: song.song_id,
-        source_song_id: song.song_id,
+        source_file: audioSourceLabel,
+        source_song_id: song?.song_id ?? null,
+        source_audio_id: audioSourceId,
         duration_seconds: takeDuration,
         browser_input_device_label:
           inputDevices.find((device) => device.deviceId === selectedInputId)?.label ?? null,
@@ -430,6 +455,9 @@ export function BrowserSingAlongCapture({
           </h3>
           <p className="text-sm text-gray-400 mt-1">
             Play the full artist song through this browser&apos;s headphones while recording this browser&apos;s microphone.
+          </p>
+          <p className="mt-2 text-xs text-gray-500" data-testid="browser-capture-source-label">
+            Original playback source: {audioSourceLabel}
           </p>
         </div>
         <div className="rounded-lg border border-blue-700 bg-blue-950/40 px-3 py-2 text-xs text-blue-100">

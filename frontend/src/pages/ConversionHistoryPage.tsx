@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Clock, Download, Play, Trash2, Music, Star, Search, Filter, FileText, GitCompare } from 'lucide-react'
-import { apiService, ConversionRecord } from '../services/api'
+import { apiService, type ConversionRecord } from '../services/api'
 import { PipelineBadge, type PipelineType } from '../components/PipelineSelector'
 import { AdapterBadge } from '../components/AdapterSelector'
 import { useToastContext } from '../contexts/ToastContext'
@@ -12,6 +12,64 @@ interface FilterOptions {
   quality: 'all' | 'draft' | 'fast' | 'balanced' | 'high' | 'studio'
   favorites: boolean
   voice: string
+}
+
+const UNKNOWN_DATE = new Date(0)
+
+function textOrEmpty(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function firstText(...values: unknown[]): string {
+  for (const value of values) {
+    const text = textOrEmpty(value)
+    if (text) return text
+  }
+  return ''
+}
+
+function coerceDate(...values: unknown[]): Date {
+  for (const value of values) {
+    if (value instanceof Date && Number.isFinite(value.getTime())) {
+      return value
+    }
+    if (typeof value === 'string' || typeof value === 'number') {
+      const date = new Date(value)
+      if (Number.isFinite(date.getTime())) {
+        return date
+      }
+    }
+  }
+  return UNKNOWN_DATE
+}
+
+function normalizeHistoryRecord(item: ConversionRecord): ConversionRecord {
+  const originalFileName = firstText(item.originalFileName, item.input_file, item.id) || 'Untitled conversion'
+  const targetVoice = firstText(item.targetVoice, item.profile_id) || 'Unknown voice'
+  const quality = firstText(item.quality, item.preset) || 'N/A'
+  const resultUrl = firstText(item.resultUrl, item.output_url, item.download_url) || undefined
+
+  return {
+    ...item,
+    input_file: firstText(item.input_file, originalFileName) || originalFileName,
+    originalFileName,
+    targetVoice,
+    quality,
+    resultUrl,
+    timestamp: coerceDate(item.timestamp, item.completed_at, item.created_at),
+  }
+}
+
+function recordTitle(item: ConversionRecord): string {
+  return firstText(item.originalFileName, item.input_file, item.id) || 'Untitled conversion'
+}
+
+function recordVoice(item: ConversionRecord): string {
+  return firstText(item.targetVoice, item.profile_id) || 'Unknown voice'
+}
+
+function recordQuality(item: ConversionRecord): string {
+  return firstText(item.quality, item.preset) || 'N/A'
 }
 
 export function ConversionHistoryPage() {
@@ -28,27 +86,22 @@ export function ConversionHistoryPage() {
   })
   const [editingNotes, setEditingNotes] = useState<string | null>(null)
   const [notesText, setNotesText] = useState('')
-  const toast = useToastContext()
+  const { error: toastError, success: toastSuccess } = useToastContext()
 
   const loadHistory = useCallback(async () => {
     setIsLoading(true)
     setPageError(null)
     try {
       const records = await apiService.getConversionHistory()
-      setHistory(records.map((item) => ({
-        ...item,
-        timestamp: new Date(String(item.timestamp ?? item.completed_at ?? item.created_at)),
-        quality: item.quality ?? item.preset,
-        resultUrl: item.resultUrl ?? item.output_url ?? item.download_url,
-      })))
+      setHistory(records.map(normalizeHistoryRecord))
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load conversion history'
       setPageError(message)
-      toast.error(message)
+      toastError(message)
     } finally {
       setIsLoading(false)
     }
-  }, [toast])
+  }, [toastError])
 
   useEffect(() => {
     void loadHistory()
@@ -58,51 +111,59 @@ export function ConversionHistoryPage() {
     try {
       await apiService.deleteConversionRecord(id)
       setHistory((prev) => prev.filter((item) => item.id !== id))
-      toast.success('Conversion record deleted')
+      toastSuccess('Conversion record deleted')
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to delete conversion record')
+      toastError(error instanceof Error ? error.message : 'Failed to delete conversion record')
     }
   }
 
   const handleToggleFavorite = async (id: string) => {
     const item = history.find((entry) => entry.id === id)
     if (!item) return
-    const updatedRecord = await apiService.updateConversionRecord(id, {
-      isFavorite: !item.isFavorite,
-    })
-    setHistory((prev) => prev.map((entry) => (
-      entry.id === id ? { ...entry, ...updatedRecord, timestamp: new Date(String(updatedRecord.timestamp ?? updatedRecord.completed_at ?? updatedRecord.created_at)) } : entry
-    )))
-    toast.success(updatedRecord.isFavorite ? 'Marked as favorite' : 'Removed from favorites')
+    try {
+      const updatedRecord = await apiService.updateConversionRecord(id, {
+        isFavorite: !item.isFavorite,
+      })
+      setHistory((prev) => prev.map((entry) => (
+        entry.id === id ? normalizeHistoryRecord({ ...entry, ...updatedRecord }) : entry
+      )))
+      toastSuccess(updatedRecord.isFavorite ? 'Marked as favorite' : 'Removed from favorites')
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : 'Failed to update favorite')
+    }
   }
 
   const handleSaveNotes = async (id: string) => {
-    const updatedRecord = await apiService.updateConversionRecord(id, { notes: notesText })
-    setHistory((prev) => prev.map((item) => (
-      item.id === id ? { ...item, ...updatedRecord, timestamp: new Date(String(updatedRecord.timestamp ?? updatedRecord.completed_at ?? updatedRecord.created_at)) } : item
-    )))
-    setEditingNotes(null)
-    toast.success('Notes saved')
+    try {
+      const updatedRecord = await apiService.updateConversionRecord(id, { notes: notesText })
+      setHistory((prev) => prev.map((item) => (
+        item.id === id ? normalizeHistoryRecord({ ...item, ...updatedRecord }) : item
+      )))
+      setEditingNotes(null)
+      toastSuccess('Notes saved')
+    } catch (error) {
+      toastError(error instanceof Error ? error.message : 'Failed to save notes')
+    }
   }
 
   const handleClearAll = async () => {
     try {
       await Promise.all(history.map((item) => apiService.deleteConversionRecord(item.id)))
       setHistory([])
-      toast.success('Conversion history cleared')
+      toastSuccess('Conversion history cleared')
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to clear conversion history')
+      toastError(error instanceof Error ? error.message : 'Failed to clear conversion history')
     }
   }
 
   const getUniqueVoices = () => {
-    const voices = new Set(history.map((item) => item.targetVoice))
+    const voices = new Set(history.map(recordVoice).filter(Boolean))
     return Array.from(voices).sort()
   }
 
   const filteredHistory = history.filter((item) => {
     const now = new Date()
-    const itemTime = item.timestamp ?? new Date(item.created_at)
+    const itemTime = coerceDate(item.timestamp, item.created_at)
     const diff = now.getTime() - itemTime.getTime()
     const dayInMs = 24 * 60 * 60 * 1000
 
@@ -121,32 +182,36 @@ export function ConversionHistoryPage() {
     }
 
     // Quality filter
-    const qualityMatch = filters.quality === 'all' || (item.quality ?? item.preset) === filters.quality
+    const qualityMatch = filters.quality === 'all' || recordQuality(item) === filters.quality
 
     // Favorites filter
     const favoritesMatch = !filters.favorites || item.isFavorite
 
     // Voice filter
-    const voiceMatch = filters.voice === 'all' || item.targetVoice === filters.voice
+    const voiceMatch = filters.voice === 'all' || recordVoice(item) === filters.voice
 
     // Search query filter
+    const normalizedQuery = searchQuery.toLowerCase()
     const searchMatch =
       searchQuery === '' ||
-      (item.originalFileName ?? item.input_file).toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (item.targetVoice ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.notes?.toLowerCase().includes(searchQuery.toLowerCase())
+      recordTitle(item).toLowerCase().includes(normalizedQuery) ||
+      recordVoice(item).toLowerCase().includes(normalizedQuery) ||
+      textOrEmpty(item.notes).toLowerCase().includes(normalizedQuery)
 
     return timeMatch && qualityMatch && favoritesMatch && voiceMatch && searchMatch
   }).sort((a, b) => {
     // Sort favorites first, then by date
     if (a.isFavorite && !b.isFavorite) return -1
     if (!a.isFavorite && b.isFavorite) return 1
-    const timeA = (a.timestamp ?? new Date(a.created_at)).getTime()
-    const timeB = (b.timestamp ?? new Date(b.created_at)).getTime()
+    const timeA = coerceDate(a.timestamp, a.created_at).getTime()
+    const timeB = coerceDate(b.timestamp, b.created_at).getTime()
     return timeB - timeA
   })
 
   const formatDate = (date: Date) => {
+    if (!Number.isFinite(date.getTime()) || date.getTime() === 0) {
+      return 'Unknown date'
+    }
     const now = new Date()
     const diff = now.getTime() - date.getTime()
     const minutes = Math.floor(diff / 60000)
@@ -167,13 +232,13 @@ export function ConversionHistoryPage() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8">
+    <div className="max-w-6xl mx-auto px-4 py-8" data-testid="history-page">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 flex items-center space-x-3">
+        <h1 className="text-3xl font-bold text-white flex items-center space-x-3">
           <Clock className="w-8 h-8 text-primary-600" />
           <span>Conversion History</span>
         </h1>
-        <p className="text-gray-600 mt-2">View and manage your past conversions</p>
+        <p className="text-gray-300 mt-2">View and manage your past conversions</p>
       </div>
 
       <div className="bg-white rounded-lg shadow-lg p-6">
@@ -323,12 +388,12 @@ export function ConversionHistoryPage() {
                     <Music className="w-5 h-5 text-primary-600 flex-shrink-0" />
                     <div className="flex-1">
                       <div className="flex items-center space-x-2">
-                        <h3 className="font-semibold text-gray-900">{item.originalFileName ?? item.input_file}</h3>
+                        <h3 className="font-semibold text-gray-900">{recordTitle(item)}</h3>
                         {item.isFavorite && <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />}
                       </div>
                       <p className="text-sm text-gray-600">
-                        Voice: {item.targetVoice ?? 'Unknown'} • Duration: {formatDuration(item.duration ?? 0)} • Quality:{' '}
-                        <span className="font-medium">{item.quality ?? item.preset ?? 'N/A'}</span>
+                        Voice: {recordVoice(item)} • Duration: {formatDuration(item.duration ?? 0)} • Quality:{' '}
+                        <span className="font-medium">{recordQuality(item)}</span>
                       </p>
                       {/* Pipeline and adapter badges */}
                       <div className="flex items-center gap-2 mt-1">
@@ -349,7 +414,7 @@ export function ConversionHistoryPage() {
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-gray-400 mt-1">{formatDate(item.timestamp ?? new Date(item.created_at))}</p>
+                      <p className="text-xs text-gray-400 mt-1">{formatDate(coerceDate(item.timestamp, item.created_at))}</p>
                     </div>
                   </div>
 
@@ -452,13 +517,13 @@ export function ConversionHistoryPage() {
 }
 
 function ArtifactComparison({ record }: { record: ConversionRecord }) {
-  const mixUrl = record.resultUrl ?? record.output_url ?? record.download_url
+  const mixUrl = firstText(record.resultUrl, record.output_url, record.download_url) || undefined
   const artifacts = [
-    { key: 'source', label: 'Original source', url: record.input_file, tone: 'bg-gray-100 text-gray-700' },
+    { key: 'source', label: 'Original source', url: firstText(record.input_file) || undefined, tone: 'bg-gray-100 text-gray-700' },
     { key: 'mix', label: 'Converted mix', url: mixUrl, tone: 'bg-green-50 text-green-700' },
-    { key: 'vocals', label: 'Converted vocals', url: record.stem_urls?.vocals, tone: 'bg-cyan-50 text-cyan-700' },
-    { key: 'instrumental', label: 'Instrumental', url: record.stem_urls?.instrumental, tone: 'bg-amber-50 text-amber-700' },
-    { key: 'reassemble', label: 'Reassembled mix', url: record.reassemble_url, tone: 'bg-blue-50 text-blue-700' },
+    { key: 'vocals', label: 'Converted vocals', url: firstText(record.stem_urls?.vocals) || undefined, tone: 'bg-cyan-50 text-cyan-700' },
+    { key: 'instrumental', label: 'Instrumental', url: firstText(record.stem_urls?.instrumental) || undefined, tone: 'bg-amber-50 text-amber-700' },
+    { key: 'reassemble', label: 'Reassembled mix', url: firstText(record.reassemble_url) || undefined, tone: 'bg-blue-50 text-blue-700' },
   ]
 
   return (

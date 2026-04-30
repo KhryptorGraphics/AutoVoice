@@ -34,6 +34,12 @@ type MockCommonApiOptions = {
   streamingStartError?: string
   voiceCloneError?: string
   apiToken?: string
+  conversionRecords?: MockConversionRecord[]
+}
+
+type MockConversionRecord = {
+  id: string
+  [key: string]: unknown
 }
 
 export async function mockCommonApi(page: Page, options: MockCommonApiOptions = {}) {
@@ -350,7 +356,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       metadata: { qa_status: 'fail' },
     },
   ]
-  const conversionRecords = [
+  const conversionRecords: MockConversionRecord[] = options.conversionRecords ?? [
     {
       id: 'history-1',
       status: 'complete',
