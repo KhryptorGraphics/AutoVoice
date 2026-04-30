@@ -480,6 +480,8 @@ def test_completion_matrix_smoke_runner(tmp_path):
     assert "priority-skip-audit" in lane_names
     assert "benchmark-dashboard-validate" in lane_names
     assert "hosted-preflight-local" in lane_names
+    assert "real-audio-e2e-lanes" in lane_names
+    assert "live-youtube-ingest-smoke" in lane_names
     assert "tensorrt-checkpoint-parity" in lane_names
     assert (platform_dir / "hosted-preflight.json").exists()
 
@@ -513,6 +515,7 @@ def test_completion_matrix_full_mode_defines_real_audio_e2e_lanes(monkeypatch, t
 
     lane_names = {lane.name for lane in lanes}
     assert {
+        "youtube-ingest-real-audio-e2e",
         "conversion-e2e",
         "karaoke-websocket-e2e",
         "voice-profile-diarization-e2e",
@@ -520,7 +523,26 @@ def test_completion_matrix_full_mode_defines_real_audio_e2e_lanes(monkeypatch, t
         "benchmark-audio-e2e",
     } <= lane_names
     assert all(command[:3] == [sys.executable, "-m", "pytest"] for _, command in captured)
+    assert any("tests/test_youtube_ingest_real_audio_e2e.py" in command for _, command in captured)
     assert any("tests/test_quality_benchmarking_sota.py" in command for _, command in captured)
+
+
+def test_completion_matrix_real_audio_flag_does_not_enable_docker_or_hardware():
+    import importlib.util
+
+    script_path = PROJECT_ROOT / "scripts" / "run_completion_matrix.py"
+    spec = importlib.util.spec_from_file_location("run_completion_matrix", script_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    args = module.parse_args(["--real-audio"])
+
+    assert args.real_audio is True
+    assert args.real_compose is False
+    assert args.hardware is False
+    assert args.full_hosted_preflight is False
 
 
 def test_tensorrt_parity_benchmark_metadata_validation(tmp_path):

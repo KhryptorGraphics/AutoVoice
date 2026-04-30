@@ -28,25 +28,24 @@ release notes or operator docs because it hides the support boundary.
 | Public multi-user | Not ready | Requires account auth, per-user isolation, quotas, abuse review, retention/export/deletion policy, and current-head full hardware evidence. |
 | Commercial launch | Not ready | Requires the public multi-user controls plus legal/policy approval for voice, likeness, copyright, biometric privacy, and platform terms. |
 
-The latest local evidence source SHA is
-`459a6465c4d0d8283a01b99e27aeea0b0ce76ec4`. A readiness claim must cite
-artifacts whose embedded git SHA matches the candidate commit being released;
-rerun the evidence commands after the final release commit is selected. During
-the 2026-04-29 local-only pass, the current completion matrix at
-`reports/completion/local-current-20260429T141731Z-459a6465c4d0/completion_matrix.json` passed
-with `ok: true` for local/no-Docker lanes, and the release-grade benchmark
-evidence in `reports/benchmarks/latest/benchmark_dashboard.json` and
-`reports/benchmarks/latest/release_evidence.json` was republished to that same
-source SHA.
+The latest pushed local-ready baseline is tag `local-ready-2026-04-30` at source
+SHA `25d484880f803a551d457e6f893daf48b34506eb`. Its no-Docker evidence lives at
+`reports/completion/local-final-20260430T032639Z-25d484880f80/completion_matrix.json`
+and passed with `ok: true` for the supported local/hardware lanes that were in
+scope. A readiness claim for any later commit must still cite artifacts whose
+embedded git SHA matches that candidate commit; rerun the evidence commands after
+the final release commit is selected.
 
-The same pass ran the supported local completion matrix in `autovoice-thor`.
-It passed GitNexus refresh, skip-audit policy, backend contract smoke tests,
-compose-config validation without Docker deployment, benchmark dashboard build
-and validation, experimental evidence validation, local hosted preflight,
-frontend lint/typecheck/build, and the frontend browser smoke lane. Real audio
-E2E, real compose, release-candidate compose, Jetson CUDA/TensorRT, TensorRT
-engine, and TensorRT checkpoint parity lanes remain explicit skipped lanes unless
-their hardware/deployment scope is enabled. MeanVC performance remains
+That local-ready pass ran in `autovoice-thor`. It passed GitNexus refresh,
+skip-audit policy, backend contract smoke tests, compose-config validation
+without Docker deployment, benchmark dashboard build and validation,
+experimental evidence validation, local hosted preflight, frontend
+lint/typecheck/build/browser smoke, Jetson CUDA/TensorRT validation, TensorRT
+engine-suite validation, and TensorRT checkpoint parity. Real compose and
+release-candidate compose remain explicit skipped lanes for local-only work.
+Deterministic real-audio E2E can now be run without Docker by passing
+`--real-audio`; the network-backed YouTube lane remains opt-in via
+`--live-youtube` and `AUTOVOICE_LIVE_YOUTUBE_URL`. MeanVC performance remains
 experimental and is no longer a default local-only readiness gate; run it
 explicitly with `AUTOVOICE_MEANVC_FULL=1` and the prepared MeanVC assets when
 promoting that lane.
@@ -90,7 +89,9 @@ and hardware/model lanes are current-head green or explicitly gated.
 - benchmark/release promotion evidence is defined by `config/benchmark_suites.json` and
   validated by `python scripts/validate_benchmark_dashboard.py`
 - production completion evidence is written by `python scripts/run_completion_matrix.py`
-  under `reports/completion/latest/`
+  under `reports/completion/latest/`; use `--real-audio` for deterministic
+  local real-audio E2E without Docker, and use `--live-youtube` only with
+  `AUTOVOICE_LIVE_YOUTUBE_URL` set to operator-owned media
 
 ## Vendor Model Repos
 
@@ -196,7 +197,7 @@ See [repo-hygiene.md](./repo-hygiene.md) for the full policy. The short version:
 - release-candidate validation: `python scripts/validate_release_candidate.py --base-url http://127.0.0.1:10001 --wait-seconds 180`
   This validates `/api/v1/health`, `/ready`, and `/api/v1/metrics`, and verifies benchmark evidence schema/provenance against `HEAD` or `GITHUB_SHA`.
 - production completion matrix: `python scripts/run_completion_matrix.py`
-  Use `--full` on a capable Jetson/compose/hosted runner; local smoke mode records unavailable frontend, compose, and hardware lanes as explicit skipped lanes.
+  Use `--real-audio` in `autovoice-thor` to run deterministic local real-audio E2E without Docker. Use `--live-youtube` with `AUTOVOICE_LIVE_YOUTUBE_URL=<operator-owned-url>` for the opt-in network-backed smoke lane. Use `--full` only on a capable Jetson/compose/hosted runner; local smoke mode records unavailable frontend, compose, and hardware lanes as explicit skipped lanes.
 - full hardware RC evidence preflight: `python scripts/preflight_full_hardware_rc.py --output reports/release_candidates/AV-j4cd/preflight.json --benchmark-report <current-head-benchmark-report.json>`
 - full hardware RC evidence bundle: `python scripts/run_full_hardware_rc.py --benchmark-report <current-head-benchmark-report.json>`
 - `<current-head-benchmark-report.json>` must be the raw `comprehensive_report.json`; the RC runner derives `release_evidence.json`.

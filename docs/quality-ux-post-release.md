@@ -17,6 +17,9 @@ must be regenerated for the candidate HEAD before a release decision.
 - The completion matrix passes, but its skip audit still records
   environment-gated CUDA, diarization, training, karaoke, TensorRT, and
   benchmark-audio E2E paths.
+- The YouTube/source-ingest flow now has deterministic real-audio fixture
+  coverage through `scripts/run_completion_matrix.py --real-audio`; the
+  live-network YouTube smoke remains an explicit operator-owned opt-in lane.
 
 Read this as historical or candidate-specific evidence unless the underlying
 artifact embeds the current candidate git SHA. The current release status ladder
@@ -42,6 +45,9 @@ GitNexus identified the owning quality and UX surfaces as:
 - `AV-japt.2`: surface benchmark and release evidence in the operator UI.
 - `AV-japt.3`: add artifact comparison UX for conversion outputs.
 - `AV-japt.4`: expand real-audio quality fixture coverage beyond minimal smoke.
+  Initial coverage now includes review-gated YouTube ingest using tracked
+  real-audio fixtures; broader conversion/quality fixture expansion remains
+  independent post-release work.
 - `AV-japt.5`: add target-voice accumulation and full-model training readiness UX.
 - `AV-japt.6`: close environment-gated E2E confidence gaps for quality workflows.
 

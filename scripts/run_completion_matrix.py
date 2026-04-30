@@ -50,6 +50,10 @@ REQUIRED_TRT_ENGINE_FILES = (
 
 SUPPORTED_REAL_AUDIO_E2E_LANES = (
     (
+        "youtube-ingest-real-audio-e2e",
+        ["tests/test_youtube_ingest_real_audio_e2e.py", "-k", "not live_youtube"],
+    ),
+    (
         "conversion-e2e",
         ["tests/test_adapter_integration_e2e.py", "tests/test_e2e_pipeline.py"],
     ),
@@ -525,6 +529,38 @@ def run_supported_real_audio_e2e_lanes(report_dir: Path, *, timeout: int) -> lis
     return results
 
 
+def run_live_youtube_smoke_lane(report_dir: Path, *, timeout: int) -> LaneResult:
+    """Run the opt-in live YouTube ingest smoke lane."""
+    live_url = os.environ.get("AUTOVOICE_LIVE_YOUTUBE_URL")
+    if not live_url:
+        return LaneResult(
+            name="live-youtube-ingest-smoke",
+            status="blocked",
+            details={
+                "reason": "AUTOVOICE_LIVE_YOUTUBE_URL is required when --live-youtube is set.",
+                "owner": "operator",
+                "action": "Set AUTOVOICE_LIVE_YOUTUBE_URL to an operator-owned test video and rerun.",
+            },
+        )
+
+    return _run_command(
+        "live-youtube-ingest-smoke",
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_youtube_ingest_real_audio_e2e.py",
+            "-q",
+            "--tb=short",
+            "-k",
+            "live_youtube_ingest_smoke",
+        ],
+        report_dir=report_dir,
+        timeout=timeout,
+        env={"AUTOVOICE_LIVE_YOUTUBE_URL": live_url},
+    )
+
+
 def run_hosted_preflight(report_dir: Path, *, timeout: int, full: bool, report_path: Path) -> LaneResult:
     if full:
         return _run_command(
@@ -817,13 +853,27 @@ def build_matrix(args: argparse.Namespace) -> dict[str, Any]:
     else:
         lanes.extend(run_benchmark_evidence(report_dir, timeout=args.timeout, dashboard_dir=benchmark_archive_dir))
 
-    if args.full:
+    if args.real_audio:
         lanes.extend(run_supported_real_audio_e2e_lanes(report_dir, timeout=args.timeout))
     else:
         lanes.append(
             skipped_lane(
                 "real-audio-e2e-lanes",
-                "pass --full on Thor to run conversion, karaoke, diarization, training, and benchmark-audio E2E lanes",
+                "pass --real-audio on Thor to run local deterministic real-audio E2E lanes without Docker",
+                owner="backend-runtime",
+                action="Run completion matrix with --real-audio in autovoice-thor.",
+            )
+        )
+
+    if args.live_youtube:
+        lanes.append(run_live_youtube_smoke_lane(report_dir, timeout=args.timeout))
+    else:
+        lanes.append(
+            skipped_lane(
+                "live-youtube-ingest-smoke",
+                "pass --live-youtube with AUTOVOICE_LIVE_YOUTUBE_URL set to run the network-backed YouTube smoke lane",
+                owner="operator",
+                action="Use only operator-owned media; this lane is intentionally opt-in.",
             )
         )
 
@@ -978,6 +1028,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--refresh-gitnexus", action="store_true", help="Run npx gitnexus analyze as a lane")
     parser.add_argument("--frontend", action="store_true", help="Run frontend lint/type/build/browser smoke lanes")
+    parser.add_argument("--real-audio", action="store_true", help="Run deterministic local real-audio E2E lanes without Docker")
+    parser.add_argument("--live-youtube", action="store_true", help="Run opt-in live YouTube ingest smoke using AUTOVOICE_LIVE_YOUTUBE_URL")
     parser.add_argument("--real-compose", action="store_true", help="Boot the real compose backend/frontend stack")
     parser.add_argument("--hardware", action="store_true", help="Run Jetson/CUDA/TensorRT validation lanes")
     parser.add_argument("--full-hosted-preflight", action="store_true", help="Run hosted preflight with DNS/TLS instead of local mocks")
@@ -986,6 +1038,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.full:
         args.refresh_gitnexus = True
         args.frontend = True
+        args.real_audio = True
         args.real_compose = True
         args.hardware = True
         args.full_hosted_preflight = True
