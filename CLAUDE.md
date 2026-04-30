@@ -38,7 +38,7 @@ pip install -e .
 ### Running the Application
 ```bash
 # Start server (Flask + SocketIO)
-python main.py --host 0.0.0.0 --port 5000
+python main.py --host 127.0.0.1 --port 10600
 
 # With Docker
 docker-compose up

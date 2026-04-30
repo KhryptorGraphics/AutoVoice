@@ -326,14 +326,14 @@ fi
 
 log_section "Health Check Hints"
 echo "Use these commands after launch:"
-echo "  curl http://localhost:5000/health"
-echo "  curl http://localhost:5000/ready"
+echo "  curl http://localhost:10600/health"
+echo "  curl http://localhost:10600/ready"
 echo "  $PYTHON $SCRIPT_DIR/verify_dependencies.py --require-env --require-tensorrt"
 
 if [[ "$SKIP_SERVICE_SETUP" -eq 0 ]]; then
     log_section "Endpoint Verification"
-    probe_endpoint "http://localhost:5000/health" 5 || true
-    probe_endpoint "http://localhost:5000/ready" 5 || true
+    probe_endpoint "http://localhost:10600/health" 5 || true
+    probe_endpoint "http://localhost:10600/ready" 5 || true
 fi
 
 log_section "Complete"

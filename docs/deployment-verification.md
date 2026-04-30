@@ -248,7 +248,7 @@ curl -X POST http://localhost:10001/api/v1/convert/singing \
 ### Frontend
 ```bash
 # Access frontend
-open http://localhost:3000
+open https://autovoice.giggahost.com
 ```
 
 - [ ] Frontend loads successfully

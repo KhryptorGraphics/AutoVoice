@@ -37,9 +37,9 @@ echo ""
 # Ensure test environment
 # Check if Flask app is running
 check_app_running() {
-    if ! curl -s http://localhost:5000/health > /dev/null 2>&1; then
-        echo -e "${YELLOW}WARNING: Flask app not running on localhost:5000${NC}"
-        echo "Start the app with: python main.py --host 0.0.0.0 --port 5000"
+    if ! curl -s http://localhost:10600/health > /dev/null 2>&1; then
+        echo -e "${YELLOW}WARNING: Flask app not running on localhost:10600${NC}"
+        echo "Start the app with: python main.py --host 127.0.0.1 --port 10600"
         echo ""
         return 1
     fi

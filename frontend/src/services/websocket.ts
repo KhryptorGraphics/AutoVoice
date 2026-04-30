@@ -1,7 +1,7 @@
 import { io, Socket } from 'socket.io-client'
 import { getApiAuthToken } from './api'
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'http://localhost:5000'
+const WS_URL = import.meta.env.VITE_WS_URL || 'http://localhost:10600'
 
 export interface ConversionProgress {
   job_id: string

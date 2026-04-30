@@ -3,7 +3,8 @@ import react from '@vitejs/plugin-react'
 import { readFileSync } from 'node:fs'
 import type { ServerOptions } from 'node:https'
 
-const backendTarget = process.env.VITE_BACKEND_URL || 'http://localhost:5000'
+const backendTarget = process.env.VITE_BACKEND_URL || 'http://localhost:10600'
+const frontendPort = Number(process.env.VITE_FRONTEND_PORT || process.env.FRONTEND_PORT || 3443)
 
 function localHttpsConfig(): ServerOptions | undefined {
   const certPath = process.env.VITE_DEV_SSL_CERT
@@ -27,7 +28,7 @@ const devHttps = localHttpsConfig()
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 3000,
+    port: frontendPort,
     ...(devHttps ? { https: devHttps } : {}),
     proxy: {
       '/api': {

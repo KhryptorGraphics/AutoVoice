@@ -29,7 +29,7 @@ Backend:
 
 ```bash
 python -m pip install -e .
-autovoice serve --host 0.0.0.0 --port 5000
+autovoice serve --host 127.0.0.1 --port 10600
 ```
 
 Frontend:
@@ -40,7 +40,7 @@ npm ci
 npm run dev
 ```
 
-By default the frontend proxies `/api` and `/socket.io` to `http://localhost:5000`. Override with `VITE_BACKEND_URL` if needed.
+By default the frontend proxies `/api` and `/socket.io` to `http://localhost:10600`, matching the Apache vhost for `autovoice.giggahost.com`. Override with `VITE_BACKEND_URL` if needed.
 
 Local HTTPS for browser microphone capture:
 
