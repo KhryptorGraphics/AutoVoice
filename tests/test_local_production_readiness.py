@@ -132,3 +132,15 @@ def test_backup_export_import_defaults_to_dry_run_and_apply_restores_files(local
     apply_payload = apply_response.get_json()
     assert apply_payload["status"] == "applied"
     assert restored_target.exists()
+
+
+def test_local_production_readiness_honors_apache_forwarded_https(local_client):
+    response = local_client.get(
+        "/api/v1/readiness/local-production",
+        headers={"X-Forwarded-Proto": "https"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    https_check = next(check for check in payload["checks"] if check["id"] == "https")
+    assert https_check["ok"] is True

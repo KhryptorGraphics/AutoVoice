@@ -217,8 +217,10 @@ def local_production_readiness():
         (_project_root() / 'reports' / 'release-evidence' / 'latest' / 'release_decision.json').exists()
         or (_project_root() / 'reports' / 'benchmarks' / 'latest' / 'release_evidence.json').exists()
     )
+    forwarded_proto = request.headers.get('X-Forwarded-Proto', '').split(',')[0].strip().lower()
+    browser_secure = request.is_secure or forwarded_proto == 'https' or request.host.startswith('localhost')
     checks = [
-        {'id': 'https', 'label': 'HTTPS for browser device permissions', 'ok': request.is_secure or request.host.startswith('localhost')},
+        {'id': 'https', 'label': 'HTTPS for browser device permissions', 'ok': browser_secure},
         {'id': 'api_auth_token', 'label': 'API auth token configured when auth is enabled', 'ok': bool(os.environ.get('AUTOVOICE_API_TOKEN')) or not bool(os.environ.get('AUTOVOICE_REQUIRE_API_AUTH'))},
         {'id': 'safe_cors', 'label': 'CORS limited to local/private origins', 'ok': not bool(os.environ.get('AUTOVOICE_PUBLIC_DEPLOYMENT'))},
         {'id': 'profiles_present', 'label': 'At least one profile exists', 'ok': profiles_present},
