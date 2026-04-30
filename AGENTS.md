@@ -41,7 +41,7 @@ bd sync               # Sync with git
 <!-- gitnexus:start -->
 # GitNexus MCP
 
-This project is indexed by GitNexus as **autovoice** (20315 symbols, 52274 relationships, 300 execution flows).
+This project is indexed by GitNexus as **autovoice** (20355 symbols, 52355 relationships, 300 execution flows).
 
 ## Always Start Here
 
