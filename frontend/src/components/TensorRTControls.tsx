@@ -226,7 +226,7 @@ export function TensorRTControls({ compact = false }: TensorRTControlsProps) {
               <label className="text-sm text-gray-400">Built Engines</label>
               <div className="bg-gray-750 rounded-lg p-3 space-y-2">
                 {status.engines.map(engine => (
-                  <div key={engine.name} className="flex items-center justify-between text-sm">
+                  <div key={engine.path || `${engine.directory || 'engine'}:${engine.name}`} className="flex items-center justify-between text-sm">
                     <div className="flex items-center gap-2">
                       <CheckCircle size={14} className="text-green-400" />
                       <span className="capitalize">{engine.name}</span>

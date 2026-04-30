@@ -418,23 +418,62 @@ def _reports_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "reports"
 
 
-def _engine_inventory() -> List[Dict[str, Any]]:
-    engines_dir = (Path(__file__).resolve().parents[1] / "export" / "engines").resolve()
-    if not engines_dir.exists():
-        return []
+_TRT_ENGINE_SUFFIXES = {".engine", ".plan", ".trt"}
+_TRT_REQUIRED_SUITE = {
+    "content_extractor.trt",
+    "pitch_extractor.trt",
+    "decoder.trt",
+    "vocoder.trt",
+}
 
-    inventory: List[Dict[str, Any]] = []
-    for engine_path in sorted(engines_dir.iterdir()):
-        if engine_path.suffix not in {".engine", ".plan"}:
+
+def _candidate_engine_dirs() -> List[Path]:
+    project_root = Path(__file__).resolve().parents[3]
+    candidates: set[Path] = {
+        (Path(__file__).resolve().parents[1] / "export" / "engines").resolve(),
+        (project_root / "data" / "tensorrt" / "canonical").resolve(),
+    }
+
+    env_dir = os.environ.get("AUTOVOICE_TRT_ENGINE_DIR")
+    if env_dir:
+        candidates.add(Path(env_dir).expanduser().resolve())
+
+    for root in (project_root / "data" / "tensorrt", project_root / "models"):
+        if not root.exists():
             continue
-        inventory.append({
-            "name": engine_path.name,
-            "model": engine_path.stem,
-            "path": str(engine_path),
-            "size": engine_path.stat().st_size,
-            "precision": "fp16" if "fp16" in engine_path.stem.lower() else "fp32",
-            "built_at": datetime.fromtimestamp(engine_path.stat().st_mtime, timezone.utc).isoformat(),
-        })
+        for suffix in _TRT_ENGINE_SUFFIXES:
+            for path in root.rglob(f"*{suffix}"):
+                candidates.add(path.parent.resolve())
+
+    return sorted(candidates, key=lambda path: str(path))
+
+
+def _engine_inventory() -> List[Dict[str, Any]]:
+    inventory: List[Dict[str, Any]] = []
+    seen: set[Path] = set()
+    for engines_dir in _candidate_engine_dirs():
+        if not engines_dir.exists() or not engines_dir.is_dir():
+            continue
+        suite_complete = all((engines_dir / name).exists() for name in _TRT_REQUIRED_SUITE)
+        for engine_path in sorted(engines_dir.iterdir()):
+            if engine_path.suffix not in _TRT_ENGINE_SUFFIXES or engine_path in seen:
+                continue
+            seen.add(engine_path)
+            stat = engine_path.stat()
+            stem = engine_path.stem
+            precision = "fp16" if "fp16" in stem.lower() else "fp32"
+            if engine_path.suffix == ".trt" and suite_complete:
+                precision = "fp16"
+            inventory.append({
+                "name": engine_path.name,
+                "model": stem,
+                "path": str(engine_path),
+                "directory": str(engines_dir),
+                "size": stat.st_size,
+                "precision": precision,
+                "suite_complete": suite_complete,
+                "built_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            })
     return inventory
 
 

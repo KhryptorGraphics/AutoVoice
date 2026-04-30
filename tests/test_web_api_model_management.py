@@ -133,10 +133,47 @@ def test_tensorrt_status_distinguishes_runtime_from_engine_inventory(client_mode
     assert isinstance(payload["runtime_available"], bool)
 
 
+def test_tensorrt_inventory_discovers_configured_trt_suite(tmp_path, monkeypatch):
+    from auto_voice.web import api as web_api
+
+    engine_dir = tmp_path / "canonical"
+    engine_dir.mkdir()
+    for name in (
+        "content_extractor.trt",
+        "pitch_extractor.trt",
+        "decoder.trt",
+        "vocoder.trt",
+    ):
+        (engine_dir / name).write_bytes(b"trt")
+
+    monkeypatch.setenv("AUTOVOICE_TRT_ENGINE_DIR", str(engine_dir))
+
+    inventory = web_api._engine_inventory()
+
+    assert {engine["name"] for engine in inventory} >= {
+        "content_extractor.trt",
+        "pitch_extractor.trt",
+        "decoder.trt",
+        "vocoder.trt",
+    }
+    configured_engines = [
+        engine for engine in inventory
+        if engine["directory"] == str(engine_dir.resolve())
+    ]
+    assert {engine["name"] for engine in configured_engines} == {
+        "content_extractor.trt",
+        "pitch_extractor.trt",
+        "decoder.trt",
+        "vocoder.trt",
+    }
+    assert all(engine["suite_complete"] for engine in configured_engines)
+
+
 def test_tensorrt_build_and_rebuild_use_defaults_and_overrides(client_models, monkeypatch):
     from auto_voice.web import api as web_api
 
     monkeypatch.setattr(web_api, "_submit_background_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(web_api, "_engine_inventory", lambda: [])
 
     rebuild_default = client_models.post("/api/v1/models/tensorrt/rebuild", json={})
     assert rebuild_default.status_code == 400

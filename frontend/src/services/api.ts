@@ -715,10 +715,14 @@ export interface TensorRTStatus {
   version?: string
   engines: {
     name: string
+    path?: string
+    directory?: string
+    model?: string
     precision: 'fp32' | 'fp16' | 'int8'
     built_at?: string
     input_shape?: number[]
     optimized?: boolean
+    suite_complete?: boolean
   }[]
   build_in_progress?: boolean
 }
