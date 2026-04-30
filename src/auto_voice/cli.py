@@ -172,8 +172,8 @@ def _load_config(args: argparse.Namespace) -> Dict[str, Any]:
     return config
 
 
-def _resolve_ssl_context(args: argparse.Namespace) -> tuple[str, str] | None:
-    """Resolve an optional Flask-SocketIO SSL context from CLI args or env."""
+def _resolve_ssl_files(args: argparse.Namespace) -> tuple[str, str] | None:
+    """Resolve optional TLS cert/key files from CLI args or env."""
     ssl_cert = args.ssl_cert or os.environ.get("AUTOVOICE_SSL_CERT")
     ssl_key = args.ssl_key or os.environ.get("AUTOVOICE_SSL_KEY")
 
@@ -190,6 +190,18 @@ def _resolve_ssl_context(args: argparse.Namespace) -> tuple[str, str] | None:
         raise SystemExit(f"TLS file not found: {', '.join(missing)}")
 
     return str(cert_path), str(key_path)
+
+
+def _ssl_run_kwargs(socketio: Any, ssl_files: tuple[str, str] | None) -> Dict[str, Any]:
+    """Return TLS kwargs compatible with the active Flask-SocketIO backend."""
+    if not ssl_files:
+        return {}
+
+    cert_path, key_path = ssl_files
+    async_mode = getattr(getattr(getattr(socketio, "server", None), "eio", None), "async_mode", None)
+    if async_mode == "threading":
+        return {"ssl_context": (cert_path, key_path)}
+    return {"certfile": cert_path, "keyfile": key_path}
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
@@ -252,22 +264,23 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         raise SystemExit(f"Unsupported command: {args.command}")
 
     config = _load_config(args)
-    ssl_context = _resolve_ssl_context(args)
+    ssl_files = _resolve_ssl_files(args)
     app, socketio = create_app(config=config)
     setup_signal_handlers(app, socketio)
+    ssl_kwargs = _ssl_run_kwargs(socketio, ssl_files)
 
     logger.info(
         "Starting AutoVoice on %s:%s%s",
         args.host,
         args.port,
-        " with HTTPS" if ssl_context else "",
+        " with HTTPS" if ssl_files else "",
     )
     socketio.run(
         app,
         host=args.host,
         port=args.port,
         debug=bool(config.get("DEBUG")),
-        ssl_context=ssl_context,
+        **ssl_kwargs,
     )
     return 0
 

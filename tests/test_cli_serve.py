@@ -12,7 +12,7 @@ def test_serve_ssl_context_requires_cert_and_key(tmp_path: Path):
     args = cli.parse_args(["serve", "--ssl-cert", str(cert_path)])
 
     with pytest.raises(SystemExit, match="Both --ssl-cert and --ssl-key"):
-        cli._resolve_ssl_context(args)
+        cli._resolve_ssl_files(args)
 
 
 def test_serve_ssl_context_resolves_existing_cert_and_key(tmp_path: Path):
@@ -22,7 +22,24 @@ def test_serve_ssl_context_resolves_existing_cert_and_key(tmp_path: Path):
     key_path.write_text("key", encoding="utf-8")
     args = cli.parse_args(["serve", "--ssl-cert", str(cert_path), "--ssl-key", str(key_path)])
 
-    assert cli._resolve_ssl_context(args) == (str(cert_path), str(key_path))
+    assert cli._resolve_ssl_files(args) == (str(cert_path), str(key_path))
+
+
+def test_serve_ssl_kwargs_use_eventlet_certfile_keyfile():
+    socketio = SimpleNamespace(server=SimpleNamespace(eio=SimpleNamespace(async_mode="eventlet")))
+
+    assert cli._ssl_run_kwargs(socketio, ("local.crt", "local.key")) == {
+        "certfile": "local.crt",
+        "keyfile": "local.key",
+    }
+
+
+def test_serve_ssl_kwargs_use_werkzeug_ssl_context_for_threading():
+    socketio = SimpleNamespace(server=SimpleNamespace(eio=SimpleNamespace(async_mode="threading")))
+
+    assert cli._ssl_run_kwargs(socketio, ("local.crt", "local.key")) == {
+        "ssl_context": ("local.crt", "local.key"),
+    }
 
 
 def test_serve_main_passes_ssl_context_to_socketio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -33,6 +50,8 @@ def test_serve_main_passes_ssl_context_to_socketio(tmp_path: Path, monkeypatch: 
     captured = {}
 
     class FakeSocketIO:
+        server = SimpleNamespace(eio=SimpleNamespace(async_mode="eventlet"))
+
         def run(self, app, **kwargs):
             captured["app"] = app
             captured["kwargs"] = kwargs
@@ -61,4 +80,5 @@ def test_serve_main_passes_ssl_context_to_socketio(tmp_path: Path, monkeypatch: 
     assert captured["app"] is fake_app
     assert captured["kwargs"]["host"] == "127.0.0.1"
     assert captured["kwargs"]["port"] == 5443
-    assert captured["kwargs"]["ssl_context"] == (str(cert_path), str(key_path))
+    assert captured["kwargs"]["certfile"] == str(cert_path)
+    assert captured["kwargs"]["keyfile"] == str(key_path)
