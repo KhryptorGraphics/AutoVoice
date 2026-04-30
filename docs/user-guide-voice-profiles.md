@@ -60,7 +60,23 @@ For best results, upload:
 
 Target profiles accumulate duration over time. The system tracks clean vocal seconds, sample count, and current model state.
 
-### 3. Train a LoRA
+### 3. Capture a Browser Sing-Along Take
+
+After a song is uploaded and separated, the karaoke page can play the full
+artist song in the browser while recording the browser computer's microphone.
+Use this when another computer on the local network is the singer's workstation:
+
+- serve AutoVoice over HTTPS on the LAN so browser microphone APIs are available
+- select the browser headset mic and browser headphone output in the sing-along panel
+- record while the user sings along to the original full song
+- preview the take before attaching it to a selected `target_user` profile
+
+This browser-device selector is separate from the server-side karaoke audio
+router. The server router still controls devices attached to the machine running
+AutoVoice; the browser recorder controls devices attached to the computer using
+the web UI.
+
+### 4. Train a LoRA
 
 LoRA is the default training path for a target user profile.
 
@@ -72,7 +88,7 @@ Use it when you want:
 
 Source artist profiles cannot be trained. If you try to train a source profile, the API rejects it.
 
-### 4. Unlock Full-Model Training
+### 5. Unlock Full-Model Training
 
 When a target user profile reaches `30 minutes` of clean user vocals, the UI unlocks full-model training.
 
@@ -84,7 +100,7 @@ This promotion path is intended for:
 
 Until that threshold is reached, the profile remains LoRA-only.
 
-### 5. Convert a Song
+### 6. Convert a Song
 
 For offline conversion:
 
@@ -97,7 +113,7 @@ The output keeps the source artist performance characteristics while replacing t
 
 When a target profile has an active full model, offline conversion uses that model directly. Otherwise it uses the trained LoRA path.
 
-### 6. Reassemble With the Instrumental
+### 7. Reassemble With the Instrumental
 
 After a conversion completes, the UI exposes:
 
@@ -107,7 +123,7 @@ After a conversion completes, the UI exposes:
 
 Use reassembly to create a fresh mixed output from the converted vocal track and the separated instrumental.
 
-### 7. Use the Same Target Voice in Live Karaoke
+### 8. Use the Same Target Voice in Live Karaoke
 
 Live mode uses the same target-user model lifecycle:
 

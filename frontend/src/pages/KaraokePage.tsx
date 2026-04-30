@@ -42,6 +42,7 @@ import { AdapterDropdown } from '../components/AdapterSelector';
 import { AdapterType } from '../services/api';
 import { KaraokeSessionInfo } from '../components/KaraokeSessionInfo';
 import { StatusBanner } from '../components/StatusBanner';
+import { BrowserSingAlongCapture } from '../components/BrowserSingAlongCapture';
 
 type Stage = 'upload' | 'separating' | 'ready' | 'performing';
 
@@ -835,6 +836,15 @@ export function KaraokePage() {
               </div>
             </div>
           </div>
+
+          {uploadedSong && (
+            <BrowserSingAlongCapture
+              song={uploadedSong}
+              profiles={voiceProfiles}
+              disabled={stage === 'performing'}
+              onSampleAttached={loadVoiceProfiles}
+            />
+          )}
 
           {/* Session Info with Real-time Latency */}
           <KaraokeSessionInfo

@@ -192,6 +192,68 @@ class TestSongInfo:
 
         assert response.status_code == 404
 
+    def test_get_song_audio_streams_uploaded_file(self, client, tmp_path):
+        """Test streaming original uploaded song audio for browser playback."""
+        from auto_voice.web.karaoke_api import _uploaded_songs
+
+        song_id = 'test-song-audio'
+        song_file = tmp_path / 'browser-playback.wav'
+        song_file.write_bytes(b'RIFF' + b'\x00' * 128)
+        _uploaded_songs[song_id] = {
+            'id': song_id,
+            'path': str(song_file),
+            'original_filename': 'browser-playback.wav',
+            'duration': 1.0,
+            'sample_rate': 44100,
+            'format': 'wav',
+            'uploaded_at': time.time(),
+            'status': 'uploaded',
+        }
+
+        try:
+            response = client.get(f'/api/v1/karaoke/songs/{song_id}/audio')
+
+            assert response.status_code == 200
+            assert response.data.startswith(b'RIFF')
+            assert response.headers['Content-Type'].startswith('audio/')
+        finally:
+            _uploaded_songs.pop(song_id, None)
+
+    def test_get_song_audio_not_found(self, client):
+        """Test streaming audio for unknown song returns 404."""
+        response = client.get('/api/v1/karaoke/songs/missing-song/audio')
+
+        assert response.status_code == 404
+        data = response.get_json()
+        assert 'error' in data
+
+    def test_get_song_audio_stale_path(self, client, tmp_path):
+        """Test stale uploaded song paths fail without exposing filesystem details."""
+        from auto_voice.web.karaoke_api import _uploaded_songs
+
+        song_id = 'test-song-stale-audio'
+        missing_path = tmp_path / 'missing.wav'
+        _uploaded_songs[song_id] = {
+            'id': song_id,
+            'path': str(missing_path),
+            'original_filename': 'missing.wav',
+            'duration': 1.0,
+            'sample_rate': 44100,
+            'format': 'wav',
+            'uploaded_at': time.time(),
+            'status': 'uploaded',
+        }
+
+        try:
+            response = client.get(f'/api/v1/karaoke/songs/{song_id}/audio')
+
+            assert response.status_code == 404
+            data = response.get_json()
+            assert 'no longer available' in data['error']
+            assert str(tmp_path) not in data['error']
+        finally:
+            _uploaded_songs.pop(song_id, None)
+
 
 class TestSeparation:
     """Test vocal separation endpoints."""

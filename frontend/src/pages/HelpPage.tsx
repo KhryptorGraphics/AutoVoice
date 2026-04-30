@@ -41,6 +41,21 @@ export default function HelpPage() {
             </li>
           </ul>
         </div>
+        <div className="mt-4 bg-green-50 p-4 rounded-lg">
+          <h3 className="font-semibold text-lg mb-2">Browser Sing-Along Recording</h3>
+          <p className="text-gray-700 mb-3">
+            When you open AutoVoice from another computer on the local network,
+            that browser can use its own headphones and microphone to record
+            training takes. Use the browser device controls on the Karaoke page,
+            not the server audio-device controls, for this workflow.
+          </p>
+          <ul className="list-disc list-inside text-gray-700 space-y-2">
+            <li>Serve AutoVoice over HTTPS on LAN so the browser can access the mic.</li>
+            <li>Select the browser&apos;s headset mic and headphones before recording.</li>
+            <li>Preview each take before attaching it to the target voice profile.</li>
+            <li>If output selection is unsupported, the browser uses its system default output.</li>
+          </ul>
+        </div>
       </section>
 
       {/* Uploading Songs */}
@@ -151,6 +166,14 @@ export default function HelpPage() {
             <p className="text-gray-700">
               Check that your browser has microphone permission and the correct
               input device is selected.
+            </p>
+          </div>
+          <div className="border-l-4 border-yellow-400 pl-4">
+            <h3 className="font-semibold">LAN browser cannot access the mic</h3>
+            <p className="text-gray-700">
+              Browser microphone and output-device APIs require HTTPS for LAN
+              clients. Use localhost for same-machine testing or configure HTTPS
+              before recording from another computer.
             </p>
           </div>
           <div className="border-l-4 border-yellow-400 pl-4">

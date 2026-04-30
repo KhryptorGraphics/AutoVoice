@@ -82,7 +82,7 @@ export async function uploadSong(file: File): Promise<UploadedSong> {
  * Get song information.
  */
 export async function getSong(songId: string): Promise<UploadedSong> {
-  const response = await karaokeFetch(`${API_BASE}/songs/${songId}`);
+  const response = await karaokeFetch(`${API_BASE}/songs/${encodeURIComponent(songId)}`);
 
   if (!response.ok) {
     const error = await response.json();
@@ -90,6 +90,20 @@ export async function getSong(songId: string): Promise<UploadedSong> {
   }
 
   return response.json();
+}
+
+/**
+ * Fetch the original uploaded song audio for browser-client playback.
+ */
+export async function fetchSongAudio(songId: string): Promise<Blob> {
+  const response = await karaokeFetch(`${API_BASE}/songs/${encodeURIComponent(songId)}/audio`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || 'Failed to load song audio');
+  }
+
+  return response.blob();
 }
 
 /**

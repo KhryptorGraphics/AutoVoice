@@ -88,19 +88,33 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       disconnect() {}
     }
 
+    class FakeAnalyserNode extends FakeAudioNode {
+      fftSize = 1024
+
+      getFloatTimeDomainData(data: Float32Array) {
+        data.fill(0.1)
+      }
+    }
+
     class FakeScriptProcessorNode extends FakeAudioNode {
       onaudioprocess: ((event: { inputBuffer: { getChannelData: (_channel: number) => Float32Array } }) => void) | null = null
     }
 
     class FakeAudioContext {
       sampleRate: number
+      destination: FakeAudioNode
 
       constructor(config?: { sampleRate?: number }) {
         this.sampleRate = config?.sampleRate ?? 24000
+        this.destination = new FakeAudioNode()
       }
 
       createMediaStreamSource() {
         return new FakeAudioNode()
+      }
+
+      createAnalyser() {
+        return new FakeAnalyserNode()
       }
 
       createScriptProcessor() {
@@ -118,6 +132,38 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       value: FakeAudioContext,
     })
 
+    class FakeMediaRecorder {
+      static isTypeSupported() {
+        return true
+      }
+
+      state: 'inactive' | 'recording' = 'inactive'
+      ondataavailable: ((event: BlobEvent) => void) | null = null
+      onstop: (() => void) | null = null
+
+      constructor(_stream: MediaStream, public readonly options?: MediaRecorderOptions) {}
+
+      start() {
+        this.state = 'recording'
+      }
+
+      stop() {
+        if (this.state === 'inactive') return
+        this.state = 'inactive'
+        const data = new Blob([new Uint8Array([82, 73, 70, 70, 0, 0, 0, 0])], {
+          type: this.options?.mimeType || 'audio/webm',
+        })
+        this.ondataavailable?.({ data } as BlobEvent)
+        this.onstop?.()
+      }
+    }
+
+    Object.defineProperty(globalThis, 'MediaRecorder', {
+      configurable: true,
+      writable: true,
+      value: FakeMediaRecorder,
+    })
+
     if (!navigator.mediaDevices) {
       Object.defineProperty(navigator, 'mediaDevices', {
         configurable: true,
@@ -125,7 +171,37 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       })
     }
 
+    navigator.mediaDevices.enumerateDevices = async () => [
+      {
+        deviceId: 'browser-mic-1',
+        kind: 'audioinput',
+        label: 'Browser Headset Mic',
+        groupId: 'browser-group-1',
+        toJSON() { return this },
+      },
+      {
+        deviceId: 'browser-output-1',
+        kind: 'audiooutput',
+        label: 'Browser Headphones',
+        groupId: 'browser-group-1',
+        toJSON() { return this },
+      },
+    ] as MediaDeviceInfo[]
     navigator.mediaDevices.getUserMedia = async () => new FakeMediaStream() as MediaStream
+
+    Object.defineProperty(HTMLMediaElement.prototype, 'setSinkId', {
+      configurable: true,
+      writable: true,
+      value: async function setSinkId(this: HTMLMediaElement, sinkId: string) {
+        Object.defineProperty(this, 'sinkId', {
+          configurable: true,
+          value: sinkId,
+        })
+      },
+    })
+    HTMLMediaElement.prototype.play = async function play() {
+      this.dispatchEvent(new Event('play'))
+    }
   }, { streamingStartError: options.streamingStartError ?? null, apiToken: options.apiToken ?? null })
 
   const profiles = [
@@ -239,6 +315,41 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   let checkpointDeletes = 0
   let lastTrainingPayload: Record<string, unknown> | null = null
   const authorizationHeaders: string[] = []
+  const trainingSamples = [
+    {
+      id: 'sample-1',
+      sample_id: 'sample-1',
+      profile_id: 'profile-1',
+      audio_path: '/tmp/sample-1.wav',
+      file_path: '/tmp/sample-1.wav',
+      duration_seconds: 12.5,
+      sample_rate: 44100,
+      created: '2026-04-18T00:00:00Z',
+      metadata: { qa_status: 'pass' },
+    },
+    {
+      id: 'sample-2',
+      sample_id: 'sample-2',
+      profile_id: 'profile-1',
+      audio_path: '/tmp/sample-2.wav',
+      file_path: '/tmp/sample-2.wav',
+      duration_seconds: 18.25,
+      sample_rate: 44100,
+      created: '2026-04-18T00:05:00Z',
+      metadata: { qa_status: 'pass' },
+    },
+    {
+      id: 'sample-failed',
+      sample_id: 'sample-failed',
+      profile_id: 'profile-1',
+      audio_path: '/tmp/sample-failed.wav',
+      file_path: '/tmp/sample-failed.wav',
+      duration_seconds: 9.5,
+      sample_rate: 44100,
+      created: '2026-04-18T00:10:00Z',
+      metadata: { qa_status: 'fail' },
+    },
+  ]
   const conversionRecords = [
     {
       id: 'history-1',
@@ -630,41 +741,26 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   })
 
   await page.route('**/api/v1/profiles/profile-1/samples', async (route) => {
-    return jsonResponse(route, [
-      {
-        id: 'sample-1',
-        sample_id: 'sample-1',
+    if (route.request().method() === 'POST') {
+      const nextIndex = trainingSamples.length + 1
+      const sample = {
+        id: `sample-${nextIndex}`,
+        sample_id: `sample-${nextIndex}`,
         profile_id: 'profile-1',
-        audio_path: '/tmp/sample-1.wav',
-        file_path: '/tmp/sample-1.wav',
-        duration_seconds: 12.5,
-        sample_rate: 44100,
-        created: '2026-04-18T00:00:00Z',
-        metadata: { qa_status: 'pass' },
-      },
-      {
-        id: 'sample-2',
-        sample_id: 'sample-2',
-        profile_id: 'profile-1',
-        audio_path: '/tmp/sample-2.wav',
-        file_path: '/tmp/sample-2.wav',
-        duration_seconds: 18.25,
-        sample_rate: 44100,
-        created: '2026-04-18T00:05:00Z',
-        metadata: { qa_status: 'pass' },
-      },
-      {
-        id: 'sample-failed',
-        sample_id: 'sample-failed',
-        profile_id: 'profile-1',
-        audio_path: '/tmp/sample-failed.wav',
-        file_path: '/tmp/sample-failed.wav',
-        duration_seconds: 9.5,
-        sample_rate: 44100,
-        created: '2026-04-18T00:10:00Z',
-        metadata: { qa_status: 'fail' },
-      },
-    ])
+        audio_path: `/tmp/sample-${nextIndex}.webm`,
+        file_path: `/tmp/sample-${nextIndex}.webm`,
+        duration_seconds: 3.0,
+        sample_rate: 48000,
+        created: '2026-04-18T00:15:00Z',
+        metadata: { source: 'browser_singalong_capture' },
+      }
+      trainingSamples.push(sample)
+      profiles[0].sample_count = trainingSamples.length
+      profiles[0].training_sample_count = trainingSamples.length
+      return jsonResponse(route, sample, 201)
+    }
+
+    return jsonResponse(route, trainingSamples)
   })
 
   await page.route('**/api/v1/profiles/profile-1/samples/from-path', async (route) => {
@@ -1121,6 +1217,14 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     }, 201)
   })
 
+  await page.route('**/api/v1/karaoke/songs/song-1/audio', async (route) => {
+    return route.fulfill({
+      status: 200,
+      contentType: 'audio/wav',
+      body: createWavBuffer(24_000, 2),
+    })
+  })
+
   await page.route('**/api/v1/karaoke/separate', async (route) => {
     separationPollCount = 0
     return jsonResponse(route, {
@@ -1261,6 +1365,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     getSpeakerDevice: () => speakerDevice,
     getHeadphoneDevice: () => headphoneDevice,
     getProfileCount: () => profiles.length,
+    getProfileSampleCount: () => trainingSamples.length,
     getLoadedModelCount: () => loadedModels.length,
     getLoadedModelTypes: () => loadedModels.map((model) => model.type),
     getBuiltTensorRTEngines: () => builtEngines.map((engine) => `${engine.name}:${engine.precision}`),

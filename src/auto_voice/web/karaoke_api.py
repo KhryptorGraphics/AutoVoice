@@ -6,6 +6,7 @@ for the live karaoke voice conversion feature.
 import atexit
 import functools
 import logging
+import mimetypes
 import os
 import tempfile
 import time
@@ -13,7 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Callable
 
-from flask import Blueprint, request, jsonify, current_app, g
+from flask import Blueprint, request, jsonify, current_app, g, send_file
 from werkzeug.utils import secure_filename
 
 from .persistence import DEFAULT_AUDIO_ROUTER_CONFIG
@@ -606,6 +607,28 @@ def get_song_info(song_id: str):
         'status': song['status'],
         'uploaded_at': song['uploaded_at']
     })
+
+
+@karaoke_bp.route('/songs/<song_id>/audio', methods=['GET'])
+def get_song_audio(song_id: str):
+    """Stream the original uploaded song audio for browser-client playback."""
+    song = _uploaded_songs.get(song_id)
+    if not song:
+        return error_response('Song not found', status_code=404, song_id=song_id)
+
+    song_path = song.get('path')
+    if not song_path or not os.path.isfile(song_path):
+        return error_response('Song audio is no longer available', status_code=404, song_id=song_id)
+
+    mimetype, _ = mimetypes.guess_type(song_path)
+    return send_file(
+        song_path,
+        mimetype=mimetype or 'application/octet-stream',
+        as_attachment=False,
+        download_name=secure_filename(song.get('original_filename') or f'{song_id}.audio'),
+        conditional=True,
+        max_age=0,
+    )
 
 
 @karaoke_bp.route('/separate', methods=['POST'])
