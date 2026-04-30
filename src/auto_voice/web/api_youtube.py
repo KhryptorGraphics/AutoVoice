@@ -53,7 +53,7 @@ def get_youtube_downloader() -> 'YouTubeDownloader':
     if cached is None:
         if not root.YOUTUBE_DOWNLOADER_AVAILABLE:
             raise RuntimeError("YouTube downloader not available")
-        output_dir = os.path.join(root.UPLOAD_FOLDER, 'youtube')
+        output_dir = str(Path(current_app.config.get('DATA_DIR', 'data')) / 'youtube_audio')
         os.makedirs(output_dir, exist_ok=True)
         cached = root.YouTubeDownloader(output_dir)
     _youtube_downloader = cached
@@ -103,6 +103,10 @@ def _register_youtube_asset(path: str, *, kind: str, job_id: str, metadata: dict
 
 def _singalong_source_url(asset_id: str) -> str:
     return f"/api/v1/singalong/sources/{asset_id}/audio"
+
+
+def _data_dir_path(*parts: str) -> Path:
+    return Path(current_app.config.get('DATA_DIR', 'data')).expanduser().joinpath(*parts)
 
 
 def _link_original_asset_to_profiles(asset_id: str | None, profile_ids: list[str]) -> None:
@@ -261,7 +265,7 @@ def _run_youtube_ingest(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     separator = VocalSeparator()
     stems = separator.separate(audio, sr)
-    output_dir = Path(root.UPLOAD_FOLDER) / 'youtube_ingest' / job_id
+    output_dir = _data_dir_path('separated_youtube', job_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     vocals_path = str(output_dir / 'vocals.wav')
     instrumental_path = str(output_dir / 'instrumental.wav')

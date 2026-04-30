@@ -797,6 +797,7 @@ class TestSampleAndDiarizationEndpoints:
         assert stored_sample.quality_metadata["qa_status"] in {"pass", "fail", "warn"}
         assert stored_sample.extra_metadata["original_audio_asset_id"] == original_asset_id
         assert stored_sample.extra_metadata["original_path"].endswith("song.wav")
+        assert str(Path(app_remaining.config["DATA_DIR"]) / "song_originals") in stored_sample.extra_metadata["original_path"]
 
         sources_response = client_remaining.get(f"/api/v1/singalong/sources?profile_id={profile_id}")
         assert sources_response.status_code == 200
@@ -850,6 +851,7 @@ class TestSampleAndDiarizationEndpoints:
         assert captured["settings"]["original_audio_asset_id"] == original_asset_id
         assert Path(captured["file_path"]).exists()
         assert Path(captured["file_path"]).name.endswith("_lead.wav")
+        assert str(Path(app_remaining.config["DATA_DIR"]) / "conversions" / "originals") in captured["file_path"]
 
         asset = app_remaining.state_store.get_asset(original_asset_id)
         assert asset["metadata"]["job_id"] == "conversion-job-1"
@@ -1443,6 +1445,24 @@ class TestStateAndModelRoutes:
 
 
 class TestYoutubeAnalysisAndQualityRoutes:
+    def test_youtube_downloader_uses_durable_data_dir(self, app_remaining, monkeypatch):
+        from auto_voice.web import api as web_api
+
+        captured = {}
+
+        class FakeDownloader:
+            def __init__(self, output_dir):
+                captured["output_dir"] = output_dir
+
+        web_api.YOUTUBE_DOWNLOADER_AVAILABLE = True
+        web_api._youtube_downloader = None
+        monkeypatch.setattr(web_api, "YouTubeDownloader", FakeDownloader)
+
+        with app_remaining.app_context():
+            web_api.get_youtube_downloader()
+
+        assert captured["output_dir"] == str(Path(app_remaining.config["DATA_DIR"]) / "youtube_audio")
+
     def test_youtube_history_info_and_download(self, client_remaining, app_remaining, tmp_path, monkeypatch):
         from auto_voice.web import api as web_api
 

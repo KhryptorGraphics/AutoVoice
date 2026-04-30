@@ -47,6 +47,10 @@ def _register_conversion_original_asset(
         return None
 
 
+def _data_dir_path(*parts: str) -> str:
+    return os.path.join(str(current_app.config.get('DATA_DIR', 'data')), *parts)
+
+
 def register_conversion_routes(api_bp: Blueprint) -> None:
     """Register conversion workflow, conversion job, and history routes."""
     api_bp.add_url_rule('/convert/workflows', view_func=list_conversion_workflows, methods=['GET'])
@@ -452,7 +456,7 @@ def convert_song():
     try:
         secure_name = secure_filename(song_file.filename)
         source_id = str(uuid.uuid4())
-        source_dir = os.path.join(root.UPLOAD_FOLDER, 'conversions', 'originals', profile_id)
+        source_dir = _data_dir_path('conversions', 'originals', profile_id)
         os.makedirs(source_dir, exist_ok=True)
         source_path = os.path.join(source_dir, f"{source_id}_{secure_name}")
         song_file.save(source_path)

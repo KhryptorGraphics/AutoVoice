@@ -619,6 +619,10 @@ def _state_store():
     return getter() if getter else None
 
 
+def _data_dir_path(*parts: str) -> Path:
+    return Path(current_app.config.get('DATA_DIR', 'data')).expanduser().joinpath(*parts)
+
+
 def _singalong_source_url(asset_id: str) -> str:
     return f"/api/v1/singalong/sources/{asset_id}/audio"
 
@@ -1476,10 +1480,10 @@ def upload_song(profile_id: str):
         job_id = str(uuid.uuid4())
         song_id = str(uuid.uuid4())
 
-        upload_dir = os.path.join(_dep('upload_folder'), 'songs', profile_id)
-        os.makedirs(upload_dir, exist_ok=True)
+        upload_dir = _data_dir_path('song_originals', profile_id)
+        upload_dir.mkdir(parents=True, exist_ok=True)
 
-        file_path = os.path.join(upload_dir, f"{song_id}_{filename}")
+        file_path = str(upload_dir / f"{song_id}_{filename}")
         file.save(file_path)
 
         auto_split = request.form.get('auto_split', 'true').lower() == 'true'
@@ -1547,8 +1551,8 @@ def upload_song(profile_id: str):
                     import soundfile as sf
                     from auto_voice.audio.separation import VocalSeparator
 
-                    output_dir = os.path.join(_dep('upload_folder'), 'separated', profile_id, song_id)
-                    os.makedirs(output_dir, exist_ok=True)
+                    output_dir = _data_dir_path('separated', profile_id, song_id)
+                    output_dir.mkdir(parents=True, exist_ok=True)
 
                     _separation_jobs[job_id]['progress'] = 20
                     _separation_jobs[job_id]['message'] = 'Loading audio...'
@@ -1569,8 +1573,8 @@ def upload_song(profile_id: str):
                     _separation_jobs[job_id]['message'] = 'Saving separated tracks...'
                     _dep('save_background_job')(_separation_jobs[job_id])
 
-                    vocals_path = os.path.join(output_dir, 'vocals.wav')
-                    instrumental_path = os.path.join(output_dir, 'instrumental.wav')
+                    vocals_path = str(output_dir / 'vocals.wav')
+                    instrumental_path = str(output_dir / 'instrumental.wav')
                     sf.write(vocals_path, result['vocals'], sr)
                     sf.write(instrumental_path, result['instrumental'], sr)
 
