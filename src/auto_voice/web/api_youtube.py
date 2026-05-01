@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import time
 import uuid
@@ -108,6 +109,29 @@ def _singalong_source_url(asset_id: str) -> str:
 
 def _data_dir_path(*parts: str) -> Path:
     return Path(current_app.config.get('DATA_DIR', 'data')).expanduser().joinpath(*parts)
+
+
+def _release_stage_memory(*objects: Any) -> None:
+    """Unload stage-owned models and force host/accelerator cache cleanup."""
+    for obj in objects:
+        if obj is None:
+            continue
+        unload = getattr(obj, 'unload', None)
+        if callable(unload):
+            try:
+                unload()
+            except Exception:
+                _root().logger.warning("Failed to unload pipeline stage object", exc_info=True)
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        _root().logger.debug("Accelerator cache cleanup skipped", exc_info=True)
 
 
 def _link_original_asset_to_profiles(asset_id: str | None, profile_ids: list[str]) -> None:
@@ -260,73 +284,84 @@ def _run_youtube_ingest(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     _update_youtube_ingest_job(job_id, progress=35, stage='separate', message='Splitting vocals and instrumental')
-    audio, sr = sf.read(result.audio_path)
-    if getattr(audio, 'ndim', 1) > 1:
-        audio = audio.T
+    separator = None
+    audio = None
+    stems = None
+    try:
+        audio, sr = sf.read(result.audio_path)
+        if getattr(audio, 'ndim', 1) > 1:
+            audio = audio.T
 
-    separator = VocalSeparator()
-    stems = separator.separate(audio, sr)
-    output_dir = _data_dir_path('separated_youtube', job_id)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    vocals_path = str(output_dir / 'vocals.wav')
-    instrumental_path = str(output_dir / 'instrumental.wav')
-    sf.write(vocals_path, stems['vocals'], sr)
-    sf.write(instrumental_path, stems['instrumental'], sr)
-    vocals_asset = _register_youtube_asset(
-        vocals_path,
-        kind='youtube_vocals',
-        job_id=job_id,
-        metadata={**metadata, 'variant': 'vocals'},
-    )
-    instrumental_asset = _register_youtube_asset(
-        instrumental_path,
-        kind='youtube_instrumental',
-        job_id=job_id,
-        metadata={**metadata, 'variant': 'instrumental'},
-    )
+        separator = VocalSeparator()
+        stems = separator.separate(audio, sr)
+        output_dir = _data_dir_path('separated_youtube', job_id)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        vocals_path = str(output_dir / 'vocals.wav')
+        instrumental_path = str(output_dir / 'instrumental.wav')
+        sf.write(vocals_path, stems['vocals'], sr)
+        sf.write(instrumental_path, stems['instrumental'], sr)
+        vocals_asset = _register_youtube_asset(
+            vocals_path,
+            kind='youtube_vocals',
+            job_id=job_id,
+            metadata={**metadata, 'variant': 'vocals'},
+        )
+        instrumental_asset = _register_youtube_asset(
+            instrumental_path,
+            kind='youtube_instrumental',
+            job_id=job_id,
+            metadata={**metadata, 'variant': 'instrumental'},
+        )
+    finally:
+        _release_stage_memory(separator)
+        del audio, stems
 
-    _update_youtube_ingest_job(job_id, progress=60, stage='diarize', message='Diarizing vocals')
-    diarizer = SpeakerDiarizer()
-    diarization = diarizer.diarize(vocals_path)
-    diarization_id = str(uuid.uuid4())
-    segments = [
-        {
-            'speaker_id': segment.speaker_id,
-            'start': segment.start,
-            'end': segment.end,
-            'duration': segment.duration,
-            'confidence': segment.confidence,
+    diarizer = None
+    try:
+        _update_youtube_ingest_job(job_id, progress=60, stage='diarize', message='Diarizing vocals')
+        diarizer = SpeakerDiarizer()
+        diarization = diarizer.diarize(vocals_path)
+        diarization_id = str(uuid.uuid4())
+        segments = [
+            {
+                'speaker_id': segment.speaker_id,
+                'start': segment.start,
+                'end': segment.end,
+                'duration': segment.duration,
+                'confidence': segment.confidence,
+            }
+            for segment in diarization.segments
+        ]
+        speaker_durations = _speaker_duration_map(segments)
+        diarization_payload = {
+            'diarization_id': diarization_id,
+            'audio_path': vocals_path,
+            'audio_duration': diarization.audio_duration,
+            'num_speakers': diarization.num_speakers,
+            'segments': segments,
+            'speaker_durations': speaker_durations,
+            'created_at': time.time(),
+            'metadata': {
+                **metadata,
+                'source': 'youtube_ingest',
+                'job_id': job_id,
+                'downloaded_audio_asset_id': audio_asset['asset_id'],
+                'vocals_asset_id': vocals_asset['asset_id'],
+                'instrumental_asset_id': instrumental_asset['asset_id'],
+            },
         }
-        for segment in diarization.segments
-    ]
-    speaker_durations = _speaker_duration_map(segments)
-    diarization_payload = {
-        'diarization_id': diarization_id,
-        'audio_path': vocals_path,
-        'audio_duration': diarization.audio_duration,
-        'num_speakers': diarization.num_speakers,
-        'segments': segments,
-        'speaker_durations': speaker_durations,
-        'created_at': time.time(),
-        'metadata': {
-            **metadata,
-            'source': 'youtube_ingest',
-            'job_id': job_id,
-            'downloaded_audio_asset_id': audio_asset['asset_id'],
-            'vocals_asset_id': vocals_asset['asset_id'],
-            'instrumental_asset_id': instrumental_asset['asset_id'],
-        },
-    }
-    root._save_diarization_result(diarization_payload)
+        root._save_diarization_result(diarization_payload)
 
-    _update_youtube_ingest_job(job_id, progress=82, stage='match', message='Matching speakers to source profiles')
-    suggestions = _build_ingest_suggestions(
-        diarizer=diarizer,
-        profile_store=root._get_profile_store(),
-        vocals_path=vocals_path,
-        segments=segments,
-        metadata=metadata,
-    )
+        _update_youtube_ingest_job(job_id, progress=82, stage='match', message='Matching speakers to source profiles')
+        suggestions = _build_ingest_suggestions(
+            diarizer=diarizer,
+            profile_store=root._get_profile_store(),
+            vocals_path=vocals_path,
+            segments=segments,
+            metadata=metadata,
+        )
+    finally:
+        _release_stage_memory(diarizer)
 
     response = {
         'job_id': job_id,
@@ -470,6 +505,7 @@ def get_youtube_ingest(job_id: str):
 def confirm_youtube_ingest(job_id: str):
     """Apply operator-reviewed profile assignments for a completed ingest job."""
     root = _root()
+    diarizer = None
     try:
         job = _youtube_ingest_job(job_id)
         if not job:
@@ -511,7 +547,6 @@ def confirm_youtube_ingest(job_id: str):
         segments = diarization_data.get('segments') or []
         valid_speakers = {segment.get('speaker_id') for segment in segments}
         store = root._get_profile_store()
-        diarizer = SpeakerDiarizer()
         applied = []
         skipped = []
 
@@ -563,6 +598,8 @@ def confirm_youtube_ingest(job_id: str):
                 if not store.exists(profile_id):
                     return root.not_found_response(f'Profile not found: {profile_id}')
 
+                if diarizer is None:
+                    diarizer = SpeakerDiarizer()
                 speaker_segments = _speaker_segments(segments, speaker_id)
                 seg_objects = [
                     SpeakerSegment(
@@ -642,6 +679,8 @@ def confirm_youtube_ingest(job_id: str):
     except Exception as exc:
         root.logger.error("Failed to confirm YouTube ingest %s: %s", job_id, exc, exc_info=True)
         return root.error_response(str(exc))
+    finally:
+        _release_stage_memory(diarizer)
 
 
 def save_youtube_history():

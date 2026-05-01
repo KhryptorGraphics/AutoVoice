@@ -3,6 +3,7 @@
 No fallback behavior - raises RuntimeError if Demucs is unavailable.
 """
 import logging
+import gc
 from typing import Dict, Optional
 
 import numpy as np
@@ -106,6 +107,16 @@ class VocalSeparator:
             raise RuntimeError(
                 f"Failed to load Demucs model '{self.model_name}': {e}"
             )
+
+    def unload(self) -> None:
+        """Release the Demucs model and cached accelerator memory."""
+        self._model = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if self.device.type == 'cuda':
+                torch.cuda.synchronize()
+        logger.info("Demucs model unloaded")
 
     @property
     def model_sample_rate(self) -> int:
@@ -213,7 +224,13 @@ class VocalSeparator:
             vocals = np.pad(vocals, (0, orig_len - len(vocals)))
             instrumental = np.pad(instrumental, (0, orig_len - len(instrumental)))
 
-        return {
+        result = {
             'vocals': vocals.astype(np.float32),
             'instrumental': instrumental.astype(np.float32),
         }
+        del audio_tensor, sources, vocals, instrumental
+        if input_sr != model_sr and 'resampler' in locals():
+            del resampler
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+        return result

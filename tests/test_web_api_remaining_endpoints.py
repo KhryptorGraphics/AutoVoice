@@ -1752,13 +1752,20 @@ class TestYoutubeAnalysisAndQualityRoutes:
                 )
 
         class FakeSeparator:
+            unload_calls = 0
+
             def separate(self, audio, sr):
                 return {
                     "vocals": np.zeros(int(sr * 2), dtype=np.float32),
                     "instrumental": np.zeros(int(sr * 2), dtype=np.float32),
                 }
 
+            def unload(self):
+                type(self).unload_calls += 1
+
         class FakeSpeakerDiarizer:
+            unload_calls = 0
+
             def diarize(self, audio_path):
                 return _FakeDiarizationResult(
                     segments=[
@@ -1778,6 +1785,9 @@ class TestYoutubeAnalysisAndQualityRoutes:
                 target = Path(output_path) if output_path else tmp_path / f"{speaker_id}_extracted.wav"
                 _write_wav(target)
                 return target
+
+            def unload(self):
+                type(self).unload_calls += 1
 
         def run_sync(job_id, runner, payload):
             web_api._update_background_job(job_id, status="running", progress=5)
@@ -1857,6 +1867,8 @@ class TestYoutubeAnalysisAndQualityRoutes:
             f"/api/v1/singalong/sources?profile_id={new_profile['profile_id']}"
         ).get_json()["sources"]
         assert any(source["asset_id"] == original_asset_id for source in new_profile_sources)
+        assert FakeSeparator.unload_calls >= 1
+        assert FakeSpeakerDiarizer.unload_calls >= 3
 
     def test_identify_retrain_analysis_artist_separation_and_quality_routes(
         self, client_remaining, app_remaining, tmp_path, monkeypatch

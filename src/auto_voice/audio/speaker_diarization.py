@@ -185,6 +185,13 @@ class SpeakerDiarizer:
             torch.cuda.empty_cache()
         logger.debug("Memory cleanup completed")
 
+    def unload(self) -> None:
+        """Release loaded speaker-embedding model state and cached memory."""
+        self._model = None
+        self._feature_extractor = None
+        self._cleanup_memory()
+        logger.info("Speaker diarization model unloaded")
+
     def _get_audio_chunks(
         self,
         audio_duration: float,
@@ -936,6 +943,8 @@ class SpeakerDiarizer:
 
         logger.info(f"Extracted {len(segments)} segments for {speaker_id} to {output_path}")
 
+        del waveform, extracted_parts, combined, combined_waveform
+        self._cleanup_memory()
         return output_path
 
 

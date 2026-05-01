@@ -165,67 +165,81 @@ def _create_profile_from_diarized_speaker(
         raise FileNotFoundError('Original audio not found')
 
     diarizer = SpeakerDiarizer()
-    longest_segment = max(speaker_segments, key=lambda s: s['end'] - s['start'])
-    embedding = diarizer.extract_speaker_embedding(
-        audio_path=audio_path,
-        start=longest_segment['start'],
-        end=longest_segment['end'],
-    )
-
-    speaker_duration = sum(s['end'] - s['start'] for s in speaker_segments)
-    profile_metadata = {
-        'source_audio_path': audio_path,
-        'source_diarization_id': diarization_data.get('diarization_id'),
-        'source_speaker_id': speaker_id,
-        'source_speaker_duration': speaker_duration,
-    }
-    profile_metadata.update(diarization_data.get('metadata') or {})
-    profile_metadata.update(request_metadata or {})
-
-    audio_segments = []
-    if extract_segments:
-        seg_objects = [
-            SpeakerSegment(
-                start=s['start'],
-                end=s['end'],
-                speaker_id=s['speaker_id'],
-                confidence=s.get('confidence', 1.0),
-            )
-            for s in speaker_segments
-        ]
-        temp_result = DiarizationResult(
-            segments=seg_objects,
-            audio_duration=diarization_data.get('audio_duration', 0),
-            num_speakers=diarization_data.get('num_speakers', 1),
-        )
-        extracted_path = diarizer.extract_speaker_audio(
+    try:
+        longest_segment = max(speaker_segments, key=lambda s: s['end'] - s['start'])
+        embedding = diarizer.extract_speaker_embedding(
             audio_path=audio_path,
-            diarization=temp_result,
-            speaker_id=speaker_id,
+            start=longest_segment['start'],
+            end=longest_segment['end'],
         )
-        if extracted_path:
-            audio_segments.append(str(extracted_path))
 
-    store = _dep('get_profile_store')()
-    profile_id = store.create_profile_from_diarization(
-        name=name,
-        speaker_embedding=embedding,
-        user_id=user_id,
-        audio_segments=audio_segments,
-        profile_role=profile_role,
-        metadata=profile_metadata,
-    )
+        speaker_duration = sum(s['end'] - s['start'] for s in speaker_segments)
+        profile_metadata = {
+            'source_audio_path': audio_path,
+            'source_diarization_id': diarization_data.get('diarization_id'),
+            'source_speaker_id': speaker_id,
+            'source_speaker_duration': speaker_duration,
+        }
+        profile_metadata.update(diarization_data.get('metadata') or {})
+        profile_metadata.update(request_metadata or {})
 
-    return {
-        'profile_id': profile_id,
-        'name': name,
-        'speaker_id': speaker_id,
-        'profile_role': profile_role,
-        'num_segments': len(speaker_segments),
-        'total_duration': speaker_duration,
-        'embedding_dim': len(embedding),
-        'metadata': profile_metadata,
-    }
+        audio_segments = []
+        if extract_segments:
+            seg_objects = [
+                SpeakerSegment(
+                    start=s['start'],
+                    end=s['end'],
+                    speaker_id=s['speaker_id'],
+                    confidence=s.get('confidence', 1.0),
+                )
+                for s in speaker_segments
+            ]
+            temp_result = DiarizationResult(
+                segments=seg_objects,
+                audio_duration=diarization_data.get('audio_duration', 0),
+                num_speakers=diarization_data.get('num_speakers', 1),
+            )
+            extracted_path = diarizer.extract_speaker_audio(
+                audio_path=audio_path,
+                diarization=temp_result,
+                speaker_id=speaker_id,
+            )
+            if extracted_path:
+                audio_segments.append(str(extracted_path))
+
+        store = _dep('get_profile_store')()
+        profile_id = store.create_profile_from_diarization(
+            name=name,
+            speaker_embedding=embedding,
+            user_id=user_id,
+            audio_segments=audio_segments,
+            profile_role=profile_role,
+            metadata=profile_metadata,
+        )
+
+        return {
+            'profile_id': profile_id,
+            'name': name,
+            'speaker_id': speaker_id,
+            'profile_role': profile_role,
+            'num_segments': len(speaker_segments),
+            'total_duration': speaker_duration,
+            'embedding_dim': len(embedding),
+            'metadata': profile_metadata,
+        }
+    finally:
+        unload = getattr(diarizer, 'unload', None)
+        if callable(unload):
+            try:
+                unload()
+            except Exception:
+                try:
+                    _dep('logger').warning(
+                        "Failed to unload diarizer after profile creation",
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
 
 
 def diarize_audio():
