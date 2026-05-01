@@ -50,6 +50,7 @@ export function YouTubeDownloadPage() {
   const [ingestJob, setIngestJob] = useState<YouTubeIngestJob | null>(null)
   const [ingestDecisions, setIngestDecisions] = useState<Record<string, YouTubeIngestDecision>>({})
   const [confirmingIngest, setConfirmingIngest] = useState(false)
+  const [clearingHistory, setClearingHistory] = useState(false)
 
   // Load profiles on mount
   useEffect(() => {
@@ -96,6 +97,21 @@ export function YouTubeDownloadPage() {
       setDownloadHistory(history)
     } catch (err) {
       console.error('Failed to load download history:', err)
+    }
+  }
+
+  const handleClearHistory = async () => {
+    setClearingHistory(true)
+    try {
+      await api.clearYouTubeHistory()
+      setDownloadHistory([])
+      await loadDownloadHistory()
+      toast.success('YouTube history cleared')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to clear YouTube history'
+      toast.error(message)
+    } finally {
+      setClearingHistory(false)
     }
   }
 
@@ -1124,12 +1140,14 @@ export function YouTubeDownloadPage() {
               Recent Downloads
             </h3>
             <button
+              type="button"
               onClick={() => {
-                void api.clearYouTubeHistory().then(() => setDownloadHistory([]))
+                void handleClearHistory()
               }}
-              className="text-sm text-gray-500 hover:text-gray-300"
+              disabled={clearingHistory}
+              className="text-sm text-gray-500 hover:text-gray-300 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Clear History
+              {clearingHistory ? 'Clearing...' : 'Clear History'}
             </button>
           </div>
 

@@ -30,6 +30,7 @@ def register_youtube_routes(api_bp: Blueprint) -> None:
     api_bp.add_url_rule('/youtube/history', view_func=list_youtube_history, methods=['GET'])
     api_bp.add_url_rule('/youtube/history', view_func=save_youtube_history, methods=['POST'])
     api_bp.add_url_rule('/youtube/history', view_func=clear_youtube_history, methods=['DELETE'])
+    api_bp.add_url_rule('/youtube/history/clear', view_func=clear_youtube_history, methods=['POST'])
     api_bp.add_url_rule('/youtube/history/<item_id>', view_func=delete_youtube_history_item, methods=['DELETE'])
     api_bp.add_url_rule('/youtube/history/export', view_func=export_youtube_history, methods=['GET'])
     api_bp.add_url_rule('/youtube/history/purge', view_func=purge_youtube_history, methods=['POST', 'DELETE'])
@@ -699,7 +700,9 @@ def clear_youtube_history():
             {"cleared_count": len(history)},
             payload=history,
         )
-        return '', 204
+        if request.method == 'DELETE':
+            return '', 204
+        return jsonify({'status': 'success', 'cleared_count': len(history)})
     except Exception as exc:
         root.logger.error("Failed to clear YouTube history: %s", exc, exc_info=True)
         return root.error_response(str(exc))

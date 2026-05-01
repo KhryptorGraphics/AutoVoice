@@ -1567,6 +1567,15 @@ class TestYoutubeAnalysisAndQualityRoutes:
         assert client_remaining.delete(f"/api/v1/youtube/history/{item_id}").status_code == 204
         assert client_remaining.delete("/api/v1/youtube/history").status_code == 204
 
+        assert client_remaining.post(
+            "/api/v1/youtube/history",
+            json={"url": "https://www.youtube.com/watch?v=abc123", "title": "Saved again"},
+        ).status_code == 201
+        clear_response = client_remaining.post("/api/v1/youtube/history/clear")
+        assert clear_response.status_code == 200
+        assert clear_response.get_json()["cleared_count"] == 1
+        assert client_remaining.get("/api/v1/youtube/history").get_json() == []
+
     def test_youtube_history_rejects_client_supplied_paths(self, client_remaining):
         response = client_remaining.post(
             "/api/v1/youtube/history",

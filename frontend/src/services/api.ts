@@ -2043,7 +2043,7 @@ class ApiService {
   }
 
   async clearYouTubeHistory(): Promise<void> {
-    await this.request('/youtube/history', { method: 'DELETE' })
+    await this.request('/youtube/history/clear', { method: 'POST' })
   }
 }
 
