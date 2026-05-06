@@ -354,6 +354,12 @@ def test_swarm_orchestrator_supports_custom_data_dir(tmp_path):
 def test_validate_hosted_deployment_with_mock_vhost_files(tmp_path):
     vhost = tmp_path / "autovoice.conf"
     ssl_vhost = tmp_path / "autovoice-ssl.conf"
+    enabled_sites = tmp_path / "sites-enabled"
+    enabled_sites.mkdir()
+    cert_path = tmp_path / "fullchain.pem"
+    key_path = tmp_path / "privkey.pem"
+    cert_path.write_text("unit-test-certificate", encoding="utf-8")
+    key_path.write_text("unit-test-key", encoding="utf-8")
     content = """
 ServerName autovoice.giggahost.com
 DocumentRoot frontend/dist
@@ -362,8 +368,15 @@ ProxyPass /socket.io http://127.0.0.1:10600/socket.io
 ProxyPass /ready http://127.0.0.1:10600/ready
 SecRequestBodyLimit 262144000
 """
+    enabled_ssl_content = f"""
+<VirtualHost *:443>
+SSLCertificateFile {cert_path}
+SSLCertificateKeyFile {key_path}
+</VirtualHost>
+"""
     vhost.write_text(content, encoding="utf-8")
     ssl_vhost.write_text(content, encoding="utf-8")
+    (enabled_sites / "autovoice.conf").write_text(enabled_ssl_content, encoding="utf-8")
     report_path = tmp_path / "hosted-preflight.json"
 
     env = _script_env()
@@ -377,6 +390,8 @@ SecRequestBodyLimit 262144000
             "--skip-dns",
             "--skip-tls",
             "--skip-apache-configtest",
+            "--enabled-sites-dir",
+            str(enabled_sites),
             "--vhost-file",
             str(vhost),
             "--vhost-file",
@@ -395,6 +410,70 @@ SecRequestBodyLimit 262144000
     assert report["checks"]["vhosts"]["ok"] is True
     assert report["checks"]["apache_configtest"]["ok"] is True
     assert report["checks"]["apache_configtest"]["skipped"] is True
+    assert report["checks"]["enabled_ssl_certificates"]["ok"] is True
+    assert report["checks"]["enabled_ssl_certificates"]["checked_path_count"] == 2
+
+
+def test_hosted_deployment_reports_enabled_ssl_certificate_paths(tmp_path):
+    from scripts.validate_hosted_deployment import _check_enabled_ssl_certificates
+
+    enabled_sites = tmp_path / "sites-enabled"
+    enabled_sites.mkdir()
+    cert_path = tmp_path / "fullchain.pem"
+    key_path = tmp_path / "privkey.pem"
+    cert_path.write_text("unit-test-certificate", encoding="utf-8")
+    key_path.write_text("unit-test-key", encoding="utf-8")
+    vhost = enabled_sites / "autovoice.conf"
+    vhost.write_text(
+        f"""
+<VirtualHost *:443>
+    SSLCertificateFile {cert_path}
+    SSLCertificateKeyFile {key_path}
+</VirtualHost>
+""",
+        encoding="utf-8",
+    )
+
+    result = _check_enabled_ssl_certificates(enabled_sites)
+
+    assert result["ok"] is True
+    assert result["checked_path_count"] == 2
+    assert result["files"][str(vhost)]["certificate_paths"][0]["path"] == str(cert_path)
+
+
+def test_hosted_deployment_fails_on_missing_enabled_ssl_certificate_path(tmp_path):
+    from scripts.validate_hosted_deployment import _check_enabled_ssl_certificates
+
+    enabled_sites = tmp_path / "sites-enabled"
+    enabled_sites.mkdir()
+    missing_cert = tmp_path / "missing-fullchain.pem"
+    key_path = tmp_path / "privkey.pem"
+    key_path.write_text("unit-test-key", encoding="utf-8")
+    vhost = enabled_sites / "autovoice.conf"
+    vhost.write_text(
+        f"""
+<VirtualHost *:443>
+    SSLCertificateFile {missing_cert}
+    SSLCertificateKeyFile {key_path}
+</VirtualHost>
+""",
+        encoding="utf-8",
+    )
+
+    result = _check_enabled_ssl_certificates(enabled_sites)
+
+    assert result["ok"] is False
+    assert result["missing"] == [
+        {
+            "enabled_path": str(vhost),
+            "resolved_path": str(vhost),
+            "directive": "SSLCertificateFile",
+            "line": 3,
+            "path": str(missing_cert),
+            "exists": False,
+            "size_bytes": 0,
+        }
+    ]
 
 
 def test_hosted_deployment_discovers_server_alias_vhost(tmp_path):

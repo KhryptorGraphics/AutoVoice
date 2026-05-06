@@ -10,6 +10,7 @@ for the readiness vocabulary.
 - Use `/ready` for container readiness and deploy gating.
 - Use `/api/v1/health` only as liveness and component diagnostics; it can return HTTP 200 while degraded.
 - Use `/api/v1/metrics?format=prometheus` for Prometheus scraping.
+- For Apache-hosted HTTPS, run `python scripts/validate_hosted_deployment.py --hostname autovoice.giggahost.com --backend-port 10600` before reloads. It must pass both live TLS validation and enabled-vhost certificate-file inventory.
 
 ## Public-Mode Hardening
 

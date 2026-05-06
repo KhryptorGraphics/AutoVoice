@@ -54,6 +54,86 @@ def _discover_enabled_vhosts(sites_enabled_dir: Path = Path("/etc/apache2/sites-
     return enabled
 
 
+def _check_enabled_ssl_certificates(
+    sites_enabled_dir: Path = Path("/etc/apache2/sites-enabled"),
+) -> dict[str, Any]:
+    """Verify every enabled Apache SSL certificate/key path exists on disk."""
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "sites_enabled_dir": str(sites_enabled_dir),
+        "files": {},
+        "missing": [],
+        "checked_path_count": 0,
+    }
+    if not sites_enabled_dir.exists():
+        return {**result, "skipped": True, "reason": "sites-enabled directory not found"}
+
+    for enabled_path in sorted(sites_enabled_dir.glob("*.conf")):
+        try:
+            resolved_path = enabled_path.resolve()
+        except OSError:
+            resolved_path = enabled_path
+
+        file_report: dict[str, Any] = {
+            "enabled_path": str(enabled_path),
+            "resolved_path": str(resolved_path),
+            "certificate_paths": [],
+        }
+        try:
+            lines = _load_text(resolved_path).splitlines()
+        except OSError as exc:
+            file_report["ok"] = False
+            file_report["error"] = str(exc)
+            result["files"][str(enabled_path)] = file_report
+            result["ok"] = False
+            continue
+
+        for line_number, line in enumerate(lines, start=1):
+            tokens = line.split()
+            if not tokens or tokens[0] not in {"SSLCertificateFile", "SSLCertificateKeyFile"}:
+                continue
+
+            certificate_path = Path(tokens[1]) if len(tokens) > 1 else None
+            entry: dict[str, Any] = {
+                "directive": tokens[0],
+                "line": line_number,
+                "path": str(certificate_path) if certificate_path else "",
+                "exists": False,
+                "size_bytes": 0,
+                "ok": False,
+            }
+            if certificate_path is None:
+                entry["error"] = "missing certificate path"
+            else:
+                try:
+                    entry["exists"] = certificate_path.exists()
+                    entry["size_bytes"] = certificate_path.stat().st_size if entry["exists"] else 0
+                    entry["ok"] = bool(entry["exists"] and entry["size_bytes"] > 0)
+                except OSError as exc:
+                    entry["error"] = str(exc)
+
+            file_report["certificate_paths"].append(entry)
+            result["checked_path_count"] += 1
+            if not entry["ok"]:
+                missing_entry = {
+                    "enabled_path": str(enabled_path),
+                    "resolved_path": str(resolved_path),
+                    "directive": entry["directive"],
+                    "line": line_number,
+                    "path": str(certificate_path) if certificate_path else "",
+                    "exists": entry["exists"],
+                    "size_bytes": entry["size_bytes"],
+                }
+                result["missing"].append(missing_entry)
+                result["ok"] = False
+
+        file_report["ok"] = all(item["ok"] for item in file_report["certificate_paths"])
+        result["files"][str(enabled_path)] = file_report
+
+    return result
+
+
 def _run_apache_configtest(command: list[str]) -> dict[str, Any]:
     try:
         completed = subprocess.run(
@@ -246,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frontend-root", default="frontend/dist")
     parser.add_argument("--min-body-limit", type=int, default=262144000)
     parser.add_argument("--vhost-file", action="append", default=[])
+    parser.add_argument("--enabled-sites-dir", type=Path, default=Path("/etc/apache2/sites-enabled"))
     parser.add_argument("--report", type=Path, default=Path("reports/platform/hosted-preflight.json"))
     parser.add_argument("--skip-dns", action="store_true")
     parser.add_argument("--skip-tls", action="store_true")
@@ -291,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.skip_apache_configtest
             else _check_apache_configtest()
         ),
+        "enabled_ssl_certificates": _check_enabled_ssl_certificates(args.enabled_sites_dir),
         "dns": {"ok": True, "skipped": True} if args.skip_dns else _check_dns(args.hostname),
         "tls": {"ok": True, "skipped": True} if args.skip_tls else _check_tls(args.hostname),
         "secrets": _check_required_secrets(args.required_env, args.secret_env_any),

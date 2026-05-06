@@ -120,6 +120,13 @@ external prerequisites outside the repo:
   one unrelated missing certificate path can block `apache2ctl configtest` and
   prevent AutoVoice reloads
 
+The hosted preflight inventories every enabled Apache `SSLCertificateFile` and
+`SSLCertificateKeyFile`. This catches the failure mode where Apache is serving a
+valid certificate from memory but the referenced `/etc/letsencrypt/live/...`
+directory has been deleted or broken on disk. If the check fails, recreate the
+missing Let's Encrypt live path with `certbot certonly --webroot` for the
+affected hostname, run `sudo apache2ctl configtest`, then reload Apache.
+
 ## Release Candidate Workflow
 
 Release-candidate status is commit-specific. Do not infer current readiness from
