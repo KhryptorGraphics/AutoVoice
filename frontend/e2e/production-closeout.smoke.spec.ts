@@ -9,7 +9,7 @@ test.describe('Production closeout browser flows', () => {
     await page.goto('/youtube')
 
     await page.getByLabel('YouTube URL input').fill('https://youtu.be/smoke-video')
-    await page.getByRole('button', { name: 'Fetch Info' }).click()
+    await page.getByRole('button', { name: 'Manual' }).click()
     await expect(page.getByText('Smoke Song').first()).toBeVisible()
 
     await page.getByRole('button', { name: 'Download Audio' }).click()
@@ -30,11 +30,7 @@ test.describe('Production closeout browser flows', () => {
     await page.goto('/youtube')
 
     await page.getByLabel('YouTube URL input').fill('https://youtu.be/smoke-video')
-    await page.getByRole('button', { name: 'Fetch Info' }).click()
-    await expect(page.getByText('Smoke Song').first()).toBeVisible()
-
-    await page.getByRole('button', { name: 'Auto Ingest + Match Profiles' }).click()
-    await expect(page.getByText('Auto Ingest Running')).toBeVisible()
+    await page.getByRole('button', { name: 'Auto Ingest' }).click()
     await expect(page.getByText('Auto Ingest Ready for Review')).toBeVisible({ timeout: 5_000 })
 
     await expect(page.getByText('Vocals Stem')).toBeVisible()

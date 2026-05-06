@@ -85,7 +85,7 @@ test.describe('Local full UI workflow coverage', () => {
 
     await page.goto('/youtube')
     await page.locator('#youtube-url').fill('not-a-youtube-url')
-    await page.getByRole('button', { name: /Fetch Info/ }).click()
+    await page.getByRole('button', { name: /Manual/ }).click()
     await expect(page.getByText(/error|invalid|youtube|url/i).first()).toBeVisible()
 
     await page.goto('/system')
