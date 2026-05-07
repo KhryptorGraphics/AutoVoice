@@ -319,6 +319,13 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   let conversionHistoryDeletes = 0
   let checkpointRollbacks = 0
   let checkpointDeletes = 0
+  let sampleReviewRequests = 0
+  let diarizationRequests = 0
+  let diarizationAssignments = 0
+  let diarizationProfileCreates = 0
+  let backupExports = 0
+  let backupDryRuns = 0
+  let backupApplies = 0
   let lastTrainingPayload: Record<string, unknown> | null = null
   const authorizationHeaders: string[] = []
   const trainingSamples = [
@@ -513,6 +520,83 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
           stderr: 'tegrastats timed out',
         },
       ],
+    })
+  })
+
+  await page.route('**/api/v1/readiness/local-production', async (route) => {
+    return jsonResponse(route, {
+      ready: true,
+      git_sha: 'abc123456789',
+      release_evidence_available: true,
+      checks: [
+        { id: 'https', label: 'HTTPS configured', ok: true },
+        { id: 'auth', label: 'API auth token configured', ok: true },
+        { id: 'cors', label: 'Safe CORS', ok: true },
+        { id: 'profiles', label: 'Profiles present', ok: true },
+        { id: 'gpu', label: 'GPU/TensorRT status', ok: true },
+        { id: 'benchmarks', label: 'Benchmark status', ok: true },
+      ],
+      commands: {
+        completion: 'conda run -n autovoice-thor python scripts/run_completion_matrix.py --output-dir reports/completion/latest --frontend --real-audio --refresh-gitnexus',
+        hardware: 'conda run -n autovoice-thor python scripts/run_hardware_release_evidence.py --output-dir reports/hardware/latest --execute',
+      },
+      paths: {
+        backup_dir: 'backups/local',
+        data_dir: 'data',
+      },
+    })
+  })
+
+  await page.route('**/api/v1/backup/export', async (route) => {
+    backupExports += 1
+    return jsonResponse(route, {
+      status: 'exported',
+      backup_path: 'backups/autovoice-smoke.zip',
+      manifest: {
+        version: 1,
+        git_sha: 'abc123456789',
+        created_at: '2026-04-18T00:00:00Z',
+        included_paths: ['data/profiles', 'data/samples', 'reports/release-evidence'],
+        files: [
+          { path: 'data/profiles/profile-1.json', size_bytes: 128, sha256: 'a'.repeat(64) },
+          { path: 'reports/release-evidence/latest/release_decision.json', size_bytes: 256, sha256: 'b'.repeat(64) },
+        ],
+        checksums: {
+          'data/profiles/profile-1.json': 'a'.repeat(64),
+          'reports/release-evidence/latest/release_decision.json': 'b'.repeat(64),
+        },
+        restore_warnings: [],
+      },
+    })
+  })
+
+  await page.route('**/api/v1/backup/import', async (route) => {
+    const formData = await route.request().postDataBuffer()
+    const isApply = formData.toString().includes('true')
+    if (isApply) {
+      backupApplies += 1
+    } else {
+      backupDryRuns += 1
+    }
+    return jsonResponse(route, {
+      status: isApply ? 'applied' : 'dry_run',
+      dry_run: !isApply,
+      manifest: {
+        version: 1,
+        git_sha: 'abc123456789',
+        created_at: '2026-04-18T00:00:00Z',
+        included_paths: ['data/profiles'],
+        files: [
+          { path: 'data/profiles/profile-1.json', size_bytes: 128, sha256: 'a'.repeat(64) },
+        ],
+        checksums: {
+          'data/profiles/profile-1.json': 'a'.repeat(64),
+        },
+        restore_warnings: isApply ? [] : ['Dry run only; no files changed.'],
+      },
+      restore_warnings: isApply ? [] : ['Dry run only; no files changed.'],
+      restored_paths: isApply ? ['data/profiles/profile-1.json'] : [],
+      restored_count: isApply ? 1 : 0,
     })
   })
 
@@ -767,6 +851,118 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     }
 
     return jsonResponse(route, trainingSamples)
+  })
+
+  await page.route(/\/api\/v1\/samples\/review(?:\?.*)?$/, async (route) => {
+    sampleReviewRequests += 1
+    const url = new URL(route.request().url())
+    const trainableFilter = url.searchParams.get('trainable')
+    const samples = [
+      {
+        id: 'review-sample-1',
+        sample_id: 'review-sample-1',
+        profile_id: 'profile-1',
+        profile_name: 'Smoke Profile',
+        source: 'youtube_ingest_review',
+        consent_status: 'confirmed',
+        duration_seconds: 42.5,
+        rms_loudness: 0.0412,
+        silence_ratio: 0.08,
+        clipping_ratio: 0.001,
+        trainable: true,
+        quality_status: 'pass',
+        issues: [],
+        recommendations: ['No remediation needed.'],
+        metadata: { source_file: 'smoke-song.wav' },
+      },
+      {
+        id: 'review-sample-blocked',
+        sample_id: 'review-sample-blocked',
+        profile_id: 'profile-1',
+        profile_name: 'Smoke Profile',
+        source: 'browser_singalong_capture',
+        consent_status: 'missing',
+        duration_seconds: 4.2,
+        rms_loudness: 0.006,
+        silence_ratio: 0.72,
+        clipping_ratio: 0.18,
+        trainable: false,
+        quality_status: 'fail',
+        issues: ['too much silence', 'clipping detected'],
+        recommendations: ['Record a cleaner take before training.'],
+        metadata: { source_file: 'bad-take.wav' },
+      },
+    ]
+    const filtered = trainableFilter === null
+      ? samples
+      : samples.filter((sample) => String(sample.trainable) === trainableFilter)
+    return jsonResponse(route, {
+      samples: filtered,
+      count: filtered.length,
+      summary: {
+        trainable: samples.filter((sample) => sample.trainable).length,
+        blocked: samples.filter((sample) => !sample.trainable).length,
+      },
+    })
+  })
+
+  await page.route('**/api/v1/audio/diarize/assign', async (route) => {
+    diarizationAssignments += 1
+    const body = route.request().postDataJSON() as { segment_index: number; profile_id: string }
+    return jsonResponse(route, {
+      status: 'assigned',
+      diarization_id: 'diarization-smoke',
+      segment_index: body.segment_index,
+      profile_id: body.profile_id,
+      sample_id: `assigned-segment-${body.segment_index}`,
+    })
+  })
+
+  await page.route('**/api/v1/audio/diarize', async (route) => {
+    diarizationRequests += 1
+    return jsonResponse(route, {
+      diarization_id: 'diarization-smoke',
+      audio_duration: 62,
+      num_speakers: 2,
+      speaker_durations: {
+        SPEAKER_00: 30,
+        SPEAKER_01: 28,
+      },
+      segments: [
+        { speaker_id: 'SPEAKER_00', start: 0, end: 30, duration: 30, confidence: 0.94 },
+        { speaker_id: 'SPEAKER_01', start: 32, end: 60, duration: 28, confidence: 0.88 },
+      ],
+    })
+  })
+
+  await page.route('**/api/v1/profiles/auto-create', async (route) => {
+    diarizationProfileCreates += 1
+    const body = route.request().postDataJSON() as { name?: string; speaker_id?: string }
+    const createdProfile = {
+      profile_id: `profile-diarized-${diarizationProfileCreates}`,
+      name: body.name ?? body.speaker_id ?? 'Diarized Speaker',
+      created_at: '2026-04-18T00:00:00Z',
+      sample_count: 1,
+      training_sample_count: 1,
+      clean_vocal_seconds: 30,
+      clean_vocal_minutes: 0.5,
+      full_model_remaining_seconds: 1770,
+      full_model_remaining_minutes: 29.5,
+      full_model_eligible: false,
+      has_trained_model: false,
+      has_full_model: false,
+      has_adapter_model: false,
+      active_model_type: 'adapter',
+      profile_role: 'source_artist',
+      selected_adapter: 'hq',
+      training_history: [],
+    }
+    profiles.push(createdProfile)
+    return jsonResponse(route, {
+      profile: createdProfile,
+      profile_id: createdProfile.profile_id,
+      sample_count: 1,
+    }, 201)
   })
 
   await page.route('**/api/v1/profiles/profile-1/samples/from-path', async (route) => {
@@ -1388,5 +1584,12 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     getCheckpointCount: () => checkpoints.length,
     getLastTrainingPayload: () => lastTrainingPayload,
     getAuthorizationHeaders: () => authorizationHeaders,
+    getSampleReviewRequests: () => sampleReviewRequests,
+    getDiarizationRequests: () => diarizationRequests,
+    getDiarizationAssignments: () => diarizationAssignments,
+    getDiarizationProfileCreates: () => diarizationProfileCreates,
+    getBackupExports: () => backupExports,
+    getBackupDryRuns: () => backupDryRuns,
+    getBackupApplies: () => backupApplies,
   }
 }

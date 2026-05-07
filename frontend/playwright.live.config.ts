@@ -9,6 +9,7 @@ export default defineConfig({
   testDir: './e2e',
   testMatch: /.*\.live\.spec\.ts/,
   timeout: 60_000,
+  workers: 1,
   retries: 0,
   reporter: [['html', { open: 'never', outputFolder: 'playwright-report-live' }], ['list']],
   use: {
