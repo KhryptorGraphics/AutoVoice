@@ -95,7 +95,8 @@ Backend health is exposed at:
 - `tests/`: backend and integration tests
 - `docs/`: canonical product, API, and operator docs
 - `docs/repo-hygiene.md`: canonical source, fixture, artifact, and release-evidence policy
-- `conductor/`, `ORCHESTRATOR*.md`, root completion summaries, `reports/`, `output/`, `academic-research/`: historical planning, research, generated output, or release-evidence artifacts
+- `docs/archive/`: archived historical planning, prompt, and completion-report docs (formerly root-level `ORCHESTRATOR*.md`, `PHASE*`, `*_SUMMARY*`, etc.)
+- `conductor/`, `reports/`, `output/`, `academic-research/`: historical planning, research, generated output, or release-evidence artifacts
 
 ## What Is Canonical vs Experimental
 

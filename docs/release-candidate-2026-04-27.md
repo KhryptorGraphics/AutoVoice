@@ -1,5 +1,9 @@
 # AutoVoice Release Candidate Evidence - 2026-04-27
 
+> **Historical snapshot (2026-04-27).** Evidence here is tied to that date's
+> commit. See [current-truth.md](./current-truth.md) for canonical status, and
+> re-run the completion matrix at the chosen release commit before claiming it.
+
 This release candidate is validated through the full completion matrix in the
 project conda environment:
 

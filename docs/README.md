@@ -36,6 +36,8 @@ These are useful for implementation context, but they are not the authoritative 
 
 Date-stamped readiness, coverage, and failure-analysis reports under `docs/` are historical artifacts. They document past investigation snapshots, not the current MVP truth. Use them for archaeology only after reading the canonical docs above.
 
+Root-level historical planning, prompt, and completion-report docs (formerly `ORCHESTRATOR*.md`, `PHASE*`, `*_SUMMARY*`, `PROMPT.md`, etc.) now live in [archive/](./archive/).
+
 Historical examples include:
 
 - [test_coverage_improvement_20260202.md](./test_coverage_improvement_20260202.md)

@@ -132,21 +132,25 @@ Tests use pytest markers defined in `pytest.ini`:
 
 ## Test Coverage
 
-**Current Status (2026-02-02):**
-- Overall Coverage: **63%** (15,063 lines, 9,467 covered)
-- Target: **80%** overall, **85%** for inference modules
-- Test Suite: 1,984 tests (1,791 passing, 147 failing, 39 skipped, 47 errors)
-- Runtime: ~27 minutes
+**Canonical readiness signal:** the completion matrix
+(`reports/completion/latest/completion_matrix.json`) and
+[docs/current-truth.md](docs/current-truth.md) — not the snapshot figures below.
 
-**Module Coverage:**
-- Database: **87%** ✅ (exceeds 70% target)
-- Inference Core: **68%** (adapter_bridge 97%, pipeline_factory 94%, meanvc 91%)
-- Audio Processing: **55%** (diarization 50%, separation 40%, youtube 38%)
-- Web API: **60%** (training API 70%, karaoke 30%)
-- Storage: **78%** ✅ (exceeds 70% target)
+**Last full pytest run (2026-04-29):** ~4,500 tests, **4,490 passed, 12 failed,
+53 skipped, 13 errors** (~2h08m).
+- All 13 errors are the `test_docker_deployment.py` suite (no local Docker), and
+  most failures are environment-gated (Docker, live Playwright).
+- The LoRA-loading and secret-key failures in that log are **fixed at HEAD**
+  (re-verified green: `test_inference_lora_loading.py` 9/9,
+  `test_secret_key_security.py` 25/25, MeanVC perf gated/skipped).
 
-**Coverage Report:** `reports/coverage_summary_20260202.md`
-**HTML Report:** `htmlcov/index.html`
+**Coverage (last measured 2026-02-02 — stale, re-run `--cov` before trusting):**
+- Overall **63%** (target **80%** overall, **85%** inference)
+- Database 87%, Storage 78%, Inference Core 68%, Web API 60%, Audio 55%
+
+> The earlier "1,984 tests / 147 failing / 47 errors" line was a 2026-02-02
+> snapshot and is obsolete; the suite has since grown to ~4,500 tests at ~99%
+> pass. Re-measure coverage at HEAD before any release claim.
 
 ### Test Patterns and Best Practices
 
@@ -354,19 +358,37 @@ Located in `models/pretrained/`:
 - Atomic commits: one feature per commit, always run full test suite first
 
 <!-- gitnexus:start -->
-# GitNexus MCP
+# GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **autovoice** (20608 symbols, 52909 relationships, 300 execution flows).
+This project is indexed by GitNexus as **AutoVoice** (28891 symbols, 47906 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-## Always Start Here
+> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
-1. **Read `gitnexus://repo/{name}/context`** — codebase overview + check index freshness
-2. **Match your task to a skill below** and **read that skill file**
-3. **Follow the skill's workflow and checklist**
+## Always Do
 
-> If step 1 warns the index is stale, run `npx gitnexus analyze` in the terminal first.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
 
-## Skills
+## Never Do
+
+- NEVER edit a function, class, or method without first running `impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
+- NEVER commit changes without running `detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/AutoVoice/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/AutoVoice/clusters` | All functional areas |
+| `gitnexus://repo/AutoVoice/processes` | All execution flows |
+| `gitnexus://repo/AutoVoice/process/{name}` | Step-by-step execution trace |
+
+## CLI
 
 | Task | Read this skill file |
 |------|---------------------|

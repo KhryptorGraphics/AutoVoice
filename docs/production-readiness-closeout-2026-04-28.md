@@ -1,5 +1,10 @@
 # Production Readiness Closeout - 2026-04-28
 
+> **Historical snapshot (2026-04-28).** Point-in-time verification results.
+> Authoritative current status and the support boundary live in
+> [current-truth.md](./current-truth.md); re-validate evidence against the
+> chosen candidate commit before any release claim.
+
 This closeout records the current production-readiness proof for `main` after running the verification matrix in the `autovoice-thor` conda environment.
 
 ## Environment

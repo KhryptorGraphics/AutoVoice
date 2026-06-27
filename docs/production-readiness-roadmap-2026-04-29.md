@@ -1,5 +1,12 @@
 # AutoVoice Production Readiness Roadmap
 
+> **Status: largely executed / superseded.** Written 2026-04-29. Phases 2–5
+> (training/model contract, benchmark gates, local operator UX, and security
+> hardening) have since been implemented on `main`. For authoritative current
+> status read [current-truth.md](./current-truth.md). This file is retained for
+> the Phase 7 public/commercial track and historical context — verify any
+> remaining item against HEAD before acting on it.
+
 Generated from the 2026-04-29 audit pass using GitNexus, MemKraft search, local repo inspection, and four read-only specialist audit lanes.
 
 ## Current Truth
