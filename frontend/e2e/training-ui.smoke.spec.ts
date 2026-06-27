@@ -15,6 +15,8 @@ test.describe('Training UI smoke', () => {
     await page.getByTestId('training-preset-selector').locator('select').selectOption('quality_lora')
     await page.getByTestId('training-device-select').selectOption('cuda:0')
     await page.getByTestId('training-precision-select').selectOption('fp16')
+    // Optimizer/scheduler live in the advanced section, collapsed by default.
+    await page.getByTestId('training-advanced-toggle').click()
     await page.getByTestId('training-optimizer-select').selectOption('adam')
     await page.getByTestId('training-scheduler-select').selectOption('none')
 

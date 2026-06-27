@@ -161,7 +161,9 @@ export function TrainingConfigPanel({
   continuationHint,
   options,
 }: TrainingConfigPanelProps) {
-  const [expanded, setExpanded] = useState(true)
+  // Advanced hyperparameters are collapsed by default; presets + key params cover
+  // the common case, and operators can Expand for full control.
+  const [expanded, setExpanded] = useState(false)
 
   const update = <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => {
     onChange({ ...config, [key]: value })
@@ -218,6 +220,8 @@ export function TrainingConfigPanel({
           <h3 className="font-semibold">Training Configuration</h3>
         </div>
         <button
+          type="button"
+          data-testid="training-advanced-toggle"
           onClick={() => setExpanded(!expanded)}
           className="flex items-center gap-1 text-sm text-gray-400 hover:text-white"
         >
