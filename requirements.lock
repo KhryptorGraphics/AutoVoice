@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-04-28T09:48:00Z",
+  "generated_at": "2026-07-02T00:00:00Z",
   "generated_by": "scripts/check_dependency_contract.py",
   "backend": {
     "requirements_runtime": {
       "path": "requirements-runtime.txt",
-      "sha256": "76073e15fb1e999be715278a9cf206c17740d503c297d2cdc32d98cc50eaa740",
-      "line_count": 30
+      "sha256": "a2e2fc3c1448ddd6b1caf661daa56a6b37086c36aba586b4e3a2f29a0a916133",
+      "line_count": 31
     },
     "frontend_lock": {
       "path": "frontend/package-lock.json",
