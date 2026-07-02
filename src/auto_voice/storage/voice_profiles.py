@@ -219,10 +219,18 @@ class VoiceProfileStore:
                 "compatibility_version"
             )
 
-        if normalized["has_full_model"]:
+        # An explicitly stored choice (set by training completion, checkpoint
+        # rollback, or adapter selection) wins as long as the corresponding
+        # artifact exists; otherwise fall back to the best available.
+        explicit = normalized.get("active_model_type")
+        if explicit == "full_model" and normalized["has_full_model"]:
+            pass
+        elif explicit == "adapter" and normalized["has_trained_model"]:
+            pass
+        elif normalized["has_full_model"]:
             normalized["active_model_type"] = "full_model"
         elif normalized["has_trained_model"]:
-            normalized.setdefault("active_model_type", "adapter")
+            normalized["active_model_type"] = "adapter"
         else:
             normalized["active_model_type"] = "base"
 
