@@ -39,6 +39,7 @@ class StreamingConversionPipeline:
         overlap_ratio: float = 0.5,
         sample_rate: int = 24000,
         device: Optional[torch.device] = None,
+        profile_store=None,
     ):
         self.sample_rate = sample_rate
         self.chunk_size_ms = chunk_size_ms
@@ -55,8 +56,11 @@ class StreamingConversionPipeline:
         else:
             self.device = device
 
-        # Initialize SOTA pipeline for actual conversion
-        self._pipeline = SOTAConversionPipeline(device=self.device, n_steps=1)
+        # Initialize SOTA pipeline for actual conversion; profile_store lets
+        # set_speaker load the profile's trained artifacts
+        self._pipeline = SOTAConversionPipeline(
+            device=self.device, n_steps=1, profile_store=profile_store
+        )
 
         # Overlap-add buffer for continuous output
         self.overlap_buffer: Optional[torch.Tensor] = None
@@ -136,12 +140,15 @@ class StreamingConversionPipeline:
         speaker_embedding = speaker_embedding.to(self.device)
 
         # Convert using SOTA pipeline
-        # Note: Pipeline expects full audio, we process chunk by chunk
+        # Note: Pipeline expects full audio, we process chunk by chunk.
+        # Live input is already vocals (microphone), so skip the per-chunk
+        # vocal separation stage entirely.
         with torch.no_grad():
             result = self._pipeline.convert(
                 audio_chunk,
                 self.sample_rate,
                 speaker_embedding,
+                separate=False,
             )
 
         converted = result['audio'].squeeze()

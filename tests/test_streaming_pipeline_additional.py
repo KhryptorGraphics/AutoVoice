@@ -175,3 +175,28 @@ def test_audio_output_stream_write_flush_start_stop_and_import_fallback(monkeypa
     assert played["samplerate"] == 16000
     assert stream.is_running is False
     assert stream._buffer == []
+
+
+def test_streaming_pipeline_forwards_profile_store_to_sota():
+    """profile_store must reach the SOTA backend so set_speaker can serve trained artifacts."""
+    sentinel = object()
+    with patch("auto_voice.inference.streaming_pipeline.SOTAConversionPipeline") as mock_pipeline_cls:
+        StreamingConversionPipeline(
+            sample_rate=24000,
+            device=torch.device("cpu"),
+            profile_store=sentinel,
+        )
+    _, kwargs = mock_pipeline_cls.call_args
+    assert kwargs["profile_store"] is sentinel
+
+
+def test_streaming_chunk_conversion_skips_separation():
+    """Live mic input is already vocals; per-chunk separation must be bypassed."""
+    pipeline, backend = _make_pipeline(device=torch.device("cpu"))
+    chunk = torch.zeros(pipeline.chunk_size, dtype=torch.float32)
+    embedding = torch.ones(256, dtype=torch.float32)
+
+    pipeline.process_chunk(chunk, embedding)
+
+    _, kwargs = backend.convert.call_args
+    assert kwargs.get("separate") is False

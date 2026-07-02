@@ -14,11 +14,19 @@ Frame alignment:
 No fallback behavior: raises RuntimeError on failure.
 """
 import logging
+import os
 import time
 from typing import Callable, Dict, Optional, Any, TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
+
+# Real vocoder weights (fetched by scripts/download_pretrained_models.py /
+# scripts/setup_sota_models.py); without them the vocoders synthesize noise.
+DEFAULT_BIGVGAN_CHECKPOINT = os.path.join('models', 'pretrained', 'bigvgan_generator.pt')
+DEFAULT_HIFIGAN_CHECKPOINT = os.path.join(
+    'models', 'pretrained', 'generator_universal.pth.tar'
+)
 
 from ..audio.separator import MelBandRoFormer
 from ..models.encoder import ContentVecEncoder
@@ -108,47 +116,130 @@ class SOTAConversionPipeline:
             device=self.device
         ).to(self.device)
         self.decoder = CoMoSVCDecoder(device=self.device).to(self.device)
+        # The on-disk models/pretrained/bigvgan_generator.pt is the official
+        # bigvgan_v2_24khz_100band_256x export, whose parametrized-weight
+        # layout does not match this repo's BigVGANGenerator — it cannot be
+        # loaded here. The base 100-mel vocoder therefore runs untrained;
+        # trained-artifact serving swaps to the 80-mel universal HiFiGAN,
+        # which does load real weights.
+        logger.warning(
+            "SOTA base BigVGAN vocoder runs WITHOUT trained weights (no "
+            "compatible checkpoint); trained profiles are served through the "
+            "80-mel HiFiGAN instead"
+        )
         self.vocoder = BigVGANVocoder(
             pretrained=None, device=self.device
         ).to(self.device)
 
-        # Load LoRA weights if profile has trained model
+        # Base (decoder, vocoder) pair for clear_speaker restore after a
+        # trained artifact replaces them
+        self._base_decoder = self.decoder
+        self._base_vocoder = self.vocoder
+
+        # Load trained profile weights if requested
         if profile_store is not None and profile_id is not None:
             self._load_profile_lora(profile_store, profile_id)
 
         logger.info(f"SOTAConversionPipeline initialized on {self.device}")
 
+    def _trained_models_dir(self) -> Optional[str]:
+        """Directory holding trained serving artifacts for profiles."""
+        store_dir = getattr(self._profile_store, 'trained_models_dir', None)
+        if store_dir:
+            return str(store_dir)
+        adapters_dir = getattr(self._adapter_manager.config, 'adapters_dir', None)
+        return str(adapters_dir) if adapters_dir else None
+
+    def _resolve_trained_artifact(self, profile_id: str) -> Optional[str]:
+        """Resolve a profile's self-contained serving artifact.
+
+        Full model wins over the adapter serving model. Note that
+        ``{id}_adapter.pt`` (deltas-only) is intentionally NOT servable here.
+        """
+        models_dir = self._trained_models_dir()
+        if not models_dir:
+            return None
+        for name in (f"{profile_id}_full_model.pt", f"{profile_id}_adapter_model.pt"):
+            candidate = os.path.join(models_dir, name)
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    def _load_trained_artifact(self, artifact_path: str) -> None:
+        """Replace (decoder, vocoder) atomically with a trained artifact.
+
+        The trained decoder's mel space decides the vocoder: 80-mel artifacts
+        (this repo's training output) are paired with the 80-mel universal
+        HiFiGAN at 22.05kHz; 100-mel artifacts keep the BigVGAN base vocoder.
+
+        Raises:
+            RuntimeError: If the artifact is unrecognized/deltas-only, or the
+                required vocoder weights cannot be loaded.
+        """
+        from .model_manager import build_voice_model_from_checkpoint
+
+        checkpoint = torch.load(artifact_path, map_location=self.device, weights_only=False)
+        decoder = build_voice_model_from_checkpoint(checkpoint, artifact_path, self.device)
+
+        n_mels = int(getattr(decoder, 'n_mels', 100))
+        if n_mels == int(getattr(self._base_vocoder, 'n_mels', 100)):
+            vocoder = self._base_vocoder
+        else:
+            from ..models.vocoder import HiFiGANVocoder
+
+            vocoder = HiFiGANVocoder(device=self.device)
+            if not os.path.exists(DEFAULT_HIFIGAN_CHECKPOINT):
+                raise RuntimeError(
+                    f"Trained artifact {artifact_path} is {n_mels}-mel and needs the "
+                    f"HiFiGAN vocoder weights at {DEFAULT_HIFIGAN_CHECKPOINT}, which "
+                    "are not installed."
+                )
+            if not vocoder.load_checkpoint(DEFAULT_HIFIGAN_CHECKPOINT):
+                raise RuntimeError(
+                    f"HiFiGAN checkpoint failed to load: {DEFAULT_HIFIGAN_CHECKPOINT}"
+                )
+            # the mel-FPS retiming in convert() reads these attributes
+            vocoder.hop_size = 256
+            vocoder.n_mels = n_mels
+
+        # atomic swap: decoder mel space and vocoder must always agree
+        self.decoder = decoder
+        self.vocoder = vocoder
+        self._use_hq_adapter = False
+        logger.info(
+            "SOTA pipeline serving trained artifact %s (%d-mel, vocoder sr=%d)",
+            artifact_path, n_mels, int(getattr(vocoder, 'sample_rate', 24000)),
+        )
+
     def _load_profile_lora(
         self, profile_store: "VoiceProfileStore", profile_id: str
     ) -> None:
-        """Load LoRA weights from profile if available.
+        """Load the profile's trained serving artifact if available.
 
-        Args:
-            profile_store: Voice profile storage
-            profile_id: Profile ID to load weights from
+        Constructor path: deltas-only legacy profiles are skipped with a
+        warning (raising here would break pipeline creation for every legacy
+        profile); use set_speaker for strict serving semantics.
 
         Raises:
-            RuntimeError: If loading or applying LoRA weights fails
+            RuntimeError: If a self-contained artifact exists but fails to load.
         """
-        if not profile_store.has_trained_model(profile_id):
-            logger.info(f"Profile {profile_id} has no trained model, skipping LoRA")
+        artifact_path = self._resolve_trained_artifact(profile_id)
+        if artifact_path:
+            self._load_trained_artifact(artifact_path)
+            self._current_speaker_id = profile_id
             return
 
-        try:
-            # Load weights
-            lora_state = profile_store.load_lora_weights(profile_id)
+        if profile_store.has_trained_model(profile_id):
+            logger.warning(
+                "Profile %s has only a deltas-only LoRA artifact, which cannot "
+                "reproduce the trained model without its exact training base; "
+                "serving the base model instead. Retrain to produce a "
+                "self-contained artifact.",
+                profile_id,
+            )
+            return
 
-            # Inject LoRA into decoder
-            self.decoder.inject_lora(rank=8, alpha=16)
-
-            # Load weights into decoder
-            self.decoder.load_lora_state_dict(lora_state)
-
-            self._current_speaker_id = profile_id
-            logger.info(f"Loaded LoRA weights from profile {profile_id}")
-        except Exception as e:
-            logger.error(f"Failed to load LoRA weights for {profile_id}: {e}")
-            raise RuntimeError(f"Failed to load LoRA weights: {e}") from e
+        logger.info(f"Profile {profile_id} has no trained model, serving base model")
 
     def set_speaker(self, profile_id: str) -> None:
         """Dynamically switch to a different speaker by loading their LoRA adapter.
@@ -177,44 +268,44 @@ class SOTAConversionPipeline:
             logger.debug(f"Speaker {profile_id} already loaded, skipping")
             return
 
-        # Check for HQ adapter first (preferred)
+        trained_artifact = self._resolve_trained_artifact(profile_id)
         has_hq_adapter = self._hq_adapter_bridge.has_adapter(profile_id)
         has_standard_adapter = self._adapter_manager.has_adapter(profile_id)
 
-        if not has_hq_adapter and not has_standard_adapter:
+        if not trained_artifact and not has_hq_adapter and not has_standard_adapter:
             raise FileNotFoundError(
                 f"No trained adapter found for profile: {profile_id}"
             )
 
         try:
-            # Load speaker embedding first (needed for both adapter types)
+            # Load speaker embedding first (needed for every serving mode)
             self._speaker_embedding = self._adapter_manager.load_speaker_embedding(
                 profile_id,
                 as_tensor=True,
             )
 
-            # Prefer HQ adapter if available
-            if has_hq_adapter:
+            if trained_artifact:
+                # Self-contained trained model (full or base+LoRA): replaces
+                # the (decoder, vocoder) pair atomically
+                self._hq_adapter_bridge.clear()
                 self._adapter_manager.release_active_artifact()
-                # Load HQ adapter (standalone MLP architecture)
+                self._load_trained_artifact(trained_artifact)
+            elif has_hq_adapter:
+                # HQ adapter (standalone MLP) applies over the base decoder
+                self._restore_base_models()
+                self._adapter_manager.release_active_artifact()
                 self._hq_adapter_bridge.load_adapter(profile_id)
                 self._use_hq_adapter = True
                 logger.info(f"Loaded HQ adapter for speaker: {profile_id}")
             else:
-                # Fall back to standard layer-injection adapter
-                artifact = self._adapter_manager.swap_artifact(
-                    profile_id,
-                    artifact_type="adapter",
+                # Deltas-only LoRA cannot reproduce the trained model: the
+                # training base was randomly initialized and is not shipped.
+                raise RuntimeError(
+                    f"Profile {profile_id} has only a deltas-only LoRA artifact, "
+                    "which cannot be served without the exact training base. "
+                    "Retrain the profile to produce a self-contained artifact "
+                    "({profile}_adapter_model.pt)."
                 )
-
-                # Ensure decoder has LoRA layers injected
-                if not hasattr(self.decoder, 'lora_adapters') or not self.decoder.lora_adapters:
-                    self.decoder.inject_lora(rank=8, alpha=16)
-
-                # Apply adapter weights to decoder
-                self._adapter_manager.apply_adapter(self.decoder, artifact.handle)
-                self._use_hq_adapter = False
-                logger.info(f"Loaded standard adapter for speaker: {profile_id}")
 
             self._current_speaker_id = profile_id
             logger.info(f"Switched to speaker: {profile_id} (embedding loaded)")
@@ -309,12 +400,21 @@ class SOTAConversionPipeline:
             self._hq_adapter_bridge.clear()
             self._use_hq_adapter = False
         else:
+            # restore the base (decoder, vocoder) pair in case a trained
+            # artifact replaced them; remove_adapter on the base is a no-op
+            # when nothing was injected
+            self._restore_base_models()
             self._adapter_manager.remove_adapter(self.decoder)
             self._adapter_manager.release_active_artifact()
 
         self._speaker_embedding = None
         self._current_speaker_id = None
         logger.info("Speaker cleared, reverted to base model")
+
+    def _restore_base_models(self) -> None:
+        """Restore the original (decoder, vocoder) pair."""
+        self.decoder = self._base_decoder
+        self.vocoder = self._base_vocoder
 
     def _resample(self, audio: torch.Tensor, from_sr: int,
                   to_sr: int) -> torch.Tensor:
@@ -412,7 +512,8 @@ class SOTAConversionPipeline:
 
     def convert(self, audio: torch.Tensor, sample_rate: int,
                 speaker_embedding: torch.Tensor,
-                on_progress: Optional[Callable[[str, float], None]] = None
+                on_progress: Optional[Callable[[str, float], None]] = None,
+                separate: bool = True,
                 ) -> Dict[str, Any]:
         """Convert audio to target speaker voice.
 
@@ -468,21 +569,27 @@ class SOTAConversionPipeline:
             if on_progress:
                 on_progress(stage, progress)
 
-        # Stage 1: Vocal separation (44.1kHz)
+        # Stage 1: Vocal separation (44.1kHz). Skippable when the input is
+        # already vocals (e.g. live microphone chunks).
         report('separation', 0.0)
-        audio_44k = self._resample(audio_mono, sample_rate, 44100)
-        audio_44k = audio_44k.to(self.device)
+        if separate:
+            audio_44k = self._resample(audio_mono, sample_rate, 44100)
+            audio_44k = audio_44k.to(self.device)
 
-        with torch.no_grad():
-            vocals_44k = self.separator.extract_vocals(
-                audio_44k.unsqueeze(0)  # [1, T]
-            )  # [1, T]
-            vocals_44k = vocals_44k.squeeze(0)  # [T]
+            with torch.no_grad():
+                vocals_44k = self.separator.extract_vocals(
+                    audio_44k.unsqueeze(0)  # [1, T]
+                )  # [1, T]
+                vocals_44k = vocals_44k.squeeze(0)  # [T]
+            vocals_16k = self._resample(vocals_44k, 44100, 16000)
+        else:
+            vocals_16k = self._resample(
+                audio_mono.to(self.device), sample_rate, 16000
+            )
         report('separation', 0.2)
 
         # Stage 2: Content extraction (16kHz)
         report('content_extraction', 0.2)
-        vocals_16k = self._resample(vocals_44k, 44100, 16000)
 
         with torch.no_grad():
             content_features = self.content_extractor.encode(
@@ -555,7 +662,8 @@ class SOTAConversionPipeline:
         report('vocoder', 1.0)
 
         elapsed = time.time() - start_time
-        output_duration = len(waveform) / 24000
+        output_sample_rate = int(getattr(self.vocoder, 'sample_rate', 24000))
+        output_duration = len(waveform) / output_sample_rate
 
         logger.info(
             f"SOTA conversion complete: {output_duration:.2f}s audio "
@@ -564,7 +672,7 @@ class SOTAConversionPipeline:
 
         return {
             'audio': waveform,
-            'sample_rate': 24000,
+            'sample_rate': output_sample_rate,
             'metadata': {
                 'processing_time': elapsed,
                 'n_steps': self.n_steps,

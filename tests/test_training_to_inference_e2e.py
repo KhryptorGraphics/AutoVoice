@@ -51,6 +51,20 @@ def mock_trained_profile(tmp_path):
     adapter_path = trained_models_dir / f"{profile_id}_adapter.pt"
     torch.save(adapter_state, adapter_path)
 
+    # Training also saves a self-contained serving artifact (base + LoRA);
+    # SOTA set_speaker serves this — deltas-only payloads are rejected.
+    from auto_voice.models.svc_decoder import CoMoSVCDecoder
+    torch.manual_seed(11)
+    serving_decoder = CoMoSVCDecoder(
+        content_dim=768, pitch_dim=768, speaker_dim=256,
+        n_mels=100, hidden_dim=64, n_layers=2, device=torch.device("cpu"),
+    )
+    serving_payload = {
+        "model_state_dict": serving_decoder.state_dict(),
+        "lora_config": {},
+    }
+    torch.save(serving_payload, trained_models_dir / f"{profile_id}_adapter_model.pt")
+
     # Create mock speaker embedding (256-dim, L2-normalized)
     embedding = np.random.randn(256).astype(np.float32)
     embedding = embedding / np.linalg.norm(embedding)  # L2 normalize

@@ -1,19 +1,26 @@
-"""Tests for inference pipeline LoRA weight loading.
+"""Tests for inference pipeline trained-profile loading.
 
-Phase 4: Test that SOTAConversionPipeline loads profile-based LoRA weights.
-
-Tests verify:
-- Pipeline accepts profile_id parameter
-- Automatic LoRA loading if profile has weights
-- Conversion uses loaded LoRA weights
+SOTAConversionPipeline serves a profile's trained weights via the
+self-contained serving artifact ({profile}_adapter_model.pt /
+{profile}_full_model.pt): the artifact-built decoder replaces the base
+decoder. Deltas-only LoRA payloads cannot reproduce the trained model
+(random training base) and are skipped at construction with a warning.
 """
+
+import os
 
 import pytest
 import torch
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
+from auto_voice.models.svc_decoder import CoMoSVCDecoder
 from auto_voice.storage.voice_profiles import VoiceProfileStore
+
+# content/pitch/speaker dims must match the pipeline's runtime features;
+# hidden/n_layers are free, so keep the artifact small for test speed
+ARTIFACT_DIMS = dict(
+    content_dim=768, pitch_dim=768, speaker_dim=256,
+    n_mels=100, hidden_dim=64, n_layers=2,
+)
 
 
 @pytest.fixture
@@ -30,9 +37,22 @@ def store(temp_profile_dir):
     return VoiceProfileStore(profiles_dir=str(temp_profile_dir))
 
 
+def _save_serving_artifact(store, profile_id):
+    torch.manual_seed(7)
+    decoder = CoMoSVCDecoder(device=torch.device("cpu"), **ARTIFACT_DIMS)
+    payload = {
+        "model_state_dict": decoder.state_dict(),
+        "lora_config": {},
+    }
+    os.makedirs(store.trained_models_dir, exist_ok=True)
+    path = os.path.join(store.trained_models_dir, f"{profile_id}_adapter_model.pt")
+    torch.save(payload, path)
+    return path
+
+
 @pytest.fixture
 def sample_profile_with_weights(store):
-    """Create a sample voice profile with trained LoRA weights."""
+    """Profile with a self-contained trained serving artifact."""
     profile_data = {
         "profile_id": "trained-profile-123",
         "name": "Trained Artist",
@@ -40,16 +60,25 @@ def sample_profile_with_weights(store):
         "sample_count": 5,
     }
     store.save(profile_data)
+    _save_serving_artifact(store, profile_data["profile_id"])
+    return profile_data["profile_id"]
 
-    # Create sample LoRA weights matching decoder structure
+
+@pytest.fixture
+def sample_profile_deltas_only(store):
+    """Legacy profile with only deltas-only LoRA weights (not servable)."""
+    profile_data = {
+        "profile_id": "deltas-profile-789",
+        "name": "Legacy Artist",
+        "embedding": torch.randn(256).numpy(),
+        "sample_count": 5,
+    }
+    store.save(profile_data)
     lora_state = {
         "input_proj.adapter.lora_A": torch.randn(8, 1536),
         "input_proj.adapter.lora_B": torch.randn(512, 8),
-        "speaker_film.gamma_proj.adapter.lora_A": torch.randn(8, 256),
-        "speaker_film.gamma_proj.adapter.lora_B": torch.randn(512, 8),
     }
     store.save_lora_weights(profile_data["profile_id"], lora_state)
-
     return profile_data["profile_id"]
 
 
@@ -70,15 +99,12 @@ class TestPipelineProfileParameter:
     """Tests for SOTAConversionPipeline profile_id parameter."""
 
     def test_pipeline_exists(self):
-        """SOTAConversionPipeline should exist."""
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
         assert SOTAConversionPipeline is not None
 
     def test_pipeline_accepts_profile_store(self, store, sample_profile_with_weights):
-        """Task 4.1-4.2: Pipeline should accept profile_store parameter."""
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
 
-        # Pipeline should be constructable with profile_store
         pipeline = SOTAConversionPipeline(
             profile_store=store,
             require_gpu=False,
@@ -87,7 +113,6 @@ class TestPipelineProfileParameter:
         assert hasattr(pipeline, 'profile_store') or hasattr(pipeline, '_profile_store')
 
     def test_pipeline_accepts_profile_id(self, store, sample_profile_with_weights):
-        """Pipeline should accept profile_id to load specific profile."""
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
 
         pipeline = SOTAConversionPipeline(
@@ -98,11 +123,10 @@ class TestPipelineProfileParameter:
         assert pipeline is not None
 
 
-class TestAutomaticLoRALoading:
-    """Tests for automatic LoRA loading from profile."""
+class TestAutomaticArtifactLoading:
+    """Trained serving artifacts replace the base decoder at construction."""
 
-    def test_loads_lora_for_trained_profile(self, store, sample_profile_with_weights):
-        """Task 4.3-4.4: Should automatically load LoRA if profile has weights."""
+    def test_trained_profile_replaces_decoder(self, store, sample_profile_with_weights):
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
 
         pipeline = SOTAConversionPipeline(
@@ -111,13 +135,11 @@ class TestAutomaticLoRALoading:
             require_gpu=False,
         )
 
-        # Check that LoRA was injected into decoder
-        decoder = pipeline.decoder
-        assert decoder._lora_injected is True, \
-            "LoRA should be injected for trained profile"
+        assert pipeline.decoder is not pipeline._base_decoder, \
+            "Trained artifact should replace the base decoder"
+        assert pipeline.decoder.hidden_dim == ARTIFACT_DIMS['hidden_dim']
 
-    def test_no_lora_for_untrained_profile(self, store, sample_profile_no_weights):
-        """Should not inject LoRA if profile has no weights."""
+    def test_untrained_profile_keeps_base_decoder(self, store, sample_profile_no_weights):
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
 
         pipeline = SOTAConversionPipeline(
@@ -126,17 +148,32 @@ class TestAutomaticLoRALoading:
             require_gpu=False,
         )
 
-        # LoRA should not be injected
-        decoder = pipeline.decoder
-        assert not getattr(decoder, '_lora_injected', False), \
-            "LoRA should not be injected for untrained profile"
+        assert pipeline.decoder is pipeline._base_decoder
 
-    def test_lora_weights_loaded_correctly(self, store, sample_profile_with_weights):
-        """Loaded LoRA weights should match saved weights."""
+    def test_deltas_only_profile_is_skipped_with_base_decoder(
+        self, store, sample_profile_deltas_only, caplog
+    ):
+        """Legacy deltas-only artifacts cannot be served; construction warns."""
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
 
-        # Get saved weights for comparison
-        saved_weights = store.load_lora_weights(sample_profile_with_weights)
+        pipeline = SOTAConversionPipeline(
+            profile_store=store,
+            profile_id=sample_profile_deltas_only,
+            require_gpu=False,
+        )
+
+        assert pipeline.decoder is pipeline._base_decoder
+        assert "deltas-only" in caplog.text
+
+    def test_artifact_weights_loaded_correctly(self, store, sample_profile_with_weights):
+        from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
+
+        artifact_path = os.path.join(
+            store.trained_models_dir, f"{sample_profile_with_weights}_adapter_model.pt"
+        )
+        saved_state = torch.load(artifact_path, map_location="cpu", weights_only=False)[
+            "model_state_dict"
+        ]
 
         pipeline = SOTAConversionPipeline(
             profile_store=store,
@@ -144,18 +181,16 @@ class TestAutomaticLoRALoading:
             require_gpu=False,
         )
 
-        # Get loaded weights from decoder
-        loaded_weights = pipeline.decoder.get_lora_state_dict()
+        torch.testing.assert_close(
+            pipeline.decoder.state_dict()["input_proj.weight"].cpu(),
+            saved_state["input_proj.weight"],
+        )
 
-        # Compare (keys may differ slightly due to naming)
-        assert len(loaded_weights) > 0, "Should have loaded some weights"
 
+class TestConversionWithTrainedArtifact:
+    """Tests for conversion using the trained serving artifact."""
 
-class TestConversionWithLoRA:
-    """Tests for conversion using loaded LoRA weights."""
-
-    def test_convert_with_lora_produces_output(self, store, sample_profile_with_weights):
-        """Task 4.5-4.6: Conversion should work with loaded LoRA."""
+    def test_convert_with_artifact_produces_output(self, store, sample_profile_with_weights):
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
 
         pipeline = SOTAConversionPipeline(
@@ -164,37 +199,33 @@ class TestConversionWithLoRA:
             require_gpu=False,
         )
 
-        # Create dummy input audio tensor
         sr = 24000
         duration = 0.2  # Short for speed
         audio = torch.randn(int(sr * duration)) * 0.1
         speaker_embedding = torch.randn(256)
 
-        # Should produce output (even if quality is low with random weights)
         result = pipeline.convert(
             audio=audio,
             sample_rate=sr,
             speaker_embedding=speaker_embedding,
         )
 
-        # Verify output was created
         assert "audio" in result, "Result should contain audio"
         assert result["audio"].shape[0] > 0, "Audio should not be empty"
-        assert result["sample_rate"] == 24000, "Output should be 24kHz"
+        assert result["sample_rate"] == pipeline.vocoder.sample_rate
 
-    def test_different_output_with_vs_without_lora(self, store, sample_profile_with_weights, sample_profile_no_weights):
-        """Output should differ between trained and untrained profiles."""
+    def test_different_output_with_vs_without_artifact(
+        self, store, sample_profile_with_weights, sample_profile_no_weights
+    ):
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
 
-        # Create input audio (same for both)
         sr = 24000
         duration = 0.2
-        torch.manual_seed(42)  # Reproducible input
+        torch.manual_seed(42)
         audio = torch.randn(int(sr * duration)) * 0.1
         speaker_embedding = torch.randn(256)
 
-        # Convert with trained profile
-        torch.manual_seed(123)  # Different seed for model init
+        torch.manual_seed(123)
         pipeline_trained = SOTAConversionPipeline(
             profile_store=store,
             profile_id=sample_profile_with_weights,
@@ -206,8 +237,7 @@ class TestConversionWithLoRA:
             speaker_embedding=speaker_embedding.clone(),
         )
 
-        # Convert with untrained profile
-        torch.manual_seed(123)  # Same seed for fair comparison
+        torch.manual_seed(123)
         pipeline_untrained = SOTAConversionPipeline(
             profile_store=store,
             profile_id=sample_profile_no_weights,
@@ -219,17 +249,13 @@ class TestConversionWithLoRA:
             speaker_embedding=speaker_embedding.clone(),
         )
 
-        # Get output audio (move to CPU for numpy)
         audio_trained = result_trained["audio"].cpu().numpy()
         audio_untrained = result_untrained["audio"].cpu().numpy()
 
-        # They should be different (different LoRA weights vs none)
-        # Truncate to same length for comparison
         min_len = min(len(audio_trained), len(audio_untrained), 1000)
         if min_len > 100:
             import numpy as np
             correlation = np.corrcoef(audio_trained[:min_len], audio_untrained[:min_len])[0, 1]
-            # Outputs should not be identical (correlation < 0.99)
             assert correlation < 0.99, \
                 "Trained and untrained outputs should differ"
 
@@ -237,22 +263,21 @@ class TestConversionWithLoRA:
 class TestProfileSwitching:
     """Tests for switching between profiles."""
 
-    def test_can_load_different_profile(self, store, sample_profile_with_weights, sample_profile_no_weights):
-        """Pipeline should support loading different profiles."""
+    def test_can_load_different_profile(
+        self, store, sample_profile_with_weights, sample_profile_no_weights
+    ):
         from auto_voice.inference.sota_pipeline import SOTAConversionPipeline
 
-        # Load trained profile
         pipeline = SOTAConversionPipeline(
             profile_store=store,
             profile_id=sample_profile_with_weights,
             require_gpu=False,
         )
-        assert pipeline.decoder._lora_injected is True
+        assert pipeline.decoder is not pipeline._base_decoder
 
-        # Load untrained profile (creates new pipeline)
         pipeline2 = SOTAConversionPipeline(
             profile_store=store,
             profile_id=sample_profile_no_weights,
             require_gpu=False,
         )
-        assert not getattr(pipeline2.decoder, '_lora_injected', False)
+        assert pipeline2.decoder is pipeline2._base_decoder
