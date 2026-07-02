@@ -550,7 +550,7 @@ export const DEFAULT_TRAINING_CONFIG: TrainingConfig = {
   validation_split: 0.15,
   early_stopping_patience: 25,
   early_stopping_min_delta: 0.0005,
-  use_ewc: true,
+  use_ewc: false,
   ewc_lambda: 1000.0,
   use_prior_preservation: false,
   prior_loss_weight: 0.5,

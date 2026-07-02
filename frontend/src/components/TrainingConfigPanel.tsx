@@ -480,7 +480,10 @@ export function TrainingConfigPanel({
               />
             </div>
             <div className="mt-3">
-              <label className="text-sm text-gray-400 mb-1 block">Target Modules</label>
+              <label className="text-sm text-gray-400 mb-1 block">
+                Target Modules
+                <span className="ml-2 text-xs text-amber-400">not implemented — ignored by the trainer</span>
+              </label>
               <div className="flex flex-wrap gap-2">
                 {['q_proj', 'v_proj', 'k_proj', 'o_proj', 'content_encoder'].map(module => (
                   <button
@@ -644,13 +647,16 @@ export function TrainingConfigPanel({
 
           {/* EWC Settings */}
           <div>
-            <h4 className="text-sm font-medium text-gray-300 mb-3">Memory Preservation (EWC)</h4>
+            <h4 className="text-sm font-medium text-gray-300 mb-3">
+              Memory Preservation (EWC)
+              <span className="ml-2 text-xs font-normal text-amber-400">not implemented — ignored by the trainer</span>
+            </h4>
             <div className="space-y-4">
               <Toggle
                 label="Enable EWC"
                 checked={config.use_ewc}
                 onChange={v => update('use_ewc', v)}
-                tooltip="Elastic Weight Consolidation prevents forgetting prior voice characteristics"
+                tooltip="Not implemented: the trainer accepts this option for config compatibility but ignores it"
                 disabled={disabled}
               />
               {config.use_ewc && (
@@ -669,13 +675,16 @@ export function TrainingConfigPanel({
 
           {/* Prior Preservation */}
           <div>
-            <h4 className="text-sm font-medium text-gray-300 mb-3">Prior Preservation</h4>
+            <h4 className="text-sm font-medium text-gray-300 mb-3">
+              Prior Preservation
+              <span className="ml-2 text-xs font-normal text-amber-400">not implemented — ignored by the trainer</span>
+            </h4>
             <div className="space-y-4">
               <Toggle
                 label="Enable Prior Preservation"
                 checked={config.use_prior_preservation}
                 onChange={v => update('use_prior_preservation', v)}
-                tooltip="Generate prior samples to maintain general voice quality"
+                tooltip="Not implemented: the trainer accepts this option for config compatibility but ignores it"
                 disabled={disabled}
               />
               {config.use_prior_preservation && (
