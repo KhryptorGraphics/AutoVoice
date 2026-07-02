@@ -136,21 +136,23 @@ Tests use pytest markers defined in `pytest.ini`:
 (`reports/completion/latest/completion_matrix.json`) and
 [docs/current-truth.md](docs/current-truth.md) — not the snapshot figures below.
 
-**Last full pytest run (2026-04-29):** ~4,500 tests, **4,490 passed, 12 failed,
-53 skipped, 13 errors** (~2h08m).
-- All 13 errors are the `test_docker_deployment.py` suite (no local Docker), and
-  most failures are environment-gated (Docker, live Playwright).
-- The LoRA-loading and secret-key failures in that log are **fixed at HEAD**
-  (re-verified green: `test_inference_lora_loading.py` 9/9,
-  `test_secret_key_security.py` 25/25, MeanVC perf gated/skipped).
+**Last full pytest run (2026-07-02, sha `0a4dc379`):** 4,613 tests, **4,540
+passed, 2 failed, 57 skipped, 1 xfailed, 13 errors** (2h18m,
+`reports/full_pytest_cov_20260702.log`).
+- All 13 errors are the `test_docker_deployment.py` suite (no local Docker).
+- Both failures are **fixed at HEAD**: the `test_platform_scripts` pair was the
+  `requirements.lock` hash going stale after adding `requests` (lock updated),
+  and the flaky `test_e2e_pipeline` speaker-sensitivity test is now
+  seed-pinned. Effective supported-lane pass rate at HEAD: 100%.
 
-**Coverage (last measured 2026-02-02 — stale, re-run `--cov` before trusting):**
-- Overall **63%** (target **80%** overall, **85%** inference)
-- Database 87%, Storage 78%, Inference Core 68%, Web API 60%, Audio 55%
+**Coverage (measured 2026-07-02 with the run above):**
+- Overall **88%** (target 80% — met), inference **92%** (target 85% — met)
+- Models/Training 94%, Audio 93%, Evaluation/Monitoring/Profiles 91%,
+  Web 84%, Storage 97%, DB 100%; below-target outliers: swarm 27%, utils 66%
+  (operator tooling, not on the product path)
 
-> The earlier "1,984 tests / 147 failing / 47 errors" line was a 2026-02-02
-> snapshot and is obsolete; the suite has since grown to ~4,500 tests at ~99%
-> pass. Re-measure coverage at HEAD before any release claim.
+> The 2026-04-29 snapshot (4,490/12/53/13 at 63% stale coverage) is superseded
+> by the run above. Re-measure at the candidate commit before release claims.
 
 ### Test Patterns and Best Practices
 
@@ -360,7 +362,7 @@ Located in `models/pretrained/`:
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **AutoVoice** (28891 symbols, 47906 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **AutoVoice** (28859 symbols, 47964 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 

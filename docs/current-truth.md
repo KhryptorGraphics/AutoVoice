@@ -13,11 +13,22 @@ AutoVoice currently targets a reliable single-user, local-first workflow:
   and only creates or assigns source profiles after operator confirmation
 - train target-user profiles
 - run offline conversion jobs
-- run live karaoke sessions
+- run live karaoke sessions, including a second client joining an existing
+  session and mid-session voice switching by voice model id
 - record browser sing-along takes for target-user profiles from the computer
   using the web UI, with browser-side input/output selection and local take
   quality checks before attach
-- persist local product state under `DATA_DIR`
+- browse and curate the speaker library (extraction, clusters with
+  rename/merge/split, identification, track metadata) from the Diarization page
+- monitor live conversion quality, adapter health, and degradation from the
+  `/quality` page, with analyze/compare operator tools (server-side paths)
+- manage the full profile lifecycle from the UI: export, purge, duplicate
+  check, retrain check, and LoRA retrain
+- receive server-dispatched webhook notifications for training/conversion
+  completion and job failures (fire-and-forget, `/api/v1/notifications/webhooks`)
+- audit product actions from the operator console (`/api/v1/audit/events`)
+- persist local product state under `DATA_DIR`, including per-profile
+  checkpoint records created automatically on successful training completion
 
 ## Readiness Vocabulary And Current Status
 
@@ -53,11 +64,20 @@ experimental and is no longer a default local-only readiness gate; run it
 explicitly with `AUTOVOICE_MEANVC_FULL=1` and the prepared MeanVC assets when
 promoting that lane.
 
-Do not treat every `latest` pointer as authoritative. `reports/completion/latest/
-completion_matrix.json` still references `9c6a056378df7585c453ecbb4d1f964345287436`.
-Treat that pointer as historical until deliberately republished for the candidate
-commit. Release decisions remain scoped by the local/no-Docker support boundary
-unless hardware/deployment lanes are explicitly enabled.
+As of 2026-07-02, `reports/completion/latest/completion_matrix.json` references
+`f7e851de634cd1e8bcd7fb6ba487f1dc32dcea80` (branch `review-fixes-2026-07`) and
+passed `ok: true` with `--real-audio`: zero failed lanes; skips are the
+documented local-mode lanes (real compose, release-candidate compose,
+live-youtube, Jetson CUDA/TensorRT, TensorRT engine suite/parity,
+benchmark-publish, and the matrix's own frontend lane — the frontend gate was
+run separately at that commit: typecheck, lint, build, and 18/18 Playwright
+smoke specs green). The same commit's full pytest run
+(`reports/full_pytest_cov_20260702.log`) measured **88% overall / 92%
+inference coverage** with all supported lanes passing. Do not treat a `latest`
+pointer as authoritative for any *other* commit; a readiness claim must cite
+artifacts whose embedded git SHA matches the candidate commit. Release
+decisions remain scoped by the local/no-Docker support boundary unless
+hardware/deployment lanes are explicitly enabled.
 
 The latest closeout and post-release quality plan are not contradictory when read
 with this vocabulary: AutoVoice has meaningful local/private deployment proof and
@@ -74,6 +94,8 @@ and hardware/model lanes are current-head green or explicitly gated.
 - canonical durable app-state store for training jobs, presets, and conversion history: `AppStateStore`
 - canonical profile routes: `/api/v1/voice/profiles/*`
 - compatibility helper routes: `/api/v1/profiles/*`
+- notification webhook routes: `/api/v1/notifications/webhooks*` (server-side
+  fire-and-forget dispatch on training/conversion completion and job failure)
 - canonical non-karaoke Socket.IO namespace: `/`
 - dedicated live namespace: `/karaoke`
 - canonical offline pipeline: `quality_seedvc`
