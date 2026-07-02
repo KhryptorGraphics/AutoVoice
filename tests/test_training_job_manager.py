@@ -625,9 +625,16 @@ class TestTrainingConfigDefaults:
         assert config.batch_size == 4
         assert config.epochs == 10
 
-        # EWC defaults
-        assert config.use_ewc is True
+        # EWC is not implemented by the trainer — advertised in
+        # unimplemented_options and defaulted off so configs don't
+        # pretend a protection that doesn't exist
+        assert config.use_ewc is False
         assert config.ewc_lambda == 1000.0
+
+        # Overfitting protection on by default
+        assert config.validation_split == 0.15
+        assert config.early_stopping_patience == 25
+        assert config.early_stopping_min_delta == 5e-4
 
     def test_training_config_serialization(self):
         """TrainingConfig serializes to/from dict."""
