@@ -299,3 +299,39 @@ def test_app_state_store_settings_models_configs_and_karaoke_sessions(tmp_path):
 
     with pytest.raises(ValueError):
         store.save_karaoke_session({"song_id": "missing-session-id"})
+
+
+def test_purge_tolerates_training_job_manager_schema(tmp_path):
+    """training_jobs.json was historically shared with TrainingJobManager,
+    which persists {"jobs": [...], "updated_at": ...}. The store now uses its
+    own file, but legacy files can still contain those foreign keys — purge
+    and listing must skip them instead of crashing (AttributeError observed
+    live when purging a profile)."""
+    import json
+
+    store = AppStateStore(str(tmp_path))
+    store.save_training_job({"job_id": "j1", "profile_id": "p1", "created_at": "2026-01-01"})
+    store.save_training_job({"job_id": "j2", "profile_id": "p2", "created_at": "2026-01-02"})
+
+    # Simulate a legacy chimera file: manager keys mixed into the store's file
+    path = tmp_path / "app_state" / "web_training_jobs.json"
+    data = json.loads(path.read_text())
+    data["jobs"] = [{"job_id": "mgr-1", "profile_id": "p1"}]
+    data["updated_at"] = "2026-01-03T00:00:00"
+    path.write_text(json.dumps(data))
+
+    jobs = store.list_training_jobs()
+    assert {j["job_id"] for j in jobs} == {"j1", "j2"}
+
+    summary = store.purge_profile_state("p1")
+    assert summary["removed_training_jobs"] == 1
+    remaining = store.list_training_jobs()
+    assert {j["job_id"] for j in remaining} == {"j2"}
+
+
+def test_store_does_not_share_training_jobs_file_with_manager(tmp_path):
+    """The store and TrainingJobManager must persist to different files."""
+    from auto_voice.training.job_manager import TrainingJobManager
+
+    store = AppStateStore(str(tmp_path))
+    assert store._files["training_jobs"].name != TrainingJobManager.JOBS_FILENAME

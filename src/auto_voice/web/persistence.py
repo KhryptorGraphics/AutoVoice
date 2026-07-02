@@ -286,7 +286,10 @@ class AppStateStore:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._files = {
-            "training_jobs": self.base_dir / "training_jobs.json",
+            # NOT training_jobs.json: that file belongs to TrainingJobManager,
+            # which persists {"jobs": [...]} — sharing it made the two writers
+            # clobber each other's schema.
+            "training_jobs": self.base_dir / "web_training_jobs.json",
             "background_jobs": self.base_dir / "background_jobs.json",
             "presets": self.base_dir / "presets.json",
             "conversion_history": self.base_dir / "conversion_history.json",
@@ -327,7 +330,9 @@ class AppStateStore:
             tmp_path.replace(path)
 
     def list_training_jobs(self, profile_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        jobs = list(self._read("training_jobs", {}).values())
+        # isinstance guard: legacy files were shared with TrainingJobManager
+        # and can contain its {"jobs": [...], "updated_at": ...} keys
+        jobs = [job for job in self._read("training_jobs", {}).values() if isinstance(job, dict)]
         if profile_id:
             jobs = [job for job in jobs if job.get("profile_id") == profile_id]
         jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
@@ -753,7 +758,7 @@ class AppStateStore:
         retained_training_jobs = {
             job_id: job
             for job_id, job in training_jobs.items()
-            if job.get("profile_id") != profile_id
+            if not (isinstance(job, dict) and job.get("profile_id") == profile_id)
         }
         removed_training_jobs = len(training_jobs) - len(retained_training_jobs)
         self._write("training_jobs", retained_training_jobs)
@@ -762,7 +767,7 @@ class AppStateStore:
         retained_background_jobs = {
             job_id: job
             for job_id, job in background_jobs.items()
-            if job.get("profile_id") != profile_id
+            if not (isinstance(job, dict) and job.get("profile_id") == profile_id)
         }
         removed_background_jobs = len(background_jobs) - len(retained_background_jobs)
         self._write("background_jobs", retained_background_jobs)
