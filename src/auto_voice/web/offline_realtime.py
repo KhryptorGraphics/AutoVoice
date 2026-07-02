@@ -14,6 +14,7 @@ def run_offline_realtime_conversion(
     pitch_shift: float = 0.0,
     chunk_duration_seconds: float = 1.0,
     pipeline=None,
+    voice_model_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the live realtime pipeline over a full audio file offline.
 
@@ -36,6 +37,17 @@ def run_offline_realtime_conversion(
         from ..inference.pipeline_factory import PipelineFactory
 
         pipeline = PipelineFactory.get_instance().get_pipeline("realtime")
+
+    if voice_model_path:
+        # serve the profile's trained artifact instead of the untrained
+        # placeholder decoder
+        pipeline.load_voice_model(voice_model_path)
+    else:
+        # the factory caches pipeline instances across jobs; make sure a
+        # previous profile's model does not leak into this conversion
+        clear_model = getattr(pipeline, 'clear_voice_model', None)
+        if callable(clear_model):
+            clear_model()
 
     embedding = np.asarray(speaker_embedding, dtype=np.float32)
     if embedding.ndim > 1:

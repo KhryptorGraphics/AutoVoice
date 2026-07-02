@@ -13,6 +13,7 @@ This pipeline is optimized for low-latency streaming inference, using
 lightweight components that maintain quality while meeting realtime constraints.
 """
 import logging
+import os
 import time
 from collections import deque
 from typing import Dict, Optional, Any
@@ -21,6 +22,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# 80-mel universal HiFiGAN matching this pipeline's 22050/256 output contract;
+# fetched by scripts/download_pretrained_models.py
+DEFAULT_HIFIGAN_CHECKPOINT = os.path.join(
+    'models', 'pretrained', 'generator_universal.pth.tar'
+)
 
 from ..models.feature_contract import (
     DEFAULT_CONTENT_DIM,
@@ -168,6 +175,10 @@ class RealtimePipeline:
         # Speaker embedding
         self._speaker_embedding: Optional[torch.Tensor] = None
 
+        # Optional trained per-profile decoder (CoMoSVC artifact); when set it
+        # replaces SimpleDecoder for mel generation
+        self._voice_model: Optional[nn.Module] = None
+
         # Initialize components
         self._init_content_encoder(contentvec_model)
         self._init_pitch_extractor()
@@ -285,8 +296,19 @@ class RealtimePipeline:
             from ..models.vocoder import HiFiGANVocoder
 
             self._vocoder = HiFiGANVocoder(device=self.device)
+            if not checkpoint and os.path.exists(DEFAULT_HIFIGAN_CHECKPOINT):
+                checkpoint = DEFAULT_HIFIGAN_CHECKPOINT
             if checkpoint:
-                self._vocoder.load_checkpoint(checkpoint)
+                # load_checkpoint returns False instead of raising; a random
+                # vocoder produces noise, so a configured checkpoint must load
+                if not self._vocoder.load_checkpoint(checkpoint):
+                    raise RuntimeError(f"HiFiGAN checkpoint failed to load: {checkpoint}")
+                logger.info(f"HiFiGAN vocoder loaded from {checkpoint}")
+            else:
+                logger.warning(
+                    "HiFiGAN vocoder initialized WITHOUT weights (no checkpoint "
+                    f"given and {DEFAULT_HIFIGAN_CHECKPOINT} not found)"
+                )
             logger.debug("HiFiGAN vocoder initialized")
         except FileNotFoundError as e:
             logger.error(f"HiFiGAN checkpoint not found: {e}")
@@ -299,6 +321,34 @@ class RealtimePipeline:
         except Exception as e:
             logger.error(f"Unexpected error loading HiFiGAN: {e}")
             raise RuntimeError(f"Failed to initialize HiFiGAN: {e}") from e
+
+    def load_voice_model(self, model_path: str) -> None:
+        """Load a profile's trained model to drive mel generation.
+
+        Accepts the training artifacts this repo produces (full-model and
+        self-contained adapter checkpoints); the artifact family and dims are
+        derived from the state dict. The trained decoder replaces
+        SimpleDecoder in process_chunk. Trained artifacts are 80-mel, which
+        matches this pipeline's HiFiGAN output contract.
+
+        Raises:
+            FileNotFoundError: If model_path does not exist.
+            RuntimeError: If the checkpoint is unrecognized or deltas-only.
+        """
+        from .model_manager import build_voice_model_from_checkpoint
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Voice model checkpoint not found: {model_path}")
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+        self._voice_model = build_voice_model_from_checkpoint(
+            checkpoint, model_path, self.device
+        )
+        logger.info(f"RealtimePipeline serving trained voice model from {model_path}")
+
+    def clear_voice_model(self) -> None:
+        """Drop any loaded per-profile model (pipeline instances are cached
+        and reused across jobs; a stale model must not leak between profiles)."""
+        self._voice_model = None
 
     def set_speaker_embedding(self, embedding: np.ndarray) -> None:
         """Set target speaker embedding for voice conversion with validation.
@@ -418,9 +468,14 @@ class RealtimePipeline:
                         mode='linear', align_corners=False,
                     ).transpose(1, 2)
 
-                # 4. Decoder (~10ms)
+                # 4. Decoder (~10ms) — trained per-profile model when loaded,
+                # otherwise the untrained SimpleDecoder placeholder
                 t0 = time.perf_counter()
-                mel = self._decoder(content, pitch, self._speaker_embedding)
+                voice_model = getattr(self, '_voice_model', None)
+                if voice_model is not None:
+                    mel = voice_model.infer(content, pitch, self._speaker_embedding)
+                else:
+                    mel = self._decoder(content, pitch, self._speaker_embedding)
                 self._latency_history['decoder'].append(time.perf_counter() - t0)
 
                 # 5. Vocoder (~20ms)

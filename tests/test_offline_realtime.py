@@ -15,6 +15,14 @@ class _FakeRealtimePipeline:
         self.embedding = None
         self.clear_calls = 0
         self.chunk_lengths = []
+        self.voice_model_paths = []
+        self.voice_model_clears = 0
+
+    def load_voice_model(self, path):
+        self.voice_model_paths.append(path)
+
+    def clear_voice_model(self):
+        self.voice_model_clears += 1
 
     def set_speaker_embedding(self, embedding):
         self.embedding = np.asarray(embedding, dtype=np.float32)
@@ -56,3 +64,40 @@ def test_run_offline_realtime_conversion_downmixes_chunks_and_clears_speaker(tmp
     assert pipeline.embedding.shape == (256,)
     assert pipeline.clear_calls == 1
     assert len(pipeline.chunk_lengths) >= 2
+
+
+def test_run_offline_realtime_conversion_loads_trained_voice_model(tmp_path: Path):
+    """A profile's trained artifact path is loaded into the pipeline."""
+    mono = np.linspace(-0.2, 0.2, 22050, dtype=np.float32)
+    input_path = tmp_path / "input.wav"
+    sf.write(input_path, mono, 22050)
+
+    pipeline = _FakeRealtimePipeline()
+    run_offline_realtime_conversion(
+        str(input_path),
+        np.ones(256, dtype=np.float32),
+        chunk_duration_seconds=0.5,
+        pipeline=pipeline,
+        voice_model_path="/models/profile_full_model.pt",
+    )
+
+    assert pipeline.voice_model_paths == ["/models/profile_full_model.pt"]
+    assert pipeline.voice_model_clears == 0
+
+
+def test_run_offline_realtime_conversion_clears_stale_voice_model(tmp_path: Path):
+    """Cached pipelines must not leak a previous profile's model."""
+    mono = np.linspace(-0.2, 0.2, 22050, dtype=np.float32)
+    input_path = tmp_path / "input.wav"
+    sf.write(input_path, mono, 22050)
+
+    pipeline = _FakeRealtimePipeline()
+    run_offline_realtime_conversion(
+        str(input_path),
+        np.ones(256, dtype=np.float32),
+        chunk_duration_seconds=0.5,
+        pipeline=pipeline,
+    )
+
+    assert pipeline.voice_model_paths == []
+    assert pipeline.voice_model_clears == 1

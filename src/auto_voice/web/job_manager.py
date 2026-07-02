@@ -264,11 +264,27 @@ class JobManager:
             if speaker_embedding is None:
                 raise RuntimeError('Profile missing speaker embedding for realtime conversion')
 
+            # Serve the profile's trained artifact when one exists (full model
+            # wins; _adapter_model.pt is the self-contained LoRA serving
+            # artifact — NOT the deltas-only _adapter.pt).
+            voice_model_path = None
+            trained_models_dir = getattr(profile_store, 'trained_models_dir', None)
+            if trained_models_dir:
+                for artifact_name in (
+                    f"{job['profile_id']}_full_model.pt",
+                    f"{job['profile_id']}_adapter_model.pt",
+                ):
+                    candidate = os.path.join(str(trained_models_dir), artifact_name)
+                    if os.path.exists(candidate):
+                        voice_model_path = candidate
+                        break
+
             self._emit_progress(job_id, 25, 'Loading realtime backend...', 'encoding')
             result = run_offline_realtime_conversion(
                 job['file_path'],
                 speaker_embedding,
                 pitch_shift=self._float_setting(settings, 'pitch_shift', 0.0),
+                voice_model_path=voice_model_path,
             )
             result.setdefault('metadata', {})
             result['metadata'].update({
