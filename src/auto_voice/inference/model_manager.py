@@ -14,6 +14,111 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 
+def build_voice_model_from_checkpoint(checkpoint: Any, model_path: str, device) -> torch.nn.Module:
+    """Construct the model class that produced a trained checkpoint.
+
+    Detects the artifact family from the state dict (CoMoSVCDecoder training
+    artifacts vs SoVitsSvc states), derives dimensions from tensor shapes
+    (including LoRA-wrapped ``<name>.original.*`` layouts), loads strictly,
+    and rejects deltas-only LoRA payloads (they cannot be served without the
+    exact training base).
+
+    Shared by ModelManager and the realtime/SOTA serving paths so every
+    consumer loads trained artifacts identically.
+
+    Raises:
+        RuntimeError: Unrecognized format, deltas-only artifact, or a state
+            dict that does not fit its detected architecture.
+    """
+    lora_config: Dict[str, Any] = {}
+    state = None
+    if isinstance(checkpoint, dict):
+        for wrapper_key in ('model_state_dict', 'model', 'state_dict'):
+            if isinstance(checkpoint.get(wrapper_key), dict):
+                state = checkpoint[wrapper_key]
+                lora_config = checkpoint.get('lora_config') or {}
+                break
+        else:
+            if isinstance(checkpoint.get('lora_state'), dict):
+                raise RuntimeError(
+                    f"Checkpoint {model_path} contains only LoRA deltas and no base "
+                    "weights; it cannot be served without the exact training base. "
+                    "Retrain the profile to produce a self-contained artifact."
+                )
+            if checkpoint and all(hasattr(v, 'shape') for v in checkpoint.values()):
+                state = checkpoint
+    if state is None:
+        raise RuntimeError(f"Unrecognized voice model checkpoint format: {model_path}")
+
+    keys = set(state.keys())
+    base_keys = {k for k in keys if '.adapter.lora_' not in k}
+
+    if not base_keys:
+        raise RuntimeError(
+            f"Checkpoint {model_path} contains only LoRA deltas and no base "
+            "weights; it cannot be served without the exact training base. "
+            "Retrain the profile to produce a self-contained artifact."
+        )
+
+    def _param(*names):
+        # LoRA injection wraps a Linear as <name>.original.* + <name>.adapter.*
+        for name in names:
+            if name in state:
+                return state[name]
+        return None
+
+    input_proj = _param('input_proj.weight', 'input_proj.original.weight')
+    gamma_proj = _param(
+        'speaker_film.gamma_proj.weight',
+        'speaker_film.gamma_proj.original.weight',
+    )
+    if input_proj is not None and gamma_proj is not None:
+        from ..models.svc_decoder import CoMoSVCDecoder
+
+        hidden_dim, content_plus_pitch = input_proj.shape
+        speaker_dim = gamma_proj.shape[1]
+        n_mels = state['output_proj.2.weight'].shape[0]
+        layer_indices = [
+            int(k.split('.')[2]) for k in keys
+            if k.startswith('backbone.layers.') and k.split('.')[2].isdigit()
+        ]
+        n_layers = (max(layer_indices) + 1) if layer_indices else 8
+        model = CoMoSVCDecoder(
+            content_dim=content_plus_pitch // 2,
+            pitch_dim=content_plus_pitch // 2,
+            speaker_dim=speaker_dim,
+            n_mels=n_mels,
+            hidden_dim=hidden_dim,
+            n_layers=n_layers,
+            device=device,
+        )
+        lora_keys = keys - base_keys
+        if lora_keys:
+            rank_source = state.get('input_proj.adapter.lora_A')
+            rank = int(lora_config.get('rank') or (rank_source.shape[0] if rank_source is not None else 8))
+            alpha = int(lora_config.get('alpha') or 16)
+            dropout = float(lora_config.get('dropout') or 0.0)
+            model.inject_lora(rank=rank, alpha=alpha, dropout=dropout)
+        model.load_state_dict(state, strict=True)
+        model.to(device)
+        model.eval()
+        logger.info(
+            "Loaded CoMoSVC voice model from %s (n_mels=%d, hidden=%d, layers=%d, lora=%s)",
+            model_path, n_mels, hidden_dim, n_layers, bool(lora_keys),
+        )
+        return model
+
+    if 'content_proj.weight' in keys:
+        from ..models.so_vits_svc import SoVitsSvc
+        model = SoVitsSvc.load_pretrained(model_path, device=device)
+        return model
+
+    raise RuntimeError(
+        f"Checkpoint {model_path} does not match any known voice model "
+        "architecture (expected CoMoSVCDecoder or SoVitsSvc keys)."
+    )
+
+
 class ModelManager:
     """Manages voice models and runs frame-aligned inference.
 
@@ -192,93 +297,7 @@ class ModelManager:
 
     def _build_voice_model(self, checkpoint: Any, model_path: str):
         """Construct the correct model class for a trained checkpoint."""
-        lora_config: Dict[str, Any] = {}
-        state = None
-        if isinstance(checkpoint, dict):
-            for wrapper_key in ('model_state_dict', 'model', 'state_dict'):
-                if isinstance(checkpoint.get(wrapper_key), dict):
-                    state = checkpoint[wrapper_key]
-                    lora_config = checkpoint.get('lora_config') or {}
-                    break
-            else:
-                if isinstance(checkpoint.get('lora_state'), dict):
-                    raise RuntimeError(
-                        f"Checkpoint {model_path} contains only LoRA deltas and no base "
-                        "weights; it cannot be served without the exact training base. "
-                        "Retrain the profile to produce a self-contained artifact."
-                    )
-                if checkpoint and all(hasattr(v, 'shape') for v in checkpoint.values()):
-                    state = checkpoint
-        if state is None:
-            raise RuntimeError(f"Unrecognized voice model checkpoint format: {model_path}")
-
-        keys = set(state.keys())
-        base_keys = {k for k in keys if '.adapter.lora_' not in k}
-
-        if not base_keys:
-            raise RuntimeError(
-                f"Checkpoint {model_path} contains only LoRA deltas and no base "
-                "weights; it cannot be served without the exact training base. "
-                "Retrain the profile to produce a self-contained artifact."
-            )
-
-        def _param(*names):
-            # LoRA injection wraps a Linear as <name>.original.* + <name>.adapter.*
-            for name in names:
-                if name in state:
-                    return state[name]
-            return None
-
-        input_proj = _param('input_proj.weight', 'input_proj.original.weight')
-        gamma_proj = _param(
-            'speaker_film.gamma_proj.weight',
-            'speaker_film.gamma_proj.original.weight',
-        )
-        if input_proj is not None and gamma_proj is not None:
-            from ..models.svc_decoder import CoMoSVCDecoder
-
-            hidden_dim, content_plus_pitch = input_proj.shape
-            speaker_dim = gamma_proj.shape[1]
-            n_mels = state['output_proj.2.weight'].shape[0]
-            layer_indices = [
-                int(k.split('.')[2]) for k in keys
-                if k.startswith('backbone.layers.') and k.split('.')[2].isdigit()
-            ]
-            n_layers = (max(layer_indices) + 1) if layer_indices else 8
-            model = CoMoSVCDecoder(
-                content_dim=content_plus_pitch // 2,
-                pitch_dim=content_plus_pitch // 2,
-                speaker_dim=speaker_dim,
-                n_mels=n_mels,
-                hidden_dim=hidden_dim,
-                n_layers=n_layers,
-                device=self.device,
-            )
-            lora_keys = keys - base_keys
-            if lora_keys:
-                rank_source = state.get('input_proj.adapter.lora_A')
-                rank = int(lora_config.get('rank') or (rank_source.shape[0] if rank_source is not None else 8))
-                alpha = int(lora_config.get('alpha') or 16)
-                dropout = float(lora_config.get('dropout') or 0.0)
-                model.inject_lora(rank=rank, alpha=alpha, dropout=dropout)
-            model.load_state_dict(state, strict=True)
-            model.to(self.device)
-            model.eval()
-            logger.info(
-                "Loaded CoMoSVC voice model from %s (n_mels=%d, hidden=%d, layers=%d, lora=%s)",
-                model_path, n_mels, hidden_dim, n_layers, bool(lora_keys),
-            )
-            return model
-
-        if 'content_proj.weight' in keys:
-            from ..models.so_vits_svc import SoVitsSvc
-            model = SoVitsSvc.load_pretrained(model_path, device=self.device)
-            return model
-
-        raise RuntimeError(
-            f"Checkpoint {model_path} does not match any known voice model "
-            "architecture (expected CoMoSVCDecoder or SoVitsSvc keys)."
-        )
+        return build_voice_model_from_checkpoint(checkpoint, model_path, self.device)
 
     def infer(self, audio: np.ndarray, speaker_id: str,
               speaker_embedding: np.ndarray, sr: int = 22050) -> np.ndarray:
