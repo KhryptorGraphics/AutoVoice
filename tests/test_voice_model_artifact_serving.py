@@ -135,3 +135,58 @@ class TestRealtimeDurationContract:
             assert len(out) == expected, (
                 f'{seconds}s chunk: got {len(out)} samples, expected {expected}'
             )
+
+
+@pytest.mark.cuda
+@pytest.mark.slow
+class TestRealtimeTrainedServing:
+    def _pipeline(self, **kwargs):
+        if not torch.cuda.is_available():
+            pytest.skip('CUDA required')
+        from auto_voice.inference.realtime_pipeline import RealtimePipeline
+        return RealtimePipeline(device='cuda', **kwargs)
+
+    def test_default_vocoder_checkpoint_loads(self, caplog):
+        import logging
+        with caplog.at_level(logging.INFO):
+            self._pipeline()
+        assert 'HiFiGAN vocoder loaded from' in caplog.text
+
+    def test_bad_vocoder_checkpoint_raises(self, tmp_path):
+        bogus = tmp_path / 'not-a-checkpoint.pt'
+        bogus.write_bytes(b'garbage')
+        with pytest.raises(RuntimeError):
+            self._pipeline(vocoder_checkpoint=str(bogus))
+
+    def test_trained_voice_model_drives_conversion(self, tmp_path):
+        pipe = self._pipeline()
+        emb = np.random.randn(256).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+        pipe.set_speaker_embedding(emb)
+
+        # trained artifact must match runtime feature dims (768/768/256);
+        # hidden/layers stay tiny for speed, n_mels matches the vocoder
+        from auto_voice.models.svc_decoder import CoMoSVCDecoder
+        torch.manual_seed(0)
+        decoder = CoMoSVCDecoder(
+            content_dim=768, pitch_dim=768, speaker_dim=256,
+            n_mels=80, hidden_dim=32, n_layers=2, device=torch.device('cpu'),
+        )
+        artifact = tmp_path / 'profile_full_model.pt'
+        torch.save(decoder.state_dict(), artifact)
+
+        n = 16000
+        chunk = (0.3 * np.sin(2 * np.pi * 220 * np.linspace(0, 1, n, endpoint=False))).astype(np.float32)
+        baseline = pipe.process_chunk(chunk)
+
+        pipe.load_voice_model(str(artifact))
+        assert pipe._voice_model is not None
+        converted = pipe.process_chunk(chunk)
+
+        expected = int(round(n * 22050 / 16000))
+        assert len(converted) == expected
+        assert not np.allclose(converted, baseline), \
+            'trained decoder output should differ from SimpleDecoder output'
+
+        pipe.clear_voice_model()
+        assert pipe._voice_model is None

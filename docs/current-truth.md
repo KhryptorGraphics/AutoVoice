@@ -101,15 +101,25 @@ and hardware/model lanes are current-head green or explicitly gated.
 - canonical offline pipeline: `quality_seedvc`
 - canonical fast/live pipeline: `realtime`
 - experimental pipelines: `quality`, `quality_shortcut`, `realtime_meanvc`
-- supported local train/serve contract: trained artifacts are served by the
-  offline `quality` pipeline. Full-model training saves
-  `{profile}_full_model.pt` and LoRA training saves both the deltas-only
-  `{profile}_adapter.pt` (AdapterManager consumers) and a self-contained
-  `{profile}_adapter_model.pt` (base + LoRA) — `ModelManager.load_voice_model`
-  detects the artifact family from the state dict and loads it into the class
-  that produced it (CoMoSVCDecoder or SoVitsSvc). The canonical
-  `quality_seedvc` offline path remains reference-audio driven, and the live
-  `realtime` path remains speaker-embedding driven.
+- supported local train/serve contract: trained artifacts are served by every
+  conversion path. Full-model training saves `{profile}_full_model.pt` and
+  LoRA training saves both the deltas-only `{profile}_adapter.pt`
+  (AdapterManager consumers) and a self-contained
+  `{profile}_adapter_model.pt` (base + LoRA). The shared artifact loader
+  (`build_voice_model_from_checkpoint`) detects the artifact family from the
+  state dict and loads it into the class that produced it; deltas-only
+  payloads are rejected loudly. Consumers: the offline `quality` pipeline
+  (`ModelManager`), offline `realtime` jobs (trained decoder + the 80-mel
+  universal HiFiGAN loaded by default), live karaoke sessions (full-model and
+  adapter-model profiles route through `RealtimeVoiceConversionPipeline`; the
+  streaming SOTA backend receives the profile store, serves self-contained
+  artifacts with an atomic decoder/vocoder swap, and skips per-chunk vocal
+  separation for mic input). The canonical `quality_seedvc` offline path
+  remains reference-audio driven. Known limitation: the on-disk
+  `bigvgan_generator.pt` is the official bigvgan_v2 export and is
+  incompatible with the in-repo BigVGAN module, so the SOTA base 100-mel
+  vocoder runs untrained; trained profiles are served through the 80-mel
+  HiFiGAN instead.
 - canonical training feature contract: ContentVec content embeddings are 768
   dims, RMVPE/PitchEncoder pitch embeddings are 768 dims, and speaker embeddings
   are 256 dims. CoMoSVC training jobs and regression tests must use that contract.
