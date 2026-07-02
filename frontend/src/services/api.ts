@@ -130,7 +130,7 @@ export interface ConversionRecord {
   pipeline_type?: PipelineType
   requested_pipeline?: PipelineType
   resolved_pipeline?: PipelineType
-  runtime_backend?: 'pytorch' | 'tensorrt' | 'pytorch_full_model' | string
+  runtime_backend?: 'pytorch' | 'tensorrt' | 'pytorch_full_model' | 'pytorch_adapter_model' | string
   adapter_type?: 'hq' | 'nvfp4' | 'unified'
   active_model_type?: ActiveModelType
   // Quality metrics
