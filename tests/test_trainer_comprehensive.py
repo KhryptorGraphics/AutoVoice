@@ -184,7 +184,13 @@ class TestVoiceDatasetEdgeCases:
                 mock_mel.return_value = np.random.randn(80, 10)
 
                 with patch('librosa.pyin') as mock_pyin:
-                    mock_pyin.return_value = (np.zeros(10), np.ones(10), None)
+                    # pyin frames scale with input length (hop 512); the
+                    # dataset caches the full-file contour and slices windows
+                    def scaled_pyin(y, **kwargs):
+                        frames = 1 + len(y) // 512
+                        return (np.zeros(frames), np.ones(frames, dtype=bool), None)
+
+                    mock_pyin.side_effect = scaled_pyin
 
                     dataset = VoiceDataset(str(temp_data_dir), segment_length=32768)
 

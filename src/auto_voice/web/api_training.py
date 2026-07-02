@@ -204,7 +204,7 @@ def get_training_config_options():
             'lora_target_modules': ['q_proj', 'v_proj', 'content_encoder'],
             'learning_rate': 1e-4,
             'batch_size': 4,
-            'epochs': 100,
+            'epochs': 500,
             'warmup_steps': 100,
             'max_grad_norm': 1.0,
             'preset_id': 'custom',
@@ -220,7 +220,7 @@ def get_training_config_options():
             'validation_split': 0.15,
             'early_stopping_patience': 25,
             'early_stopping_min_delta': 0.0005,
-            'use_ewc': True,
+            'use_ewc': False,
             'ewc_lambda': 1000.0,
             'use_prior_preservation': False,
             'prior_loss_weight': 0.5,
@@ -229,6 +229,13 @@ def get_training_config_options():
         'enums': TRAINING_CONFIG_ENUMS,
         'presets': TRAINING_PRESETS,
         'devices': _available_training_devices(),
+        # Accepted for config compatibility but not implemented by the
+        # trainer; jobs that enable them log a warning and ignore them.
+        'unimplemented_options': [
+            'use_ewc', 'ewc_lambda',
+            'use_prior_preservation', 'prior_loss_weight',
+            'lora_target_modules',
+        ],
         'full_model_unlock_minutes': 30,
     })
 

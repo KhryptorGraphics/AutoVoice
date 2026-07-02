@@ -234,6 +234,17 @@ class Trainer:
         self.early_stopped = False
         self.epochs_ran = 0
         self.monitored_metric = 'train'
+        self.warmup_steps = int(self.config.get('warmup_steps', 0) or 0)
+        self.precision = str(self.config.get('precision', 'fp32')).lower()
+        use_cuda = str(self.device) != 'cpu' and torch.cuda.is_available()
+        self._autocast_dtype = {
+            'fp16': torch.float16,
+            'bf16': torch.bfloat16,
+        }.get(self.precision)
+        self._autocast_enabled = bool(self._autocast_dtype is not None and use_cuda)
+        self._grad_scaler = torch.amp.GradScaler(
+            'cuda', enabled=(self.precision == 'fp16' and use_cuda)
+        )
 
         # Shared encoders for feature extraction (frozen during training)
         from ..models.encoder import ContentEncoder, PitchEncoder
@@ -435,11 +446,29 @@ class Trainer:
             # Compute spectrogram for posterior encoder
             spec = self._compute_spec(audio, n_mel_frames)
 
-            # Forward + loss
+            # Linear LR warmup over the first warmup_steps global steps,
+            # scaled from the scheduler's current base LR so the epoch-level
+            # ExponentialLR keeps compounding correctly afterwards
+            if self.warmup_steps > 0 and self.global_step <= self.warmup_steps:
+                scale = min(1.0, (self.global_step + 1) / float(self.warmup_steps))
+                base_lrs = (
+                    self.scheduler.get_last_lr()
+                    if self.scheduler is not None
+                    else [self.lr] * len(self.optimizer.param_groups)
+                )
+                for group, base_lr in zip(self.optimizer.param_groups, base_lrs):
+                    group['lr'] = base_lr * scale
+
+            # Forward + loss (optionally under autocast for fp16/bf16)
             self.optimizer.zero_grad()
-            outputs = self.model(content, pitch, speaker, spec=spec)
-            losses = self.model.compute_loss(outputs, mel)
-            loss = losses['total_loss']
+            with torch.autocast(
+                device_type='cuda',
+                dtype=self._autocast_dtype or torch.float16,
+                enabled=self._autocast_enabled,
+            ):
+                outputs = self.model(content, pitch, speaker, spec=spec)
+                losses = self.model.compute_loss(outputs, mel)
+                loss = losses['total_loss']
 
             # Skip NaN/Inf losses to prevent gradient explosion
             if torch.isnan(loss) or torch.isinf(loss):
@@ -449,10 +478,18 @@ class Trainer:
             # Clamp large losses to prevent gradient explosion
             loss = torch.clamp(loss, max=1e6)
 
-            loss.backward()
-            if self.gradient_clip > 0:
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
-            self.optimizer.step()
+            if self._grad_scaler.is_enabled():
+                self._grad_scaler.scale(loss).backward()
+                self._grad_scaler.unscale_(self.optimizer)
+                if self.gradient_clip > 0:
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
+                self._grad_scaler.step(self.optimizer)
+                self._grad_scaler.update()
+            else:
+                loss.backward()
+                if self.gradient_clip > 0:
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
+                self.optimizer.step()
 
             total_loss += loss.item()
             n_batches += 1

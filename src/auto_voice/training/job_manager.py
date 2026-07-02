@@ -118,11 +118,11 @@ class TrainingConfig:
     early_stopping_patience: int = 25
     early_stopping_min_delta: float = 5e-4
 
-    # EWC configuration (prevent catastrophic forgetting)
-    use_ewc: bool = True
+    # EWC / prior preservation are accepted for config compatibility but are
+    # NOT implemented by the Trainer; enabling them logs a warning and has no
+    # effect on training. Kept so stored job configs keep round-tripping.
+    use_ewc: bool = False
     ewc_lambda: float = 1000.0
-
-    # Prior preservation (from Stable-TTS research)
     use_prior_preservation: bool = False
     prior_loss_weight: float = 0.5
 
@@ -1120,7 +1120,14 @@ class TrainingJobManager:
                         'validation_split': job.config.validation_split if job.config else 0.0,
                         'early_stopping_patience': job.config.early_stopping_patience if job.config else 0,
                         'early_stopping_min_delta': job.config.early_stopping_min_delta if job.config else 0.0,
+                        'warmup_steps': job.config.warmup_steps if job.config else 0,
                     }
+                    if job.config and (job.config.use_ewc or job.config.use_prior_preservation):
+                        logger.warning(
+                            "Job %s enables use_ewc/use_prior_preservation, which are "
+                            "not implemented by the trainer and will be ignored",
+                            job_id,
+                        )
 
                     model = CoMoSVCDecoder(
                         content_dim=768,
