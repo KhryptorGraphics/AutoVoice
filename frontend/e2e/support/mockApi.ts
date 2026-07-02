@@ -1556,11 +1556,372 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     })
   })
 
+  // ---- Speaker library (speakers API family) ----
+  let extractionRuns = 0
+  let clusterMerges = 0
+  let clusterSplits = 0
+  let clusterRenames = 0
+  let identifyRuns = 0
+  let metadataFetches = 0
+  const speakerClusters: Array<{
+    id: string
+    name: string
+    is_verified: boolean
+    member_count: number
+    total_duration_sec: number
+  }> = [
+    { id: 'cluster-1', name: 'Lead Vocalist', is_verified: true, member_count: 4, total_duration_sec: 320 },
+    { id: 'cluster-2', name: 'Featured Guest', is_verified: false, member_count: 2, total_duration_sec: 95 },
+  ]
+
+  await page.route('**/api/v1/speakers/extraction/run', async (route) => {
+    extractionRuns += 1
+    return jsonResponse(route, { job_id: 'extraction-job-1', status: 'queued' }, 202)
+  })
+
+  await page.route('**/api/v1/speakers/extraction/status/*', async (route) => {
+    return jsonResponse(route, {
+      job_id: 'extraction-job-1',
+      status: 'completed',
+      progress: 100,
+      message: 'Extraction complete',
+      error: null,
+      artist_name: 'smoke_artist',
+      tracks_processed: 3,
+      tracks_total: 3,
+      speakers_detected: [
+        { speaker_id: 'SPEAKER_00', duration_sec: 180, segments: 12, is_primary: true },
+        { speaker_id: 'SPEAKER_01', duration_sec: 45, segments: 4, is_primary: false },
+      ],
+      created_at: '2026-07-01T00:00:00Z',
+      started_at: '2026-07-01T00:00:01Z',
+      completed_at: '2026-07-01T00:01:00Z',
+      result: null,
+    })
+  })
+
+  await page.route('**/api/v1/speakers/tracks/fetch-metadata', async (route) => {
+    metadataFetches += 1
+    return jsonResponse(route, { success: true, stats: { total_tracks: 3, total_featured: 1 } })
+  })
+
+  await page.route(/\/api\/v1\/speakers\/tracks(?:\?.*)?$/, async (route) => {
+    return jsonResponse(route, {
+      tracks: [
+        {
+          id: 'track-1',
+          title: 'Smoke Song',
+          channel: 'Smoke Channel',
+          artist_name: 'smoke_artist',
+          duration_sec: 210,
+          featured_artists: ['Featured Guest'],
+          vocals_path: '/data/separated/smoke_artist/track-1/vocals.wav',
+        },
+        {
+          id: 'track-2',
+          title: 'Second Song',
+          channel: 'Smoke Channel',
+          artist_name: 'smoke_artist',
+          duration_sec: 180,
+          featured_artists: [],
+          vocals_path: null,
+        },
+      ],
+      count: 2,
+    })
+  })
+
+  await page.route('**/api/v1/speakers/clusters/merge', async (route) => {
+    clusterMerges += 1
+    const body = route.request().postDataJSON() as { target_id: string; source_id: string }
+    const sourceIndex = speakerClusters.findIndex((cluster) => cluster.id === body.source_id)
+    if (sourceIndex >= 0) speakerClusters.splice(sourceIndex, 1)
+    const target = speakerClusters.find((cluster) => cluster.id === body.target_id)
+    return jsonResponse(route, { success: true, cluster: target ?? speakerClusters[0], member_count: 6 })
+  })
+
+  await page.route('**/api/v1/speakers/clusters/split', async (route) => {
+    clusterSplits += 1
+    const body = route.request().postDataJSON() as { cluster_id: string; new_name?: string }
+    const original = speakerClusters.find((cluster) => cluster.id === body.cluster_id)
+    const created = {
+      id: `cluster-${speakerClusters.length + 1}`,
+      name: body.new_name ?? 'Split Cluster',
+      is_verified: false,
+      member_count: 1,
+      total_duration_sec: 30,
+    }
+    speakerClusters.push(created)
+    return jsonResponse(route, { success: true, original_cluster: original, new_cluster: created })
+  })
+
+  await page.route('**/api/v1/speakers/clusters/*/name', async (route) => {
+    clusterRenames += 1
+    const body = route.request().postDataJSON() as { name: string }
+    const clusterId = route.request().url().match(/clusters\/([^/]+)\/name/)?.[1]
+    const cluster = speakerClusters.find((item) => item.id === clusterId)
+    if (cluster) cluster.name = body.name
+    return jsonResponse(route, { success: true, cluster })
+  })
+
+  await page.route('**/api/v1/speakers/clusters/*/sample**', async (route) => {
+    return route.fulfill({
+      status: 200,
+      contentType: 'audio/wav',
+      body: createWavBuffer(),
+    })
+  })
+
+  await page.route('**/api/v1/speakers/clusters/*', async (route) => {
+    const clusterId = route.request().url().match(/clusters\/([^/?]+)/)?.[1]
+    if (clusterId === 'merge' || clusterId === 'split') {
+      return route.fallback()
+    }
+    const cluster = speakerClusters.find((item) => item.id === clusterId) ?? speakerClusters[0]
+    return jsonResponse(route, {
+      ...cluster,
+      members: [
+        {
+          embedding_id: 'embedding-1',
+          track_id: 'track-1',
+          speaker_id: 'SPEAKER_00',
+          duration_sec: 180,
+          is_primary: true,
+          confidence: 0.93,
+          track_title: 'Smoke Song',
+          artist_name: 'smoke_artist',
+        },
+      ],
+    })
+  })
+
+  await page.route('**/api/v1/speakers/clusters', async (route) => {
+    return jsonResponse(route, { clusters: speakerClusters, count: speakerClusters.length })
+  })
+
+  await page.route('**/api/v1/speakers/identify', async (route) => {
+    identifyRuns += 1
+    return jsonResponse(route, {
+      success: true,
+      stats: { artists: {}, clustering: { clusters: 2 }, matching: { matched: 1 } },
+    })
+  })
+
+  await page.route('**/api/v1/speakers/featured-artists', async (route) => {
+    return jsonResponse(route, {
+      artists: [
+        { name: 'Featured Guest', track_count: 1, track_ids: 'track-1', total_duration_sec: 95 },
+      ],
+      count: 1,
+    })
+  })
+
+  // ---- Quality API family ----
+  let degradationChecks = 0
+  let analyzeRequests = 0
+  let compareRequests = 0
+
+  await page.route('**/api/v1/quality/all-profiles', async (route) => {
+    return jsonResponse(route, {
+      profiles: [
+        { profile_id: 'profile-1', name: 'Smoke Profile', status: 'healthy', quality_score: 0.91 },
+      ],
+      total: 1,
+      degraded_count: 0,
+      critical_count: 0,
+    })
+  })
+
+  await page.route('**/api/v1/profiles/*/quality-history**', async (route) => {
+    return jsonResponse(route, [
+      { timestamp: '2026-06-30T00:00:00Z', quality_score: 0.9, speaker_similarity: 0.88 },
+      { timestamp: '2026-07-01T00:00:00Z', quality_score: 0.91, speaker_similarity: 0.89 },
+    ])
+  })
+
+  await page.route('**/api/v1/profiles/*/quality-status', async (route) => {
+    return jsonResponse(route, { profile_id: 'profile-1', status: 'healthy', quality_score: 0.91 })
+  })
+
+  await page.route('**/api/v1/profiles/*/check-degradation', async (route) => {
+    degradationChecks += 1
+    return jsonResponse(route, { profile_id: 'profile-1', degraded: false, reason: null })
+  })
+
+  await page.route(/\/api\/v1\/loras\/audit(?:\?.*)?$/, async (route) => {
+    return jsonResponse(route, {
+      audit_timestamp: null,
+      total_profiles: 1,
+      profiles_with_adapters: 1,
+      profiles_needing_training: 0,
+      profiles_needing_retrain: 0,
+      stale_adapters: 0,
+      low_quality_adapters: 0,
+      adapter_types: { unified: 1 },
+    })
+  })
+
+  await page.route('**/api/v1/convert/analyze', async (route) => {
+    analyzeRequests += 1
+    return jsonResponse(route, {
+      methodology: 'quality_seedvc',
+      metrics: { speaker_similarity: 0.9, pitch_rmse: 12.5 },
+      quality_score: 0.9,
+      passes_thresholds: true,
+      threshold_failures: [],
+      recommendations: [],
+      timestamp: '2026-07-01T00:00:00Z',
+    })
+  })
+
+  await page.route('**/api/v1/convert/compare-methodologies', async (route) => {
+    compareRequests += 1
+    return jsonResponse(route, {
+      best_methodology: 'quality_seedvc',
+      rankings: [['quality_seedvc', 0.9], ['realtime', 0.82]],
+      summary: { compared: 2 },
+      analyses: {
+        quality_seedvc: { metrics: { speaker_similarity: 0.9 }, passes_thresholds: true, threshold_failures: [] },
+        realtime: { metrics: { speaker_similarity: 0.82 }, passes_thresholds: true, threshold_failures: [] },
+      },
+    })
+  })
+
+  // ---- Audit events ----
+  await page.route(/\/api\/v1\/audit\/events(?:\?.*)?$/, async (route) => {
+    return jsonResponse(route, {
+      events: [
+        {
+          id: 'audit-1',
+          event_type: 'profile.created',
+          actor: 'operator',
+          resource_type: 'voice_profile',
+          resource_id: 'profile-1',
+          metadata: {},
+          created_at: '2026-07-01T00:00:00Z',
+        },
+      ],
+      count: 1,
+    })
+  })
+
+  // ---- YouTube history maintenance ----
+  let youtubeHistoryExports = 0
+  let youtubeHistoryPurges = 0
+
+  await page.route(/\/api\/v1\/youtube\/history\/export(?:\?.*)?$/, async (route) => {
+    youtubeHistoryExports += 1
+    return jsonResponse(route, { count: 0, items: [], exported_at: '2026-07-01T00:00:00Z' })
+  })
+
+  await page.route('**/api/v1/youtube/history/purge', async (route) => {
+    youtubeHistoryPurges += 1
+    return jsonResponse(route, { purged_items: 2, deleted_files: 2, skipped_files: 0 })
+  })
+
+  // ---- Profile lifecycle ----
+  let profileExports = 0
+  let profilePurges = 0
+  let retrainChecks = 0
+  let retrainRuns = 0
+
+  await page.route('**/api/v1/voice/profiles/*/export', async (route) => {
+    profileExports += 1
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ profile_id: 'profile-1', samples: [], app_state: {} }),
+    })
+  })
+
+  await page.route('**/api/v1/voice/profiles/*/purge', async (route) => {
+    profilePurges += 1
+    return jsonResponse(route, { status: 'purged', profile_id: 'profile-1' })
+  })
+
+  await page.route('**/api/v1/profiles/*/check-retrain', async (route) => {
+    retrainChecks += 1
+    return jsonResponse(route, {
+      profile_id: 'profile-1',
+      needs_retrain: true,
+      reason: 'new samples available',
+      recommendation: 'Retrain the LoRA adapter with 2 new samples.',
+    })
+  })
+
+  await page.route('**/api/v1/loras/retrain/*', async (route) => {
+    retrainRuns += 1
+    return jsonResponse(route, { status: 'started', job_id: 'retrain-job-1', profile_id: 'profile-1' }, 202)
+  })
+
+  // ---- Notification webhooks ----
+  let webhookSaves = 0
+  let webhookDeletes = 0
+  let webhookTests = 0
+  const webhooks: Array<Record<string, unknown>> = []
+
+  await page.route('**/api/v1/notifications/webhooks/*/test', async (route) => {
+    webhookTests += 1
+    return jsonResponse(route, { status: 'delivered', delivered: true, error: null })
+  })
+
+  await page.route('**/api/v1/notifications/webhooks/*', async (route) => {
+    if (route.request().method() === 'DELETE') {
+      webhookDeletes += 1
+      const webhookId = route.request().url().match(/webhooks\/([^/?]+)/)?.[1]
+      const index = webhooks.findIndex((hook) => hook.id === webhookId)
+      if (index >= 0) webhooks.splice(index, 1)
+      return route.fulfill({ status: 204 })
+    }
+    return route.fallback()
+  })
+
+  await page.route('**/api/v1/notifications/webhooks', async (route) => {
+    if (route.request().method() === 'POST') {
+      webhookSaves += 1
+      const body = route.request().postDataJSON() as Record<string, unknown>
+      const saved = {
+        id: (body.id as string) ?? `webhook-${webhooks.length + 1}`,
+        enabled: body.enabled ?? true,
+        created_at: '2026-07-01T00:00:00Z',
+        ...body,
+      }
+      const index = webhooks.findIndex((hook) => hook.id === saved.id)
+      if (index >= 0) {
+        webhooks[index] = saved
+      } else {
+        webhooks.push(saved)
+      }
+      return jsonResponse(route, saved, 201)
+    }
+    return jsonResponse(route, { webhooks, count: webhooks.length })
+  })
+
   await page.route('**/socket.io/**', async (route) => {
     await route.abort()
   })
 
   return {
+    getSpeakerExtractionRuns: () => extractionRuns,
+    getClusterMerges: () => clusterMerges,
+    getClusterSplits: () => clusterSplits,
+    getClusterRenames: () => clusterRenames,
+    getIdentifyRuns: () => identifyRuns,
+    getMetadataFetches: () => metadataFetches,
+    getSpeakerClusterCount: () => speakerClusters.length,
+    getDegradationChecks: () => degradationChecks,
+    getAnalyzeRequests: () => analyzeRequests,
+    getCompareRequests: () => compareRequests,
+    getYouTubeHistoryExports: () => youtubeHistoryExports,
+    getYouTubeHistoryPurges: () => youtubeHistoryPurges,
+    getProfileExports: () => profileExports,
+    getProfilePurges: () => profilePurges,
+    getRetrainChecks: () => retrainChecks,
+    getRetrainRuns: () => retrainRuns,
+    getWebhookSaves: () => webhookSaves,
+    getWebhookDeletes: () => webhookDeletes,
+    getWebhookTests: () => webhookTests,
+    getWebhookCount: () => webhooks.length,
     getPreferredPipeline: () => preferredOfflinePipeline,
     getPreferredLivePipeline: () => preferredLivePipeline,
     isPaused: () => paused,

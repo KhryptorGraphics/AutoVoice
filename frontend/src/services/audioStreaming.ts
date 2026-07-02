@@ -161,6 +161,67 @@ export class AudioStreamingClient {
         this.sessionId = null;
         this.emitEvent('session_ended', null);
       });
+
+      // Samples collected as training takes when the session stops
+      this.socket.on('samples_collected', (data: unknown) => {
+        this.emitEvent('samples_collected', data);
+      });
+
+      // Push-based separation progress (polling remains the fallback)
+      this.socket.on('separation_progress', (data: unknown) => {
+        this.emitEvent('separation_progress', data);
+      });
+
+      // Multi-client session membership
+      this.socket.on('session_joined', (data: { session_id: string; status?: string }) => {
+        this.sessionId = data.session_id;
+        this.emitEvent('session_joined', data);
+      });
+
+      this.socket.on('session_left', (data: unknown) => {
+        this.emitEvent('session_left', data);
+      });
+
+      // Mid-session voice switch confirmation
+      this.socket.on('embedding_updated', (data: unknown) => {
+        this.emitEvent('embedding_updated', data);
+      });
+    });
+  }
+
+  /**
+   * Join an existing karaoke session started by another client.
+   */
+  joinSession(sessionId: string): void {
+    if (!this.socket?.connected) {
+      throw new Error('Not connected to server');
+    }
+    this.socket.emit('join_session', { session_id: sessionId });
+  }
+
+  /**
+   * Leave a joined karaoke session without stopping it.
+   */
+  leaveSession(): void {
+    if (!this.socket?.connected || !this.sessionId) {
+      return;
+    }
+    this.socket.emit('leave_session', { session_id: this.sessionId });
+    this.sessionId = null;
+  }
+
+  /**
+   * Switch the conversion voice mid-session. Accepts a voice model id
+   * (resolved server-side) or a raw base64 float32 embedding.
+   */
+  setSpeakerEmbedding(payload: { voiceModelId?: string; speakerEmbeddingBase64?: string }): void {
+    if (!this.socket?.connected || !this.sessionId) {
+      throw new Error('No active session');
+    }
+    this.socket.emit('set_speaker_embedding', {
+      session_id: this.sessionId,
+      ...(payload.voiceModelId ? { voice_model_id: payload.voiceModelId } : {}),
+      ...(payload.speakerEmbeddingBase64 ? { speaker_embedding: payload.speakerEmbeddingBase64 } : {}),
     });
   }
 

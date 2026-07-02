@@ -304,6 +304,7 @@ class AppStateStore:
             "diarization_segment_assignments": self.base_dir / "diarization_segment_assignments.json",
             "asset_registry": self.base_dir / "asset_registry.json",
             "audit_log": self.base_dir / "audit_log.json",
+            "notification_webhooks": self.base_dir / "notification_webhooks.json",
         }
 
     def _read(self, name: str, default: Any) -> Any:
@@ -503,6 +504,28 @@ class AppStateStore:
         if not profile_checkpoints:
             checkpoints.pop(profile_id, None)
         self._write("profile_checkpoints", checkpoints)
+        return True
+
+    def list_webhooks(self) -> List[Dict[str, Any]]:
+        webhooks = list(self._read("notification_webhooks", {}).values())
+        webhooks.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return webhooks
+
+    def get_webhook(self, webhook_id: str) -> Optional[Dict[str, Any]]:
+        return self._read("notification_webhooks", {}).get(webhook_id)
+
+    def save_webhook(self, webhook: Dict[str, Any]) -> Dict[str, Any]:
+        webhooks = self._read("notification_webhooks", {})
+        webhooks[webhook["id"]] = deepcopy(webhook)
+        self._write("notification_webhooks", webhooks)
+        return webhook
+
+    def delete_webhook(self, webhook_id: str) -> bool:
+        webhooks = self._read("notification_webhooks", {})
+        if webhook_id not in webhooks:
+            return False
+        del webhooks[webhook_id]
+        self._write("notification_webhooks", webhooks)
         return True
 
     def list_youtube_history(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:

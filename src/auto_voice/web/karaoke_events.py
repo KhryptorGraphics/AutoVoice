@@ -646,18 +646,29 @@ class KaraokeNamespace(Namespace):
             return
 
         try:
-            import base64
-            embedding_bytes = base64.b64decode(data['speaker_embedding'])
-            embedding = torch.from_numpy(
-                np.frombuffer(embedding_bytes, dtype=np.float32).copy()
-            )
+            voice_model_id = data.get('voice_model_id')
+            if voice_model_id:
+                from .karaoke_api import _get_voice_model_registry
+                embedding = _get_voice_model_registry().get_embedding(voice_model_id)
+                if embedding is None:
+                    emit('error', {'message': f'Voice model not found: {voice_model_id}'})
+                    return
+            else:
+                import base64
+                embedding_bytes = base64.b64decode(data['speaker_embedding'])
+                embedding = torch.from_numpy(
+                    np.frombuffer(embedding_bytes, dtype=np.float32).copy()
+                )
             session.set_speaker_embedding(embedding)
             self._persist_session_snapshot(
                 session,
                 collect_samples=session_id in self._sample_collectors,
                 sample_collection_enabled=session_id in self._sample_collectors,
             )
-            emit('embedding_updated', {'session_id': session_id})
+            payload = {'session_id': session_id}
+            if voice_model_id:
+                payload['voice_model_id'] = voice_model_id
+            emit('embedding_updated', payload)
         except Exception as e:
             emit('error', {'message': f'Failed to set embedding: {str(e)}'})
 

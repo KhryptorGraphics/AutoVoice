@@ -57,6 +57,7 @@ export type WSEventType =
   | 'gpu_metrics'
   | 'model_loaded'
   | 'model_unloaded'
+  | 'conversion_workflow_error'
 
 export interface WSEvent<T = unknown> {
   type: WSEventType
@@ -2045,6 +2046,428 @@ class ApiService {
   async clearYouTubeHistory(): Promise<void> {
     await this.request('/youtube/history/clear', { method: 'POST' })
   }
+
+  async exportYouTubeHistory(limit?: number): Promise<YouTubeHistoryExport> {
+    const params = limit ? `?limit=${limit}` : ''
+    return this.request(`/youtube/history/export${params}`)
+  }
+
+  async purgeYouTubeHistory(deleteAssets = true): Promise<YouTubeHistoryPurgeResult> {
+    return this.request('/youtube/history/purge', {
+      method: 'POST',
+      body: JSON.stringify({ delete_assets: deleteAssets }),
+    })
+  }
+
+  // ---- Profile lifecycle ----
+
+  async exportVoiceProfile(profileId: string): Promise<Blob> {
+    const response = await apiFetch(`${API_BASE}/voice/profiles/${profileId}/export`)
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: response.statusText }))
+      throw new ApiError(error.error || `HTTP ${response.status}`, response.status)
+    }
+    return response.blob()
+  }
+
+  async purgeVoiceProfile(profileId: string): Promise<ProfilePurgeResult> {
+    return this.request(`/voice/profiles/${profileId}/purge`, { method: 'POST' })
+  }
+
+  async checkRetrain(profileId: string): Promise<RetrainCheckResult> {
+    return this.request(`/profiles/${profileId}/check-retrain`, { method: 'POST' })
+  }
+
+  async retrainLora(profileId: string): Promise<RetrainResult> {
+    return this.request(`/loras/retrain/${profileId}`, { method: 'POST' })
+  }
+
+  // ---- Audit ----
+
+  async listAuditEvents(filters?: {
+    limit?: number
+    resource_id?: string
+    event_type?: string
+  }): Promise<{ events: AuditEvent[]; count: number }> {
+    const params = new URLSearchParams()
+    if (filters?.limit) params.append('limit', String(filters.limit))
+    if (filters?.resource_id) params.append('resource_id', filters.resource_id)
+    if (filters?.event_type) params.append('event_type', filters.event_type)
+    const query = params.toString()
+    return this.request(`/audit/events${query ? `?${query}` : ''}`)
+  }
+
+  // ---- Speaker library ----
+
+  async runSpeakerExtraction(
+    artistName: string,
+    runClustering = true
+  ): Promise<{ job_id: string; status: string }> {
+    return this.request('/speakers/extraction/run', {
+      method: 'POST',
+      body: JSON.stringify({ artist_name: artistName, run_clustering: runClustering }),
+    })
+  }
+
+  async getSpeakerExtractionStatus(jobId: string): Promise<SpeakerExtractionJob> {
+    return this.request(`/speakers/extraction/status/${jobId}`)
+  }
+
+  async listSpeakerTracks(filters?: {
+    artist?: string
+    hasFeatured?: boolean
+  }): Promise<{ tracks: SpeakerTrack[]; count: number }> {
+    const params = new URLSearchParams()
+    if (filters?.artist) params.append('artist', filters.artist)
+    if (filters?.hasFeatured) params.append('has_featured', 'true')
+    const query = params.toString()
+    return this.request(`/speakers/tracks${query ? `?${query}` : ''}`)
+  }
+
+  async fetchTrackMetadata(artistName?: string): Promise<{ success: boolean; stats: Record<string, number> }> {
+    return this.request('/speakers/tracks/fetch-metadata', {
+      method: 'POST',
+      body: JSON.stringify({ artist_name: artistName || undefined }),
+    })
+  }
+
+  async listSpeakerClusters(): Promise<{ clusters: SpeakerCluster[]; count: number }> {
+    return this.request('/speakers/clusters')
+  }
+
+  async getSpeakerCluster(clusterId: string): Promise<SpeakerClusterDetail> {
+    return this.request(`/speakers/clusters/${clusterId}`)
+  }
+
+  async renameSpeakerCluster(
+    clusterId: string,
+    name: string,
+    isVerified?: boolean
+  ): Promise<{ success: boolean; cluster: SpeakerCluster }> {
+    return this.request(`/speakers/clusters/${clusterId}/name`, {
+      method: 'PUT',
+      body: JSON.stringify({ name, ...(isVerified !== undefined ? { is_verified: isVerified } : {}) }),
+    })
+  }
+
+  async mergeSpeakerClusters(
+    targetId: string,
+    sourceId: string
+  ): Promise<{ success: boolean; cluster: SpeakerCluster; member_count: number }> {
+    return this.request('/speakers/clusters/merge', {
+      method: 'POST',
+      body: JSON.stringify({ target_id: targetId, source_id: sourceId }),
+    })
+  }
+
+  async splitSpeakerCluster(
+    clusterId: string,
+    embeddingIds: string[],
+    newName: string
+  ): Promise<{ success: boolean; original_cluster: SpeakerCluster; new_cluster: SpeakerCluster }> {
+    return this.request('/speakers/clusters/split', {
+      method: 'POST',
+      body: JSON.stringify({ cluster_id: clusterId, embedding_ids: embeddingIds, new_name: newName }),
+    })
+  }
+
+  getSpeakerClusterSampleUrl(clusterId: string, maxDuration = 10): string {
+    return `${API_BASE}/speakers/clusters/${clusterId}/sample?max_duration=${maxDuration}`
+  }
+
+  async fetchSpeakerClusterSample(clusterId: string, maxDuration = 10): Promise<Blob> {
+    const response = await apiFetch(this.getSpeakerClusterSampleUrl(clusterId, maxDuration))
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: response.statusText }))
+      throw new ApiError(error.error || `HTTP ${response.status}`, response.status)
+    }
+    return response.blob()
+  }
+
+  async identifySpeakers(options?: {
+    artists?: string[]
+    threshold?: number
+    min_duration?: number
+  }): Promise<{ success: boolean; stats: Record<string, unknown> }> {
+    return this.request('/speakers/identify', {
+      method: 'POST',
+      body: JSON.stringify(options ?? {}),
+    })
+  }
+
+  async listFeaturedArtists(): Promise<{ artists: FeaturedArtist[]; count: number }> {
+    return this.request('/speakers/featured-artists')
+  }
+
+  // ---- Quality ----
+
+  async getAllProfilesQuality(): Promise<AllProfilesQuality> {
+    return this.request('/quality/all-profiles')
+  }
+
+  async getProfileQualityHistory(profileId: string, days = 30): Promise<QualityHistoryEntry[]> {
+    return this.request(`/profiles/${profileId}/quality-history?days=${days}`)
+  }
+
+  async getProfileQualityStatus(profileId: string): Promise<ProfileQualitySummary> {
+    return this.request(`/profiles/${profileId}/quality-status`)
+  }
+
+  async checkProfileDegradation(profileId: string): Promise<DegradationCheckResult> {
+    return this.request(`/profiles/${profileId}/check-degradation`, { method: 'POST' })
+  }
+
+  async auditLoras(format?: 'summary'): Promise<LoraAuditResult> {
+    const params = format ? `?format=${format}` : ''
+    return this.request(`/loras/audit${params}`)
+  }
+
+  async analyzeConversion(payload: {
+    source_audio: string
+    converted_audio: string
+    target_profile_id?: string
+    methodology?: string
+  }): Promise<ConversionAnalysis> {
+    return this.request('/convert/analyze', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
+  async compareMethodologies(payload: {
+    source_audio: string
+    target_profile_id?: string
+    converted_outputs: Record<string, string>
+  }): Promise<MethodologyComparison> {
+    return this.request('/convert/compare-methodologies', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
+  // ---- Notification webhooks ----
+
+  async listWebhooks(): Promise<{ webhooks: NotificationWebhook[]; count: number }> {
+    return this.request('/notifications/webhooks')
+  }
+
+  async saveWebhook(webhook: NotificationWebhookSave): Promise<NotificationWebhook> {
+    return this.request('/notifications/webhooks', {
+      method: 'POST',
+      body: JSON.stringify(webhook),
+    })
+  }
+
+  async deleteWebhook(webhookId: string): Promise<void> {
+    await this.request(`/notifications/webhooks/${webhookId}`, { method: 'DELETE' })
+  }
+
+  async testWebhook(webhookId: string): Promise<WebhookTestResult> {
+    return this.request(`/notifications/webhooks/${webhookId}/test`, { method: 'POST' })
+  }
+}
+
+// YouTube history maintenance types
+export interface YouTubeHistoryExport {
+  count: number
+  items: YouTubeHistoryItem[]
+  exported_at: string
+}
+
+export interface YouTubeHistoryPurgeResult {
+  purged_items: number
+  deleted_files: number
+  skipped_files: number
+}
+
+// Profile lifecycle types
+export interface ProfilePurgeResult {
+  status?: string
+  profile_id?: string
+  purged?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+export interface RetrainCheckResult {
+  profile_id?: string
+  needs_retrain?: boolean
+  reason?: string
+  recommendation?: string
+  [key: string]: unknown
+}
+
+export interface RetrainResult {
+  status?: string
+  job_id?: string
+  profile_id?: string
+  [key: string]: unknown
+}
+
+// Audit types
+export interface AuditEvent {
+  id: string
+  event_type: string
+  actor: string
+  resource_type: string
+  resource_id: string
+  request_id?: string
+  metadata?: Record<string, unknown>
+  created_at: string
+}
+
+// Speaker library types
+export interface DetectedSpeaker {
+  speaker_id: string
+  duration_sec: number
+  segments: number
+  is_primary: boolean
+}
+
+export interface SpeakerExtractionJob {
+  job_id: string
+  status: 'queued' | 'pending' | 'running' | 'completed' | 'failed'
+  progress: number
+  message?: string
+  error?: string | null
+  artist_name: string
+  tracks_processed: number
+  tracks_total: number
+  speakers_detected: DetectedSpeaker[]
+  created_at?: string
+  started_at?: string | null
+  completed_at?: string | null
+  result?: Record<string, unknown> | null
+}
+
+export interface SpeakerTrack {
+  id: string
+  title: string | null
+  channel: string | null
+  artist_name: string
+  duration_sec: number | null
+  featured_artists: string[]
+  vocals_path: string | null
+}
+
+export interface SpeakerCluster {
+  id: string
+  name: string
+  is_verified: boolean
+  member_count: number
+  total_duration_sec: number | null
+}
+
+export interface SpeakerClusterMember {
+  embedding_id?: string
+  track_id: string
+  speaker_id: string
+  duration_sec: number
+  is_primary: boolean
+  confidence: number | null
+  track_title: string | null
+  artist_name: string
+}
+
+export interface SpeakerClusterDetail extends SpeakerCluster {
+  members?: SpeakerClusterMember[]
+  [key: string]: unknown
+}
+
+export interface FeaturedArtist {
+  name: string
+  track_count: number
+  track_ids?: string
+  total_duration_sec?: number
+  [key: string]: unknown
+}
+
+// Quality types
+export interface AllProfilesQuality {
+  profiles: Array<Record<string, unknown>>
+  total: number
+  degraded_count: number
+  critical_count: number
+}
+
+export interface QualityHistoryEntry {
+  timestamp?: string
+  [key: string]: unknown
+}
+
+export interface ProfileQualitySummary {
+  profile_id?: string
+  status?: string
+  [key: string]: unknown
+}
+
+export interface DegradationCheckResult {
+  profile_id?: string
+  degraded?: boolean
+  [key: string]: unknown
+}
+
+export interface LoraAuditResult {
+  audit_timestamp: string | null
+  total_profiles?: number
+  profiles_with_adapters?: number
+  profiles_needing_training?: number
+  profiles_needing_retrain?: number
+  stale_adapters?: number
+  low_quality_adapters?: number
+  adapter_types?: Record<string, number>
+  summary?: Record<string, unknown>
+  profiles?: Array<Record<string, unknown>>
+}
+
+export interface ConversionAnalysis {
+  methodology: string
+  metrics: Record<string, number>
+  quality_score: number
+  passes_thresholds: boolean
+  threshold_failures: string[]
+  recommendations: string[]
+  timestamp: string
+}
+
+export interface MethodologyComparison {
+  best_methodology: string
+  rankings: Array<[string, number]> | Record<string, number>
+  summary: Record<string, unknown>
+  analyses: Record<
+    string,
+    {
+      metrics: Record<string, number>
+      passes_thresholds: boolean
+      threshold_failures: string[]
+    }
+  >
+}
+
+// Notification webhook types
+export type WebhookEventName = 'training_complete' | 'conversion_complete' | 'job_failed'
+
+export interface NotificationWebhook {
+  id: string
+  name: string
+  url: string
+  events: WebhookEventName[]
+  enabled: boolean
+  created_at: string
+}
+
+export interface NotificationWebhookSave {
+  id?: string
+  name: string
+  url: string
+  events: WebhookEventName[]
+  enabled?: boolean
+}
+
+export interface WebhookTestResult {
+  status: string
+  webhook_id?: string
+  delivered?: boolean
+  error?: string | null
 }
 
 // Diarization types
@@ -2314,6 +2737,7 @@ class WebSocketManager {
       'gpu_metrics',
       'model_loaded',
       'model_unloaded',
+      'conversion_workflow_error',
     ] as WSEventType[]).forEach((eventType) => {
       this.socket!.on(eventType, (data: unknown) => {
         this.dispatch({

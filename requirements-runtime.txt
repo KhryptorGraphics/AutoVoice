@@ -15,6 +15,7 @@ flask-swagger-ui>=4.11
 werkzeug>=3.0
 eventlet>=0.35
 gunicorn>=21.0
+requests>=2.31
 
 # ML Models
 transformers>=4.30

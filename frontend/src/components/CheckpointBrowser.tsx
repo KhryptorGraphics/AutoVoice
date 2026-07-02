@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import {
   Archive, RotateCcw, GitCompare, Trash2, CheckCircle, Clock,
-  Loader2, AlertCircle, Download, ChevronDown, Play
+  Loader2, AlertCircle, ChevronDown, Play
 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiService } from '../services/api'
@@ -279,13 +279,6 @@ export function CheckpointBrowser({ profileId, onRollback, onCompare }: Checkpoi
                   )}
 
                   <div className="flex gap-2 pt-3 border-t border-gray-700">
-                    <a
-                      href={`/api/v1/profiles/${profileId}/checkpoints/${checkpoint.id}/download`}
-                      className="flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
-                    >
-                      <Download size={14} />
-                      Download
-                    </a>
                     {!checkpoint.is_active && (
                       <>
                         <ConfirmActionButton
