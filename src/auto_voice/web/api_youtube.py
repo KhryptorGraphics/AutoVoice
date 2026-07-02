@@ -571,6 +571,19 @@ def confirm_youtube_ingest(job_id: str):
                 name = (decision.get('name') or '').strip()
                 if not name:
                     return root.validation_error_response('name is required when action=create_new')
+                # Metadata-derived names collide (e.g. the channel artist's
+                # name when a guest voice doesn't embedding-match anyone);
+                # a second profile with an identical name is indistinguishable
+                # in every list view, so uniquify with a suffix.
+                existing_names = {
+                    (existing.get('name') or '').strip().casefold()
+                    for existing in store.list_profiles()
+                }
+                if name.casefold() in existing_names:
+                    suffix = 2
+                    while f"{name} ({suffix})".casefold() in existing_names:
+                        suffix += 1
+                    name = f"{name} ({suffix})"
                 profile = root._create_profile_from_diarized_speaker(
                     diarization_data=diarization_data,
                     speaker_id=speaker_id,
