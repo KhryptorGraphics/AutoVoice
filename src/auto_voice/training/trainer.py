@@ -47,6 +47,13 @@ class VoiceDataset(Dataset):
         # ~1.5s and __getitem__ repeats it every epoch, starving the GPU.
         # Voice-profile datasets are minutes of mono float32, so unbounded is fine.
         self._audio_cache: Dict[Path, np.ndarray] = {}
+        # Full-file F0 cache: librosa.pyin is single-threaded CPU and costs
+        # ~0.2s per second of audio; computing it per random window per epoch
+        # dominates training wall-time. Computed once per file and sliced per
+        # window (valid only without augmentation, which changes the audio).
+        # Long-window pyin also matches how serving extracts pitch.
+        self._f0_cache: Dict[Path, tuple] = {}
+        self._f0_hop = 512
         self.audio_files = self._scan_files()
         logger.info(f"VoiceDataset: {len(self.audio_files)} files from {data_dir}"
                     f"{' (augment=True)' if augment else ''}")
@@ -108,6 +115,31 @@ class VoiceDataset(Dataset):
         if diarization_ok is False:
             raise ValueError(f"Training sample failed diarization gate: {audio_path}")
 
+    def _window_f0(self, audio_path: Path, raw_audio: np.ndarray,
+                   start: int, window_len: int):
+        """Slice a window's F0 from the cached full-file pyin contour."""
+        import librosa
+
+        cached = self._f0_cache.get(audio_path)
+        if cached is None:
+            f0_full, voiced_full, _ = librosa.pyin(
+                raw_audio, fmin=50, fmax=1100, sr=self.sample_rate,
+            )
+            f0_full = np.nan_to_num(np.asarray(f0_full, dtype=np.float32), nan=0.0)
+            voiced_full = np.asarray(voiced_full, dtype=bool)
+            cached = (f0_full, voiced_full)
+            self._f0_cache[audio_path] = cached
+
+        f0_full, voiced_full = cached
+        expected = 1 + window_len // self._f0_hop
+        frame_start = start // self._f0_hop
+        f0 = f0_full[frame_start:frame_start + expected]
+        voiced = voiced_full[frame_start:frame_start + expected]
+        if len(f0) < expected:
+            f0 = np.pad(f0, (0, expected - len(f0)))
+            voiced = np.pad(voiced, (0, expected - len(voiced)))
+        return f0.copy(), voiced.copy()
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         import librosa
         audio_path = self.audio_files[idx]
@@ -123,6 +155,7 @@ class VoiceDataset(Dataset):
         # every attempt fails (i.e. the sample itself is bad, not the draw).
         last_gate_error: Optional[ValueError] = None
         for _ in range(10):
+            start = 0
             if len(raw_audio) > self.segment_length:
                 start = np.random.randint(0, len(raw_audio) - self.segment_length)
                 audio = raw_audio[start:start + self.segment_length]
@@ -133,7 +166,10 @@ class VoiceDataset(Dataset):
             if self._augmentation is not None:
                 audio = self._augmentation(audio, self.sample_rate)
 
-            f0, voiced, _ = librosa.pyin(audio, fmin=50, fmax=1100, sr=self.sample_rate)
+            if self._augmentation is None:
+                f0, voiced = self._window_f0(audio_path, raw_audio, start, len(audio))
+            else:
+                f0, voiced, _ = librosa.pyin(audio, fmin=50, fmax=1100, sr=self.sample_rate)
             f0 = np.nan_to_num(f0, nan=0.0)
             try:
                 self._validate_quality_gates(
