@@ -240,9 +240,32 @@ def test_get_pipeline_uses_target_profile_in_streaming_pipeline():
     assert session.pipeline_type == 'pytorch'
 
 
-def test_get_pipeline_falls_back_to_start_session_when_set_speaker_fails():
+def test_get_pipeline_raises_when_trained_speaker_fails_to_load():
+    """A trained model that fails to load must fail the session start,
+    not silently run with the wrong voice."""
     stream_pipeline = MagicMock()
     stream_pipeline.set_speaker.side_effect = RuntimeError('speaker load failed')
+    stream_cls = MagicMock(return_value=stream_pipeline)
+    fake_module = make_module(
+        'auto_voice.inference.streaming_pipeline',
+        StreamingConversionPipeline=stream_cls,
+    )
+    session = make_session(use_trt=False)
+    session._target_profile_id = 'profile-42'
+    session.set_speaker_embedding(torch.ones(256))
+
+    with patch.dict(sys.modules, {fake_module.__name__: fake_module}):
+        with pytest.raises(RuntimeError, match='Failed to load target speaker'):
+            session._get_pipeline()
+
+    stream_pipeline.start_session.assert_not_called()
+
+
+def test_get_pipeline_uses_embedding_when_profile_has_no_adapter():
+    """No trained adapter (FileNotFoundError) is the legitimate
+    embedding-only case, not a failure."""
+    stream_pipeline = MagicMock()
+    stream_pipeline.set_speaker.side_effect = FileNotFoundError('no adapter')
     stream_cls = MagicMock(return_value=stream_pipeline)
     fake_module = make_module(
         'auto_voice.inference.streaming_pipeline',

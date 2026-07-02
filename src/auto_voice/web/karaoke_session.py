@@ -386,15 +386,28 @@ class KaraokeSession:
                                 self.session_id,
                                 self._target_profile_id,
                             )
-                        except Exception as exc:
-                            logger.warning(
-                                "Session %s: failed to load target speaker %s into streaming pipeline: %s",
+                        except FileNotFoundError:
+                            # No trained adapter exists for this profile — the
+                            # embedding-only session is the correct behavior,
+                            # not a degradation.
+                            logger.info(
+                                "Session %s: profile %s has no trained adapter; "
+                                "using embedding-only conversion",
                                 self.session_id,
                                 self._target_profile_id,
-                                exc,
                             )
-                            if self._speaker_embedding is not None:
-                                self._streaming_pipeline.start_session(self._speaker_embedding.squeeze(0))
+                            if self._speaker_embedding is None:
+                                raise
+                            self._streaming_pipeline.start_session(self._speaker_embedding.squeeze(0))
+                        except Exception as exc:
+                            # A trained model exists but failed to load: falling
+                            # back silently would run the session with the wrong
+                            # voice. Fail the session start instead.
+                            self._streaming_pipeline = None
+                            raise RuntimeError(
+                                f"Failed to load target speaker {self._target_profile_id} "
+                                f"into the streaming pipeline: {exc}"
+                            ) from exc
                     elif self._speaker_embedding is not None:
                         self._streaming_pipeline.start_session(self._speaker_embedding.squeeze(0))
                     self._pipeline_type = 'pytorch'
