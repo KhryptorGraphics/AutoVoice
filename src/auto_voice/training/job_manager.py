@@ -15,7 +15,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -826,6 +826,16 @@ class TrainingJobManager:
         self._emit_event('training.failed', payload)
         self._emit_event('training_error', payload)
 
+    def _dispatch_webhook(self, event_name: str, payload: Dict[str, Any]) -> None:
+        """Fire-and-forget webhook notification; must never fail the job flow."""
+        try:
+            # Lazy import: web imports training elsewhere, keep this one-way at runtime.
+            from ..web.api_notifications import dispatch_webhooks
+
+            dispatch_webhooks(event_name, payload, self._data_dir)
+        except Exception as exc:
+            logger.warning(f"Webhook dispatch for {event_name} failed: {exc}")
+
     def _emit_paused_event(self, job: TrainingJob) -> None:
         payload = {
             'job_id': job.job_id,
@@ -1234,6 +1244,12 @@ class TrainingJobManager:
 
                     # Task 3.3: Emit training_complete event with profile_id
                     self._emit_completed_event(job)
+                    self._dispatch_webhook('training_complete', {
+                        'job_id': job_id,
+                        'profile_id': job.profile_id,
+                        'epochs_completed': results.get('epochs_completed'),
+                        'artifact_type': results.get('artifact_type'),
+                    })
                     logger.info(f"Training job {job_id} completed successfully")
 
                     # Cleanup temp directory
@@ -1250,6 +1266,12 @@ class TrainingJobManager:
                     self._mark_profile_training_failed(job.profile_id, str(e))
                     self._save_jobs()
                     self._emit_failed_event(job)
+                    self._dispatch_webhook('job_failed', {
+                        'job_id': job_id,
+                        'profile_id': job.profile_id,
+                        'error': str(e),
+                        'job_type': 'training',
+                    })
                 finally:
                     self._job_resume_events.pop(job_id, None)
                     self._job_cancel_events.pop(job_id, None)
@@ -1491,6 +1513,62 @@ class TrainingJobManager:
             profile['active_model_type'] = 'full_model'
         profile.pop('embedding', None)
         store.save(profile)
+        try:
+            self._record_profile_checkpoint(profile_id, profile, results)
+        except Exception as exc:
+            # Deliberate fire-and-forget: checkpoint bookkeeping must never
+            # fail the training completion.
+            logger.warning(f"Checkpoint bookkeeping failed for {profile_id}: {exc}")
+
+    def _record_profile_checkpoint(
+        self,
+        profile_id: str,
+        profile: Dict[str, Any],
+        results: Dict[str, Any],
+    ) -> None:
+        """Record a rollback checkpoint in app state after successful training.
+
+        Uses a separate AppStateStore instance writing the same JSON file the
+        API reads (file replaced atomically; single writer per completion).
+        The profile_snapshot mirrors what rollback_checkpoint applies.
+        """
+        from ..web.persistence import AppStateStore
+
+        state_store = AppStateStore(str(self._data_dir))
+        model_version = profile.get('model_version')
+        snapshot = {
+            'model_path': profile.get('model_path'),
+            'training_status': profile.get('training_status'),
+            'has_trained_model': profile.get('has_trained_model'),
+            'training_epochs': profile.get('training_epochs'),
+            'loss_final': profile.get('loss_final'),
+            'model_version': model_version,
+        }
+        if profile.get('runtime_artifact_manifest_path'):
+            snapshot['runtime_artifact_manifest_path'] = profile['runtime_artifact_manifest_path']
+        checkpoint = {
+            'id': uuid.uuid4().hex,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'epoch': results.get('epochs_completed'),
+            'model_version': model_version,
+            # Rollback and the frontend read 'version'; keep both keys in sync.
+            'version': model_version,
+            'active_model_type': profile.get('active_model_type'),
+            'selected_adapter': profile.get('selected_adapter'),
+            'is_active': True,
+            'profile_snapshot': snapshot,
+        }
+        # Only the newest record stays active (rollback re-flags the same way).
+        for entry in state_store.list_checkpoints(profile_id):
+            if entry.get('is_active'):
+                updated_entry = dict(entry)
+                updated_entry['is_active'] = False
+                state_store.save_checkpoint(profile_id, updated_entry)
+        state_store.save_checkpoint(profile_id, checkpoint)
+        # Cap at the newest 20 records; never delete an active record.
+        for entry in state_store.list_checkpoints(profile_id)[20:]:
+            if not entry.get('is_active'):
+                state_store.delete_checkpoint(profile_id, entry.get('id'))
 
     def _mark_profile_training_failed(self, profile_id: str, error: str) -> None:
         """Persist failed training state without deleting prior artifacts."""

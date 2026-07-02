@@ -237,6 +237,7 @@ from .api_runtime import (
     update_audio_router_config,
 )
 from .api_backup import register_backup_routes
+from .api_notifications import register_notification_routes
 from .api_youtube import (
     register_youtube_routes,
     _youtube_downloader,
@@ -921,5 +922,6 @@ register_training_routes(
 register_conversion_routes(api_bp)
 register_runtime_routes(api_bp)
 register_backup_routes(api_bp)
+register_notification_routes(api_bp)
 register_youtube_routes(api_bp)
 register_quality_routes(api_bp)

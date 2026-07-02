@@ -158,6 +158,7 @@ class JobManager:
             self._emit_conversion_history(job_id)
 
             self._emit_socket_events('job_completed', 'conversion_complete', completion_payload, room=job_id)
+            self._dispatch_webhook('conversion_complete', completion_payload)
 
             logger.info(f"Job {job_id} completed successfully")
 
@@ -175,6 +176,11 @@ class JobManager:
             }
             self._emit_conversion_history(job_id)
             self._emit_socket_events('job_failed', 'conversion_error', payload, room=job_id)
+            self._dispatch_webhook('job_failed', {
+                'job_id': job_id,
+                'error': str(e),
+                'job_type': 'conversion',
+            })
 
         finally:
             # Clean up input file
@@ -583,6 +589,17 @@ class JobManager:
             self.socketio.emit(alias_event, payload)
         except Exception as exc:
             logger.debug("Failed to emit socket event %s/%s: %s", primary_event, alias_event, exc)
+
+    def _dispatch_webhook(self, event_name: str, payload: Dict[str, Any]) -> None:
+        """Fire-and-forget webhook notification; must never fail the job flow."""
+        if not self.state_store:
+            return
+        try:
+            from .api_notifications import dispatch_webhooks
+
+            dispatch_webhooks(event_name, payload, self.state_store.data_dir)
+        except Exception as exc:
+            logger.warning(f"Webhook dispatch for {event_name} failed: {exc}")
 
     def _persist_job(self, job_id: str) -> None:
         if not self.state_store:

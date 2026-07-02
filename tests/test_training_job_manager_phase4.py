@@ -93,6 +93,57 @@ class TestProgressAndProfilePersistence:
         assert saved["active_model_type"] == "adapter"
         assert "embedding" not in saved
 
+    def test_update_profile_training_state_records_checkpoint(self, manager):
+        from auto_voice.web.persistence import AppStateStore
+
+        store = Mock()
+        profile = {"profile_id": "profile-1", "embedding": [1, 2, 3]}
+        store.load.return_value = profile
+        results = {
+            "adapter_path": "/tmp/profile-1_adapter.pt",
+            "manifest_path": "/tmp/profile-1_manifest.json",
+            "epochs_completed": 12,
+            "final_loss": 0.12,
+            "artifact_type": "adapter",
+        }
+
+        with patch.object(manager, "_get_profile_store", return_value=store):
+            manager._update_profile_training_state(
+                profile_id="profile-1",
+                results=results,
+                sample_count=7,
+            )
+
+        checkpoints = AppStateStore(str(manager._data_dir)).list_checkpoints("profile-1")
+        assert len(checkpoints) == 1
+        checkpoint = checkpoints[0]
+        assert checkpoint["epoch"] == 12
+        assert checkpoint["model_version"] == "1.0"
+        assert checkpoint["version"] == "1.0"
+        assert checkpoint["active_model_type"] == "adapter"
+        assert checkpoint["selected_adapter"] == "unified"
+        assert checkpoint["is_active"] is True
+        snapshot = checkpoint["profile_snapshot"]
+        assert snapshot["model_path"] == "/tmp/profile-1_adapter.pt"
+        assert snapshot["runtime_artifact_manifest_path"] == "/tmp/profile-1_manifest.json"
+        assert snapshot["training_status"] == "ready"
+        assert snapshot["has_trained_model"] is True
+        assert snapshot["training_epochs"] == 12
+        assert snapshot["loss_final"] == 0.12
+        assert snapshot["model_version"] == "1.0"
+
+        # Second completion: newest record is the only active one.
+        with patch.object(manager, "_get_profile_store", return_value=store):
+            manager._update_profile_training_state(
+                profile_id="profile-1",
+                results=results,
+                sample_count=7,
+            )
+
+        checkpoints = AppStateStore(str(manager._data_dir)).list_checkpoints("profile-1")
+        assert len(checkpoints) == 2
+        assert [entry["is_active"] for entry in checkpoints] == [True, False]
+
     def test_update_profile_training_state_marks_full_model_ready(self, manager):
         store = Mock()
         store.load.return_value = {

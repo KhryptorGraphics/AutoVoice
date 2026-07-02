@@ -1182,6 +1182,180 @@ and asynchronous processing modes.
         }
     )
 
+    # Notification webhook endpoints
+    _spec_path(
+        path="/api/v1/notifications/webhooks",
+        operations={
+            "get": {
+                "tags": ["Notifications"],
+                "summary": "List notification webhooks",
+                "description": "List all configured notification webhooks",
+                "responses": {
+                    "200": {
+                        "description": "Webhook list",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "webhooks": {
+                                            "type": "array",
+                                            "items": {"type": "object"}
+                                        },
+                                        "count": {"type": "integer"}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": ["Notifications"],
+                "summary": "Create or update a notification webhook",
+                "description": "Create a webhook (or update it when an existing id is supplied)",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["name", "url", "events"],
+                                "properties": {
+                                    "id": {
+                                        "type": "string",
+                                        "description": "Existing webhook id to update"
+                                    },
+                                    "name": {
+                                        "type": "string",
+                                        "maxLength": 100
+                                    },
+                                    "url": {
+                                        "type": "string",
+                                        "description": "http(s) URL to POST events to"
+                                    },
+                                    "events": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "string",
+                                            "enum": [
+                                                "training_complete",
+                                                "conversion_complete",
+                                                "job_failed"
+                                            ]
+                                        }
+                                    },
+                                    "enabled": {
+                                        "type": "boolean",
+                                        "default": True
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": "Saved webhook record",
+                        "content": {
+                            "application/json": {
+                                "schema": {"type": "object"}
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Validation error",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    _spec_path(
+        path="/api/v1/notifications/webhooks/{webhook_id}",
+        operations={
+            "delete": {
+                "tags": ["Notifications"],
+                "summary": "Delete a notification webhook",
+                "description": "Delete a webhook by id",
+                "parameters": [
+                    {
+                        "name": "webhook_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"}
+                    }
+                ],
+                "responses": {
+                    "204": {"description": "Webhook deleted"},
+                    "404": {
+                        "description": "Webhook not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+    _spec_path(
+        path="/api/v1/notifications/webhooks/{webhook_id}/test",
+        operations={
+            "post": {
+                "tags": ["Notifications"],
+                "summary": "Send a test payload to a webhook",
+                "description": "Synchronously deliver a test event and report the delivery result",
+                "parameters": [
+                    {
+                        "name": "webhook_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"}
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Delivery result (delivered or failed)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "status": {
+                                            "type": "string",
+                                            "enum": ["delivered", "failed"]
+                                        },
+                                        "delivered": {"type": "boolean"},
+                                        "error": {
+                                            "type": "string",
+                                            "nullable": True
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Webhook not found",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Error"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
     # GPU metrics
     _spec_path(
         path="/api/v1/gpu/metrics",
