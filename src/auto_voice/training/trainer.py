@@ -195,6 +195,9 @@ class Trainer:
         self.early_stopping_patience = int(self.config.get('early_stopping_patience', 0) or 0)
         self.early_stopping_min_delta = float(self.config.get('early_stopping_min_delta', 0.0) or 0.0)
         self._early_stopping_wait = 0
+        self.early_stopped = False
+        self.epochs_ran = 0
+        self.monitored_metric = 'train'
 
         # Shared encoders for feature extraction (frozen during training)
         from ..models.encoder import ContentEncoder, PitchEncoder
@@ -271,6 +274,7 @@ class Trainer:
             val_loader = DataLoader(val_dataset, batch_size=self.batch_size,
                                     shuffle=False, num_workers=2,
                                     persistent_workers=True)
+            self.monitored_metric = 'val'
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Starting training: {self.epochs} epochs, "
@@ -302,6 +306,7 @@ class Trainer:
             if self.scheduler is not None:
                 self.scheduler.step()
 
+            self.epochs_ran = epoch + 1
             if should_stop:
                 logger.info(
                     "Early stopping after epoch %s: best_loss=%.4f, current_loss=%.4f",
@@ -309,7 +314,23 @@ class Trainer:
                     self.best_loss,
                     monitored_loss,
                 )
+                self.early_stopped = True
                 break
+
+        # Ship the best-validation weights, not whatever epoch training
+        # stopped on: with early stopping the final epoch is `patience`
+        # epochs past the best point by construction.
+        best_path = self.checkpoint_dir / 'best.pth'
+        if val_loader is not None and best_path.exists():
+            epochs_ran = self.epochs_ran
+            self.load_checkpoint(best_path)
+            self.epochs_ran = epochs_ran
+            logger.info(
+                "Restored best-validation weights from %s (best epoch %s, val_loss=%.4f)",
+                best_path,
+                self.current_epoch + 1,
+                self.best_loss,
+            )
 
         self.save_checkpoint(self.checkpoint_dir / 'final.pth')
         logger.info("Training complete")

@@ -653,3 +653,52 @@ class TestTrainerSmoke:
 
         assert trainer is not None
         assert trainer.model is model
+
+
+class TestBestWeightRestore:
+    """Early stopping must ship best-validation weights, not final-epoch ones."""
+
+    def test_train_restores_best_validation_weights(self, temp_data_dir, tmp_path):
+        from auto_voice.training.trainer import Trainer
+
+        model = MockModel()
+        config = {
+            'epochs': 10,
+            'batch_size': 2,
+            'checkpoint_dir': str(tmp_path / 'ckpt'),
+            'validation_split': 0.34,
+            'early_stopping_patience': 2,
+            'early_stopping_min_delta': 0.0,
+        }
+        trainer = Trainer(model, config=config, device='cpu')
+
+        # Scripted losses: best val at epoch 2, then no improvement -> early
+        # stop after two more epochs. Each epoch stamps the weights with the
+        # epoch number so we can tell WHICH epoch's weights survive.
+        val_losses = [1.0, 0.4, 0.9, 0.95, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9]
+        epoch_counter = {'n': 0}
+
+        def fake_train_epoch(loader, epoch):
+            epoch_counter['n'] = epoch + 1
+            with torch.no_grad():
+                for param in trainer.model.parameters():
+                    param.fill_(float(epoch + 1))
+            return 1.0 / (epoch + 1)
+
+        def fake_assess(loader):
+            return val_losses[epoch_counter['n'] - 1]
+
+        with patch.object(trainer, '_train_epoch', side_effect=fake_train_epoch), \
+             patch.object(trainer, 'assess', side_effect=fake_assess):
+            trainer.train(str(temp_data_dir))
+
+        assert trainer.early_stopped is True
+        assert trainer.epochs_ran == 4, 'patience 2 after best at epoch 2 -> stop at epoch 4'
+        assert (tmp_path / 'ckpt' / 'best.pth').exists()
+        assert trainer.best_loss == pytest.approx(0.4)
+        assert trainer.monitored_metric == 'val'
+
+        # The decisive assertion: weights are epoch-2's, not epoch-4's
+        for param in trainer.model.parameters():
+            assert torch.all(param == 2.0), \
+                'model must carry the best-validation epoch weights after restore'

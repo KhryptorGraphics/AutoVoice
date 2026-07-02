@@ -217,9 +217,9 @@ def get_training_config_options():
             'scheduler': 'exponential',
             'scheduler_gamma': 0.999,
             'checkpoint_every_steps': 1000,
-            'validation_split': 0.0,
-            'early_stopping_patience': 0,
-            'early_stopping_min_delta': 0.0,
+            'validation_split': 0.15,
+            'early_stopping_patience': 25,
+            'early_stopping_min_delta': 0.0005,
             'use_ewc': True,
             'ewc_lambda': 1000.0,
             'use_prior_preservation': False,
@@ -400,6 +400,10 @@ def create_training_job():
             normalized_config.setdefault('learning_rate', 5e-5)
             normalized_config['lora_rank'] = 0
             normalized_config['lora_alpha'] = 0
+        else:
+            # LoRA: epochs are a ceiling — validation-based early stopping
+            # (on by default) decides the actual depth
+            normalized_config.setdefault('epochs', 500)
 
         if initialization_mode == 'continue':
             has_resume_checkpoint = bool(

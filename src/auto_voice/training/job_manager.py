@@ -111,9 +111,12 @@ class TrainingConfig:
     scheduler: str = "exponential"
     scheduler_gamma: float = 0.999
     checkpoint_every_steps: int = 1000
-    validation_split: float = 0.0
-    early_stopping_patience: int = 0
-    early_stopping_min_delta: float = 0.0
+    # Overfitting protection on by default: hold out whole recordings for
+    # validation, stop when val loss plateaus, and (in the Trainer) restore
+    # the best-validation weights. Epochs act as a ceiling, not a target.
+    validation_split: float = 0.15
+    early_stopping_patience: int = 25
+    early_stopping_min_delta: float = 5e-4
 
     # EWC configuration (prevent catastrophic forgetting)
     use_ewc: bool = True
@@ -1217,6 +1220,9 @@ class TrainingJobManager:
                     results = {
                         'final_loss': trainer.train_losses[-1] if trainer.train_losses else 0,
                         'best_loss': trainer.best_loss,
+                        'monitored': getattr(trainer, 'monitored_metric', 'train'),
+                        'early_stopped': bool(getattr(trainer, 'early_stopped', False)),
+                        'epochs_ran': int(getattr(trainer, 'epochs_ran', 0) or config['epochs']),
                         'epochs_completed': config['epochs'],
                         'requested_epochs': requested_epochs,
                         'checkpoint_path': str(trainer.checkpoint_dir / 'final.pth'),
