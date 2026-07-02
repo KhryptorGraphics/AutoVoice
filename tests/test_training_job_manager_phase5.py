@@ -323,6 +323,11 @@ class TestSaveTrainedAdapter:
                     "layer.lora_A": torch.ones(1),
                     "layer.lora_B": torch.ones(1),
                 },
+                state_dict=lambda: {
+                    "layer.original.weight": torch.ones(2),
+                    "layer.lora_A": torch.ones(1),
+                    "layer.lora_B": torch.ones(1),
+                },
             ),
             speaker_embedding=speaker_embedding,
             sample_rate=22050,
@@ -350,6 +355,13 @@ class TestSaveTrainedAdapter:
         saved_payload = torch.load(result["adapter_path"], map_location="cpu", weights_only=False)
         assert "__autovoice_lora_metadata__" in saved_payload
         store.save_runtime_artifact_manifest.assert_called_once()
+
+        # self-contained serving artifact: full state (base + LoRA) + config
+        serving_path = Path(result["adapter_path"]).with_name("profile-2_adapter_model.pt")
+        assert serving_path.exists()
+        serving_payload = torch.load(serving_path, map_location="cpu", weights_only=False)
+        assert "layer.original.weight" in serving_payload["model_state_dict"]
+        assert serving_payload["lora_config"]["rank"] == 8
 
     def test_save_trained_adapter_wraps_validation_errors(self, manager):
         trainer = types.SimpleNamespace(

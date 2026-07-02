@@ -159,6 +159,20 @@ class SingingConversionPipeline:
                 )
                 return target_profile_id, 'full_model'
 
+            adapter_model_path = Path(trained_models_dir) / f"{target_profile_id}_adapter_model.pt"
+            if adapter_model_path.exists():
+                model_manager.load_voice_model(
+                    str(adapter_model_path),
+                    target_profile_id,
+                    speaker_embedding=target_embedding,
+                )
+                logger.info(
+                    "Using self-contained adapter model for target profile %s from %s",
+                    target_profile_id,
+                    adapter_model_path,
+                )
+                return target_profile_id, 'adapter'
+
         return self.config.get('speaker_id', 'default'), 'adapter'
 
     def _convert_voice(self, vocals: np.ndarray, target_embedding: np.ndarray,
@@ -350,6 +364,9 @@ class SingingConversionPipeline:
         if cloner is None:
             from .voice_cloner import VoiceCloner
             cloner = VoiceCloner(device=self.device)
+            # keep it: _resolve_target_speaker needs cloner.store to find
+            # the profile's trained artifacts (full model / adapter model)
+            self._voice_cloner = cloner
         try:
             profile = cloner.load_voice_profile(target_profile_id)
         except Exception as e:

@@ -1399,6 +1399,26 @@ class TrainingJobManager:
             size_kb = adapter_path.stat().st_size / 1024
             logger.info(f"Saved LoRA adapter: {adapter_path} ({size_kb:.1f} KB)")
 
+            # Also save a self-contained serving artifact (base + LoRA weights).
+            # The deltas-only payload above cannot be served on its own: the
+            # training base is randomly initialized, so a re-built base plus
+            # deltas is a different model than the one that was trained.
+            serving_payload = {
+                'model_state_dict': {
+                    key: value.detach().cpu()
+                    for key, value in trainer.model.state_dict().items()
+                },
+                'lora_config': dict(getattr(trainer.model, '_lora_config', {}) or {}),
+                'metadata': {
+                    'profile_id': profile_id,
+                    'job_id': job_id,
+                    'training_mode': training_mode,
+                },
+            }
+            adapter_model_path = trained_models_dir / f"{profile_id}_adapter_model.pt"
+            torch.save(serving_payload, adapter_model_path)
+            logger.info(f"Saved self-contained adapter serving model: {adapter_model_path}")
+
             # Task 3.1: Save speaker embedding as .npy
             if trainer.speaker_embedding is None:
                 raise RuntimeError("Trainer has no speaker embedding set")
