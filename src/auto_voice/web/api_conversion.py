@@ -694,7 +694,10 @@ def convert_song():
             ):
                 response_data['f0_contour'] = f0_contour.tolist()
                 hop_length = current_app.app_config.get('audio', {}).get('hop_length', 512)
-                sample_rate_val = result['sample_rate']
+                # F0 is extracted at the vocal processing rate, which can
+                # differ from the mix rate — using the mix rate here would
+                # compress the pitch timeline.
+                sample_rate_val = result.get('f0_sample_rate') or result['sample_rate']
                 times = root.np.arange(len(f0_contour)) * hop_length / sample_rate_val
                 response_data['f0_times'] = times.tolist()
             else:

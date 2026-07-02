@@ -179,7 +179,8 @@ class TestSingingPipelineWithModel:
             target_profile_id=profile['profile_id'],
             preset='draft'
         )
-        assert result['sample_rate'] == 22050
+        # Full-bandwidth mix: separation and mixing run at 44.1k
+        assert result['sample_rate'] == 44100
 
 
 @pytest.mark.integration

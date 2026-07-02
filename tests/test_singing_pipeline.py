@@ -70,7 +70,8 @@ class TestSingingConversionPipeline:
         assert isinstance(result['mixed_audio'], np.ndarray)
         assert result['mixed_audio'].size > 0
         assert 'sample_rate' in result
-        assert result['sample_rate'] == 22050
+        # Mixing happens at the output rate; only the vocal chain runs at 22050
+        assert result['sample_rate'] == 44100
         assert 'duration' in result
         assert result['duration'] > 0
         assert 'metadata' in result
@@ -157,4 +158,4 @@ class TestSingingConversionPipeline:
         assert isinstance(result['mixed_audio'], np.ndarray)
         assert result['mixed_audio'].size > 0
         assert not np.any(np.isnan(result['mixed_audio']))
-        assert result['sample_rate'] == 22050
+        assert result['sample_rate'] == 44100

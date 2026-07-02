@@ -55,6 +55,9 @@ class SingingConversionPipeline:
         self._separator = None
         self._voice_cloner = voice_cloner
         self._sample_rate = 22050
+        # Separation and the final mix run at this rate (Demucs is natively
+        # 44.1k); only the vocal-conversion chain drops to _sample_rate.
+        self._output_sample_rate = int(self.config.get('output_sample_rate', 44100))
         self._model_manager = None
         self._nsf_enhancer = None
         self._pupu_vocoder = None
@@ -355,7 +358,7 @@ class SingingConversionPipeline:
             raise ConversionError(f"Song file not found: {song_path}")
 
         try:
-            audio, sr = librosa.load(song_path, sr=self._sample_rate, mono=True)
+            audio, sr = librosa.load(song_path, sr=self._output_sample_rate, mono=True)
         except Exception as e:
             raise ConversionError(f"Failed to load audio: {e}")
 
@@ -388,18 +391,20 @@ class SingingConversionPipeline:
             active_model_type=profile.get('active_model_type'),
         )
 
-        # Separate vocals and instrumental
+        # Separate at the mix rate so the instrumental keeps full bandwidth;
+        # only the vocals drop to the model's processing rate.
         stems = self._separate_vocals(audio, sr)
-        vocals = stems['vocals']
         instrumental = stems['instrumental']
+        proc_sr = self._sample_rate
+        vocals = self._resample_audio(stems['vocals'], sr, proc_sr)
 
         # Extract original pitch
-        f0_original = self._extract_pitch(vocals, sr)
+        f0_original = self._extract_pitch(vocals, proc_sr)
 
         # Detect vocal techniques (vibrato, melisma) if requested
         techniques = None
         if preserve_techniques:
-            techniques = self._detect_techniques(vocals, sr)
+            techniques = self._detect_techniques(vocals, proc_sr)
             if techniques:
                 logger.info(
                     f"Techniques detected - vibrato: {techniques['has_vibrato']}, "
@@ -410,7 +415,7 @@ class SingingConversionPipeline:
         if abs(pitch_shift) > 0.01:
             try:
                 vocals = librosa.effects.pitch_shift(
-                    vocals, sr=sr, n_steps=pitch_shift
+                    vocals, sr=proc_sr, n_steps=pitch_shift
                 )
             except Exception as e:
                 logger.warning(f"Pitch shift failed: {e}")
@@ -419,13 +424,18 @@ class SingingConversionPipeline:
         converted_vocals = self._convert_voice(
             vocals,
             target_embedding,
-            sr,
+            proc_sr,
             speaker_id=speaker_id,
             preset=preset,
         )
 
         # Extract converted pitch
-        f0_contour = self._extract_pitch(converted_vocals, sr)
+        f0_contour = self._extract_pitch(converted_vocals, proc_sr)
+        f0_rate = proc_sr
+
+        # Bring converted vocals up to the mix rate before post-processing
+        # and mixing with the full-bandwidth instrumental
+        converted_vocals = self._resample_audio(converted_vocals, proc_sr, sr)
 
         converted_vocals, instrumental, sr, quality_metadata = self._apply_quality_post_processing(
             converted_vocals,
@@ -435,6 +445,7 @@ class SingingConversionPipeline:
         )
         if quality_metadata.get('post_processing'):
             f0_contour = self._extract_pitch(converted_vocals, sr)
+            f0_rate = sr
 
         # Mix with volume adjustments
         converted_vocals = converted_vocals * vocal_volume
@@ -469,6 +480,9 @@ class SingingConversionPipeline:
             },
             'f0_contour': f0_contour,
             'f0_original': f0_original,
+            # F0 contours are extracted at the vocal processing rate, not the
+            # mix rate — consumers computing frame times must use this.
+            'f0_sample_rate': f0_rate,
         }
 
         if quality_metadata.get('hq_super_resolution_skipped'):
