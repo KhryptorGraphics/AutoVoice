@@ -204,9 +204,15 @@ def _build_ingest_suggestions(
                 start=float(longest['start']),
                 end=float(longest['end']),
             )
+            # Match against every profile with an embedding — including
+            # target_user profiles — so a diarized voice that belongs to a
+            # known target (e.g. the user's own voice profile) is recognized
+            # and its segments can be assigned to that profile for training.
+            # Each match carries profile_role, so reviewers see what they
+            # are assigning to.
             matches = profile_store.rank_speaker_embedding_matches(
                 embedding,
-                profile_role='source_artist',
+                profile_role=None,
                 limit=5,
             )
         except Exception as exc:
