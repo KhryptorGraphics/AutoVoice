@@ -428,3 +428,45 @@ def test_process_chunk_with_mix_and_mixer_helpers_delegate():
     with patch.object(session._mixer, 'set_position') as mock_set_position:
         session.seek_playback(1.5)
         mock_set_position.assert_called_once_with(36000)
+
+
+def test_get_pipeline_uses_trained_adapter_model_when_available():
+    """Adapter-stage profiles with a self-contained artifact use the trained path."""
+    realtime_pipeline = MagicMock()
+    realtime_cls = MagicMock(return_value=realtime_pipeline)
+    fake_module = make_module(
+        'auto_voice.inference.realtime_voice_conversion_pipeline',
+        RealtimeVoiceConversionPipeline=realtime_cls,
+    )
+    session = make_session()
+    session._target_model_type = 'adapter'
+    session._target_profile_id = 'profile-123'
+    session._trained_model_path = '/tmp/profile-123_adapter_model.pt'
+    session.set_speaker_embedding(torch.ones(256))
+
+    with patch.dict(sys.modules, {fake_module.__name__: fake_module}):
+        with patch('auto_voice.web.karaoke_session.os.path.exists', return_value=True):
+            pipeline = session._get_pipeline()
+
+    assert pipeline is realtime_pipeline
+    _, kwargs = realtime_cls.call_args
+    assert 'sample_rate' not in kwargs, 'ctor does not accept sample_rate (latent TypeError)'
+    assert kwargs['config']['voice_model_path'] == '/tmp/profile-123_adapter_model.pt'
+    assert session.pipeline_type == 'pytorch_adapter_model'
+
+
+def test_realtime_voice_conversion_pipeline_ctor_signature():
+    """The real ctor must accept the kwargs the session passes (mocks hid a TypeError)."""
+    from auto_voice.inference.realtime_voice_conversion_pipeline import (
+        RealtimeVoiceConversionPipeline,
+    )
+
+    pipeline = RealtimeVoiceConversionPipeline(
+        device='cpu',
+        config={
+            'sample_rate': 24000,
+            'speaker_id': 'profile-123',
+            'voice_model_path': '/tmp/does-not-need-to-exist.pt',
+        },
+    )
+    assert pipeline is not None

@@ -420,8 +420,19 @@ class KaraokeNamespace(Namespace):
                 session._target_profile_id = profile_id
                 session._target_model_type = profile.get('active_model_type', 'base')
                 session._profiles_dir = store.profiles_dir
+                session._profile_store = store
                 full_model_path = os.path.join(store.trained_models_dir, f"{profile_id}_full_model.pt")
                 session._full_model_path = full_model_path if os.path.exists(full_model_path) else None
+                # self-contained adapter serving artifact ({id}_adapter_model.pt,
+                # not the deltas-only {id}_adapter.pt); full model wins
+                adapter_model_path = os.path.join(
+                    store.trained_models_dir, f"{profile_id}_adapter_model.pt"
+                )
+                session._trained_model_path = (
+                    session._full_model_path
+                    if session._full_model_path
+                    else (adapter_model_path if os.path.exists(adapter_model_path) else None)
+                )
             elif voice_model_id:
                 from .karaoke_api import _get_voice_model_registry
 

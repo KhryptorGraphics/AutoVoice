@@ -211,6 +211,8 @@ class KaraokeSession:
         self._target_model_type: Optional[str] = None
         self._profiles_dir: Optional[str] = None
         self._full_model_path: Optional[str] = None
+        self._trained_model_path: Optional[str] = None
+        self._profile_store = None
 
         # Latency tracking
         self._latency_history: List[float] = []
@@ -304,22 +306,22 @@ class KaraokeSession:
         not explicitly disabled. Falls back to StreamingConversionPipeline.
         """
         if self._streaming_pipeline is None:
+            trained_model_path = getattr(self, '_trained_model_path', None) or self._full_model_path
             if (
-                self._target_model_type == 'full_model'
-                and self._full_model_path
-                and os.path.exists(self._full_model_path)
+                self._target_model_type in ('full_model', 'adapter')
+                and trained_model_path
+                and os.path.exists(trained_model_path)
             ):
                 from ..inference.realtime_voice_conversion_pipeline import (
                     RealtimeVoiceConversionPipeline,
                 )
 
                 self._streaming_pipeline = RealtimeVoiceConversionPipeline(
-                    sample_rate=self.sample_rate,
                     device=self.device,
                     config={
                         'sample_rate': self.sample_rate,
                         'speaker_id': self._target_profile_id or 'default',
-                        'voice_model_path': self._full_model_path,
+                        'voice_model_path': trained_model_path,
                     },
                 )
                 if self._speaker_embedding is not None:
@@ -327,11 +329,16 @@ class KaraokeSession:
                         self._speaker_embedding.squeeze(0).detach().cpu().numpy()
                     )
                 self._streaming_pipeline.start()
-                self._pipeline_type = 'pytorch_full_model'
+                self._pipeline_type = (
+                    'pytorch_full_model'
+                    if self._target_model_type == 'full_model'
+                    else 'pytorch_adapter_model'
+                )
                 logger.info(
-                    "Session %s: RealtimeVoiceConversionPipeline loaded with full model %s",
+                    "Session %s: RealtimeVoiceConversionPipeline loaded with trained %s artifact %s",
                     self.session_id,
-                    self._full_model_path,
+                    self._target_model_type,
+                    trained_model_path,
                 )
                 return self._streaming_pipeline
 
@@ -368,7 +375,8 @@ class KaraokeSession:
                     from ..inference.streaming_pipeline import StreamingConversionPipeline
                     self._streaming_pipeline = StreamingConversionPipeline(
                         sample_rate=self.sample_rate,
-                        device=self.device
+                        device=self.device,
+                        profile_store=getattr(self, '_profile_store', None),
                     )
                     if self._target_profile_id:
                         try:
