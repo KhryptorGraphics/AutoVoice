@@ -1528,7 +1528,7 @@ class TrainingJobManager:
         profile['model_version'] = profile.get('model_version') or '1.0'
         profile['model_path'] = results.get('adapter_path')
         profile['runtime_artifact_manifest_path'] = results.get('manifest_path')
-        profile['training_epochs'] = results.get('epochs_completed')
+        profile['training_epochs'] = results.get('epochs_ran') or results.get('epochs_completed')
         profile['loss_final'] = results.get('final_loss')
         profile['sample_count'] = sample_count
         artifact_type = results.get('artifact_type')
@@ -1575,7 +1575,7 @@ class TrainingJobManager:
         checkpoint = {
             'id': uuid.uuid4().hex,
             'created_at': datetime.now(timezone.utc).isoformat(),
-            'epoch': results.get('epochs_completed'),
+            'epoch': results.get('epochs_ran') or results.get('epochs_completed'),
             'model_version': model_version,
             # Rollback and the frontend read 'version'; keep both keys in sync.
             'version': model_version,
