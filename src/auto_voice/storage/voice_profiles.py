@@ -242,7 +242,19 @@ class VoiceProfileStore:
     def save(self, profile_data: Dict[str, Any]) -> str:
         """Save a voice profile. Returns profile_id."""
         profile_id = profile_data.get('profile_id', str(uuid.uuid4()))
+        explicit_model_type = profile_data.get('active_model_type')
         profile_data = self._normalize_profile(dict(profile_data))
+        # Persist the caller's explicit model choice even when its artifact is
+        # not on disk yet (training saves the record before the artifact) —
+        # load() re-derives the effective value against actual artifacts, so
+        # storing the normalized downgrade would only destroy the choice.
+        if explicit_model_type in ('full_model', 'adapter', 'base'):
+            profile_data['active_model_type'] = explicit_model_type
+        else:
+            # No explicit choice given: don't persist the derived value —
+            # storing it would turn a moment-in-time derivation into a sticky
+            # explicit choice that shadows artifacts trained later.
+            profile_data.pop('active_model_type', None)
         profile_data['profile_id'] = profile_id
         profile_data.setdefault('created_at', datetime.now(timezone.utc).isoformat())
 

@@ -215,3 +215,47 @@ def test_create_profile_from_diarization_warns_on_segment_failure(
     assert temp_store.exists(profile_id) is True
     assert temp_store.list_training_samples(profile_id) == []
     assert "Failed to add segment" in caplog.text
+
+
+def test_save_preserves_explicit_model_choice_before_artifact_exists(temp_store):
+    """Training saves the profile record before the artifact file lands on
+    disk; save() must not permanently downgrade the explicit choice just
+    because the artifact is momentarily missing — load() derives the
+    effective value against actual artifacts anyway."""
+    import torch
+
+    profile_id = "explicit-choice-1"
+    temp_store.save({
+        "profile_id": profile_id,
+        "name": "Explicit Choice",
+        "user_id": "user-1",
+        "has_trained_model": True,
+        "active_model_type": "full_model",
+    })
+
+    # Before the artifact exists, the effective value falls back...
+    assert temp_store.load(profile_id)["active_model_type"] == "adapter"
+
+    # ...but the stored choice survives, so once the artifact arrives the
+    # profile serves the full model as chosen.
+    full_model_path = Path(temp_store.trained_models_dir) / f"{profile_id}_full_model.pt"
+    torch.save({"decoder.weight": torch.zeros(2, 2)}, full_model_path)
+    assert temp_store.load(profile_id)["active_model_type"] == "full_model"
+
+
+def test_save_does_not_persist_derived_model_type(temp_store):
+    """Without an explicit choice the derived value must not be stored —
+    a profile saved before its full model lands must serve the full model
+    once the artifact exists (a persisted derivation would stick to
+    'adapter' forever)."""
+    profile_id = "derived-choice-1"
+    temp_store.save({
+        "profile_id": profile_id,
+        "name": "Derived",
+        "user_id": "user-1",
+        "has_trained_model": True,
+    })
+
+    full_model_path = Path(temp_store.trained_models_dir) / f"{profile_id}_full_model.pt"
+    full_model_path.write_bytes(b"full-model")
+    assert temp_store.load(profile_id)["active_model_type"] == "full_model"
