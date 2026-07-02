@@ -43,6 +43,10 @@ class VoiceDataset(Dataset):
         self.min_voiced_ratio = 0.02
         self.min_peak_amplitude = 1e-4
         self.min_speaker_purity = 0.75
+        # Decoded-audio cache: librosa.load+resample of a full source file costs
+        # ~1.5s and __getitem__ repeats it every epoch, starving the GPU.
+        # Voice-profile datasets are minutes of mono float32, so unbounded is fine.
+        self._audio_cache: Dict[Path, np.ndarray] = {}
         self.audio_files = self._scan_files()
         logger.info(f"VoiceDataset: {len(self.audio_files)} files from {data_dir}"
                     f"{' (augment=True)' if augment else ''}")
@@ -107,18 +111,45 @@ class VoiceDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         import librosa
         audio_path = self.audio_files[idx]
-        audio, sr = librosa.load(str(audio_path), sr=self.sample_rate, mono=True)
-        raw_audio = np.asarray(audio, dtype=np.float32)
+        raw_audio = self._audio_cache.get(audio_path)
+        if raw_audio is None:
+            audio, sr = librosa.load(str(audio_path), sr=self.sample_rate, mono=True)
+            raw_audio = np.asarray(audio, dtype=np.float32)
+            self._audio_cache[audio_path] = raw_audio
 
-        if len(raw_audio) > self.segment_length:
-            start = np.random.randint(0, len(raw_audio) - self.segment_length)
-            audio = raw_audio[start:start + self.segment_length]
-        else:
-            audio = np.pad(raw_audio, (0, self.segment_length - len(raw_audio)))
+        # Gates run on a random window each epoch, so any rare quiet stretch
+        # in an otherwise-valid sample would eventually be drawn and crash a
+        # long run. Redraw failing windows instead; a sample only fails when
+        # every attempt fails (i.e. the sample itself is bad, not the draw).
+        last_gate_error: Optional[ValueError] = None
+        for _ in range(10):
+            if len(raw_audio) > self.segment_length:
+                start = np.random.randint(0, len(raw_audio) - self.segment_length)
+                audio = raw_audio[start:start + self.segment_length]
+            else:
+                audio = np.pad(raw_audio, (0, self.segment_length - len(raw_audio)))
 
-        # Apply augmentation if enabled
-        if self._augmentation is not None:
-            audio = self._augmentation(audio, self.sample_rate)
+            # Apply augmentation if enabled
+            if self._augmentation is not None:
+                audio = self._augmentation(audio, self.sample_rate)
+
+            f0, voiced, _ = librosa.pyin(audio, fmin=50, fmax=1100, sr=self.sample_rate)
+            f0 = np.nan_to_num(f0, nan=0.0)
+            try:
+                self._validate_quality_gates(
+                    audio_path=audio_path,
+                    raw_audio=raw_audio,
+                    f0=f0,
+                    voiced=voiced,
+                )
+                last_gate_error = None
+                break
+            except ValueError as exc:
+                last_gate_error = exc
+                if len(raw_audio) <= self.segment_length:
+                    break  # only one possible window; redrawing cannot help
+        if last_gate_error is not None:
+            raise last_gate_error
 
         mel = librosa.feature.melspectrogram(
             y=audio, sr=self.sample_rate, n_fft=2048,
@@ -126,15 +157,6 @@ class VoiceDataset(Dataset):
         )
         mel_db = librosa.power_to_db(mel, ref=np.max)
         mel_db = (mel_db + 80.0) / 80.0
-
-        f0, voiced, _ = librosa.pyin(audio, fmin=50, fmax=1100, sr=self.sample_rate)
-        f0 = np.nan_to_num(f0, nan=0.0)
-        self._validate_quality_gates(
-            audio_path=audio_path,
-            raw_audio=raw_audio,
-            f0=f0,
-            voiced=voiced,
-        )
 
         return {
             'audio': torch.from_numpy(audio).float(),
@@ -229,10 +251,16 @@ class Trainer:
                 )
         # drop_last=False when dataset < batch_size to ensure training can proceed
         actual_batch_size = min(self.batch_size, len(train_dataset))
+        # persistent_workers keeps each worker's decoded-audio cache alive
+        # across epochs; without it the cache is rebuilt every epoch.
+        # Per-item cost is dominated by single-threaded librosa.pyin, so
+        # feed the GPU with more parallel workers and deeper prefetch.
+        loader_workers = min(8, os.cpu_count() or 4)
         train_loader = DataLoader(
             train_dataset, batch_size=actual_batch_size,
-            shuffle=True, num_workers=4, pin_memory=True,
+            shuffle=True, num_workers=loader_workers, pin_memory=True,
             drop_last=(len(train_dataset) >= self.batch_size),
+            persistent_workers=True, prefetch_factor=4,
         )
 
         val_loader = None
@@ -241,7 +269,8 @@ class Trainer:
 
         if val_dataset is not None:
             val_loader = DataLoader(val_dataset, batch_size=self.batch_size,
-                                    shuffle=False, num_workers=2)
+                                    shuffle=False, num_workers=2,
+                                    persistent_workers=True)
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Starting training: {self.epochs} epochs, "
