@@ -542,10 +542,18 @@ class VoiceProfileStore:
         profile_samples_dir = self._samples_dir_for_profile(profile_id)
         os.makedirs(profile_samples_dir, exist_ok=True)
 
-        # Generate sample ID based on count
+        # Generate the next sample ID from the max existing suffix; count-based
+        # ids collide after deletions and silently overwrite earlier samples.
         existing_samples = self.list_training_samples(profile_id)
-        sample_num = len(existing_samples) + 1
-        sample_id = f"sample_{sample_num:03d}"
+        max_num = 0
+        for existing in existing_samples:
+            sid = getattr(existing, 'sample_id', '') or ''
+            if sid.startswith('sample_'):
+                try:
+                    max_num = max(max_num, int(sid.rsplit('_', 1)[-1]))
+                except ValueError:
+                    continue
+        sample_id = f"sample_{max_num + 1:03d}"
         sample_dir = os.path.join(profile_samples_dir, sample_id)
         os.makedirs(sample_dir, exist_ok=True)
 
