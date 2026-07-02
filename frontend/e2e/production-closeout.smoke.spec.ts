@@ -80,19 +80,21 @@ test.describe('Production closeout browser flows', () => {
         browserNotifications: false,
         soundEnabled: true,
         soundVolume: 0.5,
-        webhooks: [
-          {
-            id: 'webhook-smoke',
-            url: 'https://example.invalid/autovoice-webhook',
-            name: 'Smoke Webhook',
-            enabled: true,
-            events: ['conversion_complete', 'training_complete'],
-          },
-        ],
         enabledEvents: ['conversion_complete', 'conversion_error', 'training_complete', 'training_error'],
       }))
     })
-    await mockCommonApi(page)
+    const mockedApi = await mockCommonApi(page, {
+      webhooks: [
+        {
+          id: 'webhook-smoke',
+          url: 'https://example.invalid/autovoice-webhook',
+          name: 'Smoke Webhook',
+          enabled: true,
+          events: ['conversion_complete', 'training_complete'],
+          created_at: '2026-07-01T00:00:00Z',
+        },
+      ],
+    })
 
     await page.goto('/system')
 
@@ -104,6 +106,7 @@ test.describe('Production closeout browser flows', () => {
 
     await expect(page.getByText('Smoke Webhook')).toHaveCount(0)
     await expect(page.getByText('Webhook deleted successfully')).toBeVisible()
+    await expect.poll(() => mockedApi.getWebhookDeletes()).toBe(1)
   })
 
   test('confirms conversion history deletion from the conversion page', async ({ page }) => {

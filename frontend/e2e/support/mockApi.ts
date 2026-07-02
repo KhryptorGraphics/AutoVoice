@@ -35,6 +35,7 @@ type MockCommonApiOptions = {
   voiceCloneError?: string
   apiToken?: string
   conversionRecords?: MockConversionRecord[]
+  webhooks?: Array<Record<string, unknown>>
 }
 
 type MockConversionRecord = {
@@ -1858,7 +1859,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   let webhookSaves = 0
   let webhookDeletes = 0
   let webhookTests = 0
-  const webhooks: Array<Record<string, unknown>> = []
+  const webhooks: Array<Record<string, unknown>> = [...(options.webhooks ?? [])]
 
   await page.route('**/api/v1/notifications/webhooks/*/test', async (route) => {
     webhookTests += 1
