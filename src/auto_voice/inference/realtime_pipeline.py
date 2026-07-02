@@ -395,14 +395,28 @@ class RealtimePipeline:
 
                 # 3. Frame alignment
                 n_frames = min(content.shape[1], pitch.shape[1])
+                expected_len = int(round(len(audio) * self.output_sample_rate / self.sample_rate))
                 if n_frames == 0:
-                    return np.zeros(
-                        int(len(audio) * self.output_sample_rate / self.sample_rate),
-                        dtype=np.float32
-                    )
+                    return np.zeros(expected_len, dtype=np.float32)
 
                 content = content[:, :n_frames, :]
                 pitch = pitch[:, :n_frames, :]
+
+                # Retime features from the input analysis grid (16k, hop 320:
+                # 20ms/frame) to the vocoder's output grid (22.05k, hop 256:
+                # ~11.6ms/frame). Without this the vocoder renders 20ms of
+                # content in 11.6ms and the output is time-compressed by ~43%.
+                vocoder_hop = 256
+                target_frames = max(1, int(round(expected_len / vocoder_hop)))
+                if target_frames != n_frames:
+                    content = F.interpolate(
+                        content.transpose(1, 2), size=target_frames,
+                        mode='linear', align_corners=False,
+                    ).transpose(1, 2)
+                    pitch = F.interpolate(
+                        pitch.transpose(1, 2), size=target_frames,
+                        mode='linear', align_corners=False,
+                    ).transpose(1, 2)
 
                 # 4. Decoder (~10ms)
                 t0 = time.perf_counter()
@@ -414,8 +428,12 @@ class RealtimePipeline:
                 output = self._vocoder.synthesize(mel)
                 self._latency_history['vocoder'].append(time.perf_counter() - t0)
 
-            # Convert to numpy
+            # Convert to numpy and enforce the duration contract exactly
             output_np = output.squeeze(0).cpu().numpy()
+            if len(output_np) > expected_len:
+                output_np = output_np[:expected_len]
+            elif len(output_np) < expected_len:
+                output_np = np.pad(output_np, (0, expected_len - len(output_np)))
 
             # Normalize output
             peak = np.abs(output_np).max()
