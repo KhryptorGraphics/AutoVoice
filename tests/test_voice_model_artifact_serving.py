@@ -190,3 +190,35 @@ class TestRealtimeTrainedServing:
 
         pipe.clear_voice_model()
         assert pipe._voice_model is None
+
+
+class TestActiveModelTypePreference:
+    """convert_song must honor the profile's active_model_type when both artifacts exist."""
+
+    def _pipeline_with_artifacts(self, tmp_path):
+        from auto_voice.inference.singing_conversion_pipeline import SingingConversionPipeline
+
+        trained_dir = tmp_path / 'trained_models'
+        trained_dir.mkdir()
+        for name in ('p1_full_model.pt', 'p1_adapter_model.pt'):
+            torch.save(_small_decoder().state_dict(), trained_dir / name)
+
+        pipeline = SingingConversionPipeline(device='cpu', config={})
+        store = type('S', (), {'trained_models_dir': str(trained_dir)})()
+        pipeline._voice_cloner = type('C', (), {'store': store})()
+        pipeline._model_manager = ModelManager(device=torch.device('cpu'), config={})
+        return pipeline
+
+    def test_adapter_preference_wins_when_active(self, tmp_path):
+        pipeline = self._pipeline_with_artifacts(tmp_path)
+        _, model_type = pipeline._resolve_target_speaker(
+            'p1', np.ones(4, dtype=np.float32), active_model_type='adapter'
+        )
+        assert model_type == 'adapter'
+
+    def test_full_model_preferred_by_default(self, tmp_path):
+        pipeline = self._pipeline_with_artifacts(tmp_path)
+        _, model_type = pipeline._resolve_target_speaker(
+            'p1', np.ones(4, dtype=np.float32), active_model_type='full_model'
+        )
+        assert model_type == 'full_model'

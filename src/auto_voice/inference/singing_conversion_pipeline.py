@@ -133,8 +133,17 @@ class SingingConversionPipeline:
                 self._model_manager.load_voice_model(voice_model_path, speaker_id)
         return self._model_manager
 
-    def _resolve_target_speaker(self, target_profile_id: str, target_embedding: np.ndarray) -> tuple[str, str]:
+    def _resolve_target_speaker(
+        self,
+        target_profile_id: str,
+        target_embedding: np.ndarray,
+        active_model_type: Optional[str] = None,
+    ) -> tuple[str, str]:
         """Resolve which target model should drive conversion for a profile.
+
+        The profile's ``active_model_type`` (set by training and by the
+        adapter-select endpoint) decides the artifact preference; the other
+        artifact family is the fallback when the preferred file is absent.
 
         Returns:
             Tuple of (speaker_id, model_type), where model_type is one of
@@ -145,33 +154,27 @@ class SingingConversionPipeline:
         store = getattr(self._voice_cloner, 'store', None)
         trained_models_dir = getattr(store, 'trained_models_dir', None)
         if trained_models_dir:
-            full_model_path = Path(trained_models_dir) / f"{target_profile_id}_full_model.pt"
-            if full_model_path.exists():
-                model_manager.load_voice_model(
-                    str(full_model_path),
-                    target_profile_id,
-                    speaker_embedding=target_embedding,
-                )
-                logger.info(
-                    "Using dedicated full model for target profile %s from %s",
-                    target_profile_id,
-                    full_model_path,
-                )
-                return target_profile_id, 'full_model'
-
-            adapter_model_path = Path(trained_models_dir) / f"{target_profile_id}_adapter_model.pt"
-            if adapter_model_path.exists():
-                model_manager.load_voice_model(
-                    str(adapter_model_path),
-                    target_profile_id,
-                    speaker_embedding=target_embedding,
-                )
-                logger.info(
-                    "Using self-contained adapter model for target profile %s from %s",
-                    target_profile_id,
-                    adapter_model_path,
-                )
-                return target_profile_id, 'adapter'
+            candidates = [
+                ('full_model', Path(trained_models_dir) / f"{target_profile_id}_full_model.pt"),
+                ('adapter', Path(trained_models_dir) / f"{target_profile_id}_adapter_model.pt"),
+            ]
+            if active_model_type == 'adapter':
+                candidates.reverse()
+            for model_type, artifact_path in candidates:
+                if artifact_path.exists():
+                    model_manager.load_voice_model(
+                        str(artifact_path),
+                        target_profile_id,
+                        speaker_embedding=target_embedding,
+                    )
+                    logger.info(
+                        "Using trained %s artifact for target profile %s from %s (active_model_type=%s)",
+                        model_type,
+                        target_profile_id,
+                        artifact_path,
+                        active_model_type,
+                    )
+                    return target_profile_id, model_type
 
         return self.config.get('speaker_id', 'default'), 'adapter'
 
@@ -382,6 +385,7 @@ class SingingConversionPipeline:
         speaker_id, model_type = self._resolve_target_speaker(
             target_profile_id,
             target_embedding,
+            active_model_type=profile.get('active_model_type'),
         )
 
         # Separate vocals and instrumental
