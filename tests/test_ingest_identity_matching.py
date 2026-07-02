@@ -64,3 +64,26 @@ def test_target_user_profiles_are_match_candidates(store):
     assert best['profile_role'] == 'target_user'
     assert suggestions[0]['recommended_action'] == 'assign_existing'
     assert suggestions[0]['recommended_profile_id'] == target_id
+
+
+def test_suggested_names_follow_speaker_dominance(store):
+    """The dominant speaker gets the main-artist name even when diarization
+    labeled them SPEAKER_01 — diarization labels are arbitrary."""
+    diarizer = MagicMock()
+    diarizer.extract_speaker_embedding.side_effect = RuntimeError("no embedding")
+
+    segments = [
+        {'speaker_id': 'SPEAKER_00', 'start': 0.0, 'end': 20.0, 'duration': 20.0},
+        {'speaker_id': 'SPEAKER_01', 'start': 20.0, 'end': 180.0, 'duration': 160.0},
+    ]
+    suggestions = _build_ingest_suggestions(
+        diarizer=diarizer,
+        profile_store=store,
+        vocals_path='/tmp/vocals.wav',
+        segments=segments,
+        metadata={'main_artist': 'Main Artist', 'featured_artists': ['Guest Artist']},
+    )
+
+    by_speaker = {s['speaker_id']: s for s in suggestions}
+    assert by_speaker['SPEAKER_01']['suggested_name'] == 'Main Artist'
+    assert by_speaker['SPEAKER_00']['suggested_name'] == 'Guest Artist'

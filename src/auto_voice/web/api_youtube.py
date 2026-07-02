@@ -192,6 +192,14 @@ def _build_ingest_suggestions(
     suggestions = []
     speaker_ids = sorted({str(segment['speaker_id']) for segment in segments})
     durations = _speaker_duration_map(segments)
+    # Metadata names go to speakers by dominance: whoever sings most gets the
+    # main-artist name, not whoever diarization happened to label SPEAKER_00.
+    name_rank = {
+        sid: rank
+        for rank, sid in enumerate(
+            sorted(speaker_ids, key=lambda sid: (-durations.get(sid, 0.0), sid))
+        )
+    }
 
     for index, speaker_id in enumerate(speaker_ids):
         current_segments = _speaker_segments(segments, speaker_id)
@@ -226,7 +234,7 @@ def _build_ingest_suggestions(
         ]
         suggestions.append({
             'speaker_id': speaker_id,
-            'suggested_name': _suggested_speaker_name(index, speaker_id, metadata),
+            'suggested_name': _suggested_speaker_name(name_rank[speaker_id], speaker_id, metadata),
             'duration': durations.get(speaker_id, 0.0),
             'segment_count': len(current_segments),
             'matches': matches,
