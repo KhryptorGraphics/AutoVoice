@@ -26,6 +26,10 @@ class RealtimeVoiceConversionPipeline:
     continuous voice conversion with minimal delay.
     """
 
+    # Per-chunk passthrough absorbs transient errors, but a failure streak
+    # means the whole session is streaming unconverted audio — fail instead.
+    MAX_CONSECUTIVE_CHUNK_FAILURES = 5
+
     def __init__(self, device=None, config: Optional[Dict[str, Any]] = None):
         """Initialize realtime voice conversion pipeline.
 
@@ -54,6 +58,7 @@ class RealtimeVoiceConversionPipeline:
         self._input_buffer = deque(maxlen=10)
         self._output_buffer = deque(maxlen=10)
         self._prev_output_tail = None
+        self._consecutive_chunk_failures = 0
 
         # Thread management
         self._process_thread = None
@@ -338,10 +343,18 @@ class RealtimeVoiceConversionPipeline:
             self._latency_samples.append(elapsed)
             self._chunks_processed += 1
 
+            self._consecutive_chunk_failures = 0
             return output[:original_len]  # Return original length
 
         except Exception as e:
             logger.error(f"Chunk conversion error: {e}")
+            failures = getattr(self, '_consecutive_chunk_failures', 0) + 1
+            self._consecutive_chunk_failures = failures
+            if failures >= self.MAX_CONSECUTIVE_CHUNK_FAILURES:
+                raise RuntimeError(
+                    f"{failures} consecutive chunk conversion failures; "
+                    "refusing to keep returning passthrough audio"
+                ) from e
             return audio[:original_len]  # Return original length on error
 
     def _get_model_manager(self):

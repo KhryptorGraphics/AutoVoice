@@ -209,3 +209,42 @@ class TestRealtimePipeline:
         assert result.dtype == np.float32
         assert not np.any(np.isnan(result))
         assert not np.any(np.isinf(result))
+
+
+class TestChunkFailureCircuitBreaker:
+    """A failure streak must raise instead of silently streaming passthrough."""
+
+    def _pipeline_with_target(self):
+        from unittest.mock import patch
+        from auto_voice.inference.realtime_voice_conversion_pipeline import (
+            RealtimeVoiceConversionPipeline
+        )
+        pipe = RealtimeVoiceConversionPipeline()
+        pipe._target_embedding = np.ones(256, dtype=np.float32)
+        return pipe
+
+    def test_raises_after_consecutive_failure_streak(self):
+        from unittest.mock import patch
+        pipe = self._pipeline_with_target()
+        chunk = np.random.randn(pipe.chunk_size).astype(np.float32)
+
+        with patch.object(pipe, '_apply_conversion', side_effect=ValueError("broken")):
+            for _ in range(pipe.MAX_CONSECUTIVE_CHUNK_FAILURES - 1):
+                out = pipe._convert_chunk(chunk)
+                np.testing.assert_array_equal(out, chunk)  # single-chunk resilience
+            with pytest.raises(RuntimeError, match="consecutive chunk conversion failures"):
+                pipe._convert_chunk(chunk)
+
+    def test_success_resets_failure_streak(self):
+        import torch
+        from unittest.mock import patch
+        pipe = self._pipeline_with_target()
+        chunk = np.random.randn(pipe.chunk_size).astype(np.float32)
+        pipe._consecutive_chunk_failures = pipe.MAX_CONSECUTIVE_CHUNK_FAILURES - 1
+
+        with patch.object(pipe, '_apply_conversion',
+                          return_value=torch.zeros(pipe.chunk_size)):
+            out = pipe._convert_chunk(chunk)
+
+        assert out is not None
+        assert pipe._consecutive_chunk_failures == 0

@@ -174,6 +174,7 @@ class RealtimePipeline:
 
         # Speaker embedding
         self._speaker_embedding: Optional[torch.Tensor] = None
+        self._consecutive_chunk_failures = 0
 
         # Optional trained per-profile decoder (CoMoSVC artifact); when set it
         # replaces SimpleDecoder for mel generation
@@ -499,24 +500,41 @@ class RealtimePipeline:
 
             self._latency_history['total'].append(time.perf_counter() - total_start)
 
+            self._consecutive_chunk_failures = 0
             return output_np.astype(np.float32)
 
-        except torch.cuda.OutOfMemoryError:
+        except torch.cuda.OutOfMemoryError as e:
             logger.error("GPU OOM during chunk processing, falling back to passthrough")
             torch.cuda.empty_cache()
             self._log_gpu_memory()
+            self._note_chunk_failure(e)
             return audio.astype(np.float32)
 
         except RuntimeError as e:
             if "CUDA" in str(e):
                 logger.error(f"CUDA error during processing: {e}")
                 torch.cuda.empty_cache()
+                self._note_chunk_failure(e)
                 return audio.astype(np.float32)
             raise
 
         except Exception as e:
             logger.error(f"Unexpected error in process_chunk: {e}", exc_info=True)
+            self._note_chunk_failure(e)
             return audio.astype(np.float32)
+
+    # Per-chunk passthrough absorbs transient errors, but a failure streak
+    # means the whole stream is unconverted audio — fail instead.
+    MAX_CONSECUTIVE_CHUNK_FAILURES = 5
+
+    def _note_chunk_failure(self, exc: Exception) -> None:
+        failures = getattr(self, '_consecutive_chunk_failures', 0) + 1
+        self._consecutive_chunk_failures = failures
+        if failures >= self.MAX_CONSECUTIVE_CHUNK_FAILURES:
+            raise RuntimeError(
+                f"{failures} consecutive chunk conversion failures; "
+                "refusing to keep returning passthrough audio"
+            ) from exc
 
     def get_latency_metrics(self) -> Dict[str, float]:
         """Get average latency for each pipeline component from circular buffers.

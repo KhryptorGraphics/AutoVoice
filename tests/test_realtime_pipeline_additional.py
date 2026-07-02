@@ -148,3 +148,36 @@ def test_log_gpu_memory_warns_when_query_fails(caplog):
             RealtimePipeline._log_gpu_memory(pipeline)
 
     assert "Could not log GPU memory" in caplog.text
+
+
+def test_process_chunk_raises_after_consecutive_failure_streak():
+    """Passthrough hides a dead conversion; a failure streak must fail loudly."""
+    pipeline = _bare_pipeline()
+    pipeline._speaker_embedding = torch.randn(1, 256)
+    pipeline._content_encoder = MagicMock()
+    pipeline._content_encoder.encode.side_effect = ValueError("broken")
+
+    audio = np.ones(1600, dtype=np.float32)
+    for _ in range(RealtimePipeline.MAX_CONSECUTIVE_CHUNK_FAILURES - 1):
+        output = RealtimePipeline.process_chunk(pipeline, audio)
+        assert np.array_equal(output, audio)  # single-chunk resilience
+
+    with pytest.raises(RuntimeError, match="consecutive chunk conversion failures"):
+        RealtimePipeline.process_chunk(pipeline, audio)
+
+
+def test_process_chunk_success_resets_failure_streak():
+    pipeline = _bare_pipeline()
+    pipeline._speaker_embedding = torch.randn(1, 256)
+    pipeline._content_encoder = MagicMock()
+    pipeline._content_encoder.encode.return_value = torch.randn(1, 5, 768)
+    pipeline._pitch_extractor = MagicMock()
+    pipeline._pitch_extractor.extract.return_value = torch.randn(1, 5)
+    pipeline._pitch_encoder = MagicMock(return_value=torch.randn(1, 5, DEFAULT_PITCH_DIM))
+    pipeline._decoder = MagicMock(return_value=torch.randn(1, 80, 5))
+    pipeline._vocoder = MagicMock()
+    pipeline._vocoder.synthesize.return_value = torch.tensor([[0.25, -0.5]], dtype=torch.float32)
+
+    pipeline._consecutive_chunk_failures = RealtimePipeline.MAX_CONSECUTIVE_CHUNK_FAILURES - 1
+    RealtimePipeline.process_chunk(pipeline, np.ones(1600, dtype=np.float32))
+    assert pipeline._consecutive_chunk_failures == 0
