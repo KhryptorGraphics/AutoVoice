@@ -2,27 +2,19 @@
  * TrackListPanel - Display tracks with YouTube metadata and featured artists
  */
 import React, { useState, useEffect, useCallback } from 'react';
-
-interface Track {
-  id: string;
-  title: string | null;
-  channel: string | null;
-  artist_name: string;
-  duration_sec: number | null;
-  featured_artists: string[];
-  vocals_path: string | null;
-}
+import { apiService } from '../services/api';
+import type { SpeakerTrack } from '../services/api';
 
 interface TrackListPanelProps {
   artistFilter?: string;
-  onTrackSelect?: (track: Track) => void;
+  onTrackSelect?: (track: SpeakerTrack) => void;
 }
 
 const TrackListPanel: React.FC<TrackListPanelProps> = ({
   artistFilter,
   onTrackSelect,
 }) => {
-  const [tracks, setTracks] = useState<Track[]>([]);
+  const [tracks, setTracks] = useState<SpeakerTrack[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState({
@@ -32,21 +24,20 @@ const TrackListPanel: React.FC<TrackListPanelProps> = ({
   });
   const [fetchingMetadata, setFetchingMetadata] = useState(false);
 
+  // Sync artist filter when parent changes it
+  useEffect(() => {
+    setFilter((prev) => ({ ...prev, artist: artistFilter || '' }));
+  }, [artistFilter]);
+
   // Load tracks
   const loadTracks = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams();
-      if (filter.artist) params.append('artist', filter.artist);
-      if (filter.hasFeatured) params.append('has_featured', 'true');
-
-      const response = await fetch(`/api/v1/speakers/tracks?${params}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to load tracks');
-      }
+      const data = await apiService.listSpeakerTracks({
+        artist: filter.artist || undefined,
+        hasFeatured: filter.hasFeatured || undefined,
+      });
 
       setTracks(data.tracks || []);
     } catch (err) {
@@ -60,16 +51,7 @@ const TrackListPanel: React.FC<TrackListPanelProps> = ({
   const fetchMetadata = async () => {
     setFetchingMetadata(true);
     try {
-      const response = await fetch('/api/v1/speakers/tracks/fetch-metadata', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ artist_name: filter.artist || undefined }),
-      });
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch metadata');
-      }
+      await apiService.fetchTrackMetadata(filter.artist || undefined);
 
       // Reload tracks after fetching
       await loadTracks();
@@ -119,15 +101,14 @@ const TrackListPanel: React.FC<TrackListPanelProps> = ({
       <div className="grid grid-cols-3 gap-4 mb-4">
         <div>
           <label className="block text-sm text-gray-400 mb-1">Artist</label>
-          <select
+          <input
+            type="text"
             value={filter.artist}
             onChange={(e) => setFilter({ ...filter, artist: e.target.value })}
+            placeholder="All artists"
+            data-testid="track-artist-filter"
             className="w-full bg-gray-700 text-white rounded px-3 py-2 text-sm"
-          >
-            <option value="">All Artists</option>
-            <option value="conor_maynard">Conor Maynard</option>
-            <option value="william_singe">William Singe</option>
-          </select>
+          />
         </div>
 
         <div>

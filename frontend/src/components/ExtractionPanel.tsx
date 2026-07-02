@@ -2,30 +2,12 @@
  * ExtractionPanel - Display and manage speaker extraction jobs
  */
 import React, { useState, useEffect, useRef } from 'react';
-
-interface DetectedSpeaker {
-  speaker_id: string;
-  duration_sec: number;
-  segments: number;
-  is_primary: boolean;
-}
-
-interface ExtractionJob {
-  job_id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  progress: number;
-  artist_name: string;
-  tracks_processed: number;
-  tracks_total: number;
-  speakers_detected: DetectedSpeaker[];
-  error?: string;
-  started_at?: string;
-  completed_at?: string;
-}
+import { apiService } from '../services/api';
+import type { DetectedSpeaker, SpeakerExtractionJob } from '../services/api';
 
 interface ExtractionPanelProps {
   artistName?: string;
-  onExtractionComplete?: (job: ExtractionJob) => void;
+  onExtractionComplete?: (job: SpeakerExtractionJob) => void;
   onSpeakerSelect?: (speaker: DetectedSpeaker) => void;
 }
 
@@ -34,45 +16,50 @@ const ExtractionPanel: React.FC<ExtractionPanelProps> = ({
   onExtractionComplete,
   onSpeakerSelect,
 }) => {
-  const [job, setJob] = useState<ExtractionJob | null>(null);
+  const [job, setJob] = useState<SpeakerExtractionJob | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedArtist, setSelectedArtist] = useState(artistName || '');
+  const [knownArtists, setKnownArtists] = useState<string[]>([]);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const pollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Available artists (could be fetched from API)
-  const artists = [
-    { value: 'conor_maynard', label: 'Conor Maynard' },
-    { value: 'william_singe', label: 'William Singe' },
-  ];
+  // Sync artist input when parent filter changes
+  useEffect(() => {
+    if (artistName) {
+      setSelectedArtist(artistName);
+    }
+  }, [artistName]);
+
+  // Best-effort suggestions for the artist datalist
+  useEffect(() => {
+    apiService
+      .listFeaturedArtists()
+      .then((data) => setKnownArtists(data.artists.map((a) => a.name)))
+      .catch(() => {
+        // ponytail: suggestions only — free-text input works without them
+      });
+  }, []);
 
   // Start extraction job
   const startExtraction = async () => {
-    if (!selectedArtist) return;
+    if (!selectedArtist.trim()) return;
 
     setLoading(true);
     setError(null);
     setJob(null);
 
     try {
-      const response = await fetch('/api/v1/speakers/extraction/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ artist_name: selectedArtist }),
-      });
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to start extraction');
-      }
+      const data = await apiService.runSpeakerExtraction(selectedArtist.trim());
 
       setJob({
         job_id: data.job_id,
-        status: data.status === 'queued' ? 'pending' : data.status,
+        status: (data.status === 'queued'
+          ? 'pending'
+          : data.status) as SpeakerExtractionJob['status'],
         progress: 0,
-        artist_name: selectedArtist,
+        artist_name: selectedArtist.trim(),
         tracks_processed: 0,
         tracks_total: 0,
         speakers_detected: [],
@@ -95,12 +82,7 @@ const ExtractionPanel: React.FC<ExtractionPanelProps> = ({
 
     pollInterval.current = setInterval(async () => {
       try {
-        const response = await fetch(`/api/v1/speakers/extraction/status/${jobId}`);
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.error || 'Failed to get status');
-        }
+        const data = await apiService.getSpeakerExtractionStatus(jobId);
 
         setJob(data);
 
@@ -125,23 +107,14 @@ const ExtractionPanel: React.FC<ExtractionPanelProps> = ({
   const previewSpeaker = async (speakerId: string) => {
     try {
       // Find cluster ID for this speaker
-      const response = await fetch('/api/v1/speakers/clusters');
-      const data = await response.json();
+      const data = await apiService.listSpeakerClusters();
 
-      const cluster = data.clusters?.find((c: any) =>
+      const cluster = data.clusters?.find((c) =>
         c.name.toLowerCase().includes(speakerId.toLowerCase())
       );
 
       if (cluster) {
-        const sampleResponse = await fetch(
-          `/api/v1/speakers/clusters/${cluster.id}/sample?max_duration=10`
-        );
-
-        if (!sampleResponse.ok) {
-          throw new Error('Failed to load sample');
-        }
-
-        const blob = await sampleResponse.blob();
+        const blob = await apiService.fetchSpeakerClusterSample(cluster.id, 10);
         const url = URL.createObjectURL(blob);
 
         if (previewUrl) {
@@ -199,25 +172,28 @@ const ExtractionPanel: React.FC<ExtractionPanelProps> = ({
       {/* Artist Selection */}
       <div className="mb-4">
         <label className="block text-sm text-gray-400 mb-2">
-          Select Artist
+          Artist
         </label>
         <div className="flex gap-2">
-          <select
+          <input
+            type="text"
+            list="extraction-artist-options"
             value={selectedArtist}
             onChange={(e) => setSelectedArtist(e.target.value)}
             disabled={job?.status === 'running'}
+            placeholder="Enter artist name..."
+            data-testid="extraction-artist-input"
             className="flex-1 bg-gray-700 text-white rounded px-3 py-2"
-          >
-            <option value="">Choose an artist...</option>
-            {artists.map((artist) => (
-              <option key={artist.value} value={artist.value}>
-                {artist.label}
-              </option>
+          />
+          <datalist id="extraction-artist-options">
+            {knownArtists.map((name) => (
+              <option key={name} value={name} />
             ))}
-          </select>
+          </datalist>
           <button
             onClick={startExtraction}
-            disabled={!selectedArtist || loading || job?.status === 'running'}
+            disabled={!selectedArtist.trim() || loading || job?.status === 'running'}
+            data-testid="run-extraction-button"
             className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
           >
             {loading ? 'Starting...' : 'Extract Speakers'}
@@ -341,7 +317,7 @@ const ExtractionPanel: React.FC<ExtractionPanelProps> = ({
         <div className="text-gray-400 text-sm mt-4">
           <p>
             Speaker extraction analyzes audio tracks to identify and separate
-            different voices. Select an artist to extract speakers from their
+            different voices. Enter an artist to extract speakers from their
             tracks.
           </p>
           <ul className="mt-2 list-disc list-inside space-y-1">

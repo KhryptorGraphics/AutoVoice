@@ -2,13 +2,7 @@
  * FeaturedArtistCard - Display featured artist info with training option
  */
 import React from 'react';
-
-interface FeaturedArtist {
-  name: string;
-  track_count: number;
-  track_ids: string;
-  total_duration_sec?: number;
-}
+import type { FeaturedArtist } from '../services/api';
 
 interface FeaturedArtistCardProps {
   artist: FeaturedArtist;

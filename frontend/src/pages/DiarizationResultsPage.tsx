@@ -1,7 +1,12 @@
 import React, { useState, useCallback } from 'react';
 import { DiarizationTimeline } from '../components/DiarizationTimeline';
 import { SpeakerAssignmentPanel } from '../components/SpeakerAssignmentPanel';
+import ExtractionPanel from '../components/ExtractionPanel';
+import SpeakerIdentificationPanel from '../components/SpeakerIdentificationPanel';
+import TrackListPanel from '../components/TrackListPanel';
+import FeaturedArtistCard from '../components/FeaturedArtistCard';
 import { apiService as api } from '../services/api';
+import type { FeaturedArtist } from '../services/api';
 
 interface DiarizationSegment {
   start: number;
@@ -34,6 +39,8 @@ export function DiarizationResultsPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedSegmentIndex, setSelectedSegmentIndex] = useState<number | undefined>();
   const [suggestedArtists, setSuggestedArtists] = useState<string[]>([]);
+  const [featuredArtists, setFeaturedArtists] = useState<FeaturedArtist[]>([]);
+  const [artistFilter, setArtistFilter] = useState('');
 
   // Load profiles
   const loadProfiles = useCallback(async () => {
@@ -53,6 +60,15 @@ export function DiarizationResultsPage() {
   React.useEffect(() => {
     loadProfiles();
   }, [loadProfiles]);
+
+  // Best-effort featured-artist load for the Speaker Library section
+  React.useEffect(() => {
+    api.listFeaturedArtists()
+      .then((data) => setFeaturedArtists(data.artists || []))
+      .catch(() => {
+        // ponytail: optional enrichment — section renders fine without it
+      });
+  }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -279,6 +295,32 @@ export function DiarizationResultsPage() {
             />
           </div>
         )}
+
+        {/* Speaker Library */}
+        <div data-testid="speaker-library-section" className="mt-6 mb-6 space-y-6">
+          <div>
+            <h2 className="text-2xl font-semibold text-white mb-1">Speaker Library</h2>
+            <p className="text-zinc-400">
+              Extract, cluster, and identify source-artist voices across ingested tracks.
+            </p>
+          </div>
+
+          {featuredArtists.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {featuredArtists.map((artist) => (
+                <FeaturedArtistCard
+                  key={artist.name}
+                  artist={artist}
+                  onViewTracks={() => setArtistFilter(artist.name)}
+                />
+              ))}
+            </div>
+          )}
+
+          <ExtractionPanel artistName={artistFilter} />
+          <SpeakerIdentificationPanel />
+          <TrackListPanel artistFilter={artistFilter} />
+        </div>
 
         {/* Help text when no result */}
         {!diarizationResult && !isProcessing && (
