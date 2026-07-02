@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import {
   Activity,
+  Gauge,
   Headphones,
   HelpCircle,
   History,
@@ -24,6 +25,7 @@ import HelpPage from './pages/HelpPage'
 import { KaraokePage } from './pages/KaraokePage'
 import { DiarizationResultsPage } from './pages/DiarizationResultsPage'
 import { SingAlongPage } from './pages/SingAlongPage'
+import { QualityPage } from './pages/QualityPage'
 import { SampleInboxPage } from './pages/SampleInboxPage'
 import { SystemStatusPage } from './pages/SystemStatusPage'
 import { VoiceProfilePage } from './pages/VoiceProfilePage'
@@ -51,6 +53,7 @@ const navGroups = [
     items: [
       { to: '/profiles', label: 'Profiles', icon: User },
       { to: '/history', label: 'History', icon: History },
+      { to: '/quality', label: 'Quality', icon: Gauge },
     ],
   },
   {
@@ -155,6 +158,7 @@ export default function App() {
                 <Route path="/youtube" element={<YouTubeDownloadPage />} />
                 <Route path="/diarization" element={<DiarizationResultsPage />} />
                 <Route path="/history" element={<ConversionHistoryPage />} />
+                <Route path="/quality" element={<QualityPage />} />
                 <Route path="/system" element={<SystemStatusPage />} />
                 <Route path="/help" element={<HelpPage />} />
               </Routes>
