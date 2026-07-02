@@ -101,10 +101,15 @@ and hardware/model lanes are current-head green or explicitly gated.
 - canonical offline pipeline: `quality_seedvc`
 - canonical fast/live pipeline: `realtime`
 - experimental pipelines: `quality`, `quality_shortcut`, `realtime_meanvc`
-- supported local train/serve contract: LoRA and full-model training artifacts
-  are packaged for the canonical `realtime` serving path only. The canonical
-  `quality_seedvc` offline path is reference-audio driven and must not be treated
-  as consuming trained LoRA/full-model artifacts.
+- supported local train/serve contract: trained artifacts are served by the
+  offline `quality` pipeline. Full-model training saves
+  `{profile}_full_model.pt` and LoRA training saves both the deltas-only
+  `{profile}_adapter.pt` (AdapterManager consumers) and a self-contained
+  `{profile}_adapter_model.pt` (base + LoRA) — `ModelManager.load_voice_model`
+  detects the artifact family from the state dict and loads it into the class
+  that produced it (CoMoSVCDecoder or SoVitsSvc). The canonical
+  `quality_seedvc` offline path remains reference-audio driven, and the live
+  `realtime` path remains speaker-embedding driven.
 - canonical training feature contract: ContentVec content embeddings are 768
   dims, RMVPE/PitchEncoder pitch embeddings are 768 dims, and speaker embeddings
   are 256 dims. CoMoSVC training jobs and regression tests must use that contract.
