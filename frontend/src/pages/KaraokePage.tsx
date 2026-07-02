@@ -16,6 +16,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { Link } from 'react-router-dom';
 import {
   uploadSong,
   startSeparation,
@@ -105,6 +106,15 @@ export function KaraokePage() {
   // Audio levels
   const [inputLevel, setInputLevel] = useState(0);
   const [outputLevel, setOutputLevel] = useState(0);
+
+  // Multi-client join state (listener/second-screen)
+  const [joinSessionId, setJoinSessionId] = useState('');
+  const [joinedSessionId, setJoinedSessionId] = useState<string | null>(null);
+  const [isJoining, setIsJoining] = useState(false);
+
+  // Session notices (samples collected, mid-session voice switch)
+  const [samplesNotice, setSamplesNotice] = useState<{ count: number; sessionId?: string } | null>(null);
+  const [voiceSwitched, setVoiceSwitched] = useState(false);
 
   // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -260,6 +270,34 @@ export function KaraokePage() {
         setOutputLevel(0);
       } else if (event === 'session_started') {
         applySessionStarted(data as Record<string, unknown>);
+      } else if (event === 'samples_collected') {
+        // Backend payload (karaoke_events.py): { session_id, count }
+        const d = data as { session_id?: string; count?: number };
+        setSamplesNotice({
+          count: d?.count ?? 0,
+          sessionId: typeof d?.session_id === 'string' ? d.session_id : undefined,
+        });
+      } else if (event === 'separation_progress') {
+        // Backend payload (app.py): { job_id, progress, status }. Polling remains the fallback.
+        const d = data as { job_id?: string; progress?: number; status?: string };
+        setSeparationJob((prev) => {
+          if (!prev || !d?.job_id || d.job_id !== prev.job_id) {
+            return prev;
+          }
+          return {
+            ...prev,
+            progress: typeof d.progress === 'number' ? d.progress : prev.progress,
+          };
+        });
+      } else if (event === 'session_joined') {
+        const d = data as { session_id?: string };
+        if (d?.session_id) {
+          setJoinedSessionId(d.session_id);
+        }
+      } else if (event === 'session_left') {
+        setJoinedSessionId(null);
+      } else if (event === 'embedding_updated') {
+        setVoiceSwitched(true);
       }
     });
 
@@ -430,6 +468,44 @@ export function KaraokePage() {
     }
   };
 
+  const handleJoinSession = async () => {
+    const sid = joinSessionId.trim();
+    if (!sid) return;
+
+    setIsJoining(true);
+    setSessionError(null);
+    try {
+      const client = getAudioStreamingClient();
+      await client.connect();
+      client.joinSession(sid);
+    } catch (error) {
+      console.error('Failed to join session:', error);
+      setSessionError(error instanceof Error ? error.message : 'Failed to join session');
+    } finally {
+      setIsJoining(false);
+    }
+  };
+
+  const handleLeaveSession = () => {
+    try {
+      getAudioStreamingClient().leaveSession();
+    } catch (error) {
+      console.error('Failed to leave session:', error);
+    }
+    setJoinedSessionId(null);
+  };
+
+  const handleLiveVoiceSwitch = (voiceModelId: string) => {
+    setSelectedModel(voiceModelId);
+    setVoiceSwitched(false);
+    try {
+      getAudioStreamingClient().setSpeakerEmbedding({ voiceModelId });
+    } catch (error) {
+      console.error('Failed to switch voice:', error);
+      setSessionError(error instanceof Error ? error.message : 'Failed to switch voice');
+    }
+  };
+
   const startPerformance = async () => {
     if (!uploadedSong || !selectedModel) return;
 
@@ -437,6 +513,8 @@ export function KaraokePage() {
       setSessionError(null);
       setPreflightIssues([]);
       setPreflightWarnings([]);
+      setSamplesNotice(null);
+      setVoiceSwitched(false);
       const preflight = await apiService.karaokePreflight({
         song_id: uploadedSong.song_id,
         profile_id: selectedProfileId,
@@ -496,6 +574,9 @@ export function KaraokePage() {
     setSessionError(null);
     setPreflightIssues([]);
     setPreflightWarnings([]);
+    setSamplesNotice(null);
+    setVoiceSwitched(false);
+    setJoinedSessionId(null);
   };
 
   return (
@@ -519,6 +600,65 @@ export function KaraokePage() {
           {/* Audio Device Config */}
           <div className="bg-gray-800 rounded-lg p-4">
             <AudioDeviceSelector compact />
+          </div>
+
+          {/* Join an existing session as a listener/second screen */}
+          <div className="bg-gray-800 rounded-lg p-4">
+            {joinedSessionId ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-gray-200">
+                    Joined session {joinedSessionId}
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Listening as a second screen. This client does not stream audio.
+                  </p>
+                </div>
+                <button
+                  onClick={handleLeaveSession}
+                  data-testid="leave-session-button"
+                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
+                >
+                  Leave
+                </button>
+              </div>
+            ) : (
+              <div>
+                <label htmlFor="join-session-id" className="text-sm text-gray-400">
+                  Join existing session
+                </label>
+                <div className="mt-2 flex gap-2">
+                  <input
+                    id="join-session-id"
+                    type="text"
+                    value={joinSessionId}
+                    onChange={(e) => setJoinSessionId(e.target.value)}
+                    placeholder="Session ID"
+                    data-testid="join-session-input"
+                    className="flex-1 px-3 py-2 bg-gray-700 rounded text-sm"
+                  />
+                  <button
+                    onClick={() => void handleJoinSession()}
+                    disabled={isJoining || !joinSessionId.trim()}
+                    data-testid="join-session-button"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded text-sm"
+                  >
+                    {isJoining ? 'Joining...' : 'Join'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {sessionError && (
+              <div className="mt-3">
+                <StatusBanner
+                  tone="danger"
+                  title="Session error"
+                  message={sessionError}
+                  compact
+                  testId="karaoke-join-error"
+                />
+              </div>
+            )}
           </div>
 
           <div className="bg-gray-800 rounded-lg p-8">
@@ -657,6 +797,30 @@ export function KaraokePage() {
                 ))}
               </select>
             </div>
+
+            {stage === 'performing' && (
+              <div className="mt-3">
+                <label htmlFor="live-voice-switch" className="text-sm text-gray-400">
+                  Switch voice live
+                </label>
+                <select
+                  id="live-voice-switch"
+                  value={selectedModel || ''}
+                  onChange={(e) => handleLiveVoiceSwitch(e.target.value)}
+                  data-testid="live-voice-switch"
+                  className="mt-1 w-full p-2 bg-gray-700 rounded-lg text-sm"
+                >
+                  {voiceModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name} ({model.type})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Changes the conversion voice without stopping the session.
+                </p>
+              </div>
+            )}
 
             <button
               onClick={handleExtractVoice}
@@ -870,6 +1034,32 @@ export function KaraokePage() {
               tone={preflightIssues.length > 0 ? 'warning' : 'info'}
               title={preflightIssues.length > 0 ? 'Preflight attention required' : 'Preflight warnings'}
               details={[...preflightIssues, ...preflightWarnings]}
+            />
+          )}
+
+          {samplesNotice && (
+            <StatusBanner
+              tone="success"
+              title="Sing-along takes saved"
+              message={`${samplesNotice.count} sing-along take(s) saved to profile ${streamingStats.targetProfileId ?? selectedProfileId ?? 'unknown'}`}
+              actions={(
+                <Link
+                  to="/profiles"
+                  className="text-sm font-medium text-emerald-200 underline hover:text-white"
+                >
+                  View profiles
+                </Link>
+              )}
+              testId="karaoke-samples-collected"
+            />
+          )}
+
+          {voiceSwitched && (
+            <StatusBanner
+              tone="info"
+              title="Voice switched"
+              message="The conversion voice was updated mid-session."
+              testId="karaoke-voice-switched"
             />
           )}
 

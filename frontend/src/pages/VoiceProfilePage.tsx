@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award, Search, Filter, Info } from 'lucide-react'
-import { apiService, VoiceProfile, TrainingJob, TrainingConfig, TrainingConfigOptions, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType } from '../services/api'
+import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Download, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award, Search, Filter, Info } from 'lucide-react'
+import { apiService, VoiceProfile, TrainingJob, TrainingConfig, TrainingConfigOptions, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType, RetrainCheckResult, DuplicateProfileCheck } from '../services/api'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { TrainingJobQueue } from '../components/TrainingJobQueue'
 import { LossCurveChart } from '../components/LossCurveChart'
@@ -95,6 +95,9 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const [loadingSegments, setLoadingSegments] = useState(false)
   const [adapters, setAdapters] = useState<AdapterListResponse | null>(null)
   const [selectedAdapter, setSelectedAdapter] = useState<AdapterType | null>(null)
+  const [isPurging, setIsPurging] = useState(false)
+  const [retrainCheck, setRetrainCheck] = useState<RetrainCheckResult | null>(null)
+  const [checkingRetrain, setCheckingRetrain] = useState(false)
   const isSourceProfile = detailProfile.profile_role === 'source_artist'
   const cleanVocalMinutes = detailProfile.clean_vocal_minutes ?? ((detailProfile.clean_vocal_seconds ?? 0) / 60)
   const remainingMinutes = detailProfile.full_model_remaining_minutes ?? ((detailProfile.full_model_remaining_seconds ?? 0) / 60)
@@ -186,6 +189,56 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
       const errorMsg = error instanceof Error ? error.message : 'Failed to delete profile'
       toast.error(errorMsg)
       setIsDeleting(false)
+    }
+  }
+
+  const handlePurge = async () => {
+    setIsPurging(true)
+    try {
+      await apiService.purgeVoiceProfile(profile.profile_id)
+      toast.success('Profile purged (audit records kept)')
+      onDelete()
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Failed to purge profile'
+      toast.error(errorMsg)
+      setIsPurging(false)
+    }
+  }
+
+  const handleExport = async () => {
+    try {
+      const blob = await apiService.exportVoiceProfile(profile.profile_id)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${profile.profile_id}_export.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success('Profile exported')
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to export profile')
+    }
+  }
+
+  const handleCheckRetrain = async () => {
+    setCheckingRetrain(true)
+    try {
+      const result = await apiService.checkRetrain(profile.profile_id)
+      setRetrainCheck(result)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to check retrain status')
+    } finally {
+      setCheckingRetrain(false)
+    }
+  }
+
+  const handleRetrainLora = async () => {
+    try {
+      const result = await apiService.retrainLora(profile.profile_id)
+      toast.success(result.job_id ? `LoRA retrain started (job ${result.job_id})` : 'LoRA retrain started')
+      await refreshProfile()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to start LoRA retrain')
     }
   }
 
@@ -626,6 +679,40 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                 )}
                 {trainingConfig.initialization_mode === 'continue' ? 'Continue' : 'Start'} {trainingConfig.training_mode === 'full' ? 'Full Model' : 'LoRA'} Training ({selectedSampleIds.size} samples)
               </button>
+
+              <button
+                type="button"
+                onClick={handleCheckRetrain}
+                disabled={checkingRetrain}
+                data-testid="check-retrain-button"
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded text-sm"
+              >
+                {checkingRetrain ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+                Check retrain
+              </button>
+              {retrainCheck && (
+                <div className="rounded-lg border border-gray-700 bg-gray-900/60 p-3 space-y-3 text-sm text-gray-300" data-testid="retrain-check-result">
+                  <p>
+                    {retrainCheck.recommendation
+                      ?? retrainCheck.reason
+                      ?? (retrainCheck.needs_retrain ? 'Retrain recommended.' : 'No retrain needed.')}
+                  </p>
+                  {retrainCheck.recommendation && retrainCheck.reason && (
+                    <p className="text-xs text-gray-500">{retrainCheck.reason}</p>
+                  )}
+                  {retrainCheck.needs_retrain && (
+                    <ConfirmActionButton
+                      label="Retrain LoRA"
+                      confirmMessage="Start a LoRA retrain for this profile using its current training samples?"
+                      confirmLabel="Retrain"
+                      onConfirm={handleRetrainLora}
+                      variant="neutral"
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white"
+                      testId="retrain-lora-button"
+                    />
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -700,8 +787,32 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
         </div>
       )}
 
-      {/* Delete button */}
-      <div className="flex justify-end pt-4 border-t border-gray-700">
+      {/* Lifecycle actions */}
+      <div className="flex justify-end gap-2 pt-4 border-t border-gray-700">
+        <button
+          type="button"
+          onClick={() => void handleExport()}
+          data-testid="export-profile"
+          className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded"
+        >
+          <Download size={16} />
+          Export
+        </button>
+        <ConfirmActionButton
+          label={
+            <span className="flex items-center gap-2">
+              {isPurging ? <Loader2 className="animate-spin" size={16} /> : <XCircle size={16} />}
+              Purge
+            </span>
+          }
+          confirmMessage={`Purge profile "${detailProfile.name || detailProfile.profile_id}"? This removes profile-linked app-state and registered assets while keeping audit records.`}
+          confirmLabel="Purge Profile"
+          onConfirm={handlePurge}
+          disabled={isPurging || isDeleting}
+          pending={isPurging}
+          className="flex items-center gap-2 px-4 py-2 bg-amber-700 hover:bg-amber-600 disabled:opacity-50 rounded text-white"
+          testId="purge-profile"
+        />
         <ConfirmActionButton
           label={
             <span className="flex items-center gap-2">
@@ -962,6 +1073,7 @@ export function VoiceProfilePage() {
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [filter, setFilter] = useState<ProfileFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
+  const [duplicateWarning, setDuplicateWarning] = useState<DuplicateProfileCheck | null>(null)
 
   const fetchProfiles = useCallback(async () => {
     try {
@@ -997,6 +1109,14 @@ export function VoiceProfilePage() {
   const handleProfileCreated = (profile: VoiceProfile) => {
     setProfiles(prev => mergeProfiles([profile], prev))
     setShowCreateForm(false)
+    // Warn if the new profile sounds like an existing one
+    apiService.checkDuplicateProfiles(profile.profile_id)
+      .then((check) => {
+        if (check.duplicate_warning) {
+          setDuplicateWarning(check)
+        }
+      })
+      .catch((error) => console.error('Duplicate profile check failed:', error))
   }
 
   const handleProfileDeleted = () => {
@@ -1045,6 +1165,29 @@ export function VoiceProfilePage() {
       {showCreateForm && (
         <div className="mb-6">
           <CreateProfileForm onCreated={handleProfileCreated} />
+        </div>
+      )}
+
+      {duplicateWarning && (
+        <div
+          className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-yellow-700 bg-yellow-900/30 p-4 text-sm text-yellow-100"
+          data-testid="duplicate-profile-warning"
+        >
+          <div>
+            <p className="font-medium">Possible duplicate profiles detected</p>
+            <p className="mt-1 text-yellow-200/80">
+              The new profile sounds similar to:{' '}
+              {duplicateWarning.candidates.map((candidate) => candidate.name || candidate.profile_id).join(', ')}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDuplicateWarning(null)}
+            aria-label="Dismiss duplicate warning"
+            className="text-yellow-300 hover:text-white"
+          >
+            <XCircle size={16} />
+          </button>
         </div>
       )}
 

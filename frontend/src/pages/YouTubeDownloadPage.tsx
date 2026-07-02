@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Youtube, Search, Download, Music, Users, Loader2, AlertCircle, CheckCircle, User, Plus, UserPlus, History, Info } from 'lucide-react'
 import { api, getApiAuthToken, YouTubeVideoInfo, YouTubeDownloadResult, VoiceProfile, type YouTubeHistoryItem, type YouTubeIngestDecision, type YouTubeIngestJob } from '../services/api'
 import { useToastContext } from '../contexts/ToastContext'
+import { ConfirmActionButton } from '../components/ConfirmActionButton'
 
 type Stage = 'idle' | 'fetching' | 'info' | 'downloading' | 'ingesting' | 'diarizing' | 'complete' | 'error'
 type DownloadStep = 'download' | 'diarize' | 'complete'
@@ -51,6 +52,7 @@ export function YouTubeDownloadPage() {
   const [ingestDecisions, setIngestDecisions] = useState<Record<string, YouTubeIngestDecision>>({})
   const [confirmingIngest, setConfirmingIngest] = useState(false)
   const [clearingHistory, setClearingHistory] = useState(false)
+  const [purgeDeleteAssets, setPurgeDeleteAssets] = useState(true)
 
   // Load profiles on mount
   useEffect(() => {
@@ -112,6 +114,35 @@ export function YouTubeDownloadPage() {
       toast.error(message)
     } finally {
       setClearingHistory(false)
+    }
+  }
+
+  const handleExportHistory = async () => {
+    try {
+      const data = await api.exportYouTubeHistory()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'youtube_history_export.json'
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success(`Exported ${data.count} history item(s)`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to export YouTube history')
+    }
+  }
+
+  const handlePurgeHistory = async () => {
+    try {
+      const result = await api.purgeYouTubeHistory(purgeDeleteAssets)
+      toast.success(
+        `Purged ${result.purged_items} item(s), deleted ${result.deleted_files} file(s), skipped ${result.skipped_files}`
+      )
+      setDownloadHistory([])
+      await loadDownloadHistory()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to purge YouTube history')
     }
   }
 
@@ -1139,16 +1170,45 @@ export function YouTubeDownloadPage() {
               <History size={20} className="text-gray-400" />
               Recent Downloads
             </h3>
-            <button
-              type="button"
-              onClick={() => {
-                void handleClearHistory()
-              }}
-              disabled={clearingHistory}
-              className="text-sm text-gray-500 hover:text-gray-300 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {clearingHistory ? 'Clearing...' : 'Clear History'}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={purgeDeleteAssets}
+                  onChange={(e) => setPurgeDeleteAssets(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded bg-gray-700 border-gray-600"
+                />
+                Also delete downloaded files
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleExportHistory()
+                }}
+                data-testid="export-youtube-history"
+                className="text-sm text-gray-500 hover:text-gray-300"
+              >
+                Export
+              </button>
+              <ConfirmActionButton
+                label="Purge"
+                confirmMessage={`Purge all YouTube download history${purgeDeleteAssets ? ' and delete the downloaded files' : ' (downloaded files kept)'}? This cannot be undone.`}
+                confirmLabel="Purge"
+                onConfirm={handlePurgeHistory}
+                className="px-2 py-1 text-sm"
+                testId="purge-youtube-history"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  void handleClearHistory()
+                }}
+                disabled={clearingHistory}
+                className="text-sm text-gray-500 hover:text-gray-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {clearingHistory ? 'Clearing...' : 'Clear History'}
+              </button>
+            </div>
           </div>
 
           <div className="space-y-3">

@@ -7,15 +7,7 @@ import clsx from 'clsx'
 import { useToastContext } from '../contexts/ToastContext'
 import { STORAGE_KEYS, usePersistedState } from '../hooks/usePersistedState'
 import { ConfirmActionButton } from './ConfirmActionButton'
-
-interface WebhookConfig {
-  id: string
-  url: string
-  name: string
-  enabled: boolean
-  events: NotificationEvent[]
-  secret?: string
-}
+import { apiService, type NotificationWebhook, type WebhookEventName } from '../services/api'
 
 type NotificationEvent =
   | 'conversion_complete'
@@ -29,7 +21,6 @@ interface NotificationConfig {
   browserNotifications: boolean
   soundEnabled: boolean
   soundVolume: number
-  webhooks: WebhookConfig[]
   enabledEvents: NotificationEvent[]
 }
 
@@ -48,9 +39,15 @@ const DEFAULT_CONFIG: NotificationConfig = {
   browserNotifications: false,
   soundEnabled: true,
   soundVolume: 0.5,
-  webhooks: [],
   enabledEvents: ['conversion_complete', 'conversion_error', 'training_complete', 'training_error'],
 }
+
+// Server-delivered webhook events (backend contract)
+const WEBHOOK_EVENTS: { key: WebhookEventName; label: string }[] = [
+  { key: 'training_complete', label: 'Training Complete' },
+  { key: 'conversion_complete', label: 'Conversion Complete' },
+  { key: 'job_failed', label: 'Job Failed' },
+]
 
 export function NotificationSettings() {
   const toast = useToastContext()
@@ -65,11 +62,29 @@ export function NotificationSettings() {
   const [testingWebhookId, setTestingWebhookId] = useState<string | null>(null)
   const [permissionStatus, setPermissionStatus] = useState<NotificationPermission | null>(null)
 
+  // Server-stored webhooks
+  const [webhooks, setWebhooks] = useState<NotificationWebhook[]>([])
+  const [loadingWebhooks, setLoadingWebhooks] = useState(true)
+  const [webhookError, setWebhookError] = useState<string | null>(null)
+
   // Check notification permission on mount
   useEffect(() => {
     if ('Notification' in window) {
       setPermissionStatus(Notification.permission)
     }
+  }, [])
+
+  // Load webhooks from the backend on mount
+  useEffect(() => {
+    apiService.listWebhooks()
+      .then((result) => {
+        setWebhooks(result.webhooks)
+        setWebhookError(null)
+      })
+      .catch((err) => {
+        setWebhookError(err instanceof Error ? err.message : 'Failed to load webhooks')
+      })
+      .finally(() => setLoadingWebhooks(false))
   }, [])
 
   // Save config changes
@@ -104,68 +119,75 @@ export function NotificationSettings() {
     updateConfig({ enabledEvents: newEvents })
   }
 
-  // Add webhook
-  const addWebhook = () => {
+  // Persist a webhook to the backend and sync local state
+  const persistWebhook = async (webhook: NotificationWebhook) => {
+    try {
+      const saved = await apiService.saveWebhook({
+        id: webhook.id,
+        name: webhook.name,
+        url: webhook.url,
+        events: webhook.events,
+        enabled: webhook.enabled,
+      })
+      setWebhooks(prev => prev.map(w => (w.id === saved.id ? saved : w)))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save webhook')
+    }
+  }
+
+  // Add webhook (saved server-side)
+  const addWebhook = async () => {
     if (!newWebhook.url.trim()) return
 
-    const webhook: WebhookConfig = {
-      id: `webhook-${Date.now()}`,
-      url: newWebhook.url.trim(),
-      name: newWebhook.name.trim() || 'Unnamed Webhook',
-      enabled: true,
-      events: [...config.enabledEvents],
+    try {
+      const saved = await apiService.saveWebhook({
+        name: newWebhook.name.trim() || 'Unnamed Webhook',
+        url: newWebhook.url.trim(),
+        events: WEBHOOK_EVENTS.map(e => e.key),
+        enabled: true,
+      })
+      setWebhooks(prev => [...prev, saved])
+      setNewWebhook({ url: '', name: '' })
+      setShowAddWebhook(false)
+      toast.success('Webhook saved')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save webhook')
     }
-
-    updateConfig({ webhooks: [...config.webhooks, webhook] })
-    setNewWebhook({ url: '', name: '' })
-    setShowAddWebhook(false)
   }
 
-  // Delete webhook
-  const deleteWebhook = (id: string) => {
-    updateConfig({ webhooks: config.webhooks.filter(w => w.id !== id) })
-    toast.success('Webhook deleted successfully')
+  // Delete webhook (server-side)
+  const deleteWebhook = async (id: string) => {
+    try {
+      await apiService.deleteWebhook(id)
+      setWebhooks(prev => prev.filter(w => w.id !== id))
+      toast.success('Webhook deleted successfully')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete webhook')
+    }
   }
 
-  // Toggle webhook
-  const toggleWebhook = (id: string) => {
-    updateConfig({
-      webhooks: config.webhooks.map(w =>
-        w.id === id ? { ...w, enabled: !w.enabled } : w
-      ),
-    })
+  // Toggle webhook enabled
+  const toggleWebhook = (webhook: NotificationWebhook) => {
+    void persistWebhook({ ...webhook, enabled: !webhook.enabled })
   }
 
   // Toggle webhook event
-  const toggleWebhookEvent = (webhookId: string, event: NotificationEvent) => {
-    updateConfig({
-      webhooks: config.webhooks.map(w => {
-        if (w.id !== webhookId) return w
-        const newEvents = w.events.includes(event)
-          ? w.events.filter(e => e !== event)
-          : [...w.events, event]
-        return { ...w, events: newEvents }
-      }),
-    })
+  const toggleWebhookEvent = (webhook: NotificationWebhook, event: WebhookEventName) => {
+    const newEvents = webhook.events.includes(event)
+      ? webhook.events.filter(e => e !== event)
+      : [...webhook.events, event]
+    void persistWebhook({ ...webhook, events: newEvents })
   }
 
-  // Test webhook
-  const testWebhook = async (webhook: WebhookConfig) => {
+  // Test webhook (delivered by the server, not the browser)
+  const testWebhook = async (webhook: NotificationWebhook) => {
     setTestingWebhookId(webhook.id)
     try {
-      const response = await fetch(webhook.url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          event: 'test',
-          timestamp: new Date().toISOString(),
-          message: 'This is a test notification from AutoVoice',
-        }),
-      })
-      if (response.ok) {
-        toast.success('Webhook test successful!')
+      const result = await apiService.testWebhook(webhook.id)
+      if (result.error || result.delivered === false) {
+        toast.error(`Webhook test failed: ${result.error ?? result.status}`)
       } else {
-        toast.error(`Webhook test failed: ${response.status} ${response.statusText}`)
+        toast.success('Webhook test delivered by server')
       }
     } catch (err) {
       toast.error(`Webhook test failed: ${(err as Error).message}`)
@@ -342,14 +364,27 @@ export function NotificationSettings() {
             </button>
           </div>
 
+          <p className="text-xs text-gray-500 mb-3">
+            Webhooks are delivered by the AutoVoice server, so they fire even when this app is closed (server must be running).
+          </p>
+
+          {webhookError && (
+            <div className="mb-2 text-xs text-red-400">{webhookError}</div>
+          )}
+
           <div className="space-y-2">
-            {config.webhooks.length === 0 && !showAddWebhook ? (
+            {loadingWebhooks ? (
+              <div className="bg-gray-750 rounded-lg p-4 flex items-center justify-center gap-2 text-gray-500 text-sm">
+                <Loader2 size={14} className="animate-spin" />
+                Loading webhooks...
+              </div>
+            ) : webhooks.length === 0 && !showAddWebhook ? (
               <div className="bg-gray-750 rounded-lg p-4 text-center text-gray-500 text-sm">
                 No webhooks configured
               </div>
             ) : (
               <>
-                {config.webhooks.map(webhook => (
+                {webhooks.map(webhook => (
                   <div
                     key={webhook.id}
                     className={clsx(
@@ -359,7 +394,7 @@ export function NotificationSettings() {
                   >
                     <div className="flex items-start gap-3">
                       <button
-                        onClick={() => toggleWebhook(webhook.id)}
+                        onClick={() => toggleWebhook(webhook)}
                         className={clsx(
                           'mt-1 w-8 h-4 rounded-full transition-colors relative shrink-0',
                           webhook.enabled ? 'bg-green-600' : 'bg-gray-600'
@@ -379,10 +414,10 @@ export function NotificationSettings() {
 
                         {editingWebhookId === webhook.id ? (
                           <div className="mt-2 flex flex-wrap gap-1">
-                            {NOTIFICATION_EVENTS.map(event => (
+                            {WEBHOOK_EVENTS.map(event => (
                               <button
                                 key={event.key}
-                                onClick={() => toggleWebhookEvent(webhook.id, event.key)}
+                                onClick={() => toggleWebhookEvent(webhook, event.key)}
                                 className={clsx(
                                   'px-2 py-0.5 rounded text-xs transition-colors',
                                   webhook.events.includes(event.key)
@@ -454,7 +489,7 @@ export function NotificationSettings() {
                     />
                     <div className="flex gap-2">
                       <button
-                        onClick={addWebhook}
+                        onClick={() => void addWebhook()}
                         disabled={!newWebhook.url.trim()}
                         className="flex-1 flex items-center justify-center gap-2 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 rounded text-sm"
                       >

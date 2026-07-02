@@ -388,6 +388,8 @@ export function SystemStatusPage() {
 
           <LocalProductionWizard readiness={data.localProductionReadiness} />
 
+          <AuditEventsPanel />
+
           <section className="rounded-xl border border-gray-800 bg-gray-900/80 p-6 shadow-lg">
             <h2 className="text-lg font-semibold text-white">Pipeline Matrix</h2>
             <p className="mt-1 text-sm text-gray-400">
@@ -712,6 +714,133 @@ function LocalProductionWizard({ readiness }: { readiness: LocalProductionReadin
           {backupStatus && <div className="mt-3 text-sm text-gray-300">{backupStatus}</div>}
         </div>
       </div>
+    </section>
+  )
+}
+
+function AuditEventsPanel() {
+  const [limit, setLimit] = useState('50')
+  const [eventType, setEventType] = useState('')
+  const [resourceId, setResourceId] = useState('')
+  const [applied, setApplied] = useState({ limit: 50, event_type: '', resource_id: '' })
+
+  const { data, isLoading, error, isFetching, refetch } = useQuery({
+    queryKey: ['auditEvents', applied],
+    queryFn: () => apiService.listAuditEvents({
+      limit: applied.limit,
+      event_type: applied.event_type || undefined,
+      resource_id: applied.resource_id || undefined,
+    }),
+  })
+
+  const applyFilters = () => {
+    const next = { limit: Number(limit), event_type: eventType.trim(), resource_id: resourceId.trim() }
+    const unchanged = next.limit === applied.limit
+      && next.event_type === applied.event_type
+      && next.resource_id === applied.resource_id
+    setApplied(next)
+    if (unchanged) {
+      void refetch()
+    }
+  }
+
+  const events = data?.events ?? []
+
+  return (
+    <section className="rounded-xl border border-gray-800 bg-gray-900/80 p-6 shadow-lg" data-testid="audit-events-panel">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
+            <ShieldCheck className="h-5 w-5 text-cyan-300" />
+            Audit Events
+          </h2>
+          <p className="mt-1 text-sm text-gray-400">
+            Recent lifecycle and operator actions recorded by the backend audit log.
+          </p>
+        </div>
+        <span className="rounded-full bg-gray-800 px-3 py-1 text-xs font-medium text-gray-300">
+          {data ? `${data.count} events` : 'Loading'}
+        </span>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-end gap-3">
+        <div>
+          <label className="mb-1 block text-xs text-gray-400" htmlFor="audit-limit">Limit</label>
+          <select
+            id="audit-limit"
+            value={limit}
+            onChange={(event) => setLimit(event.target.value)}
+            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white"
+          >
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-400" htmlFor="audit-event-type">Event type</label>
+          <input
+            id="audit-event-type"
+            type="text"
+            value={eventType}
+            onChange={(event) => setEventType(event.target.value)}
+            placeholder="e.g. profile.purge"
+            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-gray-400" htmlFor="audit-resource-id">Resource ID</label>
+          <input
+            id="audit-resource-id"
+            type="text"
+            value={resourceId}
+            onChange={(event) => setResourceId(event.target.value)}
+            placeholder="profile / job id"
+            className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={applyFilters}
+          disabled={isFetching}
+          className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <RefreshCw className={clsx('h-4 w-4', isFetching && 'animate-spin')} />
+          Refresh
+        </button>
+      </div>
+
+      {isLoading ? (
+        <p className="mt-5 text-sm text-gray-400">Loading audit events...</p>
+      ) : error ? (
+        <StatusBanner
+          tone="danger"
+          title="Failed to load audit events"
+          message={(error as Error).message}
+          compact
+        />
+      ) : events.length === 0 ? (
+        <p className="mt-5 text-sm text-gray-500">No audit events match the current filters.</p>
+      ) : (
+        <div className="mt-5 overflow-hidden rounded-lg border border-gray-800">
+          <div className="grid grid-cols-5 bg-gray-950 px-4 py-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+            <span>Created</span>
+            <span>Event type</span>
+            <span>Actor</span>
+            <span>Resource type</span>
+            <span>Resource ID</span>
+          </div>
+          {events.map((event) => (
+            <div key={event.id} className="grid grid-cols-5 border-t border-gray-800 px-4 py-3 text-sm text-gray-300">
+              <span>{event.created_at ? new Date(event.created_at).toLocaleString() : 'unknown'}</span>
+              <span className="font-medium text-white break-all">{event.event_type}</span>
+              <span className="break-all">{event.actor}</span>
+              <span>{event.resource_type}</span>
+              <span className="break-all">{event.resource_id}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   )
 }
