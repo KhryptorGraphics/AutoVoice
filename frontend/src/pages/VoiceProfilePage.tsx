@@ -429,7 +429,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
              tab === 'adapters' ? `Adapters (${adapters?.count ?? 0})` :
              tab === 'checkpoints' ? 'Checkpoints' :
              tab === 'segments' ? 'Diarized Segments' :
-             tab === 'jobs' ? 'Training Jobs' : 'Config'}
+             tab === 'jobs' ? 'Training Jobs' : 'Train'}
           </button>
         ))}
       </div>
@@ -517,6 +517,15 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                     <div className="text-xs text-gray-500">
                       Only explicit QA pass/warn samples can be selected for training; pending and failed samples stay visible for review.
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('config')}
+                      data-testid="go-to-training-button"
+                      className="mt-2 inline-flex items-center gap-2 rounded bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+                    >
+                      <Play size={12} />
+                      Train voice model (LoRA / full) →
+                    </button>
                   </div>
                   <div className="flex gap-2">
                     <button
