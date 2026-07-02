@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
@@ -202,7 +203,10 @@ def normalize_reference_audio_entries(
         path_text = str(Path(str(raw_path)))
         if not path_text:
             continue
-        if require_exists and not Path(path_text).exists():
+        # os.path.exists (unlike Path.exists) returns False on ANY OSError —
+        # a reference path on a dead mount (ENODEV) must not make the whole
+        # profile unreadable.
+        if require_exists and not os.path.exists(path_text):
             continue
         if path_text in seen_paths:
             continue

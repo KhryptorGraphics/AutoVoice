@@ -141,3 +141,25 @@ def test_normalize_reference_audio_entries_deduplicates_and_normalizes(tmp_path:
             "created_at": "2026-01-01T00:00:00Z",
         },
     ]
+
+
+def test_normalize_reference_audio_skips_paths_on_dead_mounts(monkeypatch):
+    """A reference path on a dead mount raises ENODEV from stat — the entry
+    must be skipped like a missing file, not blow up the whole profile load
+    (Path.exists propagates ENODEV; os.path.exists must be used)."""
+    import os
+
+    real_stat = os.stat
+    dead_path = "/mnt/dead-device/vocals.wav"
+
+    def fake_stat(path, *args, **kwargs):
+        if str(path) == dead_path:
+            raise OSError(19, "No such device", path)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+
+    entries = normalize_reference_audio_entries(
+        [{"path": dead_path}], require_exists=True
+    )
+    assert entries == []
