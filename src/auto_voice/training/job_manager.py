@@ -1140,9 +1140,14 @@ class TrainingJobManager:
 
                     if architecture == "diffusion_mel":
                         from auto_voice.models.diffusion_decoder import DiffusionMelDecoder
+                        # Smaller denoiser: 20 heavy BiDilConv blocks were the
+                        # 16s/epoch cost (the L1 decoder with identical ContentVec
+                        # extraction ran at 1.7s/epoch), and 12/192 has ample
+                        # capacity for one speaker while training ~2x faster and
+                        # overfitting a 58-sample set less.
                         model = DiffusionMelDecoder(
                             content_dim=768, pitch_dim=768, speaker_dim=256,
-                            n_mels=80, hidden_dim=256, n_blocks=20, device=device,
+                            n_mels=80, hidden_dim=192, n_blocks=12, device=device,
                         )
                         # The generative decoder trains all parameters; LoRA
                         # (a low-rank delta on a frozen regression base) does not

@@ -40,7 +40,12 @@ class DiffusionMelDecoder(nn.Module):
         cond_dim: int = 256,
         sigma_data: float = 0.5,
         mel_mean: float = 0.5,
-        mel_std: float = 0.15,
+        # NOT the true mel std (~0.15). This is the scale that maps the [0,1]
+        # mel to std ~= sigma_data (0.5) so EDM's noise schedule and Karras's
+        # P_mean/P_std defaults are centred correctly; a mismatch makes
+        # training ignore the mid/high-noise regime and sampling collapse to a
+        # flat mel (0.148 / 0.30 = 0.49 ~= sigma_data).
+        mel_std: float = 0.30,
         p_mean: float = -1.2,
         p_std: float = 1.2,
         sampler_steps: int = 16,
