@@ -408,7 +408,7 @@ class TestExecuteJobPaths:
         job = manager.create_job(
             profile_id="profile-1",
             sample_ids=["sample-1"],
-            config=TrainingConfig(training_mode="mystery", epochs=2, batch_size=3, learning_rate=2e-4),
+            config=TrainingConfig(training_mode="mystery", architecture="como", epochs=2, batch_size=3, learning_rate=2e-4),
         )
         store = Mock()
         store.list_training_samples.return_value = [_sample("sample-1", source)]

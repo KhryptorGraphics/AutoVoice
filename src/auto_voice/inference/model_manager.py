@@ -30,6 +30,25 @@ def build_voice_model_from_checkpoint(checkpoint: Any, model_path: str, device) 
         RuntimeError: Unrecognized format, deltas-only artifact, or a state
             dict that does not fit its detected architecture.
     """
+    # Explicit architecture tag (written by newer artifacts) wins over the
+    # key-sniffing heuristic below, which stays as the legacy fallback.
+    if isinstance(checkpoint, dict) and checkpoint.get('architecture') == 'diffusion_mel':
+        from ..models.diffusion_decoder import DiffusionMelDecoder
+        d_state = checkpoint.get('model_state_dict')
+        if not isinstance(d_state, dict):
+            raise RuntimeError(
+                f"diffusion_mel checkpoint {model_path} is missing model_state_dict"
+            )
+        model = DiffusionMelDecoder(device=device, **(checkpoint.get('config') or {}))
+        model.load_state_dict(d_state, strict=True)
+        model.to(device)
+        model.eval()
+        logger.info(
+            "Loaded DiffusionMelDecoder from %s (n_mels=%d, hidden=%d, blocks=%d)",
+            model_path, model.n_mels, model.hidden_dim, model.n_blocks,
+        )
+        return model
+
     lora_config: Dict[str, Any] = {}
     state = None
     if isinstance(checkpoint, dict):

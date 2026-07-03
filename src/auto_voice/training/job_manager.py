@@ -86,6 +86,10 @@ class TrainingConfig:
 
     training_mode: str = "lora"
     initialization_mode: str = "scratch"
+    # Decoder architecture. 'diffusion_mel' = EDM generative decoder (default;
+    # samples the mel distribution, avoids the L1-regression over-smoothing).
+    # 'como' = legacy L1-regression CoMoSVCDecoder (kept for compatibility).
+    architecture: str = "diffusion_mel"
 
     # LoRA configuration
     lora_rank: int = 8
@@ -1079,6 +1083,11 @@ class TrainingJobManager:
                     training_mode = job.config.training_mode if job.config else "lora"
                     if training_mode not in {"lora", "full"}:
                         training_mode = "lora"
+                    architecture = getattr(job.config, "architecture", "diffusion_mel") if job.config else "diffusion_mel"
+                    # The generative decoder has no LoRA delta form; it always
+                    # trains and serves as a full model.
+                    if architecture == "diffusion_mel":
+                        training_mode = "full"
                     job_type = "full_model" if training_mode == "full" else "lora"
                     initialization_mode = (
                         job.config.initialization_mode if job.config else "scratch"
@@ -1129,21 +1138,35 @@ class TrainingJobManager:
                             job_id,
                         )
 
-                    model = CoMoSVCDecoder(
-                        content_dim=768,
-                        pitch_dim=768,
-                        speaker_dim=256,
-                        n_mels=80,
-                        hidden_dim=512,
-                        n_layers=8,
-                        device=device,
-                    )
-
-                    if training_mode == "lora":
-                        lora_rank = job.config.lora_rank if job.config else 8
-                        lora_alpha = job.config.lora_alpha if job.config else 16
-                        lora_dropout = job.config.lora_dropout if job.config else 0.1
-                        model.inject_lora(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
+                    if architecture == "diffusion_mel":
+                        from auto_voice.models.diffusion_decoder import DiffusionMelDecoder
+                        model = DiffusionMelDecoder(
+                            content_dim=768, pitch_dim=768, speaker_dim=256,
+                            n_mels=80, hidden_dim=256, n_blocks=20, device=device,
+                        )
+                        # The generative decoder trains all parameters; LoRA
+                        # (a low-rank delta on a frozen regression base) does not
+                        # apply. lora mode falls back to a full diffusion train.
+                        if training_mode == "lora":
+                            logger.info(
+                                "Job %s: diffusion_mel architecture trains fully; "
+                                "ignoring lora mode (no adapter deltas)", job_id,
+                            )
+                    else:
+                        model = CoMoSVCDecoder(
+                            content_dim=768,
+                            pitch_dim=768,
+                            speaker_dim=256,
+                            n_mels=80,
+                            hidden_dim=512,
+                            n_layers=8,
+                            device=device,
+                        )
+                        if training_mode == "lora":
+                            lora_rank = job.config.lora_rank if job.config else 8
+                            lora_alpha = job.config.lora_alpha if job.config else 16
+                            lora_dropout = job.config.lora_dropout if job.config else 0.1
+                            model.inject_lora(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
 
                     if initialization_state["artifact_path"]:
                         self._load_existing_training_state(
@@ -1341,7 +1364,16 @@ class TrainingJobManager:
             has_lora = getattr(trainer.model, '_lora_injected', False)
             if training_mode == "full":
                 full_checkpoint_path = trained_models_dir / f"{profile_id}_full_model.pt"
-                torch.save(trainer.model.state_dict(), full_checkpoint_path)
+                # Tag generative decoders so the loader rebuilds the right class
+                # from config instead of key-sniffing (which only knows CoMoSVC).
+                if getattr(trainer.model, "ARCHITECTURE", None) == "diffusion_mel":
+                    torch.save({
+                        "architecture": "diffusion_mel",
+                        "model_state_dict": trainer.model.state_dict(),
+                        "config": trainer.model.get_config(),
+                    }, full_checkpoint_path)
+                else:
+                    torch.save(trainer.model.state_dict(), full_checkpoint_path)
                 logger.info(f"Saved full model checkpoint: {full_checkpoint_path}")
 
                 # Still need speaker embedding
