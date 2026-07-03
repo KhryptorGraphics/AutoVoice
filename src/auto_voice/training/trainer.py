@@ -115,22 +115,53 @@ class VoiceDataset(Dataset):
         if diarization_ok is False:
             raise ValueError(f"Training sample failed diarization gate: {audio_path}")
 
-    def _window_f0(self, audio_path: Path, raw_audio: np.ndarray,
-                   start: int, window_len: int):
-        """Slice a window's F0 from the cached full-file pyin contour."""
+    def _full_file_f0(self, audio_path: Path, raw_audio: np.ndarray):
+        """Full-file pyin F0/voiced contour, cached in memory and on disk.
+
+        librosa.pyin is single-threaded and costs ~20-35s on a 2-5 minute
+        vocal track — the dominant per-epoch stall that starves the GPU.
+        The contour only depends on the file (at a fixed sample rate/hop),
+        so compute it at most once ever: an on-disk .f0.npz sidecar is
+        shared across the 8 dataloader workers and across training runs;
+        the in-memory dict avoids re-reading disk within a worker.
+        """
         import librosa
 
         cached = self._f0_cache.get(audio_path)
-        if cached is None:
-            f0_full, voiced_full, _ = librosa.pyin(
-                raw_audio, fmin=50, fmax=1100, sr=self.sample_rate,
-            )
-            f0_full = np.nan_to_num(np.asarray(f0_full, dtype=np.float32), nan=0.0)
-            voiced_full = np.asarray(voiced_full, dtype=bool)
-            cached = (f0_full, voiced_full)
-            self._f0_cache[audio_path] = cached
+        if cached is not None:
+            return cached
 
-        f0_full, voiced_full = cached
+        sidecar = audio_path.with_suffix('.f0.npz')
+        if sidecar.exists():
+            try:
+                data = np.load(sidecar)
+                if (int(data['sample_rate']) == int(self.sample_rate)
+                        and int(data['hop']) == int(self._f0_hop)):
+                    cached = (data['f0'].astype(np.float32),
+                              data['voiced'].astype(bool))
+                    self._f0_cache[audio_path] = cached
+                    return cached
+            except Exception:
+                pass  # corrupt/old sidecar — recompute below
+
+        f0_full, voiced_full, _ = librosa.pyin(
+            raw_audio, fmin=50, fmax=1100, sr=self.sample_rate,
+        )
+        f0_full = np.nan_to_num(np.asarray(f0_full, dtype=np.float32), nan=0.0)
+        voiced_full = np.asarray(voiced_full, dtype=bool)
+        try:
+            np.savez(sidecar, f0=f0_full, voiced=voiced_full,
+                     sample_rate=self.sample_rate, hop=self._f0_hop)
+        except Exception:
+            pass  # cache is an optimization; never fail training on it
+        cached = (f0_full, voiced_full)
+        self._f0_cache[audio_path] = cached
+        return cached
+
+    def _window_f0(self, audio_path: Path, raw_audio: np.ndarray,
+                   start: int, window_len: int):
+        """Slice a window's F0 from the cached full-file pyin contour."""
+        f0_full, voiced_full = self._full_file_f0(audio_path, raw_audio)
         expected = 1 + window_len // self._f0_hop
         frame_start = start // self._f0_hop
         f0 = f0_full[frame_start:frame_start + expected]

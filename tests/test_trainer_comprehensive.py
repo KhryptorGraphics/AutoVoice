@@ -201,6 +201,53 @@ class TestVoiceDatasetEdgeCases:
                     assert item1['audio'].shape[0] == 32768
                     assert item2['audio'].shape[0] == 32768
 
+    def test_full_file_f0_persists_and_reuses_disk_sidecar(self, temp_data_dir):
+        """F0 is computed by pyin at most once per file, then served from an
+        on-disk .f0.npz sidecar — full-file pyin on a long vocal track costs
+        20-58s and is the dominant GPU-starving stall, so it must not recur
+        across workers or runs."""
+        from auto_voice.training.trainer import VoiceDataset
+
+        audio = np.random.randn(40000).astype(np.float32)
+        audio_path = temp_data_dir / "sample_0.wav"
+
+        dataset = VoiceDataset.__new__(VoiceDataset)
+        dataset.sample_rate = 22050
+        dataset._f0_hop = 512
+        dataset._f0_cache = {}
+
+        with patch('librosa.pyin') as mock_pyin:
+            frames = 1 + len(audio) // 512
+            mock_pyin.return_value = (
+                np.zeros(frames), np.ones(frames, dtype=bool), None,
+            )
+            f0a, va = dataset._full_file_f0(audio_path, audio)
+
+        assert mock_pyin.call_count == 1
+        assert audio_path.with_suffix('.f0.npz').exists()
+
+        # A fresh dataset (simulating another worker / later run) must NOT
+        # call pyin again — it reads the sidecar from disk.
+        dataset2 = VoiceDataset.__new__(VoiceDataset)
+        dataset2.sample_rate = 22050
+        dataset2._f0_hop = 512
+        dataset2._f0_cache = {}
+        with patch('librosa.pyin') as mock_pyin2:
+            f0b, vb = dataset2._full_file_f0(audio_path, audio)
+            assert mock_pyin2.call_count == 0
+
+        assert np.array_equal(f0a, f0b)
+
+        # A sidecar at a different sample rate must be ignored (recompute).
+        dataset3 = VoiceDataset.__new__(VoiceDataset)
+        dataset3.sample_rate = 44100
+        dataset3._f0_hop = 512
+        dataset3._f0_cache = {}
+        with patch('librosa.pyin') as mock_pyin3:
+            mock_pyin3.return_value = (np.zeros(5), np.ones(5, dtype=bool), None)
+            dataset3._full_file_f0(audio_path, audio)
+            assert mock_pyin3.call_count == 1
+
     def test_quality_gates_reject_silence_heavy_audio(self, temp_data_dir):
         """VoiceDataset fails fast on silence-heavy training samples."""
         from auto_voice.training.trainer import VoiceDataset
