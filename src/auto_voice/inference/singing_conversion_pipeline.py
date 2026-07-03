@@ -113,12 +113,29 @@ class SingingConversionPipeline:
             from .model_manager import ModelManager
             self._model_manager = ModelManager(device=self.device, config=self.config)
 
-            # Load models from config paths
+            # Load models from config paths.
+            # CRITICAL: these must match how the decoder was TRAINED, or the
+            # trained decoder receives out-of-distribution content and the
+            # vocoder renders random weights — both produce a tonal whine
+            # instead of vocals. Training uses ContentVec content features
+            # (trainer.py builds ContentEncoder(encoder_backend='contentvec'))
+            # and the 80-mel universal HiFiGAN. Default serving to the same
+            # instead of the old 'hubert' (random) + no-vocoder (random).
             hubert_path = self.config.get('hubert_path')
-            vocoder_path = self.config.get('vocoder_path')
-            vocoder_type = self.config.get('vocoder_type', 'hifigan')
-            encoder_backend = self.config.get('encoder_backend', 'hubert')
+            encoder_backend = self.config.get('encoder_backend', 'contentvec')
             encoder_type = self.config.get('encoder_type', 'linear')
+            vocoder_type = self.config.get('vocoder_type', 'hifigan')
+            vocoder_path = self.config.get('vocoder_path')
+            if not vocoder_path and vocoder_type == 'hifigan':
+                default_vocoder = os.path.join(
+                    'models', 'pretrained', 'generator_universal.pth.tar')
+                if os.path.exists(default_vocoder):
+                    vocoder_path = default_vocoder
+                else:
+                    raise RuntimeError(
+                        "No HiFiGAN vocoder checkpoint configured and the "
+                        f"default {default_vocoder} is missing; conversion "
+                        "would render a random vocoder (silent whine).")
             conformer_config = self.config.get('conformer_config')
             self._model_manager.load(
                 hubert_path=hubert_path,

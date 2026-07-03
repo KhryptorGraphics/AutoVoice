@@ -216,6 +216,14 @@ class PitchEncoder(nn.Module):
     preserves fine pitch detail and gradient flow.
     """
 
+    # The pitch encoder is frozen (not trained) and NOT saved in the model
+    # checkpoint, so its weights must be IDENTICAL between training and
+    # serving — otherwise the decoder, which learned against these specific
+    # pitch embeddings, receives out-of-distribution pitch conditioning at
+    # serving and produces pitchless output (a whine). Deterministic init
+    # from a fixed seed guarantees every instance is identical.
+    _INIT_SEED = 20240517
+
     def __init__(self, input_size: int = 1, hidden_size: int = 128,
                  output_size: int = 256, n_bins: int = 256):
         super().__init__()
@@ -224,14 +232,19 @@ class PitchEncoder(nn.Module):
         self.output_size = output_size
         self.n_bins = n_bins
 
-        # Mel-quantized pitch embedding (256 bins)
-        self.pitch_embed = nn.Embedding(n_bins, output_size)
-
-        # Voiced/unvoiced embedding
-        self.uv_embed = nn.Embedding(2, output_size)
-
-        # Residual linear path for fine pitch detail and gradient flow
-        self.residual_proj = nn.Linear(1, output_size)
+        # Seed the parameter init deterministically, then restore global RNG
+        # so we don't perturb anything else that relies on it.
+        _rng_state = torch.random.get_rng_state()
+        torch.manual_seed(self._INIT_SEED)
+        try:
+            # Mel-quantized pitch embedding (256 bins)
+            self.pitch_embed = nn.Embedding(n_bins, output_size)
+            # Voiced/unvoiced embedding
+            self.uv_embed = nn.Embedding(2, output_size)
+            # Residual linear path for fine pitch detail and gradient flow
+            self.residual_proj = nn.Linear(1, output_size)
+        finally:
+            torch.random.set_rng_state(_rng_state)
 
     def forward(self, f0: torch.Tensor) -> torch.Tensor:
         """Encode pitch contour using mel-quantized embeddings.
