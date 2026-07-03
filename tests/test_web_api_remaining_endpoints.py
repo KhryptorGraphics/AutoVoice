@@ -236,8 +236,8 @@ class _FakeTrainingJobManager:
         self.jobs[job.job_id] = job
         return job
 
-    def create_full_model_job(self, *, profile_id, config, initialization_mode="scratch"):
-        job = self.create_job(profile_id=profile_id, sample_ids=["sample_001"], config=config)
+    def create_full_model_job(self, *, profile_id, config, initialization_mode="scratch", sample_ids=None):
+        job = self.create_job(profile_id=profile_id, sample_ids=sample_ids or ["sample_001"], config=config)
         job.to_dict()["results"] = {"job_type": "full_model"}
         return job
 
