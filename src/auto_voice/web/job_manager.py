@@ -1,7 +1,6 @@
 """Async job manager for voice conversion with WebSocket progress."""
 import logging
 import os
-import tempfile
 import threading
 import time
 import uuid
@@ -457,14 +456,22 @@ class JobManager:
         return self.get_job_asset_path(job_id, 'mix')
 
     def get_job_asset_path(self, job_id: str, asset: str = 'mix') -> Optional[str]:
-        """Get the stored path for a completed job asset."""
+        """Get the stored path for a completed job asset.
+
+        Falls back to the persistent on-disk convention when the job has left
+        memory (server restart or TTL eviction) so download links keep working
+        for as long as the history record exists.
+        """
         with self._lock:
             job = self._jobs.get(job_id)
             if job and job['status'] == 'completed':
-                if asset == 'mix':
-                    return job.get('result_path')
-                return (job.get('stem_paths') or {}).get(asset)
-        return None
+                path = job.get('result_path') if asset == 'mix' else (job.get('stem_paths') or {}).get(asset)
+                if path:
+                    return path
+        # Job left memory (server restart or TTL eviction): rebuild the path
+        # by convention — data/conversions/<job_id>/<variant>.wav.
+        conventional = os.path.join(self._conversions_dir(job_id, create=False), f'{asset}.wav')
+        return conventional if os.path.exists(conventional) else None
 
     def cancel_job(self, job_id: str) -> bool:
         """Cancel a queued job. Returns True if cancelled."""
@@ -533,25 +540,29 @@ class JobManager:
             self._cleanup_stop_event.wait(60)
 
     def _cleanup_job(self, job_id: str):
-        """Clean up a single job's resources."""
+        """Evict an expired job from memory.
+
+        The converted audio is deliberately KEPT on disk: it is the user's
+        deliverable and its history record persists, so downloads must keep
+        working after the in-memory job expires. Files are removed only when
+        the user deletes the conversion record. (Previously this unlinked the
+        result after the 1h TTL, so downloads 404'd an hour after conversion.)
+        """
         with self._lock:
-            job = self._jobs.pop(job_id, None)
+            self._jobs.pop(job_id, None)
 
-        if job and job.get('result_path'):
-            try:
-                if os.path.exists(job['result_path']):
-                    os.unlink(job['result_path'])
-            except OSError:
-                pass
-        if job:
-            for stem_path in (job.get('stem_paths') or {}).values():
-                try:
-                    if stem_path and os.path.exists(stem_path):
-                        os.unlink(stem_path)
-                except OSError:
-                    pass
+        logger.debug(f"Evicted expired job {job_id} from memory (output retained on disk)")
 
-        logger.debug(f"Cleaned up expired job {job_id}")
+    def delete_job_assets(self, job_id: str) -> None:
+        """Remove a job's persisted output directory. Called when the user
+        deletes the conversion record, so downloads are retained until then
+        but disk is freed on explicit delete."""
+        import shutil
+
+        with self._lock:
+            self._jobs.pop(job_id, None)
+        base = getattr(self.state_store, 'data_dir', None) or 'data'
+        shutil.rmtree(os.path.join(str(base), 'conversions', job_id), ignore_errors=True)
 
     def stop(self):
         """Stop the job manager."""
@@ -711,6 +722,19 @@ class JobManager:
         record['tags'] = existing.get('tags', [])
         self.state_store.save_conversion_record(record)
 
+    def _conversions_dir(self, job_id: str, *, create: bool = True) -> str:
+        """Persistent per-job output directory (survives restarts and the
+        job-TTL memory eviction, unlike the old /tmp files whose downloads
+        404'd once the temp file was cleaned). Pass create=False for
+        read-only lookups so resolving a path never has side effects."""
+        base = getattr(self.state_store, 'data_dir', None) or 'data'
+        # Absolute: send_file resolves relative paths against the Flask app
+        # root (src/auto_voice/web/), not the cwd, so a relative path 404s.
+        path = os.path.abspath(os.path.join(str(base), 'conversions', job_id))
+        if create:
+            os.makedirs(path, exist_ok=True)
+        return path
+
     def _write_audio_output(
         self,
         job_id: str,
@@ -718,14 +742,15 @@ class JobManager:
         audio_data: np.ndarray,
         sample_rate: int,
     ) -> str:
-        """Write one WAV output for a conversion job and return its path."""
+        """Write one WAV output for a conversion job and return its path.
+
+        Files are named by download variant (mix/vocals/instrumental) so
+        get_job_asset_path can rebuild the path by convention after the job
+        leaves memory.
+        """
         import soundfile as sf
 
-        output_path = tempfile.NamedTemporaryFile(
-            suffix='.wav',
-            delete=False,
-            prefix=f'av_job_{job_id}_{suffix}_',
-        ).name
+        output_path = os.path.join(self._conversions_dir(job_id), f'{suffix}.wav')
         sf.write(output_path, np.asarray(audio_data, dtype=np.float32), sample_rate)
         return output_path
 

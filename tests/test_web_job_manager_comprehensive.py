@@ -290,6 +290,57 @@ class TestJobStatusTracking:
         assert job_manager.get_job_result_path(job_id) == '/tmp/mix.wav'
         assert job_manager.get_job_asset_path(job_id, 'vocals') == '/tmp/vocals.wav'
 
+    def test_get_job_asset_path_falls_back_to_disk_after_memory_eviction(
+        self, job_manager, tmp_path
+    ):
+        """After a server restart or TTL eviction the job is gone from memory,
+        but the download must still resolve from the persisted conversions
+        dir — otherwise history download links 404."""
+        from types import SimpleNamespace
+        import soundfile as sf
+        import numpy as np
+
+        job_manager.state_store = SimpleNamespace(data_dir=str(tmp_path))
+        job_id = "evicted-job-123"
+
+        # No such job in memory
+        assert job_manager.get_job_asset_path(job_id, 'mix') is None
+
+        # Persist an output the conventional way, then resolve it with no
+        # in-memory job record present.
+        out_dir = tmp_path / "conversions" / job_id
+        out_dir.mkdir(parents=True)
+        sf.write(str(out_dir / "mix.wav"), np.zeros(2205, dtype=np.float32), 22050)
+
+        resolved = job_manager.get_job_asset_path(job_id, 'mix')
+        assert resolved is not None
+        assert resolved.endswith(f"conversions/{job_id}/mix.wav")
+
+    def test_cleanup_job_keeps_output_files_on_disk(self, job_manager, tmp_path):
+        """TTL eviction must NOT delete the converted audio — only free memory
+        — so downloads work until the user deletes the record."""
+        from types import SimpleNamespace
+        import soundfile as sf
+        import numpy as np
+
+        job_manager.state_store = SimpleNamespace(data_dir=str(tmp_path))
+        job_id = "keep-me-456"
+        out_dir = tmp_path / "conversions" / job_id
+        out_dir.mkdir(parents=True)
+        mix = out_dir / "mix.wav"
+        sf.write(str(mix), np.zeros(2205, dtype=np.float32), 22050)
+
+        with job_manager._lock:
+            job_manager._jobs[job_id] = {'status': 'completed', 'result_path': str(mix)}
+        job_manager._cleanup_job(job_id)
+
+        assert mix.exists()  # retained after eviction
+        assert job_id not in job_manager._jobs  # but gone from memory
+
+        # Explicit delete frees the disk
+        job_manager.delete_job_assets(job_id)
+        assert not mix.exists()
+
     def test_get_job_metrics_returns_none_for_pending(self, job_manager, sample_audio_file):
         """Metrics should be None for non-completed jobs."""
         job_id = job_manager.create_job(
@@ -1042,8 +1093,9 @@ class TestEdgeCases:
 
         result_path = job_manager.get_job_result_path(job_id)
         if result_path:
-            # Should be a temp file path
-            assert 'av_job_' in result_path
+            # Persisted under the durable conversions dir (not /tmp), so the
+            # download link survives server restarts and the job TTL.
+            assert 'conversions' in result_path
             assert result_path.endswith('.wav')
 
 

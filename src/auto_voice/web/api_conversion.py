@@ -1041,6 +1041,13 @@ def delete_conversion_record(record_id: str):
     if not root._get_state_store().delete_conversion_record(record_id):
         return root.not_found_response('Record not found')
     _conversion_history.pop(record_id, None)
+    # Free the persisted converted-audio files for this conversion.
+    job_manager = getattr(current_app, 'job_manager', None)
+    if job_manager is not None and hasattr(job_manager, 'delete_job_assets'):
+        try:
+            job_manager.delete_job_assets(record_id)
+        except Exception as exc:
+            root.logger.warning("Failed to delete assets for %s: %s", record_id, exc)
     root.logger.info("Deleted conversion record %s", record_id)
     return '', 204
 

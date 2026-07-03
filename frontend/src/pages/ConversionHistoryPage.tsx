@@ -433,7 +433,7 @@ export function ConversionHistoryPage() {
                         </button>
                         <a
                           href={item.resultUrl ?? item.output_url ?? item.download_url}
-                          download
+                          download={recordTitle(item).replace(/\.(wav|mp3|flac|ogg)$/i, '') + '.wav'}
                           className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors"
                           title="Download"
                         >

@@ -20,6 +20,21 @@ interface ConversionHistoryTableProps {
 type SortField = 'created_at' | 'duration' | 'status' | 'pipeline_type'
 type SortDirection = 'asc' | 'desc'
 
+// The backend reports finished conversions as 'completed' (and some paths as
+// 'complete'/'success'); accept all so the play/download actions actually show.
+const COMPLETED_STATUSES = new Set(['complete', 'completed', 'success'])
+
+// Prefer resultUrl but fall back to the raw backend fields — a record isn't
+// always normalized before it reaches this table.
+function conversionDownloadUrl(record: ConversionRecord): string | undefined {
+  return record.resultUrl || record.output_url || record.download_url || undefined
+}
+
+function conversionDownloadName(record: ConversionRecord): string {
+  const base = record.originalFileName || record.input_file || record.id
+  return /\.(wav|mp3|flac|ogg)$/i.test(base) ? base : `${base}.wav`
+}
+
 const statusConfig: Record<ConversionRecord['status'], { icon: typeof CheckCircle; color: string; label: string }> = {
   queued: { icon: Clock, color: 'text-yellow-400', label: 'Queued' },
   processing: { icon: Loader2, color: 'text-blue-400', label: 'Processing' },
@@ -115,7 +130,8 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
   }
 
   const handlePlayToggle = (record: ConversionRecord) => {
-    if (!record.resultUrl) return
+    const url = conversionDownloadUrl(record)
+    if (!url) return
 
     if (playingId === record.id) {
       const audio = audioElements.get(record.id)
@@ -129,7 +145,7 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
 
       let audio = audioElements.get(record.id)
       if (!audio) {
-        audio = new Audio(record.resultUrl)
+        audio = new Audio(url)
         audio.onended = () => setPlayingId(null)
         audioElements.set(record.id, audio)
       }
@@ -347,7 +363,7 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
                     </td>
                     <td className="p-3" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
-                        {record.status === 'complete' && record.resultUrl && (
+                        {COMPLETED_STATUSES.has(record.status) && conversionDownloadUrl(record) && (
                           <>
                             <button
                               onClick={() => handlePlayToggle(record)}
@@ -357,8 +373,8 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
                               {playingId === record.id ? <Pause size={14} /> : <Play size={14} />}
                             </button>
                             <a
-                              href={record.resultUrl}
-                              download
+                              href={conversionDownloadUrl(record)}
+                              download={conversionDownloadName(record)}
                               className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
                               title="Download"
                             >
