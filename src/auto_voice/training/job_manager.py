@@ -1084,9 +1084,9 @@ class TrainingJobManager:
                     if training_mode not in {"lora", "full"}:
                         training_mode = "lora"
                     architecture = getattr(job.config, "architecture", "diffusion_mel") if job.config else "diffusion_mel"
-                    # The generative decoder has no LoRA delta form; it always
-                    # trains and serves as a full model.
-                    if architecture == "diffusion_mel":
+                    # Generative / adversarial decoders have no LoRA delta form;
+                    # they train and serve as full models.
+                    if architecture in ("diffusion_mel", "mel_gan"):
                         training_mode = "full"
                     job_type = "full_model" if training_mode == "full" else "lora"
                     initialization_mode = (
@@ -1131,6 +1131,11 @@ class TrainingJobManager:
                         'early_stopping_min_delta': job.config.early_stopping_min_delta if job.config else 0.0,
                         'warmup_steps': job.config.warmup_steps if job.config else 0,
                     }
+                    if architecture == "mel_gan":
+                        # Adversarial mel training: discriminator pushes the
+                        # generator off the L1 mean so mels stay sharp.
+                        config['adversarial'] = True
+                        config['precision'] = 'fp32'  # GANs are unstable in fp16
                     if job.config and (job.config.use_ewc or job.config.use_prior_preservation):
                         logger.warning(
                             "Job %s enables use_ewc/use_prior_preservation, which are "
@@ -1158,6 +1163,9 @@ class TrainingJobManager:
                                 "ignoring lora mode (no adapter deltas)", job_id,
                             )
                     else:
+                        # 'como' (legacy L1) and 'mel_gan' both use the CoMoSVC
+                        # decoder as the generator; mel_gan just adds a
+                        # discriminator in the trainer (config['adversarial']).
                         model = CoMoSVCDecoder(
                             content_dim=768,
                             pitch_dim=768,
@@ -1167,7 +1175,7 @@ class TrainingJobManager:
                             n_layers=8,
                             device=device,
                         )
-                        if training_mode == "lora":
+                        if training_mode == "lora" and architecture != "mel_gan":
                             lora_rank = job.config.lora_rank if job.config else 8
                             lora_alpha = job.config.lora_alpha if job.config else 16
                             lora_dropout = job.config.lora_dropout if job.config else 0.1

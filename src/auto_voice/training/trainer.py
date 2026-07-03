@@ -320,6 +320,22 @@ class Trainer:
                 self.optimizer, gamma=float(self.config.get('scheduler_gamma', 0.999)),
             )
 
+        # Opt-in adversarial (mel-GAN) training: a mel discriminator pushes the
+        # generator off the L1 conditional mean so mels keep their sharp
+        # harmonic structure. The discriminator is training-only; the generator
+        # (self.model) serves unchanged.
+        self.adversarial = bool(self.config.get('adversarial', False))
+        self.discriminator = None
+        self.optimizer_d = None
+        if self.adversarial:
+            from ..models.mel_discriminator import MultiScaleMelDiscriminator
+            self.discriminator = MultiScaleMelDiscriminator().to(self.device)
+            self.optimizer_d = torch.optim.AdamW(
+                self.discriminator.parameters(), lr=self.lr, betas=betas, weight_decay=weight_decay,
+            )
+            self.adv_lambda_l1 = float(self.config.get('adv_lambda_l1', 45.0))
+            self.adv_lambda_fm = float(self.config.get('adv_lambda_fm', 2.0))
+
     def train(self, train_dir: str, val_dir: Optional[str] = None,
               resume_from: Optional[str] = None):
         """Run training loop."""
@@ -496,6 +512,53 @@ class Trainer:
                 )
                 for group, base_lr in zip(self.optimizer.param_groups, base_lrs):
                     group['lr'] = base_lr * scale
+
+            if self.adversarial:
+                # mel-GAN: alternate a discriminator step and a generator step.
+                # fp32 (GANs are unstable in fp16); generator serves unchanged.
+                from ..models.mel_discriminator import (
+                    discriminator_loss, generator_adv_loss, feature_matching_loss,
+                )
+                gen_mel = self.model(content, pitch, speaker, spec=spec)
+                if gen_mel.shape[-1] != mel.shape[-1]:
+                    gen_mel = F.interpolate(gen_mel, size=mel.shape[-1],
+                                            mode='linear', align_corners=False)
+                # D step
+                self.optimizer_d.zero_grad()
+                real_outs, real_feats = self.discriminator(mel)
+                fake_outs, _ = self.discriminator(gen_mel.detach())
+                d_loss = discriminator_loss(real_outs, fake_outs)
+                d_loss.backward()
+                self.optimizer_d.step()
+                # G step: L1 anchor + adversarial + feature matching
+                self.optimizer.zero_grad()
+                fake_outs2, fake_feats2 = self.discriminator(gen_mel)
+                g_l1 = F.l1_loss(gen_mel, mel)
+                g_adv = generator_adv_loss(fake_outs2)
+                g_fm = feature_matching_loss(real_feats, fake_feats2)
+                loss = self.adv_lambda_l1 * g_l1 + g_adv + self.adv_lambda_fm * g_fm
+                if torch.isnan(loss) or torch.isinf(loss):
+                    logger.warning(f"Step {self.global_step}: Skipping NaN/Inf loss")
+                    continue
+                loss.backward()
+                if self.gradient_clip > 0:
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.gradient_clip)
+                self.optimizer.step()
+                losses = {'total_loss': loss, 'reconstruction_loss': g_l1.detach()}
+                total_loss += loss.item()
+                n_batches += 1
+                self.global_step += 1
+                if callable(self.on_batch_end):
+                    try:
+                        self.on_batch_end({
+                            'epoch': epoch + 1, 'total_epochs': self.epochs,
+                            'step': batch_idx, 'total_steps': total_batches,
+                            'global_step': self.global_step, 'loss': float(loss.item()),
+                            'learning_rate': float(self.optimizer.param_groups[0]['lr']),
+                        })
+                    except Exception as exc:
+                        logger.debug("on_batch_end callback failed: %s", exc)
+                continue
 
             # Forward + loss (optionally under autocast for fp16/bf16)
             self.optimizer.zero_grad()
