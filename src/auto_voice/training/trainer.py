@@ -218,12 +218,15 @@ class VoiceDataset(Dataset):
         if last_gate_error is not None:
             raise last_gate_error
 
+        # Mel MUST match the vocoder's expected format or the decoder learns a
+        # representation no vocoder can render (the cause of the whine).
+        # Verified by copy-synthesis (pitch corr 0.988): the universal HiFiGAN
+        # wants magnitude log-mel at n_fft=1024, hop=256, fmin=0, fmax=8000.
         mel = librosa.feature.melspectrogram(
-            y=audio, sr=self.sample_rate, n_fft=2048,
-            hop_length=512, n_mels=80,
+            y=audio, sr=self.sample_rate, n_fft=1024, hop_length=256,
+            win_length=1024, n_mels=80, fmin=0, fmax=8000, power=1.0,
         )
-        mel_db = librosa.power_to_db(mel, ref=np.max)
-        mel_db = (mel_db + 80.0) / 80.0
+        mel_db = np.log(np.clip(mel, 1e-5, None)).astype(np.float32)
 
         return {
             'audio': torch.from_numpy(audio).float(),

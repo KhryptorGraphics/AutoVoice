@@ -354,10 +354,18 @@ class ModelManager:
         with torch.no_grad():
             pitch = self._pitch_encoder(f0_tensor)
 
-        # 3. Frame alignment - align content and pitch to same resolution
-        target_frames = min(content.shape[1], pitch.shape[1])
-        if target_frames == 0:
+        # 3. Frame alignment — align content and pitch to the VOCODER GRID so
+        # the vocoder renders exactly len(audio) samples. Aligning to
+        # min(content, pitch) instead produced a mel at the pyin frame rate
+        # (~43 fps); the hop-256 vocoder then emitted ~half-length audio,
+        # which step 7 stretched back to length by resampling — dropping the
+        # pitch a full octave (measured 240->114 Hz) and scrambling the
+        # melody. len(audio)//hop is the frame count whose synthesis is
+        # already the right length, so no pitch-corrupting resample is needed.
+        vocoder_hop = int(getattr(self._vocoder, 'hop_size', 256) or 256)
+        if min(content.shape[1], pitch.shape[1]) == 0:
             return np.zeros_like(audio)
+        target_frames = max(1, len(audio) // vocoder_hop)
 
         content = F.interpolate(
             content.transpose(1, 2), size=target_frames,
@@ -378,10 +386,14 @@ class ModelManager:
         with torch.no_grad():
             output_audio = self._vocoder.synthesize(mel_pred)  # [1, T_audio]
 
-        # 7. Resample to match input length
-        output_np = output_audio.squeeze(0).cpu().numpy()
-        if len(output_np) != len(audio):
-            output_np = scipy.signal.resample(output_np, len(audio)).astype(np.float32)
+        # 7. Enforce exact length by trim/pad — NOT resampling, which would
+        # change the pitch. The vocoder-grid alignment above already makes the
+        # output essentially len(audio) samples; this only fixes off-by-a-frame.
+        output_np = output_audio.squeeze(0).cpu().numpy().astype(np.float32)
+        if len(output_np) > len(audio):
+            output_np = output_np[:len(audio)]
+        elif len(output_np) < len(audio):
+            output_np = np.pad(output_np, (0, len(audio) - len(output_np)))
 
         # 8. Normalize
         peak = np.abs(output_np).max()
