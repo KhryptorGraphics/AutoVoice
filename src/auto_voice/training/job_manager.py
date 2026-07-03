@@ -2132,6 +2132,7 @@ class TrainingJobManager:
         profile_id: str,
         config: Optional[TrainingConfig] = None,
         initialization_mode: str = "scratch",
+        sample_ids: Optional[List[str]] = None,
     ) -> TrainingJob:
         """Create a full model training job (not LoRA).
 
@@ -2172,8 +2173,15 @@ class TrainingJobManager:
                 raise ValueError(check["reason"])
 
         store = self._get_profile_store()
-        samples = store.list_training_samples(profile_id)
-        sample_ids = [s.sample_id for s in samples]
+        # Honor a caller-supplied (quality-filtered) sample list. Without this
+        # the full-model path pulled EVERY stored sample, bypassing the
+        # qa_status filter the LoRA path applies — a silent sample then reached
+        # the trainer and crashed the whole job inside a DataLoader worker.
+        if sample_ids:
+            sample_ids = [str(s) for s in sample_ids]
+        else:
+            samples = store.list_training_samples(profile_id)
+            sample_ids = [s.sample_id for s in samples]
 
         # Enhanced config for full model training
         if config is None:

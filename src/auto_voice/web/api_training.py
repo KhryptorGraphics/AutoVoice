@@ -459,6 +459,7 @@ def create_training_job():
                 profile_id=profile_id,
                 config=training_config,
                 initialization_mode=initialization_mode,
+                sample_ids=filtered_sample_ids,
             )
         else:
             job = job_manager.create_job(

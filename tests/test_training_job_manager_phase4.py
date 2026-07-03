@@ -573,6 +573,30 @@ class TestFullModelUpgradeLogic:
         assert job.results["job_type"] == "full_model"
         assert job.results["sample_count"] == 2
 
+    def test_create_full_model_job_honors_filtered_sample_ids(self, manager):
+        """The full-model path must train on the caller's quality-filtered
+        sample list, not every stored sample — otherwise a sample the API
+        rejected on qa_status (e.g. a silent clip) reaches the trainer and
+        crashes the whole job in a DataLoader worker."""
+        store = Mock()
+        # store has 3 samples, but only 2 passed the quality filter
+        store.list_training_samples.return_value = [_sample("s1"), _sample("s2"), _sample("bad")]
+
+        with patch.object(
+            manager,
+            "check_needs_full_model",
+            return_value={
+                "needs_full_model": True,
+                "clean_vocal_seconds": 2400.0,
+                "reason": "upgrade_recommended",
+            },
+        ), patch.object(manager, "_get_profile_store", return_value=store):
+            job = manager.create_full_model_job("profile-1", sample_ids=["s1", "s2"])
+
+        assert job.sample_ids == ["s1", "s2"]
+        assert "bad" not in job.sample_ids
+        assert job.results["sample_count"] == 2
+
     def test_create_full_model_job_overrides_custom_config_to_full_mode(self, manager):
         store = Mock()
         store.list_training_samples.return_value = [_sample("s1")]

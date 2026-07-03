@@ -144,15 +144,19 @@ class TestTrainingSampleManagement:
 
     @pytest.fixture
     def temp_vocals(self, tmp_path):
-        """Create temporary vocals file."""
+        """Create temporary vocals file with real (non-silent) content —
+        attach now rejects silence, so a voiced tone is required."""
         vocals_path = tmp_path / "test_vocals.wav"
-        # Create minimal WAV file (44 byte header + some data)
         import wave
+        sr = 16000
+        t = np.linspace(0, 4.0, sr * 4, endpoint=False)  # 4s (attach min is 3s)
+        tone = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        pcm = (tone * 32767).astype('<i2').tobytes()
         with wave.open(str(vocals_path), 'w') as f:
             f.setnchannels(1)
             f.setsampwidth(2)
-            f.setframerate(16000)
-            f.writeframes(b'\x00' * 128000)  # 4 seconds of silence (attach minimum is 3s)
+            f.setframerate(sr)
+            f.writeframes(pcm)
         return str(vocals_path)
 
     def test_add_training_sample(self, temp_store, sample_profile, temp_vocals):
