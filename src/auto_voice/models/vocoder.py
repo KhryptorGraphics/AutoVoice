@@ -15,6 +15,25 @@ import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
+# The vocoder consumes magnitude log-mel (log(clamp(mel,1e-5))), which spans
+# ~[-11.5, 2] with mean ~-5. A decoder with L1 loss at lr 1e-4 cannot travel
+# that far in a reasonable number of epochs, so the DECODER is trained on a
+# [0,1]-normalized mel (easy to fit) and the prediction is denormalized back
+# to log-mel here before synthesis. Both sides MUST use these constants.
+MEL_LOG_MIN = -11.5129   # log(1e-5)
+MEL_LOG_MAX = 2.0
+
+
+def normalize_log_mel(log_mel):
+    """log-mel (~[-11.5, 2]) -> [0,1] for a trainable decoder target."""
+    return (log_mel - MEL_LOG_MIN) / (MEL_LOG_MAX - MEL_LOG_MIN)
+
+
+def denormalize_log_mel(norm_mel):
+    """[0,1] decoder output -> log-mel for the vocoder."""
+    return norm_mel * (MEL_LOG_MAX - MEL_LOG_MIN) + MEL_LOG_MIN
+
+
 HIFIGAN_CONFIG = {
     'resblock_kernel_sizes': [3, 7, 11],
     'resblock_dilation_sizes': [[1, 3, 5], [1, 3, 5], [1, 3, 5]],

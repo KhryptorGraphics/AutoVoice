@@ -226,7 +226,11 @@ class VoiceDataset(Dataset):
             y=audio, sr=self.sample_rate, n_fft=1024, hop_length=256,
             win_length=1024, n_mels=80, fmin=0, fmax=8000, power=1.0,
         )
-        mel_db = np.log(np.clip(mel, 1e-5, None)).astype(np.float32)
+        log_mel = np.log(np.clip(mel, 1e-5, None)).astype(np.float32)
+        # Normalize to [0,1] so the decoder can actually fit it at lr 1e-4;
+        # serving denormalizes back to log-mel for the vocoder.
+        from ..models.vocoder import normalize_log_mel
+        mel_db = np.clip(normalize_log_mel(log_mel), 0.0, 1.0).astype(np.float32)
 
         return {
             'audio': torch.from_numpy(audio).float(),

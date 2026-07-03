@@ -382,6 +382,11 @@ class ModelManager:
         with torch.no_grad():
             mel_pred = sovits.infer(content, pitch, speaker)  # [1, 80, target_frames]
 
+        # Decoder predicts a [0,1]-normalized mel; denormalize back to the
+        # log-mel the vocoder was trained on.
+        from ..models.vocoder import denormalize_log_mel
+        mel_pred = denormalize_log_mel(mel_pred)
+
         # 6. HiFiGAN vocoder -> audio waveform
         with torch.no_grad():
             output_audio = self._vocoder.synthesize(mel_pred)  # [1, T_audio]
