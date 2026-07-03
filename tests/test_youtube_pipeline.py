@@ -100,15 +100,21 @@ class TestPipelineIntegration:
         # Don't execute, just check syntax
         assert module is not None
 
-    def test_artist_profiles_exist(self):
-        """Test expected voice profiles exist."""
-        profiles_dir = Path('data/voice_profiles')
-        if not profiles_dir.exists():
-            pytest.skip("Voice profiles directory not found")
+    def test_artist_profiles_persist_and_load(self, tmp_path):
+        """Saved artist profiles persist to disk and load back by id.
 
-        # Check for Connor and William profiles
-        connor_profile = profiles_dir / 'c572d02c-c687-4bed-8676-6ad253cf1c91.json'
-        william_profile = profiles_dir / '7da05140-1303-40c6-95d9-5b6e2c3624df.json'
+        (Previously asserted two hardcoded production profile ids — tests
+        must not depend on live store contents.)
+        """
+        from auto_voice.storage.voice_profiles import VoiceProfileStore
 
-        assert connor_profile.exists(), "Connor profile not found"
-        assert william_profile.exists(), "William profile not found"
+        store = VoiceProfileStore(
+            profiles_dir=str(tmp_path / 'profiles'),
+            samples_dir=str(tmp_path / 'samples'),
+        )
+        conor_id = store.save({'name': 'Conor Maynard', 'profile_role': 'target_user'})
+        william_id = store.save({'name': 'William Singe', 'profile_role': 'source_artist'})
+
+        assert store.exists(conor_id), "Conor profile not found"
+        assert store.exists(william_id), "William profile not found"
+        assert store.load(william_id)['profile_role'] == 'source_artist'

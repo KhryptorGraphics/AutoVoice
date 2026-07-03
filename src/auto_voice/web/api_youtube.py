@@ -592,22 +592,31 @@ def confirm_youtube_ingest(job_id: str):
                     while f"{name} ({suffix})".casefold() in existing_names:
                         suffix += 1
                     name = f"{name} ({suffix})"
-                profile = root._create_profile_from_diarized_speaker(
-                    diarization_data=diarization_data,
-                    speaker_id=speaker_id,
-                    name=name,
-                    user_id=decision.get('user_id') or 'system',
-                    profile_role='source_artist',
-                    extract_segments=True,
-                    request_metadata={
-                        'source': 'youtube_ingest_review',
-                        'ingest_job_id': job_id,
-                        'original_audio_asset_id': original_audio_asset_id,
-                        'original_audio_url': original_audio_url,
-                        'identity_confidence': 'operator_reviewed',
-                        **(decision.get('metadata') or {}),
-                    },
-                )
+                try:
+                    profile = root._create_profile_from_diarized_speaker(
+                        diarization_data=diarization_data,
+                        speaker_id=speaker_id,
+                        name=name,
+                        user_id=decision.get('user_id') or 'system',
+                        profile_role='source_artist',
+                        extract_segments=True,
+                        request_metadata={
+                            'source': 'youtube_ingest_review',
+                            'ingest_job_id': job_id,
+                            'original_audio_asset_id': original_audio_asset_id,
+                            'original_audio_url': original_audio_url,
+                            'identity_confidence': 'operator_reviewed',
+                            **(decision.get('metadata') or {}),
+                        },
+                    )
+                except ValueError as exc:
+                    # Too-short extraction: record the skip, keep the batch going
+                    skipped.append({
+                        'speaker_id': speaker_id,
+                        'action': 'create_new',
+                        'reason': str(exc),
+                    })
+                    continue
                 applied.append({
                     'speaker_id': speaker_id,
                     'action': 'create_new',
@@ -649,22 +658,32 @@ def confirm_youtube_ingest(job_id: str):
                 )
 
                 duration = sum(float(segment.get('duration', 0.0)) for segment in speaker_segments)
-                sample = store.add_training_sample(
-                    profile_id=profile_id,
-                    vocals_path=str(extracted_path),
-                    duration=duration,
-                    source_file=f"youtube_ingest_{job_id}_{speaker_id}",
-                    extra_metadata={
-                        'source': 'youtube_ingest_review',
-                        'ingest_job_id': job_id,
-                        'diarization_id': diarization_id,
+                try:
+                    sample = store.add_training_sample(
+                        profile_id=profile_id,
+                        vocals_path=str(extracted_path),
+                        duration=duration,
+                        source_file=f"youtube_ingest_{job_id}_{speaker_id}",
+                        extra_metadata={
+                            'source': 'youtube_ingest_review',
+                            'ingest_job_id': job_id,
+                            'diarization_id': diarization_id,
+                            'speaker_id': speaker_id,
+                            'original_audio_asset_id': original_audio_asset_id,
+                            'original_audio_url': original_audio_url,
+                            'identity_confidence': 'operator_reviewed',
+                            **(decision.get('metadata') or {}),
+                        },
+                    )
+                except ValueError as exc:
+                    # Too-short extraction: record the skip, keep the batch going
+                    skipped.append({
                         'speaker_id': speaker_id,
-                        'original_audio_asset_id': original_audio_asset_id,
-                        'original_audio_url': original_audio_url,
-                        'identity_confidence': 'operator_reviewed',
-                        **(decision.get('metadata') or {}),
-                    },
-                )
+                        'action': 'assign_existing',
+                        'profile_id': profile_id,
+                        'reason': str(exc),
+                    })
+                    continue
                 root._get_state_store().save_diarization_segment_assignment(
                     profile_id,
                     f"{diarization_id}_{speaker_id}",

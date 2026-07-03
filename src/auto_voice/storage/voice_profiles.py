@@ -16,7 +16,11 @@ from auto_voice.runtime_contract import (
     normalize_reference_audio_entries,
     write_packaged_artifact_manifest,
 )
-from auto_voice.training.sample_quality import analyze_training_sample, summarize_training_samples
+from auto_voice.training.sample_quality import (
+    MIN_TRAINING_SAMPLE_SECONDS,
+    analyze_training_sample,
+    summarize_training_samples,
+)
 
 from .paths import (
     resolve_profiles_dir,
@@ -557,6 +561,19 @@ class VoiceProfileStore:
         """
         if not self.exists(profile_id):
             raise ProfileNotFoundError(f"Profile {profile_id} not found")
+
+        # Reject scraps up front: sub-minimum samples fail later at training
+        # time (VoiceCloner needs >= 3s), so don't let them accumulate.
+        try:
+            import soundfile as _sf
+            measured_duration = float(_sf.info(vocals_path).duration)
+        except Exception:
+            measured_duration = float(duration or 0.0)
+        if measured_duration < MIN_TRAINING_SAMPLE_SECONDS:
+            raise ValueError(
+                f"Training sample too short ({measured_duration:.1f}s). "
+                f"Minimum {MIN_TRAINING_SAMPLE_SECONDS:.1f}s required."
+            )
 
         # Create sample directory structure
         profile_samples_dir = self._samples_dir_for_profile(profile_id)

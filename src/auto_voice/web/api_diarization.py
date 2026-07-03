@@ -503,12 +503,15 @@ def assign_diarization_segment():
                     from scipy.io import wavfile
                     sr, audio_data = wavfile.read(str(extracted_path))
                     duration = len(audio_data) / sr
-                    store.add_training_sample(
-                        profile_id=profile_id,
-                        vocals_path=str(extracted_path),
-                        duration=duration,
-                        source_file=f"diarization_{diarization_id}_seg{segment_index}",
-                    )
+                    try:
+                        store.add_training_sample(
+                            profile_id=profile_id,
+                            vocals_path=str(extracted_path),
+                            duration=duration,
+                            source_file=f"diarization_{diarization_id}_seg{segment_index}",
+                        )
+                    except ValueError as exc:
+                        return _dep('validation_error_response')(str(exc))
 
         segment_key = f"{diarization_id}_{segment_index}"
         _save_segment_assignment(profile_id, segment_key, str(extracted_path) if extracted_path else "")

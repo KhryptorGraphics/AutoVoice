@@ -152,7 +152,7 @@ class TestTrainingSampleManagement:
             f.setnchannels(1)
             f.setsampwidth(2)
             f.setframerate(16000)
-            f.writeframes(b'\x00' * 32000)  # 1 second of silence
+            f.writeframes(b'\x00' * 128000)  # 4 seconds of silence (attach minimum is 3s)
         return str(vocals_path)
 
     def test_add_training_sample(self, temp_store, sample_profile, temp_vocals):
@@ -161,12 +161,12 @@ class TestTrainingSampleManagement:
             profile_id=sample_profile,
             vocals_path=temp_vocals,
             source_file="test.mp3",
-            duration=1.0,
+            duration=4.0,
         )
 
         assert sample.sample_id == "sample_001"
         assert os.path.exists(sample.vocals_path)
-        assert sample.duration == 1.0
+        assert sample.duration == 4.0
 
     def test_add_training_sample_profile_not_found(self, temp_store, temp_vocals):
         """Add sample to non-existent profile raises error."""
@@ -183,7 +183,7 @@ class TestTrainingSampleManagement:
 
     def test_list_training_samples(self, temp_store, sample_profile, temp_vocals):
         """List all training samples for profile."""
-        temp_store.add_training_sample(sample_profile, temp_vocals, duration=1.0)
+        temp_store.add_training_sample(sample_profile, temp_vocals, duration=4.0)
         temp_store.add_training_sample(sample_profile, temp_vocals, duration=2.0)
 
         samples = temp_store.list_training_samples(sample_profile)

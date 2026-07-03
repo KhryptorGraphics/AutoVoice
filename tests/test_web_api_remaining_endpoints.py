@@ -18,7 +18,7 @@ import pytest
 import torch
 
 
-def _wav_bytes(sample_rate: int = 22050, duration_seconds: float = 1.0) -> io.BytesIO:
+def _wav_bytes(sample_rate: int = 22050, duration_seconds: float = 4.0) -> io.BytesIO:
     frames = int(sample_rate * duration_seconds)
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
@@ -30,7 +30,7 @@ def _wav_bytes(sample_rate: int = 22050, duration_seconds: float = 1.0) -> io.By
     return buffer
 
 
-def _write_wav(path: Path, *, sample_rate: int = 22050, duration_seconds: float = 1.0) -> None:
+def _write_wav(path: Path, *, sample_rate: int = 22050, duration_seconds: float = 4.0) -> None:
     frames = int(sample_rate * duration_seconds)
     time_axis = np.linspace(0.0, duration_seconds, frames, endpoint=False)
     audio = (0.3 * np.sin(2 * np.pi * 220.0 * time_axis) * 32767.0).astype(np.int16)
@@ -576,7 +576,7 @@ class TestSampleAndDiarizationEndpoints:
         response = client_remaining.post(
             f"/api/v1/profiles/{profile_id}/samples",
             data={
-                "audio": (_wav_bytes(duration_seconds=1.2), "browser-take.webm"),
+                "audio": (_wav_bytes(duration_seconds=4.0), "browser-take.webm"),
                 "metadata": json.dumps(
                     {
                         "source": "browser_singalong_capture",
@@ -587,7 +587,7 @@ class TestSampleAndDiarizationEndpoints:
                                 "status": "warn",
                                 "issues": ["decode_unavailable"],
                                 "recommendations": ["server decode required"],
-                                "durationSeconds": 1.2,
+                                "durationSeconds": 4.0,
                                 "blobSizeBytes": 2048,
                                 "decoded": False,
                             }
@@ -701,8 +701,8 @@ class TestSampleAndDiarizationEndpoints:
         _write_wav(source_path)
 
         monkeypatch.setattr(web_api, "TORCH_AVAILABLE", False)
-        monkeypatch.setattr(sf, "read", lambda path: (np.zeros(22050, dtype=np.float32), 22050))
-        monkeypatch.setattr(sf, "info", lambda path: SimpleNamespace(duration=1.0))
+        monkeypatch.setattr(sf, "read", lambda path: (np.zeros(88200, dtype=np.float32), 22050))
+        monkeypatch.setattr(sf, "info", lambda path: SimpleNamespace(duration=4.0))
         written = []
 
         def _fake_write(path, audio, sr):
@@ -719,8 +719,8 @@ class TestSampleAndDiarizationEndpoints:
 
             def separate(self, audio, sr):
                 return {
-                    "vocals": np.zeros(22050, dtype=np.float32),
-                    "instrumental": np.zeros(22050, dtype=np.float32),
+                    "vocals": np.zeros(88200, dtype=np.float32),
+                    "instrumental": np.zeros(88200, dtype=np.float32),
                 }
 
         fake_sep_module.VocalSeparator = FakeSeparator
@@ -749,7 +749,7 @@ class TestSampleAndDiarizationEndpoints:
                 self._target()
 
         monkeypatch.setattr("threading.Thread", ImmediateThread)
-        monkeypatch.setattr(sf, "read", lambda path: (np.zeros((22050, 2), dtype=np.float32), 22050))
+        monkeypatch.setattr(sf, "read", lambda path: (np.zeros((88200, 2), dtype=np.float32), 22050))
         monkeypatch.setattr(sf, "write", lambda path, audio, sr: Path(path).write_bytes(b"wav"))
 
         fake_sep_module = types.ModuleType("auto_voice.audio.separation")
@@ -757,8 +757,8 @@ class TestSampleAndDiarizationEndpoints:
         class FakeSeparator:
             def separate(self, audio, sr):
                 return {
-                    "vocals": np.zeros(22050, dtype=np.float32),
-                    "instrumental": np.zeros(22050, dtype=np.float32),
+                    "vocals": np.zeros(88200, dtype=np.float32),
+                    "instrumental": np.zeros(88200, dtype=np.float32),
                 }
 
         fake_sep_module.VocalSeparator = FakeSeparator
@@ -918,13 +918,16 @@ class TestSampleAndDiarizationEndpoints:
     def test_training_job_rejects_failed_quality_samples(self, client_remaining, app_remaining, tmp_path):
         profile_id = "00000000-0000-0000-0000-000000000316"
         _create_profile(app_remaining, profile_id=profile_id)
+        # Long enough to pass the attach-time duration floor, but silent so
+        # the quality gates (peak amplitude / active ratio) fail it.
+        import soundfile as sf
         sample_path = tmp_path / "silent.wav"
-        _write_wav(sample_path, duration_seconds=0.01)
+        sf.write(str(sample_path), np.zeros(4 * 22050, dtype=np.float32), 22050)
         sample = app_remaining.voice_cloner.store.add_training_sample(
             profile_id=profile_id,
             vocals_path=str(sample_path),
             source_file=sample_path.name,
-            duration=0.01,
+            duration=4.0,
         )
 
         response = client_remaining.post(
@@ -980,8 +983,8 @@ class TestSampleAndDiarizationEndpoints:
         profile_id = "00000000-0000-0000-0000-000000000315"
         _create_profile(app_remaining, profile_id=profile_id)
         sample_path = tmp_path / "sample.wav"
-        _write_wav(sample_path, duration_seconds=2.0)
-        sample = _add_training_sample(app_remaining, profile_id, sample_path, duration=2.0)
+        _write_wav(sample_path, duration_seconds=4.0)
+        sample = _add_training_sample(app_remaining, profile_id, sample_path, duration=4.0)
 
         fake_sd_module = types.ModuleType("auto_voice.audio.speaker_diarization")
 

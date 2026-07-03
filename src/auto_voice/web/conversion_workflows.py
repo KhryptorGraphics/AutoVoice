@@ -914,6 +914,7 @@ class ConversionWorkflowManager:
         store.save_speaker_embedding(profile_id, aggregate_embedding)
         attached = 0
         skipped_existing = 0
+        skipped_short = 0
         for item in user_vocals:
             audio_path = item.get("path")
             if not audio_path or not os.path.exists(audio_path):
@@ -928,20 +929,28 @@ class ConversionWorkflowManager:
                 skipped_existing += 1
                 continue
             duration_seconds = self._duration_seconds(audio_path)
-            store.add_training_sample(
-                profile_id=profile_id,
-                vocals_path=audio_path,
-                duration=duration_seconds,
-                source_file=item.get("filename") or os.path.basename(audio_path),
-                extra_metadata={
-                    "provenance": "conversion_workflow_user_vocals",
-                    "workflow_id": workflow_id,
-                    "workflow_source_path": str(Path(audio_path).resolve()),
-                    "workflow_auto_attached": True,
-                },
-            )
+            try:
+                store.add_training_sample(
+                    profile_id=profile_id,
+                    vocals_path=audio_path,
+                    duration=duration_seconds,
+                    source_file=item.get("filename") or os.path.basename(audio_path),
+                    extra_metadata={
+                        "provenance": "conversion_workflow_user_vocals",
+                        "workflow_id": workflow_id,
+                        "workflow_source_path": str(Path(audio_path).resolve()),
+                        "workflow_auto_attached": True,
+                    },
+                )
+            except ValueError:
+                skipped_short += 1
+                continue
             attached += 1
-        return {"attached": attached, "skipped_existing": skipped_existing}
+        return {
+            "attached": attached,
+            "skipped_existing": skipped_existing,
+            "skipped_short": skipped_short,
+        }
 
     def _create_target_profile_from_samples(
         self,
@@ -1047,19 +1056,23 @@ class ConversionWorkflowManager:
                 speaker_id=str(candidate.get("speaker_id") or ""),
             ):
                 continue
-            store.add_training_sample(
-                profile_id=profile_id,
-                vocals_path=sample_path,
-                duration=self._duration_seconds(sample_path),
-                source_file=source_file or os.path.basename(sample_path),
-                extra_metadata={
-                    "provenance": "conversion_workflow_candidate",
-                    "workflow_id": workflow_id,
-                    "workflow_source_path": str(Path(sample_path).resolve()),
-                    "speaker_id": candidate.get("speaker_id"),
-                    "workflow_auto_attached": True,
-                },
-            )
+            try:
+                store.add_training_sample(
+                    profile_id=profile_id,
+                    vocals_path=sample_path,
+                    duration=self._duration_seconds(sample_path),
+                    source_file=source_file or os.path.basename(sample_path),
+                    extra_metadata={
+                        "provenance": "conversion_workflow_candidate",
+                        "workflow_id": workflow_id,
+                        "workflow_source_path": str(Path(sample_path).resolve()),
+                        "speaker_id": candidate.get("speaker_id"),
+                        "workflow_auto_attached": True,
+                    },
+                )
+            except ValueError:
+                # Too short to train on — skip this extraction, keep the rest
+                continue
 
     def _workflow_sample_exists(
         self,

@@ -12,6 +12,10 @@ import soundfile as sf
 
 
 MIN_SOURCE_DURATION_SECONDS = 0.5
+# Hard floor for attaching a training sample: VoiceCloner needs >= 3s to
+# compute a speaker embedding, so anything shorter fails at training time —
+# reject it at attach time instead of letting scraps accumulate.
+MIN_TRAINING_SAMPLE_SECONDS = 3.0
 MIN_ACTIVE_RATIO = 0.08
 MIN_VOICED_RATIO = 0.02
 MIN_PEAK_AMPLITUDE = 1e-4

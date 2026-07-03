@@ -1259,28 +1259,27 @@ def upload_sample(profile_id: str):
         try:
             training_audio_path = _normalize_uploaded_training_audio(file_path)
             duration = _soundfile_info_duration(training_audio_path)
+            store = _dep('get_profile_store')()
+            training_sample = store.add_training_sample(
+                profile_id=profile_id,
+                vocals_path=training_audio_path,
+                source_file=metadata.get('source_file') or filename,
+                duration=duration,
+                extra_metadata={
+                    'source': metadata.get('source', 'upload'),
+                    'provenance': metadata.get('provenance') or filename,
+                    'readiness_report': metadata.get('readiness_report'),
+                    'latency_calibration_ms': metadata.get('latency_calibration_ms'),
+                    'alignment_offset_ms': metadata.get('alignment_offset_ms'),
+                    'original_track_position_seconds': metadata.get('original_track_position_seconds'),
+                    'input_device_label': metadata.get('input_device_label') or metadata.get('browser_input_device_label'),
+                    'output_device_label': metadata.get('output_device_label') or metadata.get('browser_output_device_label'),
+                    'aligned_upload': metadata.get('aligned_upload'),
+                },
+                quality_metadata=metadata.get('quality_metadata'),
+            )
         except ValueError as exc:
             return _dep('validation_error_response')(str(exc))
-
-        store = _dep('get_profile_store')()
-        training_sample = store.add_training_sample(
-            profile_id=profile_id,
-            vocals_path=training_audio_path,
-            source_file=metadata.get('source_file') or filename,
-            duration=duration,
-            extra_metadata={
-                'source': metadata.get('source', 'upload'),
-                'provenance': metadata.get('provenance') or filename,
-                'readiness_report': metadata.get('readiness_report'),
-                'latency_calibration_ms': metadata.get('latency_calibration_ms'),
-                'alignment_offset_ms': metadata.get('alignment_offset_ms'),
-                'original_track_position_seconds': metadata.get('original_track_position_seconds'),
-                'input_device_label': metadata.get('input_device_label') or metadata.get('browser_input_device_label'),
-                'output_device_label': metadata.get('output_device_label') or metadata.get('browser_output_device_label'),
-                'aligned_upload': metadata.get('aligned_upload'),
-            },
-            quality_metadata=metadata.get('quality_metadata'),
-        )
         if metadata:
             sample_payload = _serialize_training_sample(profile_id, training_sample)
             sample_payload['metadata'].update(metadata)
@@ -1413,20 +1412,23 @@ def add_sample_from_path(profile_id: str):
                 logger.warning(f"Could not get duration: {e}")
 
         store = _dep('get_profile_store')()
-        training_sample = store.add_training_sample(
-            profile_id=profile_id,
-            vocals_path=dest_path,
-            instrumental_path=metadata.get('instrumental_path'),
-            source_file=metadata.get('original_path') or filename,
-            duration=duration or 0.0,
-            extra_metadata={
-                'source': metadata.get('source', 'youtube_download'),
-                'original_path': metadata.get('original_path'),
-                'provenance': metadata.get('original_path') or filename,
-                'separated': metadata.get('separated', False),
-            },
-            quality_metadata=metadata.get('quality_metadata'),
-        )
+        try:
+            training_sample = store.add_training_sample(
+                profile_id=profile_id,
+                vocals_path=dest_path,
+                instrumental_path=metadata.get('instrumental_path'),
+                source_file=metadata.get('original_path') or filename,
+                duration=duration or 0.0,
+                extra_metadata={
+                    'source': metadata.get('source', 'youtube_download'),
+                    'original_path': metadata.get('original_path'),
+                    'provenance': metadata.get('original_path') or filename,
+                    'separated': metadata.get('separated', False),
+                },
+                quality_metadata=metadata.get('quality_metadata'),
+            )
+        except ValueError as exc:
+            return _dep('validation_error_response')(str(exc))
         sample_payload = _serialize_training_sample(profile_id, training_sample)
         sample_payload['metadata'].update(metadata)
 
@@ -1585,28 +1587,37 @@ def upload_song(profile_id: str):
                     _separation_jobs[job_id]['message'] = 'Separation complete'
 
                     store = _dep('get_profile_store')()
-                    sample = store.add_training_sample(
-                        profile_id=profile_id,
-                        vocals_path=vocals_path,
-                        instrumental_path=instrumental_path,
-                        source_file=filename,
-                        duration=float(len(result['vocals']) / sr) if sr else 0.0,
-                        extra_metadata={
-                            'source_song': song_id,
-                            'source': 'uploaded_song',
-                            'provenance': filename,
-                            'original_path': file_path,
-                            'original_audio_asset_id': original_asset.get('asset_id') if original_asset else None,
-                            'original_audio_url': (
-                                _singalong_source_url(original_asset['asset_id'])
-                                if original_asset
-                                else None
-                            ),
-                            'separation_job_id': job_id,
-                            'separated': True,
-                        },
-                    )
-                    _separation_jobs[job_id]['sample_id'] = sample.sample_id
+                    try:
+                        sample = store.add_training_sample(
+                            profile_id=profile_id,
+                            vocals_path=vocals_path,
+                            instrumental_path=instrumental_path,
+                            source_file=filename,
+                            duration=float(len(result['vocals']) / sr) if sr else 0.0,
+                            extra_metadata={
+                                'source_song': song_id,
+                                'source': 'uploaded_song',
+                                'provenance': filename,
+                                'original_path': file_path,
+                                'original_audio_asset_id': original_asset.get('asset_id') if original_asset else None,
+                                'original_audio_url': (
+                                    _singalong_source_url(original_asset['asset_id'])
+                                    if original_asset
+                                    else None
+                                ),
+                                'separation_job_id': job_id,
+                                'separated': True,
+                            },
+                        )
+                    except ValueError as exc:
+                        # Separation itself succeeded; the vocals are just too
+                        # short to be a training sample. Keep the stems.
+                        sample = None
+                        _separation_jobs[job_id]['message'] = (
+                            f'Separation complete; sample not attached: {exc}'
+                        )
+                    if sample is not None:
+                        _separation_jobs[job_id]['sample_id'] = sample.sample_id
                     _dep('save_background_job')(_separation_jobs[job_id])
                     record_structured_audit_event(
                         "separate",
@@ -1620,12 +1631,15 @@ def upload_song(profile_id: str):
                             "profile_id": profile_id,
                             "job_id": job_id,
                             "song_id": song_id,
-                            "sample_id": sample.sample_id,
+                            "sample_id": sample.sample_id if sample is not None else None,
                             "source": "uploaded_song",
                         },
                     )
 
-                    logger.info(f"Separation complete for song {song_id}, added sample {sample.sample_id}")
+                    logger.info(
+                        f"Separation complete for song {song_id}, "
+                        f"sample: {sample.sample_id if sample is not None else 'not attached (too short)'}"
+                    )
                 except Exception as e:
                     logger.error(f"Separation failed for job {job_id}: {e}", exc_info=True)
                     _separation_jobs[job_id]['status'] = 'error'

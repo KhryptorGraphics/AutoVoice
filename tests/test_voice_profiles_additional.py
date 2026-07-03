@@ -12,7 +12,7 @@ from tests.fixtures.audio import write_voiced_wav
 from auto_voice.storage.voice_profiles import VoiceProfileStore
 
 
-def _write_wav(path: Path, duration_seconds: float = 1.0) -> None:
+def _write_wav(path: Path, duration_seconds: float = 4.0) -> None:
     """Create a valid voiced mono WAV file for storage tests."""
     write_voiced_wav(path, duration_seconds=duration_seconds, sample_rate=16000)
 
@@ -177,7 +177,7 @@ def test_create_profile_from_diarization_adds_metadata_and_segments(
 ):
     """Diarization profile creation should persist metadata and import valid segments."""
     segment = tmp_path / "segment.wav"
-    _write_wav(segment, duration_seconds=2.0)
+    _write_wav(segment, duration_seconds=4.0)
 
     with patch("scipy.io.wavfile.read", return_value=(16000, np.zeros(32000, dtype=np.int16))):
         profile_id = temp_store.create_profile_from_diarization(
@@ -259,3 +259,21 @@ def test_save_does_not_persist_derived_model_type(temp_store):
     full_model_path = Path(temp_store.trained_models_dir) / f"{profile_id}_full_model.pt"
     full_model_path.write_bytes(b"full-model")
     assert temp_store.load(profile_id)["active_model_type"] == "full_model"
+
+
+def test_add_training_sample_rejects_sub_minimum_audio(temp_store, tmp_path):
+    """Scraps shorter than the training minimum must be rejected at attach
+    time — they fail later at training (VoiceCloner needs >= 3s), so letting
+    them accumulate only turns one bad file into a failed training job."""
+    profile_id = "min-duration-1"
+    temp_store.save({"profile_id": profile_id, "name": "Min Duration", "user_id": "u1"})
+
+    short_wav = tmp_path / "short.wav"
+    _write_wav(short_wav, duration_seconds=1.0)
+    with pytest.raises(ValueError, match="too short"):
+        temp_store.add_training_sample(profile_id, vocals_path=str(short_wav), duration=1.0)
+
+    ok_wav = tmp_path / "ok.wav"
+    _write_wav(ok_wav, duration_seconds=4.0)
+    sample = temp_store.add_training_sample(profile_id, vocals_path=str(ok_wav), duration=4.0)
+    assert sample.sample_id == "sample_001"

@@ -33,7 +33,7 @@ def _touch(path: Path, content: bytes = b"audio") -> str:
     return str(path)
 
 
-def _write_wav(path: Path, *, sample_rate: int = 22050, duration_seconds: float = 0.5) -> str:
+def _write_wav(path: Path, *, sample_rate: int = 22050, duration_seconds: float = 4.0) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     frames = int(sample_rate * duration_seconds)
     samples = bytearray()
@@ -207,7 +207,7 @@ def test_attach_user_samples_is_idempotent_across_workflow_retries(workflow_app,
     source_path = _touch(tmp_path / "samples" / "user.wav")
     user_vocals = [{"filename": "user.wav", "path": source_path}]
 
-    manager._duration_seconds = lambda _audio_path: 1.25  # type: ignore[method-assign]
+    manager._duration_seconds = lambda _audio_path: 4.0  # type: ignore[method-assign]
 
     first = manager._attach_user_samples(
         store,
@@ -226,8 +226,8 @@ def test_attach_user_samples_is_idempotent_across_workflow_retries(workflow_app,
 
     samples = store.list_training_samples(profile_id)
 
-    assert first == {"attached": 1, "skipped_existing": 0}
-    assert second == {"attached": 0, "skipped_existing": 1}
+    assert first == {"attached": 1, "skipped_existing": 0, "skipped_short": 0}
+    assert second == {"attached": 0, "skipped_existing": 1, "skipped_short": 0}
     assert len(samples) == 1
     assert samples[0].extra_metadata["provenance"] == "conversion_workflow_user_vocals"
     assert samples[0].extra_metadata["workflow_id"] == "wf-dup"
@@ -293,7 +293,7 @@ def test_artist_analysis_persists_serialized_diarization_and_assignments(workflo
             return str(extracted)
 
     monkeypatch.setattr(workflow_module, "SpeakerDiarizer", FakeDiarizer)
-    manager._duration_seconds = lambda _audio_path: 2.5  # type: ignore[method-assign]
+    manager._duration_seconds = lambda _audio_path: 4.0  # type: ignore[method-assign]
 
     manager._analyze_artist_song(workflow_id)
 

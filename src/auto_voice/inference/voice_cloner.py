@@ -85,7 +85,8 @@ class VoiceCloner:
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.store = VoiceProfileStore(profiles_dir=profiles_dir, samples_dir=samples_dir)
         self._sample_rate = 16000
-        self._min_duration = 3.0  # seconds
+        from ..training.sample_quality import MIN_TRAINING_SAMPLE_SECONDS
+        self._min_duration = MIN_TRAINING_SAMPLE_SECONDS  # 3s: same floor as sample attach
         self._auto_separate_vocals = auto_separate_vocals
         self._speaker_encoder_backend = speaker_encoder_backend
         self._speaker_encoder = None
