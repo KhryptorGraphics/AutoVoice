@@ -1088,6 +1088,15 @@ class TrainingJobManager:
                     # they train and serve as full models.
                     if architecture in ("diffusion_mel", "mel_gan"):
                         training_mode = "full"
+
+                    # so-vits-svc-fork engine: fine-tune a pretrained base in the
+                    # isolated svcfork env and register it for serving. Handles
+                    # its own data prep, artifact promotion, and job lifecycle.
+                    if architecture == "svc_fork":
+                        self._run_fork_training(
+                            job, job_id, train_dir, sample_files, cancel_event)
+                        return
+
                     job_type = "full_model" if training_mode == "full" else "lora"
                     initialization_mode = (
                         job.config.initialization_mode if job.config else "scratch"
@@ -1337,6 +1346,86 @@ class TrainingJobManager:
             self._save_jobs()
             self._emit_failed_event(job)
             raise
+
+    def _run_fork_training(self, job, job_id, train_dir, sample_files, cancel_event):
+        """Run so-vits-svc-fork training for a profile (architecture='svc_fork').
+
+        Self-contained: stages the profile's vocals, fine-tunes a pretrained base
+        in the isolated svcfork env, promotes the model, writes the serving
+        registry, and drives the job lifecycle (progress / complete / fail /
+        cancel + events + webhooks), mirroring the in-repo completion path. The
+        model serves via svc_fork_bridge's registry, not profile.model_path.
+        """
+        from auto_voice.training.svc_fork_trainer import (
+            ForkTrainingError,
+            train_svc_fork,
+        )
+        speaker = "spk_" + str(job.profile_id).replace("-", "")[:8]
+        epochs = job.config.epochs if (job.config and job.config.epochs) else 100
+
+        def _progress(pct, stage):
+            job.update_progress(int(pct))
+            job.results = job.results or {}
+            job.results.update({'stage': stage, 'engine': 'svc_fork',
+                                'job_type': 'full_model'})
+            self._save_jobs()
+
+        try:
+            result = train_svc_fork(
+                train_dir=str(train_dir),
+                profile_id=job.profile_id,
+                speaker=speaker,
+                epochs=int(epochs),
+                data_dir=str(self._data_dir),
+                progress_cb=_progress,
+                cancel_event=cancel_event,
+            )
+            # artifact_type='full_model' so the profile is marked trained/ready;
+            # adapter_path carries the model path (legacy key -> profile.model_path).
+            results = {
+                'engine': 'svc_fork',
+                'job_type': 'full_model',
+                'artifact_type': 'full_model',
+                'adapter_path': result['model_path'],
+                'manifest_path': result['registry_path'],
+                'config_path': result['config_path'],
+                'epochs_ran': result['epochs'],
+                'epochs_completed': result['epochs'],
+                'speaker': result['speaker'],
+                'training_config': job.config.to_dict() if job.config else {},
+            }
+            job.complete(results)
+            self._update_profile_training_state(
+                profile_id=job.profile_id, results=results,
+                sample_count=len(sample_files),
+            )
+            self._save_jobs()
+            self._emit_completed_event(job)
+            self._dispatch_webhook('training_complete', {
+                'job_id': job_id, 'profile_id': job.profile_id,
+                'epochs_completed': results['epochs_completed'],
+                'artifact_type': 'svc_fork',
+            })
+            logger.info("Fork training job %s completed (epoch %s)",
+                        job_id, result['epochs'])
+        except ForkTrainingError as e:
+            if 'cancel' in str(e).lower():
+                logger.info("Fork training job %s cancelled", job_id)
+                job.cancel(str(e))
+                self._save_jobs()
+                self._emit_cancelled_event(job)
+            else:
+                logger.error("Fork training job %s failed: %s", job_id, e)
+                job.fail(str(e))
+                self._mark_profile_training_failed(job.profile_id, str(e))
+                self._save_jobs()
+                self._emit_failed_event(job)
+        except Exception as e:  # noqa: BLE001 - lifecycle must record any failure
+            logger.error("Fork training job %s failed: %s", job_id, e, exc_info=True)
+            job.fail(str(e))
+            self._mark_profile_training_failed(job.profile_id, str(e))
+            self._save_jobs()
+            self._emit_failed_event(job)
 
     def _save_trained_adapter(
         self,
