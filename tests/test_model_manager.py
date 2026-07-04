@@ -282,7 +282,9 @@ class TestPipelineConfigPassthrough:
             pipeline._get_model_manager()
             call_kwargs = mock_load.call_args[1]
             assert call_kwargs['vocoder_type'] == 'hifigan'
-            assert call_kwargs['encoder_backend'] == 'hubert'
+            # contentvec is the intentional default: 'hubert' feeds the trained
+            # decoder OOD content and renders a whine (see _get_model_manager).
+            assert call_kwargs['encoder_backend'] == 'contentvec'
             assert call_kwargs['encoder_type'] == 'linear'
 
     def test_realtime_pipeline_passes_vocoder_type(self, device):
