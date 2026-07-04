@@ -130,7 +130,8 @@ class VocalSeparator:
         self._load_model()
         return list(self._model.sources)
 
-    def separate(self, audio: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
+    def separate(self, audio: np.ndarray, sr: int,
+                 mono: bool = True) -> Dict[str, np.ndarray]:
         """Separate audio into vocals and instrumental.
 
         Args:
@@ -201,28 +202,32 @@ class VocalSeparator:
             )
         vocals_idx = source_names.index('vocals')
 
-        # Vocals: mean across channels -> mono
-        vocals = sources[0, vocals_idx].mean(dim=0).cpu().numpy()
-
-        # Instrumental: sum all non-vocal sources, mean across channels -> mono
         non_vocal_indices = [i for i in range(len(source_names)) if i != vocals_idx]
-        instrumental = sources[0, non_vocal_indices].sum(dim=0).mean(dim=0).cpu().numpy()
+        if mono:
+            # mean across channels -> mono (samples,)
+            vocals = sources[0, vocals_idx].mean(dim=0).cpu().numpy()
+            instrumental = sources[0, non_vocal_indices].sum(dim=0).mean(dim=0).cpu().numpy()
+        else:
+            # keep channels -> stereo (channels, samples)
+            vocals = sources[0, vocals_idx].cpu().numpy()
+            instrumental = sources[0, non_vocal_indices].sum(dim=0).cpu().numpy()
 
-        # Resample back to input sample rate if needed
+        # Resample back to input sample rate if needed (librosa resamples axis=-1)
         if input_sr != model_sr:
             import librosa
             vocals = librosa.resample(vocals, orig_sr=model_sr, target_sr=input_sr)
             instrumental = librosa.resample(instrumental, orig_sr=model_sr, target_sr=input_sr)
 
-        # Match original length
+        # Match original length on the sample axis (works for mono or stereo)
         orig_len = len(audio) if audio.ndim == 1 else audio.shape[-1]
-        if len(vocals) > orig_len:
-            vocals = vocals[:orig_len]
-            instrumental = instrumental[:orig_len]
-        elif len(vocals) < orig_len:
-            # Pad with zeros if resampling caused shortening
-            vocals = np.pad(vocals, (0, orig_len - len(vocals)))
-            instrumental = np.pad(instrumental, (0, orig_len - len(instrumental)))
+        cur_len = vocals.shape[-1]
+        if cur_len > orig_len:
+            vocals = vocals[..., :orig_len]
+            instrumental = instrumental[..., :orig_len]
+        elif cur_len < orig_len:
+            pad = [(0, 0)] * (vocals.ndim - 1) + [(0, orig_len - cur_len)]
+            vocals = np.pad(vocals, pad)
+            instrumental = np.pad(instrumental, pad)
 
         result = {
             'vocals': vocals.astype(np.float32),

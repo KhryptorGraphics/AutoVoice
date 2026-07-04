@@ -118,6 +118,7 @@ def convert(audio: np.ndarray, sr: int, profile_id: str,
             "-fm", str(entry.get("f0_method", "crepe")),
             "-na",  # preserve the source melody (no auto-predict F0)
             "-t", str(int(entry.get("transpose", 0))),
+            "-n", str(float(entry.get("noise_scale", 0.4))),  # lower = steadier voice
             "-o", out_wav,
         ]
         proc = subprocess.run(

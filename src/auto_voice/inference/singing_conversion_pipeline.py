@@ -73,7 +73,10 @@ class SingingConversionPipeline:
         """
         if self._separator is None:
             from ..audio.separation import VocalSeparator
-            self._separator = VocalSeparator(device=self.device)
+            self._separator = VocalSeparator(
+                device=self.device,
+                model_name=self.config.get('separation_model', 'htdemucs'),
+            )
             logger.info("Vocal separator loaded")
         return self._separator
 
@@ -96,6 +99,99 @@ class SingingConversionPipeline:
             return separator.separate(audio, sr)
         except Exception as e:
             raise SeparationError(f"Vocal separation failed: {e}")
+
+    def _convert_song_fork_hq(self, song_path, target_profile_id, vocal_volume,
+                              instrumental_volume, return_stems, preset, pitch_shift):
+        """Fork-backed conversion: stereo, native output rate.
+
+        Bypasses the two quality losses of the legacy lane for so-vits-svc-fork
+        profiles: (1) resampling the vocal through 22.05kHz (band-limits it to
+        ~11kHz vs the full-band instrumental), and (2) mono-summing. Keeps the
+        instrumental in stereo and runs the fork vocal at the native output rate
+        (the bridge returns that rate without downsampling). Mirrors
+        convert_song's result contract.
+        """
+        import librosa
+        import soundfile as sf
+        start_time = time.time()
+        target_sr = int(self._output_sample_rate)
+
+        try:
+            audio, sr = sf.read(song_path, dtype='float32', always_2d=True)  # (N, C)
+        except Exception as e:
+            raise ConversionError(f"Failed to load audio: {e}")
+        if audio.size == 0:
+            raise ConversionError("Empty audio file")
+        audio = audio.T  # (C, N)
+        if audio.shape[0] == 1:
+            audio = np.repeat(audio, 2, axis=0)   # mono source -> dual for separation
+        elif audio.shape[0] > 2:
+            audio = audio[:2]
+        if sr != target_sr:
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+            sr = target_sr
+
+        mm = self._get_model_manager()
+        try:
+            stems = self._get_separator().separate(audio, sr, mono=False)  # stereo stems
+        except Exception as e:
+            raise SeparationError(f"Vocal separation failed: {e}")
+        voc_st = np.atleast_2d(np.asarray(stems['vocals'], dtype=np.float32))
+        inst_st = np.atleast_2d(np.asarray(stems['instrumental'], dtype=np.float32))
+        voc_mono = voc_st.mean(axis=0).astype(np.float32)
+        if pitch_shift:
+            voc_mono = librosa.effects.pitch_shift(voc_mono, sr=sr, n_steps=float(pitch_shift))
+
+        # Fork inference at the native rate (svc_fork_bridge returns target_sr,
+        # so no downsample); embedding is unused by the fork engine.
+        converted = np.asarray(
+            mm.infer(voc_mono, target_profile_id, np.zeros(256, dtype=np.float32), sr),
+            dtype=np.float32,
+        )
+
+        n = min(inst_st.shape[-1], len(converted))
+        if n == 0:
+            raise ConversionError("Fork conversion produced empty audio")
+        conv = converted[:n] * float(vocal_volume)
+        inst = inst_st[:, :n] * float(instrumental_volume)
+        mixed = np.stack([inst[0] + conv, inst[1] + conv], axis=-1)  # (n, 2) stereo
+        peak = float(np.abs(mixed).max())
+        if peak > 0.95:
+            mixed = mixed * (0.95 / peak)
+
+        duration = n / sr
+        f0_original = self._extract_pitch(voc_mono, sr)
+        f0_contour = self._extract_pitch(converted[:n], sr)
+        result = {
+            'mixed_audio': mixed,
+            'sample_rate': sr,
+            'duration': duration,
+            'metadata': {
+                'preset': preset,
+                'pitch_shift': pitch_shift,
+                'vocal_volume': vocal_volume,
+                'instrumental_volume': instrumental_volume,
+                'processing_time': time.time() - start_time,
+                'target_profile_id': target_profile_id,
+                'active_model_type': 'svc_fork',
+                'speaker_id': target_profile_id,
+                'quality_post_processing': ['svc_fork_hq_stereo'],
+                'stereo': True,
+            },
+            'f0_contour': f0_contour,
+            'f0_original': f0_original,
+            'f0_sample_rate': sr,
+        }
+        if return_stems:
+            result['stems'] = {
+                'vocals': conv.astype(np.float32),
+                'instrumental': inst.mean(axis=0).astype(np.float32),
+            }
+        logger.info(
+            f"Fork HQ conversion complete: {duration:.1f}s stereo/{sr}Hz "
+            f"(profile={target_profile_id})"
+        )
+        return result
 
     def _get_model_manager(self):
         """Get or create ModelManager and load models from config.
@@ -373,6 +469,16 @@ class SingingConversionPipeline:
         # Load audio
         if not os.path.exists(song_path):
             raise ConversionError(f"Song file not found: {song_path}")
+
+        # Fork-backed profiles use a native-44.1kHz STEREO lane (no 22.05k vocal
+        # bottleneck, no mono-summing). The legacy mono path below is unchanged
+        # for every other profile.
+        from . import svc_fork_bridge
+        if svc_fork_bridge.is_available(
+                target_profile_id, self.config.get('data_dir', 'data')):
+            return self._convert_song_fork_hq(
+                song_path, target_profile_id, vocal_volume,
+                instrumental_volume, return_stems, preset, pitch_shift)
 
         try:
             audio, sr = librosa.load(song_path, sr=self._output_sample_rate, mono=True)
