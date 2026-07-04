@@ -1,0 +1,406 @@
+{
+  "f16189d9-f6a1-4eac-813a-2f89e6a92f65": {
+    "0523ababa7d04f42b9e78fe2cd99a784": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-03T21:30:34.986038+00:00",
+      "epoch": 159,
+      "id": "0523ababa7d04f42b9e78fe2cd99a784",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.10501929000020027,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 159,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "13968a68f3ca40b58523cde4ec3f3e64": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-03T22:08:51.973549+00:00",
+      "epoch": 30,
+      "id": "13968a68f3ca40b58523cde4ec3f3e64",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 1.7385688594409399,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 30,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "1c33e27fae3149a3b967d46b59b9eca7": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-03T23:20:57.995332+00:00",
+      "epoch": 370,
+      "id": "1c33e27fae3149a3b967d46b59b9eca7",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.8952974571901209,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 370,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "36cc80191760418abe918528b80e4b4b": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-03T15:56:37.827010+00:00",
+      "epoch": 370,
+      "id": "36cc80191760418abe918528b80e4b4b",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.1639192524281415,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 370,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "381491336eb74e068b14971bd383d65c": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-03T20:56:03.979925+00:00",
+      "epoch": 47,
+      "id": "381491336eb74e068b14971bd383d65c",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 5.644720792770386,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 47,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "4bea4e7985814cfc88c927f73eba9261": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-02T22:19:12.292331+00:00",
+      "epoch": 381,
+      "id": "4bea4e7985814cfc88c927f73eba9261",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.16505570980635556,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 381,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "4de87a0288dd49c59df9f4719dc282a1": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-02T13:57:43.526241+00:00",
+      "epoch": 1000,
+      "id": "4de87a0288dd49c59df9f4719dc282a1",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.07978899590671062,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 1000,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "5d4243852e664d6885252cb0427a6cdc": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-03T18:58:35.642297+00:00",
+      "epoch": 139,
+      "id": "5d4243852e664d6885252cb0427a6cdc",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.12615323119929858,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 139,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "5db573b67a1c4fceb060fee88d2974bb": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-03T23:31:22.650986+00:00",
+      "epoch": 112,
+      "id": "5db573b67a1c4fceb060fee88d2974bb",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.1025800092944077,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 112,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "72ecd2a4da8f4c9185078bf2f9d750b8": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-02T16:24:34.698714+00:00",
+      "epoch": 1000,
+      "id": "72ecd2a4da8f4c9185078bf2f9d750b8",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.10082315653562546,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 1000,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "7dd53f841ff2461ebdbb1a53d3485e26": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-02T15:53:40.843980+00:00",
+      "epoch": 500,
+      "id": "7dd53f841ff2461ebdbb1a53d3485e26",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.12190716820103782,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 500,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "86ebb97a7189496297b87e55a7ad4811": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-03T17:40:19.896372+00:00",
+      "epoch": 115,
+      "id": "86ebb97a7189496297b87e55a7ad4811",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.28058483654802496,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 115,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "97228deedcdb4559b2c214483c6d5b32": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-03T21:15:16.847431+00:00",
+      "epoch": 108,
+      "id": "97228deedcdb4559b2c214483c6d5b32",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.09983573747532708,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 108,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "a2fb8ddc6e784b6f8ece979ad8ac9ed7": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-04T00:22:42.745428+00:00",
+      "epoch": 276,
+      "id": "a2fb8ddc6e784b6f8ece979ad8ac9ed7",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 7.0900490704704735,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 276,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "b5fd1bfd511b4359b36fd13648be36e3": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-02T23:07:38.188414+00:00",
+      "epoch": 204,
+      "id": "b5fd1bfd511b4359b36fd13648be36e3",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.26422420144081116,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 204,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "be3de64946a6474d9cab883df959f81e": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-03T15:36:32.812784+00:00",
+      "epoch": 64,
+      "id": "be3de64946a6474d9cab883df959f81e",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.2902996160767295,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 64,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "c3d2869d424f4e2c80ef9d9f06278fee": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-02T17:11:31.169121+00:00",
+      "epoch": 500,
+      "id": "c3d2869d424f4e2c80ef9d9f06278fee",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.10599485465458461,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 500,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "c40c69f90f084314865d881efb84b8e1": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-03T20:29:29.975866+00:00",
+      "epoch": 140,
+      "id": "c40c69f90f084314865d881efb84b8e1",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.13014079896467073,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 140,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "c6dd580bf42545cb86f22d7f83f8475e": {
+      "active_model_type": "adapter",
+      "created_at": "2026-07-03T18:24:21.841558+00:00",
+      "epoch": 110,
+      "id": "c6dd580bf42545cb86f22d7f83f8475e",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.13200597997222627,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_adapter.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 110,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "fa4f0db3650f49ec95dd79515d606cb0": {
+      "active_model_type": "full_model",
+      "created_at": "2026-07-03T23:02:21.214213+00:00",
+      "epoch": 220,
+      "id": "fa4f0db3650f49ec95dd79515d606cb0",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.8625058707068948,
+        "model_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+        "training_epochs": 220,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "3e946252adf245c98d0bdd75f7171519": {
+      "id": "3e946252adf245c98d0bdd75f7171519",
+      "created_at": "2026-07-04T19:33:54.048515+00:00",
+      "epoch": 100,
+      "model_version": "svcfork_epoch100",
+      "version": "svcfork_epoch100",
+      "active_model_type": "svc_fork",
+      "selected_adapter": null,
+      "is_active": true,
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.0,
+        "model_path": "checkpoints/svcfork/G_100.pth",
+        "model_version": "svcfork_epoch100",
+        "runtime_artifact_manifest_path": "checkpoints/svcfork/config.json",
+        "training_epochs": 100,
+        "training_status": "ready",
+        "engine": "so-vits-svc-fork",
+        "speaker_id": "connor",
+        "config_path": "checkpoints/svcfork/config.json"
+      }
+    }
+  }
+}

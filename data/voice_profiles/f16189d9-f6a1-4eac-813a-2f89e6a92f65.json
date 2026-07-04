@@ -1,0 +1,685 @@
+{
+  "profile_id": "f16189d9-f6a1-4eac-813a-2f89e6a92f65",
+  "user_id": "operator",
+  "name": "Conor Maynard",
+  "created_from": "manual",
+  "profile_role": "target_user",
+  "audio_duration": 202.0833125,
+  "vocal_range": {
+    "min_hz": 110.31788221637464,
+    "max_hz": 809.295552241538,
+    "mean_hz": 285.20505120690785
+  },
+  "vocals_extracted": true,
+  "separated_tracks": {
+    "vocals": "/home/kp/thordrive/autofusion/autovoice/data/separated/f16189d9-f6a1-4eac-813a-2f89e6a92f65/vocals.wav",
+    "instrumental": "/home/kp/thordrive/autofusion/autovoice/data/separated/f16189d9-f6a1-4eac-813a-2f89e6a92f65/instrumental.wav"
+  },
+  "created_at": "2026-07-02T09:49:11.511101+00:00",
+  "training_quality_summary": {
+    "sample_count": 68,
+    "trainable_sample_count": 68,
+    "failing_sample_ids": [],
+    "status_counts": {
+      "pass": 68,
+      "warn": 0,
+      "fail": 0,
+      "unknown": 0
+    },
+    "total_duration_seconds": 8720.333153769843,
+    "trainable_duration_seconds": 8720.333153769843,
+    "recommendations": [],
+    "ready_for_training": true
+  },
+  "reference_audio": [
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_001/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_001",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/what_i_put_you_through_conor.wav",
+      "duration_seconds": 194.5833125,
+      "created_at": "2026-07-02T10:05:40.875976+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_002/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_002",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/r_u_crazy_trimmed.wav",
+      "duration_seconds": 218.2791836734694,
+      "created_at": "2026-07-02T10:06:04.057134+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_003/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_003",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/someone_you_loved_trimmed.wav",
+      "duration_seconds": 84.19555555555556,
+      "created_at": "2026-07-02T10:06:28.282053+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_004/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_004",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/you_broke_me_first_filtered.wav",
+      "duration_seconds": 48.75,
+      "created_at": "2026-07-02T10:06:36.665677+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_005/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_005",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/D7pRb85XgdA_clean.wav",
+      "duration_seconds": 131.22757369614513,
+      "created_at": "2026-07-02T10:22:05.229801+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_007/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_007",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/uMTGcwZxdGg_clean.wav",
+      "duration_seconds": 161.32063492063492,
+      "created_at": "2026-07-02T10:27:24.262599+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_008/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_008",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/JsfaCZp1OuQ_clean.wav",
+      "duration_seconds": 200.51591836734693,
+      "created_at": "2026-07-02T10:29:29.685808+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_009/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_009",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/FMth4qrnaBI_clean.wav",
+      "duration_seconds": 149.88480725623583,
+      "created_at": "2026-07-02T10:31:22.735140+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_010/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_010",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/rDWuqrJAyGw_clean.wav",
+      "duration_seconds": 325.1374149659864,
+      "created_at": "2026-07-02T10:43:24.634051+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_011/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_011",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/Jnm4UMEQFyc_clean.wav",
+      "duration_seconds": 198.60027210884354,
+      "created_at": "2026-07-02T10:45:36.027909+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_014/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_014",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/vbq74HHsaBA_clean.wav",
+      "duration_seconds": 145.92142857142858,
+      "created_at": "2026-07-02T10:49:01.299572+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_015/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_015",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/jIIa44jMww0_clean.wav",
+      "duration_seconds": 129.3119274376417,
+      "created_at": "2026-07-02T10:50:12.238086+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_018/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_018",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/vmgu4dRUoSQ_clean.wav",
+      "duration_seconds": 87.06750566893425,
+      "created_at": "2026-07-02T10:54:07.036942+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_019/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_019",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/AcvGfXgSu2k_clean.wav",
+      "duration_seconds": 119.72208616780046,
+      "created_at": "2026-07-02T10:55:17.289251+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_020/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_020",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/K-Lg8c1mW6s_clean.wav",
+      "duration_seconds": 133.2128798185941,
+      "created_at": "2026-07-02T10:56:38.895165+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_022/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_022",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/oJSWQf_tG2s_clean.wav",
+      "duration_seconds": 111.5718820861678,
+      "created_at": "2026-07-02T10:58:55.198601+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_026/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_026",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/_6vpNg9NUzM_sample_024_clean.wav",
+      "duration_seconds": 8.52172335600907,
+      "created_at": "2026-07-02T15:04:15.304881+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_027/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_027",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/lZLUipjIqEI_sample_027_clean.wav",
+      "duration_seconds": 122.30453514739229,
+      "created_at": "2026-07-02T15:05:44.722526+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_029/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_029",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/QBS0vL-H_kg_sample_029_clean.wav",
+      "duration_seconds": 43.95537414965986,
+      "created_at": "2026-07-02T15:08:28.073765+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_030/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_030",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/ocigG_c1JLU_sample_030_clean.wav",
+      "duration_seconds": 65.84018140589569,
+      "created_at": "2026-07-02T15:09:59.070018+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_032/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_032",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/AoQMHzkj2x0_sample_032_clean.wav",
+      "duration_seconds": 70.37968253968253,
+      "created_at": "2026-07-02T15:19:46.130840+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_033/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_033",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/dTsVONv6iWc_sample_033_clean.wav",
+      "duration_seconds": 228.4777777777778,
+      "created_at": "2026-07-02T15:21:34.799589+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_034/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_034",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/fspeBQf-4pg_sample_034_clean.wav",
+      "duration_seconds": 258.7631746031746,
+      "created_at": "2026-07-02T15:23:42.745102+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_035/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_035",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/P4oSRlQqjf8_sample_035_clean.wav",
+      "duration_seconds": 233.77850340136055,
+      "created_at": "2026-07-02T15:25:40.945188+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_036/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_036",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/shModxyYwXo_sample_036_clean.wav",
+      "duration_seconds": 261.23609977324264,
+      "created_at": "2026-07-02T15:27:48.784902+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_037/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_037",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/u_SA2QkZd24_sample_037_clean.wav",
+      "duration_seconds": 49.21469387755102,
+      "created_at": "2026-07-02T15:29:46.863887+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_038/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_038",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/jDQdotuBIHM_sample_038_clean.wav",
+      "duration_seconds": 276.60770975056687,
+      "created_at": "2026-07-02T15:34:58.019874+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_039/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_039",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/l3d-sBqrctM_sample_039_clean.wav",
+      "duration_seconds": 233.99909297052153,
+      "created_at": "2026-07-02T15:36:58.699511+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_040/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_040",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/nsSCl8UXlrY_sample_040_clean.wav",
+      "duration_seconds": 174.741768707483,
+      "created_at": "2026-07-02T15:38:50.445292+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_041/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_041",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/oO4FxgzGbxw_sample_041_clean.wav",
+      "duration_seconds": 118.97904761904762,
+      "created_at": "2026-07-02T15:40:39.451994+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_042/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_042",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/SD5EwigRcNg_sample_042_clean.wav",
+      "duration_seconds": 155.56467120181406,
+      "created_at": "2026-07-02T15:42:26.785740+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_044/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_044",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/s8yPsMyxdCc_sample_044_clean.wav",
+      "duration_seconds": 136.51011337868482,
+      "created_at": "2026-07-02T15:45:57.602859+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_045/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_045",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/voNiX4T7JlU_sample_045_clean.wav",
+      "duration_seconds": 118.56922902494331,
+      "created_at": "2026-07-02T15:48:00.895909+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_046/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_046",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/h_lb74-jNJ4_sample_046_clean.wav",
+      "duration_seconds": 36.085306122448976,
+      "created_at": "2026-07-02T15:50:08.447784+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_047/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_047",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/x-u1wHZLezc_sample_047_clean.wav",
+      "duration_seconds": 63.46013605442177,
+      "created_at": "2026-07-02T20:54:43.018814+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_048/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_048",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/hWzOHqzRCAA_sample_048_clean.wav",
+      "duration_seconds": 160.46149659863946,
+      "created_at": "2026-07-02T20:57:28.686759+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_049/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_049",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/IgCphQCkHSk_sample_049_clean.wav",
+      "duration_seconds": 154.45913832199545,
+      "created_at": "2026-07-02T20:58:42.330678+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_051/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_051",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/XqG7klPbais_sample_051_clean.wav",
+      "duration_seconds": 128.58049886621316,
+      "created_at": "2026-07-02T21:01:33.287133+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_052/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_052",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/SYgQzrZmNtc_sample_052_clean.wav",
+      "duration_seconds": 121.32993197278911,
+      "created_at": "2026-07-02T21:03:13.804102+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_054/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_054",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/2ep9WsHwYZE_sample_054_clean.wav",
+      "duration_seconds": 100.30242630385487,
+      "created_at": "2026-07-02T21:06:40.955163+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_055/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_055",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/L0TMA0GRBV0_sample_055_clean.wav",
+      "duration_seconds": 129.48954648526077,
+      "created_at": "2026-07-02T21:08:45.921373+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_056/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_056",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/qxE5QOR5nZE_sample_056_clean.wav",
+      "duration_seconds": 184.55219954648527,
+      "created_at": "2026-07-02T21:10:31.777629+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_058/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_058",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/GDr4Qayi9Us_sample_058_clean.wav",
+      "duration_seconds": 36.74557823129252,
+      "created_at": "2026-07-02T21:13:46.096071+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_060/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_060",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/xJbo0SvTnvA_sample_060_clean.wav",
+      "duration_seconds": 208.75857142857143,
+      "created_at": "2026-07-02T21:17:11.107636+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_062/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_062",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/cleanup_89b8e44b_sample_004.wav",
+      "duration_seconds": 4.435011337868481,
+      "created_at": "2026-07-02T21:18:20.148456+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_063/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_063",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/cleanup_89b8e44b_sample_005.wav",
+      "duration_seconds": 12.817414965986394,
+      "created_at": "2026-07-02T21:18:34.947879+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_065/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_065",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/cleanup_9e58314e_sample_002.wav",
+      "duration_seconds": 8.811972789115647,
+      "created_at": "2026-07-02T21:18:50.586344+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_066/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_066",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/cleanup_9e58314e_sample_006.wav",
+      "duration_seconds": 5.3986394557823125,
+      "created_at": "2026-07-02T21:18:58.132396+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_067/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_067",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/cleanup_dbf12319_sample_003.wav",
+      "duration_seconds": 19.620861678004534,
+      "created_at": "2026-07-02T21:19:19.323709+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_068/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_068",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/cleanup_9679a6ec_sample_001.wav",
+      "duration_seconds": 156.8624036281179,
+      "created_at": "2026-07-02T21:19:49.792962+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_069/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_069",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/cleanup_66afcc77_sample_005.wav",
+      "duration_seconds": 6.791836734693877,
+      "created_at": "2026-07-02T21:19:58.597530+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_070/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_070",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/cleanup_66afcc77_sample_006.wav",
+      "duration_seconds": 16.033378684807257,
+      "created_at": "2026-07-02T21:20:16.086755+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_071/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_071",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/cleanup_66afcc77_sample_007.wav",
+      "duration_seconds": 13.537233560090703,
+      "created_at": "2026-07-02T21:20:31.010401+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_072/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_072",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/9aL3rzXgd4Y_sample_072_clean.wav",
+      "duration_seconds": 50.1318820861678,
+      "created_at": "2026-07-03T17:49:37.854794+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_073/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_073",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/dovQiZtu1x8_sample_073_clean.wav",
+      "duration_seconds": 5.77015873015873,
+      "created_at": "2026-07-03T17:52:06.239344+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_074/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_074",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/edKo-6RCEq4_sample_074_clean.wav",
+      "duration_seconds": 121.35913832199546,
+      "created_at": "2026-07-03T17:53:08.665417+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_075/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_075",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/F7nt724lDnE_sample_075_clean.wav",
+      "duration_seconds": 205.78691609977324,
+      "created_at": "2026-07-03T17:54:22.395117+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_076/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_076",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/HFF3xOVaJo8_sample_076_clean.wav",
+      "duration_seconds": 128.37766439909296,
+      "created_at": "2026-07-03T17:55:26.624677+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_078/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_078",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/IWB85VDgANI_sample_078_clean.wav",
+      "duration_seconds": 154.52879818594104,
+      "created_at": "2026-07-03T17:58:29.864593+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_079/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_079",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/KWSjVsGOKbA_sample_079_clean.wav",
+      "duration_seconds": 161.71848072562358,
+      "created_at": "2026-07-03T17:59:43.600528+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_080/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_080",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/OcTD3RwdzPY_sample_080_clean.wav",
+      "duration_seconds": 119.66403628117914,
+      "created_at": "2026-07-03T18:00:50.773817+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_081/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_081",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/OwP6U0LRzQM_sample_081_clean.wav",
+      "duration_seconds": 209.32789115646258,
+      "created_at": "2026-07-03T18:02:07.927477+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_082/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_082",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/OYsQMl8WMj4_sample_082_clean.wav",
+      "duration_seconds": 124.37768707482994,
+      "created_at": "2026-07-03T18:03:12.261757+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_083/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_083",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/qehC8FH1KGU_sample_083_clean.wav",
+      "duration_seconds": 250.91487528344672,
+      "created_at": "2026-07-03T18:05:27.187577+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_084/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_084",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/SJurLuck6CI_sample_084_clean.wav",
+      "duration_seconds": 190.77938775510205,
+      "created_at": "2026-07-03T18:06:45.987914+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_085/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_085",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/TgR3Dvv6GTQ_sample_085_clean.wav",
+      "duration_seconds": 55.356371882086165,
+      "created_at": "2026-07-03T18:07:50.269797+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_086/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_086",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/h6vj8Ryu0LI_sample_086_clean.wav",
+      "duration_seconds": 286.9289795918367,
+      "created_at": "2026-07-03T18:11:38.937663+00:00"
+    },
+    {
+      "path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_087/vocals.wav",
+      "source": "training_sample",
+      "sample_id": "sample_087",
+      "source_file": "/home/kp/thordrive/autofusion/autovoice/data/filtered_vocals/f16189d9/S2Dgo7RnRnY_sample_087_clean.wav",
+      "duration_seconds": 90.03154195011338,
+      "created_at": "2026-07-03T18:12:41.512452+00:00"
+    },
+    {
+      "path": "/home/kp/thordrive/autofusion/autovoice/data/separated/f16189d9-f6a1-4eac-813a-2f89e6a92f65/vocals.wav",
+      "source": "separated_track",
+      "created_at": "2026-07-02T09:49:11.511101+00:00"
+    }
+  ],
+  "reference_audio_paths": [
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_001/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_002/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_003/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_004/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_005/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_007/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_008/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_009/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_010/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_011/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_014/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_015/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_018/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_019/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_020/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_022/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_026/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_027/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_029/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_030/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_032/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_033/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_034/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_035/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_036/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_037/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_038/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_039/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_040/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_041/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_042/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_044/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_045/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_046/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_047/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_048/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_049/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_051/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_052/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_054/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_055/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_056/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_058/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_060/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_062/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_063/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_065/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_066/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_067/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_068/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_069/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_070/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_071/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_072/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_073/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_074/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_075/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_076/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_078/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_079/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_080/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_081/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_082/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_083/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_084/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_085/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_086/vocals.wav",
+    "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_087/vocals.wav",
+    "/home/kp/thordrive/autofusion/autovoice/data/separated/f16189d9-f6a1-4eac-813a-2f89e6a92f65/vocals.wav"
+  ],
+  "reference_audio_count": 69,
+  "primary_reference_audio_path": "data/samples/f16189d9-f6a1-4eac-813a-2f89e6a92f65/sample_001/vocals.wav",
+  "reference_audio_total_duration": 8720.333153769841,
+  "training_sample_count": 68,
+  "sample_count": 68,
+  "total_training_duration": 8720.333153769841,
+  "clean_vocal_seconds": 0.0,
+  "full_model_unlock_seconds": 1800.0,
+  "full_model_remaining_seconds": 1800.0,
+  "full_model_eligible": false,
+  "has_adapter_model": true,
+  "has_full_model": true,
+  "has_trained_model": true,
+  "active_model_type": "svc_fork",
+  "training_status": "ready",
+  "last_training_error": "pre-hubert failed: \n 21%|\u2588\u2588\u258f       | 195/911 [02:44<10:23,  1.15it/s]\n 22%|\u2588\u2588\u258f       | 196/911 [02:45<10:20,  1.15it/s]\n 22%|\u2588\u2588\u258f       | 197/911 [02:46<10:17,  1.16it/s]\n 22%|\u2588\u2588\u258f       | 198/911 [02:46<10:17,  1.15it/s]\n 22%|\u2588\u2588\u258f       | 199/911 [02:47<09:08,  1.30it/s]\n 22%|\u2588\u2588\u258f       | 200/911 [02:48<09:30,  1.25it/s]\n 22%|\u2588\u2588\u258f       | 201/911 [02:49<09:52,  1.20it/s]\n 22%|\u2588\u2588\u258f       | 202/911 [02:50<10:03,  1.17it/s]\n 22%|\u2588\u2588\u258f       | 203/911 [02:51<10:04,  1.17it/s]\n 22%|\u2588\u2588\u258f       | 204/911 [02:51<10:08,  1.16it/s]\n 23%|\u2588\u2588\u258e       | 205/911 [02:52<10:20,  1.14it/s]\n 23%|\u2588\u2588\u258e       | 206/911 [02:53<10:17,  1.14it/s]",
+  "runtime_artifact_manifest_path": "data/trained_models/f16189d9-f6a1-4eac-813a-2f89e6a92f65/artifact_manifest.json",
+  "runtime_artifact_pipeline": "realtime",
+  "runtime_artifact_model_family": "realtime",
+  "runtime_artifact_compatibility_version": "1.0",
+  "selected_adapter": "unified",
+  "last_trained_at": "2026-07-03T19:22:42.734985",
+  "model_version": "svcfork_epoch100",
+  "model_path": "checkpoints/svcfork/G_100.pth",
+  "training_epochs": 100,
+  "loss_final": 7.0900490704704735,
+  "engine": "so-vits-svc-fork",
+  "speaker_id": "connor",
+  "config_path": "checkpoints/svcfork/config.json"
+}
