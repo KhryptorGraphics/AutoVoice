@@ -194,6 +194,10 @@ class ModelManager:
         self._sovits_models: Dict[str, object] = {}
         self._speaker_embeddings: Dict[str, np.ndarray] = {}
 
+        # Root under which per-profile so-vits-svc-fork registries live
+        # (<data_dir>/fork_models/<profile_id>.json); see svc_fork_bridge.
+        self._fork_data_dir = self.config.get('data_dir', 'data')
+
     def _validate_config(self, config: Dict) -> None:
         """Validate configuration values against allowed options.
 
@@ -334,6 +338,14 @@ class ModelManager:
         Raises:
             RuntimeError: If any model is not loaded
         """
+        # so-vits-svc-fork engine: profiles with a registered fork model are
+        # served by the pretrained-base fine-tune, which renders F0 into voiced
+        # harmonics correctly where the in-repo decoder cannot. Additive and
+        # opt-in per profile; every other profile falls through unchanged.
+        from . import svc_fork_bridge
+        if svc_fork_bridge.is_available(speaker_id, self._fork_data_dir):
+            return svc_fork_bridge.convert(audio, sr, speaker_id, self._fork_data_dir)
+
         if self._content_encoder is None:
             raise RuntimeError("ContentEncoder not loaded. Call load() first.")
         if self._pitch_encoder is None:
