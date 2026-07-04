@@ -54,6 +54,11 @@ class VoiceDataset(Dataset):
         # Long-window pyin also matches how serving extracts pitch.
         self._f0_cache: Dict[Path, tuple] = {}
         self._f0_hop = 512
+        # Full-file ContentVec features, precomputed to a .content.npy sidecar
+        # (on GPU in the main process — the CPU dataloader workers can't run
+        # ContentVec) and sliced per window here, so the GPU never waits on
+        # per-batch content extraction (the jumpy-utilisation bottleneck).
+        self._content_cache: Dict[Path, np.ndarray] = {}
         self.audio_files = self._scan_files()
         logger.info(f"VoiceDataset: {len(self.audio_files)} files from {data_dir}"
                     f"{' (augment=True)' if augment else ''}")
@@ -232,12 +237,35 @@ class VoiceDataset(Dataset):
         from ..models.vocoder import normalize_log_mel
         mel_db = np.clip(normalize_log_mel(log_mel), 0.0, 1.0).astype(np.float32)
 
-        return {
+        item = {
             'audio': torch.from_numpy(audio).float(),
             'mel': torch.from_numpy(mel_db).float(),
             'f0': torch.from_numpy(f0).float(),
             'path': str(audio_path),
         }
+
+        # Cached content: slice the full-file features for this window and align
+        # to the mel frame count (fixed -> batch-collatable). Absent sidecar ->
+        # the trainer extracts content itself (fallback).
+        content_full = self._content_cache.get(audio_path)
+        if content_full is None:
+            sidecar = audio_path.with_suffix('.content.npy')
+            if sidecar.exists():
+                try:
+                    content_full = np.load(sidecar)
+                    self._content_cache[audio_path] = content_full
+                except Exception:
+                    content_full = None
+        if content_full is not None and content_full.shape[0] > 0:
+            tc, span = content_full.shape[0], max(len(raw_audio), 1)
+            cs = min(int(start / span * tc), tc - 1)
+            ce = max(min(int((start + len(audio)) / span * tc), tc), cs + 1)
+            cw = torch.from_numpy(content_full[cs:ce]).float().t().unsqueeze(0)  # [1,768,t]
+            n_frames = mel_db.shape[1]
+            cw = torch.nn.functional.interpolate(cw, size=n_frames, mode='linear', align_corners=False)
+            item['content'] = cw.squeeze(0).t().contiguous()  # [n_frames, 768]
+
+        return item
 
 
 class Trainer:
@@ -336,6 +364,41 @@ class Trainer:
             self.adv_lambda_l1 = float(self.config.get('adv_lambda_l1', 45.0))
             self.adv_lambda_fm = float(self.config.get('adv_lambda_fm', 2.0))
 
+    def _precompute_content_cache(self, dataset) -> None:
+        """Extract full-file ContentVec features to .content.npy sidecars once
+        (GPU, main process). Chunked to bound memory; workers load + slice them."""
+        files = getattr(dataset, 'audio_files', None)
+        if not files:
+            return
+        import librosa
+        chunk = int(self.sample_rate * 30)  # 30s chunks
+        made = 0
+        for path in files:
+            path = Path(path)
+            sidecar = path.with_suffix('.content.npy')
+            if sidecar.exists():
+                continue
+            try:
+                audio, _ = librosa.load(str(path), sr=self.sample_rate, mono=True)
+                parts = []
+                with torch.no_grad():
+                    for i in range(0, len(audio), chunk):
+                        seg = audio[i:i + chunk]
+                        if len(seg) < 512:
+                            continue
+                        feat = self.content_encoder.extract_features(
+                            torch.from_numpy(seg).float().unsqueeze(0).to(self.device),
+                            sr=self.sample_rate,
+                        )
+                        parts.append(feat.squeeze(0).cpu().numpy().astype(np.float32))
+                if parts:
+                    np.save(sidecar, np.concatenate(parts, axis=0))
+                    made += 1
+            except Exception as exc:
+                logger.warning("Content precompute failed for %s: %s", path, exc)
+        if made:
+            logger.info("Precomputed %d ContentVec sidecars", made)
+
     def train(self, train_dir: str, val_dir: Optional[str] = None,
               resume_from: Optional[str] = None):
         """Run training loop."""
@@ -343,6 +406,9 @@ class Trainer:
             self.load_checkpoint(resume_from)
 
         train_dataset = VoiceDataset(train_dir, segment_length=32768)
+        # Precompute full-file ContentVec sidecars once (GPU, main process) so
+        # the dataloader workers never wait on content extraction.
+        self._precompute_content_cache(train_dataset)
         val_dataset = None
         if not val_dir and 0.0 < self.validation_split < 1.0 and len(train_dataset) > 1:
             val_size = max(1, int(round(len(train_dataset) * self.validation_split)))
@@ -359,7 +425,7 @@ class Trainer:
         # across epochs; without it the cache is rebuilt every epoch.
         # Per-item cost is dominated by single-threaded librosa.pyin, so
         # feed the GPU with more parallel workers and deeper prefetch.
-        loader_workers = min(8, os.cpu_count() or 4)
+        loader_workers = min(int(self.config.get('num_workers', 12)), os.cpu_count() or 4)
         train_loader = DataLoader(
             train_dataset, batch_size=actual_batch_size,
             shuffle=True, num_workers=loader_workers, pin_memory=True,
@@ -471,11 +537,17 @@ class Trainer:
 
             n_mel_frames = mel.shape[2]
 
-            # Extract content features from training audio (no grad - frozen encoder)
+            # Content features: use the precomputed cache (already aligned to
+            # mel frames) when present, else extract on the fly. Caching keeps
+            # the GPU from stalling on per-batch ContentVec extraction.
             with torch.no_grad():
-                content = self.content_encoder.extract_features(
-                    audio, sr=self.sample_rate
-                )  # [B, N, 768]
+                cached_content = batch.get('content')
+                if cached_content is not None and cached_content.numel() > 0:
+                    content = cached_content.to(self.device)  # [B, n_mel_frames, 768]
+                else:
+                    content = self.content_encoder.extract_features(
+                        audio, sr=self.sample_rate
+                    )  # [B, N, 768]
                 pitch = self.pitch_encoder(f0)  # [B, T, 256]
 
             # Align to mel frame count
