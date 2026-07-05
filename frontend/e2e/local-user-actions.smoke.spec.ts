@@ -12,7 +12,7 @@ const primaryRoutes = [
   { path: '/diarization', heading: 'Speaker Diarization' },
   { path: '/history', heading: 'Conversion History' },
   { path: '/system', heading: 'Operator Console' },
-  { path: '/help', heading: 'Live Karaoke Help' },
+  { path: '/help', heading: 'AutoVoice Help' },
 ]
 
 test.describe('Local user action coverage', () => {

@@ -224,6 +224,8 @@ def convert_from_workflow(workflow_id: str):
         'requested_pipeline': payload.get('pipeline_type'),
         'adapter_type': payload.get('adapter_type'),
         'return_stems': payload.get('return_stems', True),
+        'enable_multi_speaker': payload.get('enable_multi_speaker'),
+        'convert_backing': payload.get('convert_backing'),
     }
     try:
         result = root._get_conversion_workflow_manager().create_conversion_job(workflow_id, settings)
@@ -363,6 +365,28 @@ def convert_song():
         type_hint='bool',
     )
 
+    # Tri-state: absent -> None (use the server default inside the pipeline);
+    # a bool string -> explicit True/False override of the multi-speaker path.
+    enable_multi_speaker = root.get_param(
+        settings_data,
+        'enable_multi_speaker',
+        'enable_multi_speaker',
+        None,
+        None,
+        type_hint='bool',
+    )
+
+    # Tri-state like enable_multi_speaker: convert backing-vocal harmonies to
+    # the target voice too (experimental; fork HQ multi-speaker path only).
+    convert_backing = root.get_param(
+        settings_data,
+        'convert_backing',
+        'convert_backing',
+        None,
+        None,
+        type_hint='bool',
+    )
+
     try:
         output_quality = root.get_param(
             settings_data,
@@ -480,6 +504,8 @@ def convert_song():
                 'instrumental_volume': instrumental_volume,
                 'pitch_shift': pitch_shift,
                 'return_stems': return_stems,
+                'enable_multi_speaker': enable_multi_speaker,
+                'convert_backing': convert_backing,
                 'preset': preset,
                 'adapter_type': adapter_type,
                 'pipeline_type': requested_pipeline,

@@ -36,3 +36,8 @@ job_manager:
   max_workers: 4
   ttl_seconds: 3600
   in_progress_ttl_seconds: 7200
+
+# Vocal separation model for the conversion pipeline. 'htdemucs_ft' is the
+# fine-tuned (cleaner, ~4x slower) variant used for fork-backed HQ conversions;
+# 'htdemucs' is the faster default.
+separation_model: htdemucs_ft

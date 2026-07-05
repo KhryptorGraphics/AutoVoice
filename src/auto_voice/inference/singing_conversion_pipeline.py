@@ -25,6 +25,133 @@ class ConversionError(Exception):
     pass
 
 
+def _active_audio(vocals: np.ndarray, sample_rate: int, spans) -> np.ndarray:
+    """Concatenate the audio inside spans (active regions only).
+
+    Used for per-cluster signal measurement — zero-padded tracks would dilute
+    the statistics, so this deliberately drops the silence between spans.
+    """
+    parts = [vocals[int(s * sample_rate):int(e * sample_rate)] for s, e in spans]
+    if not parts:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(parts).astype(np.float32)
+
+
+def _voiced_fraction(audio: np.ndarray, sample_rate: int, max_s: float = 20.0) -> float:
+    """Fraction of pyin-voiced frames — the convertibility signal.
+
+    Clean monophonic melody (what the fork engine converts well) scores high
+    (calibrated leads: 0.76-0.87); harmony stacks / textures it would butcher
+    score low (calibrated: 0.14-0.51). Measured on up to ``max_s`` of active
+    audio with pyin fmin=80 fmax=1000, matching the calibration convention.
+    """
+    import librosa
+
+    a = np.asarray(audio, dtype=np.float32)[: int(max_s * sample_rate)]
+    _, voiced_flag, _ = librosa.pyin(a, fmin=80, fmax=1000, sr=sample_rate)
+    if voiced_flag is None or len(voiced_flag) == 0:
+        return 0.0
+    return float(np.mean(voiced_flag))
+
+
+def _group_notes_into_lines(notes, max_lines: int = 3):
+    """Group polyphonic note events into monophonic voice lines.
+
+    Voice-leading heuristic: notes (time-ordered) are assigned to the free
+    line with the nearest last pitch; a new line opens while under
+    ``max_lines``. Weak notes (short, or quiet relative to the loudest note)
+    are dropped first — basic-pitch emits spurious high-harmonic blips on
+    dense stacks.
+
+    Returns a list of note-event lists, one per line, longest-duration first.
+    """
+    if not notes:
+        return []
+    max_amp = max(n.get('amplitude', 1.0) for n in notes) or 1.0
+    kept = [n for n in notes
+            if (n['end'] - n['start']) >= 0.1
+            and n.get('amplitude', 1.0) >= 0.15 * max_amp]
+
+    # Drop harmonic duplicates: basic-pitch often reports a strong harmonic of
+    # a concurrent lower note as its own note; converting those would add
+    # squeaky phantom voices. A note is a dup if a concurrent note sits ~1/k
+    # of its frequency (k=2..5) and is not much quieter.
+    def _hz(n):
+        return 440.0 * 2.0 ** ((n['pitch_midi'] - 69.0) / 12.0)
+
+    def _is_harmonic_dup(note):
+        dur = note['end'] - note['start']
+        for other in kept:
+            if other is note:
+                continue
+            overlap = min(note['end'], other['end']) - max(note['start'], other['start'])
+            if overlap < 0.5 * dur:
+                continue
+            ratio = _hz(note) / _hz(other)
+            for k in (2, 3, 4, 5):
+                if abs(ratio - k) < 0.06 * k and \
+                        note.get('amplitude', 1.0) <= 1.2 * other.get('amplitude', 1.0):
+                    return True
+        return False
+
+    kept = [n for n in kept if not _is_harmonic_dup(n)]
+
+    lines = []  # {'notes': [...], 'end': float, 'pitch': float}
+    for note in sorted(kept, key=lambda n: (n['start'], n['pitch_midi'])):
+        free = [ln for ln in lines if ln['end'] <= note['start'] + 0.05]
+        if free:
+            best = min(free, key=lambda ln: abs(ln['pitch'] - note['pitch_midi']))
+        elif len(lines) < max_lines:
+            best = {'notes': [], 'end': 0.0, 'pitch': note['pitch_midi']}
+            lines.append(best)
+        else:
+            # All lines busy (dense stack): merge into the nearest-pitch line.
+            best = min(lines, key=lambda ln: abs(ln['pitch'] - note['pitch_midi']))
+        best['notes'].append(note)
+        best['end'] = max(best['end'], note['end'])
+        best['pitch'] = note['pitch_midi']
+
+    grouped = [ln['notes'] for ln in lines if ln['notes']]
+    grouped.sort(key=lambda ns: -sum(n['end'] - n['start'] for n in ns))
+    return grouped
+
+
+def _extract_line_audio(stack: np.ndarray, sample_rate: int, line_notes,
+                        n_harmonics: int = 10, width_cents: float = 40.0) -> np.ndarray:
+    """Isolate one harmony line from a stack via an STFT harmonic comb mask.
+
+    For each note, passes ±``width_cents`` bands around the first
+    ``n_harmonics`` multiples of the note's F0 during the note's time span.
+    Binary mask + ISTFT; good enough for stacked harmonies whose lines sit at
+    different pitches most of the time.
+    """
+    import librosa
+
+    n_fft, hop = 2048, 512
+    S = librosa.stft(np.asarray(stack, dtype=np.float32), n_fft=n_fft, hop_length=hop)
+    freqs = librosa.fft_frequencies(sr=sample_rate, n_fft=n_fft)
+    times = librosa.frames_to_time(np.arange(S.shape[1]), sr=sample_rate, hop_length=hop)
+    mask = np.zeros(S.shape, dtype=np.float32)
+    lo_ratio = 2.0 ** (-width_cents / 1200.0)
+    hi_ratio = 2.0 ** (width_cents / 1200.0)
+
+    for note in line_notes:
+        f0 = 440.0 * 2.0 ** ((float(note['pitch_midi']) - 69.0) / 12.0)
+        fsel = (times >= note['start']) & (times <= note['end'])
+        if not fsel.any():
+            continue
+        for k in range(1, n_harmonics + 1):
+            fk = k * f0
+            if fk >= sample_rate / 2:
+                break
+            bsel = (freqs >= fk * lo_ratio) & (freqs <= fk * hi_ratio)
+            if bsel.any():
+                mask[np.ix_(bsel, fsel)] = 1.0
+
+    line = librosa.istft(S * mask, hop_length=hop, length=len(stack))
+    return np.asarray(line, dtype=np.float32)
+
+
 # Preset configurations
 PRESETS = {
     'draft': {'n_steps': 10, 'denoise': 0.3},
@@ -53,6 +180,7 @@ class SingingConversionPipeline:
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.config = config or {}
         self._separator = None
+        self._diarizer = None
         self._voice_cloner = voice_cloner
         self._sample_rate = 22050
         # Separation and the final mix run at this rate (Demucs is natively
@@ -100,8 +228,432 @@ class SingingConversionPipeline:
         except Exception as e:
             raise SeparationError(f"Vocal separation failed: {e}")
 
+    def _get_diarizer(self):
+        """Lazy-load and cache the speaker diarizer (mirrors _get_separator)."""
+        if self._diarizer is None:
+            from ..audio.speaker_diarization import SpeakerDiarizer
+            self._diarizer = SpeakerDiarizer(device=str(self.device))
+            logger.info("Speaker diarizer loaded")
+        return self._diarizer
+
+    def _select_speaker_spans(self, result, voc_mono, sr):
+        """Partition diarization segments into lead vs backing spans.
+
+        The primary speaker (most total speaking time) is the lead. Each other
+        cluster is routed by *convertibility*, not identity (calibration
+        2026-07-04: speaker-verification embeddings cannot do identity on sung
+        audio — different-person sims 0.855/0.900 exceeded most same-person
+        pairs): a cluster whose active audio is clean monophonic melody
+        (pyin voiced fraction >= ``multi_speaker_merge_voiced_min``) merges
+        into the lead so it gets converted — leaving it original would poke
+        through as the source voice; low-voiced clusters are harmony stacks /
+        textures the fork engine would butcher (it needs clean F0), so they
+        stay original as backing. Calibrated margin: leads 0.76-0.87 vs
+        keep-cases 0.14-0.51, threshold 0.65.
+
+        Non-primary segments shorter than ``multi_speaker_min_segment_s``
+        (default 2s) are reassigned to the lead (blip policy). Lead segments
+        are never dropped — that would punch holes in the converted vocal.
+
+        Returns:
+            ``(primary_spans, backing_spans, info)`` or ``None`` when the
+            multi-speaker path should not run (<=1 speaker, or no backing
+            segment survives the gates).
+        """
+        if result.num_speakers <= 1:
+            logger.info("Multi-speaker path: only %d speaker(s), using single-stem",
+                        result.num_speakers)
+            return None
+
+        # Sorted so duration ties break deterministically (get_all_speaker_ids
+        # returns set order).
+        speakers = sorted(result.get_all_speaker_ids())
+        primary = max(speakers, key=result.get_speaker_total_duration)
+        min_seg = float(self.config.get('multi_speaker_min_segment_s', 2.0))
+        merge_voiced = float(self.config.get('multi_speaker_merge_voiced_min', 0.65))
+
+        # Convertibility role per non-primary cluster. Clusters with <1.5s of
+        # active audio skip measurement (pyin is unreliable there); the blip
+        # policy below covers them.
+        roles, voiced = {}, {}
+        merged_speakers = set()
+        for spk in speakers:
+            if spk == primary:
+                continue
+            spans = [(s.start, s.end) for s in result.get_speaker_segments(spk)]
+            active = _active_audio(voc_mono, sr, spans)
+            if len(active) < int(1.5 * sr):
+                continue
+            vf = _voiced_fraction(active, sr)
+            voiced[spk] = round(vf, 3)
+            if vf >= merge_voiced:
+                roles[spk] = 'lead_merge'
+                merged_speakers.add(spk)
+            else:
+                roles[spk] = 'backing'
+
+        primary_spans, backing_spans = [], []
+        reassigned = 0
+        for seg in result.segments:
+            span = (seg.start, seg.end)
+            if seg.speaker_id == primary or seg.speaker_id in merged_speakers:
+                primary_spans.append(span)
+            elif seg.duration < min_seg:
+                primary_spans.append(span)
+                reassigned += 1
+            else:
+                backing_spans.append(span)
+
+        # Clip backing spans against the lead's spans: overlapping regions must
+        # not land in both tracks, or that audio plays twice in the output
+        # (converted lead + original echo). The lead wins the overlap — it gets
+        # converted. Post-clip slivers < min_seg follow the blip policy (their
+        # remainder joins the lead; the region itself is already lead-covered).
+        primary_union: list = []
+        for start, end in sorted(primary_spans):
+            if primary_union and start <= primary_union[-1][1]:
+                primary_union[-1] = (primary_union[-1][0],
+                                     max(primary_union[-1][1], end))
+            else:
+                primary_union.append((start, end))
+        clipped = []
+        for start, end in backing_spans:
+            for u_start, u_end in primary_union:
+                if u_end <= start:
+                    continue
+                if u_start >= end:
+                    break
+                if u_start > start:
+                    clipped.append((start, u_start))
+                start = max(start, u_end)
+                if start >= end:
+                    break
+            if start < end:
+                clipped.append((start, end))
+        backing_spans = []
+        for start, end in clipped:
+            if end - start >= min_seg:
+                backing_spans.append((start, end))
+            else:
+                primary_spans.append((start, end))
+                reassigned += 1
+
+        if not backing_spans:
+            logger.info(
+                "Multi-speaker path: no backing survives (%d cluster(s) merged "
+                "into lead as convertible, %d blips reassigned), using single-stem",
+                len(merged_speakers), reassigned)
+            return None
+
+        info = {
+            'separator': 'diarization',
+            'num_speakers': result.num_speakers,
+            'primary_speaker': primary,
+            'backing_s': round(sum(e - s for s, e in backing_spans), 1),
+            'reassigned_blips': reassigned,
+            'roles': roles,
+            'voiced': voiced,
+        }
+        return primary_spans, backing_spans, info
+
+    def _multi_speaker_enabled(self, override: Optional[bool] = None) -> bool:
+        """Whether the per-speaker conversion path is enabled.
+
+        An explicit ``override`` (from the request/job settings) wins over
+        everything; ``None`` (the default) keeps the config-then-env resolution.
+        Config ``enable_multi_speaker_conversion`` wins when set (testable);
+        otherwise the ``ENABLE_MULTI_SPEAKER_CONVERSION`` env var flips it on for
+        ops. Off by default: the single-stem path stays the production behaviour.
+        """
+        if override is not None:
+            return bool(override)
+        cfg = self.config.get('enable_multi_speaker_conversion')
+        if cfg is not None:
+            return bool(cfg)
+        return os.environ.get('ENABLE_MULTI_SPEAKER_CONVERSION', '').strip().lower() in (
+            '1', 'true', 'yes', 'on')
+
+    def _split_lead_backing_karaoke(self, voc_mono, sr):
+        """Split lead/backing with a karaoke separation model (Mel-RoFormer).
+
+        Pre-stage to the span path: separates SIMULTANEOUS voices, so
+        harmony doubles stacked on the lead land in the backing stem instead
+        of contaminating the lead. Stacked echo-answer phrases stay in the
+        lead stem (calibrated 2026-07-05) — the span machinery downstream
+        handles those. Gates (all return ``None`` -> caller runs the span
+        path on the raw vocal):
+        - bridge/env unavailable or separation fails;
+        - negligible backing energy (< ``multi_speaker_min_backing_ratio`` of
+          the vocal energy) — effectively a solo;
+        - the backing stem looks like clean lead (voiced fraction >= the merge
+          threshold): the known failure mode of karaoke models is retaining
+          lead in the backing stem, which would poke through unconverted.
+
+        Returns ``(lead_track, backing, info)`` or ``None``.
+        """
+        import librosa
+        from . import separation_bridge
+
+        if not separation_bridge.is_available():
+            logger.info("Karaoke separator configured but uvr bridge unavailable; "
+                        "using diarization spans")
+            return None
+        try:
+            lead, backing = separation_bridge.separate_lead_backing(
+                voc_mono, sr,
+                data_dir=str(self.config.get('data_dir', 'data')),
+                model=self.config.get('multi_speaker_karaoke_model'),
+            )
+        except Exception as e:
+            logger.warning("Karaoke separation failed (%s); using diarization spans", e)
+            return None
+
+        voc_energy = float(np.sum(np.square(voc_mono, dtype=np.float64))) + 1e-12
+        backing_ratio = float(
+            np.sum(np.square(backing, dtype=np.float64)) / voc_energy)
+        min_ratio = float(self.config.get('multi_speaker_min_backing_ratio', 0.01))
+        if backing_ratio < min_ratio:
+            logger.info(
+                "Karaoke separation: negligible backing energy (%.4f < %.3f); "
+                "treating as solo", backing_ratio, min_ratio)
+            return None
+
+        intervals = librosa.effects.split(backing, top_db=40)
+        active = (np.concatenate([backing[s:e] for s, e in intervals])
+                  if len(intervals) else np.zeros(0, dtype=np.float32))
+        backing_s = float(sum(int(e) - int(s) for s, e in intervals)) / sr
+        vf = _voiced_fraction(active, sr) if len(active) >= int(1.5 * sr) else 0.0
+        merge_voiced = float(self.config.get('multi_speaker_merge_voiced_min', 0.65))
+        if vf >= merge_voiced:
+            logger.info(
+                "Karaoke separation: backing stem looks like clean lead "
+                "(voiced %.2f >= %.2f); using diarization spans", vf, merge_voiced)
+            return None
+
+        info = {
+            'separator': 'karaoke_model',
+            'backing_s': round(backing_s, 1),
+            'backing_energy_ratio': round(backing_ratio, 4),
+            'roles': {'backing_stem': 'backing'},
+            'voiced': {'backing_stem': round(vf, 3)},
+        }
+        return lead, backing, info
+
+    def _convert_backing_stack(self, backing, sr, target_profile_id, mm):
+        """Convert a polyphonic backing stack to the target voice, per line.
+
+        The mono-F0 fork engine butchers polyphony, so: basic-pitch note
+        events (via the uvr bridge) -> group into <=3 monophonic voice lines
+        -> isolate each line with a harmonic comb mask -> convert lines whose
+        extracted audio is clean melody (voiced fraction >= the calibrated
+        merge threshold and non-negligible energy) -> subtract the converted
+        lines' extracts from the stack and add the converted versions
+        (RMS-matched per line), so breaths/consonants/unmatched content stay
+        original.
+
+        Returns ``(new_backing, harmony_info)``; on any failure or when no
+        line clears the gates, returns the original stack with mode 'kept'.
+        """
+        from . import separation_bridge
+
+        merge_voiced = float(self.config.get('multi_speaker_merge_voiced_min', 0.65))
+        kept = {'mode': 'kept', 'lines_detected': 0, 'lines_converted': 0}
+        try:
+            notes = separation_bridge.polyphonic_notes(backing, sr)
+        except Exception as e:
+            logger.warning("Backing conversion: basic-pitch unavailable (%s); "
+                           "keeping backing original", e)
+            return backing, kept
+
+        lines = _group_notes_into_lines(notes)
+        kept['lines_detected'] = len(lines)
+        if not lines:
+            logger.info("Backing conversion: no harmony lines detected; keeping original")
+            return backing, kept
+
+        stack_rms = float(np.sqrt(np.mean(np.square(backing, dtype=np.float64))) + 1e-12)
+        new_backing = backing.astype(np.float32).copy()
+        converted_count = 0
+        for i, line_notes in enumerate(lines):
+            extract = _extract_line_audio(backing, sr, line_notes)
+            line_rms = float(np.sqrt(np.mean(np.square(extract, dtype=np.float64))))
+            if line_rms < 0.05 * stack_rms:
+                logger.info("Backing line %d: negligible energy, skipped", i)
+                continue
+            # Concentration gate: a real harmonic line captures a large share
+            # of the stack's energy inside its note spans; comb-filtering
+            # noise/texture captures little (and pyin can't tell — a comb
+            # mask MANUFACTURES pitch, so the voiced gate alone is blind here).
+            spans = [(n['start'], n['end']) for n in line_notes]
+            stack_active = _active_audio(backing, sr, spans)
+            extract_active = _active_audio(extract, sr, spans)
+            stack_e = float(np.sum(np.square(stack_active, dtype=np.float64))) + 1e-12
+            concentration = float(
+                np.sum(np.square(extract_active, dtype=np.float64)) / stack_e)
+            if concentration < 0.15:
+                logger.info("Backing line %d: energy concentration %.2f < 0.15 "
+                            "(not a real harmonic line), kept original", i, concentration)
+                continue
+            # Measure voicing on the span-active audio (calibration convention);
+            # the full-length extract is mostly silence, which starves pyin's
+            # 20s measurement window and would zero the gate for any song
+            # whose backing starts late.
+            vf = (_voiced_fraction(extract_active, sr)
+                  if len(extract_active) >= int(1.5 * sr) else 0.0)
+            if vf < merge_voiced:
+                logger.info("Backing line %d: voiced %.2f < %.2f, kept original", i, vf, merge_voiced)
+                continue
+            converted = np.asarray(
+                mm.infer(extract, target_profile_id, np.zeros(256, dtype=np.float32), sr),
+                dtype=np.float32,
+            )
+            n = min(len(converted), len(new_backing))
+            conv_rms = float(np.sqrt(np.mean(np.square(converted[:n], dtype=np.float64))) + 1e-12)
+            gain = line_rms / conv_rms
+            # Swap the line: remove the original extract, add the converted one.
+            new_backing[:n] = new_backing[:n] - extract[:n] + converted[:n] * gain
+            converted_count += 1
+            logger.info("Backing line %d: converted (voiced %.2f, rms %.4f)", i, vf, line_rms)
+
+        if converted_count == 0:
+            return backing, kept
+        mode = 'converted' if converted_count == len(lines) else 'partial'
+        return new_backing, {'mode': mode, 'lines_detected': len(lines),
+                             'lines_converted': converted_count}
+
+    def _convert_multi_speaker(self, voc_mono, sr, target_profile_id, mm, pitch_shift,
+                               convert_backing=None):
+        """Convert the lead vocal per-speaker; keep backing vocals as original.
+
+        Diarizes the mono vocal stem, converts the primary speaker (most total
+        speaking time — the lead) through the same model as the single-stem path,
+        and sums the untouched backing speakers back in. This avoids the muddiness
+        of converting a mixed vocal as one voice (validated on Hotline Bling / Cry
+        Me A River: 5-6x high-frequency energy).
+
+        Gates (all route back to single-stem): <=1 speaker detected; no backing
+        segment >= ``multi_speaker_min_segment_s``; lead+backing spans capture
+        less than ``multi_speaker_min_coverage`` of the vocal energy (the
+        diarizer's VAD missed content that would otherwise be silently dropped
+        from the mix). The coverage gate runs before the expensive fork call.
+
+        Returns ``(combined_vocal, info_dict)`` for the result metadata, or
+        ``None`` to tell the caller to fall back to single-stem conversion
+        (gate tripped, or any failure).
+        """
+        import librosa
+        import soundfile as sf
+        from ..audio.multi_artist_separator import build_speaker_track
+
+        tmp = None
+        try:
+            # HYBRID pre-stage (opt-in): the karaoke model and diarization
+            # spans catch ORTHOGONAL backing phenomena (calibrated 2026-07-05
+            # on Hotline Bling): the model separates SIMULTANEOUS harmony
+            # doubles from under the lead (spans structurally cannot), while
+            # stacked echo-answer phrases land in its lead stem — exactly what
+            # the span path already handles. So: strip the doubles first, run
+            # the proven span machinery on the de-doubled lead, and carry the
+            # doubles as extra backing.
+            simul_backing = None
+            karaoke_info = {}
+            voc_for_spans = voc_mono
+            if str(self.config.get('multi_speaker_separator', 'diarization')) == 'karaoke_model':
+                split = self._split_lead_backing_karaoke(voc_mono, sr)
+                if split is not None:
+                    voc_for_spans, simul_backing, karaoke_info = split
+
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                tmp = f.name
+                sf.write(tmp, voc_for_spans, sr)
+
+            result = self._get_diarizer().diarize(tmp)
+            selection = self._select_speaker_spans(result, voc_for_spans, sr)
+            if selection is None:
+                if simul_backing is None:
+                    return None
+                # De-doubled lead is a single voice: convert it whole and
+                # keep the separated doubles as the only backing.
+                info = {'num_speakers': 1, 'backing_s': 0.0}
+                primary_track = voc_for_spans
+                backing = np.zeros_like(voc_for_spans)
+            else:
+                primary_spans, backing_spans, info = selection
+                primary_track = build_speaker_track(voc_for_spans, sr, primary_spans)
+                backing = build_speaker_track(voc_for_spans, sr, backing_spans)
+
+            # Coverage gate: energy the span tracks capture vs the (de-
+            # doubled) vocal — computed BEFORE the doubles are merged back,
+            # since they are not part of this reference. Anything the
+            # diarizer's VAD missed is in neither track and would vanish from
+            # the mix — below threshold, single-stem is the safer output.
+            voc_energy = float(np.sum(np.square(voc_for_spans, dtype=np.float64)))
+            min_cov = float(self.config.get('multi_speaker_min_coverage', 0.9))
+            coverage = 1.0 if voc_energy <= 0 else float(
+                np.sum(np.square(primary_track + backing, dtype=np.float64)) / voc_energy)
+            info['coverage'] = round(coverage, 4)
+            if coverage < min_cov:
+                logger.info(
+                    "Multi-speaker path: span coverage %.3f < %.2f "
+                    "(VAD missed vocal content), using single-stem", coverage, min_cov)
+                return None
+
+            if simul_backing is not None:
+                n2 = min(len(backing), len(simul_backing))
+                backing = (backing[:n2] + simul_backing[:n2]).astype(np.float32)
+                primary_track = primary_track[:n2]
+                info['separator'] = 'karaoke_model+diarization'
+                info['backing_s'] = round(
+                    float(info.get('backing_s', 0.0)) + karaoke_info.get('backing_s', 0.0), 1)
+                info['simul_backing_s'] = karaoke_info.get('backing_s', 0.0)
+                info['backing_energy_ratio'] = karaoke_info.get('backing_energy_ratio')
+
+            # Experimental: convert the backing stack to the target voice too
+            # (per-line decomposition; falls back to keeping it original).
+            do_convert_backing = (bool(convert_backing) if convert_backing is not None
+                                  else bool(self.config.get('multi_speaker_convert_backing')))
+            info['backing_mode'] = 'kept'
+            if do_convert_backing and float(np.abs(backing).max()) > 1e-4:
+                backing, harmony = self._convert_backing_stack(
+                    backing, sr, target_profile_id, mm)
+                info['backing_mode'] = harmony['mode']
+                info['harmony_lines'] = {
+                    'detected': harmony['lines_detected'],
+                    'converted': harmony['lines_converted'],
+                }
+
+            if pitch_shift:
+                primary_track = librosa.effects.pitch_shift(
+                    primary_track, sr=sr, n_steps=float(pitch_shift))
+            converted_primary = np.asarray(
+                mm.infer(primary_track, target_profile_id, np.zeros(256, dtype=np.float32), sr),
+                dtype=np.float32,
+            )
+
+            n = min(len(converted_primary), len(backing))
+            if n == 0:
+                return None
+            combined = (converted_primary[:n] + backing[:n]).astype(np.float32)
+            logger.info(
+                "Multi-speaker conversion (%s): lead converted, %.1fs backing "
+                "%s, coverage=%.3f",
+                info.get('separator', 'diarization'),
+                info.get('backing_s', -1.0),
+                info.get('backing_mode', 'kept'), coverage)
+            return combined, info
+        except Exception as e:
+            logger.warning("Multi-speaker conversion failed, falling back to single-stem: %s", e)
+            return None
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
     def _convert_song_fork_hq(self, song_path, target_profile_id, vocal_volume,
-                              instrumental_volume, return_stems, preset, pitch_shift):
+                              instrumental_volume, return_stems, preset, pitch_shift,
+                              enable_multi_speaker=None, convert_backing=None):
         """Fork-backed conversion: stereo, native output rate.
 
         Bypasses the two quality losses of the legacy lane for so-vits-svc-fork
@@ -139,15 +691,32 @@ class SingingConversionPipeline:
         voc_st = np.atleast_2d(np.asarray(stems['vocals'], dtype=np.float32))
         inst_st = np.atleast_2d(np.asarray(stems['instrumental'], dtype=np.float32))
         voc_mono = voc_st.mean(axis=0).astype(np.float32)
-        if pitch_shift:
-            voc_mono = librosa.effects.pitch_shift(voc_mono, sr=sr, n_steps=float(pitch_shift))
 
-        # Fork inference at the native rate (svc_fork_bridge returns target_sr,
-        # so no downsample); embedding is unused by the fork engine.
-        converted = np.asarray(
-            mm.infer(voc_mono, target_profile_id, np.zeros(256, dtype=np.float32), sr),
-            dtype=np.float32,
-        )
+        # Per-speaker path (opt-in): convert only the lead vocal and keep backing
+        # vocals as-is. Returns None -> fall through to single-stem below. voc_mono
+        # stays unshifted here; the helper pitch-shifts the lead track it builds.
+        converted = None
+        multi_speaker = False
+        multi_speaker_info = None
+        if self._multi_speaker_enabled(override=enable_multi_speaker):
+            ms = self._convert_multi_speaker(
+                voc_mono, sr, target_profile_id, mm, pitch_shift,
+                convert_backing=convert_backing)
+            if ms is not None:
+                converted, multi_speaker_info = ms
+                multi_speaker = True
+
+        if converted is None:
+            voc_single = voc_mono
+            if pitch_shift:
+                voc_single = librosa.effects.pitch_shift(
+                    voc_single, sr=sr, n_steps=float(pitch_shift))
+            # Fork inference at the native rate (svc_fork_bridge returns target_sr,
+            # so no downsample); embedding is unused by the fork engine.
+            converted = np.asarray(
+                mm.infer(voc_single, target_profile_id, np.zeros(256, dtype=np.float32), sr),
+                dtype=np.float32,
+            )
 
         n = min(inst_st.shape[-1], len(converted))
         if n == 0:
@@ -177,11 +746,14 @@ class SingingConversionPipeline:
                 'speaker_id': target_profile_id,
                 'quality_post_processing': ['svc_fork_hq_stereo'],
                 'stereo': True,
+                'multi_speaker': multi_speaker,
             },
             'f0_contour': f0_contour,
             'f0_original': f0_original,
             'f0_sample_rate': sr,
         }
+        if multi_speaker_info:
+            result['metadata']['multi_speaker_info'] = multi_speaker_info
         if return_stems:
             result['stems'] = {
                 'vocals': conv.astype(np.float32),
@@ -444,7 +1016,9 @@ class SingingConversionPipeline:
                      vocal_volume: float = 1.0, instrumental_volume: float = 0.9,
                      pitch_shift: float = 0.0, return_stems: bool = False,
                      preset: str = 'balanced',
-                     preserve_techniques: bool = True) -> Dict[str, Any]:
+                     preserve_techniques: bool = True,
+                     enable_multi_speaker: Optional[bool] = None,
+                     convert_backing: Optional[bool] = None) -> Dict[str, Any]:
         """Convert a song to target voice.
 
         Args:
@@ -476,9 +1050,18 @@ class SingingConversionPipeline:
         from . import svc_fork_bridge
         if svc_fork_bridge.is_available(
                 target_profile_id, self.config.get('data_dir', 'data')):
+            # ponytail: pass enable_multi_speaker only when set so existing
+            # 7-arg stubs of _convert_song_fork_hq keep working (default None
+            # already resolves via config/env inside the fork lane).
+            fork_kwargs = {}
+            if enable_multi_speaker is not None:
+                fork_kwargs['enable_multi_speaker'] = enable_multi_speaker
+            if convert_backing is not None:
+                fork_kwargs['convert_backing'] = convert_backing
             return self._convert_song_fork_hq(
                 song_path, target_profile_id, vocal_volume,
-                instrumental_volume, return_stems, preset, pitch_shift)
+                instrumental_volume, return_stems, preset, pitch_shift,
+                **fork_kwargs)
 
         try:
             audio, sr = librosa.load(song_path, sr=self._output_sample_rate, mono=True)

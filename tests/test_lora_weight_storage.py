@@ -121,7 +121,7 @@ class TestSaveLoRAWeights:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
             wav_file.setframerate(16000)
-            wav_file.writeframes(b"\x00\x00" * 16000)
+            wav_file.writeframes(b"\x00\x00" * 56000)  # 3.5s @16k
         sample = store.add_training_sample(
             profile_id=sample_profile,
             vocals_path=str(vocals_path),

@@ -31,6 +31,62 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+def build_speaker_track(
+    vocals: np.ndarray,
+    sample_rate: int,
+    spans: List[Tuple[float, float]],
+    fade_ms: float = 50.0,
+) -> np.ndarray:
+    """Reassemble one speaker's diarization segments into a full-length track.
+
+    Each ``(start, end)`` span (seconds) is copied back to its original position
+    in a zero-filled, mono track and given a linear fade at both edges so the
+    silence->voice->silence boundaries don't click. Overlapping or touching
+    spans are unioned into one continuous span first: continuous singing must
+    not fade or double-add at diarization-window boundaries, so fades only land
+    at true silence edges. This is the per-speaker masking approach validated
+    in the background-vocal experiments (5-6x high-frequency energy vs
+    single-stem conversion of the mixed vocal).
+
+    Uses additive placement rather than ``np.maximum`` on purpose: max against a
+    zero-initialised track would clip every negative-going sample to zero
+    (half-wave rectification).
+
+    Args:
+        vocals: Mono vocal stem the spans index into.
+        sample_rate: Sample rate of ``vocals``.
+        spans: ``(start, end)`` second pairs belonging to one speaker.
+        fade_ms: Edge fade length; 0 disables fading.
+
+    Returns:
+        A ``float32`` array the same length as ``vocals``, zero everywhere the
+        speaker is not active.
+    """
+    vocals = np.asarray(vocals, dtype=np.float32)
+    track = np.zeros(len(vocals), dtype=np.float32)
+    fade = max(0, int(fade_ms * sample_rate / 1000))
+
+    # Union overlapping/touching spans (classic interval-merge sweep).
+    merged: List[Tuple[float, float]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    for start, end in merged:
+        s = max(0, int(start * sample_rate))
+        e = min(len(vocals), int(end * sample_rate))
+        if e <= s:
+            continue
+        seg = vocals[s:e].copy()
+        if fade and len(seg) > 2 * fade:
+            seg[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
+            seg[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+        track[s:e] += seg
+    return track
+
+
 @dataclass
 class ArtistSegment:
     """A segment of audio belonging to a specific artist."""

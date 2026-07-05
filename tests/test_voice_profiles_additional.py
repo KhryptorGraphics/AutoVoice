@@ -277,3 +277,4 @@ def test_add_training_sample_rejects_sub_minimum_audio(temp_store, tmp_path):
     _write_wav(ok_wav, duration_seconds=4.0)
     sample = temp_store.add_training_sample(profile_id, vocals_path=str(ok_wav), duration=4.0)
     assert sample.sample_id == "sample_001"
+

@@ -125,10 +125,12 @@ class SpeakerDiarizer:
     def _load_model(self):
         """Lazy load the speaker embedding model."""
         if self._model is None and not self._model_load_failed:
-            from transformers import Wav2Vec2FeatureExtractor, WavLMModel
-
             logger.info(f"Loading speaker embedding model: {self.model_name}")
             try:
+                # Import inside the try: a broken/absent transformers install
+                # is a load failure too and must fall back, not crash.
+                from transformers import Wav2Vec2FeatureExtractor, WavLMModel
+
                 self._feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(self.model_name)
                 self._model = WavLMModel.from_pretrained(self.model_name).to(self.device)
                 self._model.eval()
@@ -149,16 +151,18 @@ class SpeakerDiarizer:
         """Build a deterministic lightweight embedding when WavLM is unavailable."""
         waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
         if waveform.size == 0:
-            return np.zeros(512, dtype=np.float32)
+            return np.zeros(256, dtype=np.float32)
 
         # Use a fixed FFT window so fallback embeddings remain deterministic.
+        # 128 magnitude + 128 delta bins = 256-dim, matching the truncated
+        # WavLM embeddings from extract_speaker_embedding.
         spectrum = np.abs(np.fft.rfft(waveform, n=1024)).astype(np.float32)
         spectrum = np.log1p(spectrum)
-        if spectrum.shape[0] < 257:
-            spectrum = np.pad(spectrum, (0, 257 - spectrum.shape[0]))
+        if spectrum.shape[0] < 129:
+            spectrum = np.pad(spectrum, (0, 129 - spectrum.shape[0]))
 
-        magnitude = spectrum[:256]
-        delta = np.abs(np.diff(spectrum[:257])).astype(np.float32)
+        magnitude = spectrum[:128]
+        delta = np.abs(np.diff(spectrum[:129])).astype(np.float32)
         embedding = np.concatenate([magnitude, delta], axis=0)
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
         return embedding.astype(np.float32)
@@ -417,6 +421,11 @@ class SpeakerDiarizer:
             outputs = self._model(**inputs)
             hidden_states = outputs.last_hidden_state
             embedding = hidden_states.mean(dim=1).squeeze().cpu().numpy()
+
+        # Profile-compatible size: wavlm-base-plus hidden states are 768-dim;
+        # stored profile embeddings are 256-dim, so truncate BEFORE the L2
+        # normalize (normalizing first would leave a non-unit vector).
+        embedding = embedding[:256]
 
         # L2 normalize
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)

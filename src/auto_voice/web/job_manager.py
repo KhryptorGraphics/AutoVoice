@@ -124,6 +124,7 @@ class JobManager:
 
             self._emit_progress(job_id, 100, 'Complete', 'mixing')
 
+            conversion_metadata = result.get('metadata') or {}
             with self._lock:
                 job['status'] = 'completed'
                 job['completed_at'] = time.time()
@@ -132,6 +133,7 @@ class JobManager:
                 job['metrics'] = metrics
                 job['duration'] = result['duration']
                 job['sample_rate'] = result['sample_rate']
+                job['conversion_metadata'] = conversion_metadata
                 self._persist_job(job_id)
 
             completion_payload = {
@@ -143,8 +145,12 @@ class JobManager:
                 'requested_pipeline': settings.get('requested_pipeline') or settings.get('pipeline_type'),
                 'resolved_pipeline': settings.get('resolved_pipeline') or settings.get('pipeline_type'),
                 'runtime_backend': settings.get('runtime_backend', 'pytorch'),
-                'active_model_type': settings.get('active_model_type'),
+                # The pipeline's own metadata is authoritative for what actually
+                # ran (e.g. the fork lane sets active_model_type='svc_fork');
+                # fall back to the requested setting when it didn't report one.
+                'active_model_type': conversion_metadata.get('active_model_type') or settings.get('active_model_type'),
                 'adapter_type': settings.get('adapter_type'),
+                'conversion_metadata': conversion_metadata,
             }
             if stem_paths:
                 completion_payload['stem_urls'] = {
@@ -294,6 +300,9 @@ class JobManager:
             return result
 
         if resolved_pipeline == 'quality':
+            # Only the SingingConversionPipeline (fork HQ lane) honours
+            # enable_multi_speaker; the realtime/seedvc/shortcut branches above
+            # never reach this call, so no other pipeline sees the kwarg.
             result = self.singing_pipeline.convert_song(
                 song_path=job['file_path'],
                 target_profile_id=job['profile_id'],
@@ -302,6 +311,8 @@ class JobManager:
                 pitch_shift=self._float_setting(settings, 'pitch_shift', 0.0),
                 return_stems=bool(settings.get('return_stems', False)),
                 preset=settings.get('preset') or 'balanced',
+                enable_multi_speaker=settings.get('enable_multi_speaker'),
+                convert_backing=settings.get('convert_backing'),
             )
             result.setdefault('metadata', {})
             result['metadata'].update({
@@ -407,6 +418,7 @@ class JobManager:
                 except (TypeError, ValueError, ZeroDivisionError):
                     rtf = None
 
+            conversion_metadata = job.get('conversion_metadata') or {}
             status = {
                 'job_id': job_id,
                 'status': job['status'],
@@ -423,7 +435,11 @@ class JobManager:
                 or job.get('settings', {}).get('pipeline_type'),
                 'runtime_backend': job.get('settings', {}).get('runtime_backend', 'pytorch'),
                 'adapter_type': job.get('settings', {}).get('adapter_type'),
-                'active_model_type': job.get('settings', {}).get('active_model_type'),
+                # Prefer what the pipeline actually ran (fork lane reports
+                # 'svc_fork') over the requested setting.
+                'active_model_type': conversion_metadata.get('active_model_type')
+                or job.get('settings', {}).get('active_model_type'),
+                'conversion_metadata': conversion_metadata,
                 'original_audio_asset_id': job.get('settings', {}).get('original_audio_asset_id'),
                 'original_audio_url': job.get('settings', {}).get('original_audio_url'),
                 'input_file': job.get('input_file'),
@@ -674,6 +690,7 @@ class JobManager:
 
         output_url = f'/api/v1/convert/download/{job_id}' if job.get('result_path') else None
         stem_paths = job.get('stem_paths') or {}
+        conversion_metadata = job.get('conversion_metadata') or {}
         record = {
             'id': job_id,
             'status': self._public_status(job.get('status', 'queued')),
@@ -694,7 +711,9 @@ class JobManager:
             or job.get('settings', {}).get('pipeline_type'),
             'runtime_backend': job.get('settings', {}).get('runtime_backend', 'pytorch'),
             'adapter_type': job.get('settings', {}).get('adapter_type'),
-            'active_model_type': job.get('settings', {}).get('active_model_type'),
+            'active_model_type': conversion_metadata.get('active_model_type')
+            or job.get('settings', {}).get('active_model_type'),
+            'conversion_metadata': conversion_metadata,
             'original_audio_asset_id': job.get('settings', {}).get('original_audio_asset_id'),
             'original_audio_url': job.get('settings', {}).get('original_audio_url'),
             'duration': job.get('duration'),

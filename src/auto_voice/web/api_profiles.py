@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, Optional
 from flask import Blueprint, current_app, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
+from ..inference import svc_fork_bridge
 from .security import (
     annotate_asset_payload,
     api_auth_required,
@@ -66,6 +67,12 @@ def register_profile_sample_routes(api_bp: Blueprint, **deps: Any) -> None:
 
 def _dep(name: str) -> Any:
     return _deps[name]
+
+
+def _fork_data_dir() -> str:
+    """Data dir that svc_fork_bridge resolves its registry against — the same
+    DATA_DIR the rest of the web layer (and ModelManager) uses."""
+    return str(current_app.config.get('DATA_DIR', 'data'))
 
 
 # In-memory storage for samples (fallback for samples not in VoiceProfileStore)
@@ -503,10 +510,15 @@ def get_voice_profiles():
     try:
         store = _dep('get_profile_store')()
         profiles = store.list_profiles(user_id=user_id)
-        clean_profiles = [
-            _redact_profile_payload(_dep('serialize_profile_for_response')(profile), profile.get('profile_id'))
-            for profile in profiles
-        ]
+        data_dir = _fork_data_dir()
+        clean_profiles = []
+        for profile in profiles:
+            profile_id = profile.get('profile_id')
+            clean = _redact_profile_payload(
+                _dep('serialize_profile_for_response')(profile), profile_id
+            )
+            clean['fork_backed'] = svc_fork_bridge.is_available(profile_id, data_dir)
+            clean_profiles.append(clean)
         return jsonify(clean_profiles)
     except Exception as e:
         logger.error(f"Voice cloner list_profiles error: {e}", exc_info=True)
@@ -541,7 +553,9 @@ def get_voice_profile(profile_id):
         if adapter_artifact is not None:
             clean_profile['adapter_path'] = adapter_artifact['path']
 
-        return jsonify(_redact_profile_payload(clean_profile, profile_id))
+        payload = _redact_profile_payload(clean_profile, profile_id)
+        payload['fork_backed'] = svc_fork_bridge.is_available(profile_id, _fork_data_dir())
+        return jsonify(payload)
     except _dep('ProfileNotFoundError'):
         logger.info(f"Voice profile not found via exception: {profile_id}")
         return jsonify({
@@ -880,12 +894,24 @@ def get_profile_adapters(profile_id):
         })
         selected = adapter_artifact['type']
 
-    return jsonify(_redact_profile_payload({
+    data_dir = _fork_data_dir()
+    fork_backed = svc_fork_bridge.is_available(profile_id, data_dir)
+    payload = {
         'profile_id': profile_id,
         'adapters': adapters,
         'selected': selected,
         'count': len(adapters),
-    }, profile_id))
+        'fork_backed': fork_backed,
+    }
+    if fork_backed:
+        entry = svc_fork_bridge.get_fork_model(profile_id, data_dir) or {}
+        payload['fork_engine'] = {
+            'speaker': entry.get('speaker'),
+            'trained_epochs': entry.get('trained_epochs'),
+            'f0_method': entry.get('f0_method'),
+        }
+
+    return jsonify(_redact_profile_payload(payload, profile_id))
 
 
 def get_profile_model(profile_id):

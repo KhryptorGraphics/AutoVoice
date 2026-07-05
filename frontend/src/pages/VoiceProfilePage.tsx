@@ -50,6 +50,21 @@ function TrainingStatusBadge({ status }: { status?: TrainingStatusType }) {
   )
 }
 
+// Fork HQ pill — shown when a profile is served by the so-vits-svc-fork HQ lane.
+function ForkHqBadge({ className }: { className?: string }) {
+  return (
+    <span
+      title="Served by the so-vits-svc-fork HQ lane (stereo, native 44.1 kHz)"
+      className={clsx(
+        'inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-emerald-600 text-white',
+        className
+      )}
+    >
+      Fork HQ
+    </span>
+  )
+}
+
 function sampleQualityStatus(sample: TrainingSample): string {
   const metadata = {
     ...(sample.metadata ?? {}),
@@ -317,6 +332,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
           ← Back
         </button>
         <h2 className="text-2xl font-bold">{detailProfile.name || detailProfile.profile_id}</h2>
+        {detailProfile.fork_backed && <ForkHqBadge />}
       </div>
 
       <div className={clsx(
@@ -608,6 +624,19 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
             showMetrics={true}
             size="lg"
           />
+
+          {adapters?.fork_engine && (
+            <div
+              className="rounded-lg border border-emerald-800 bg-emerald-950/30 p-3 text-sm text-emerald-100"
+              data-testid="fork-engine-info"
+            >
+              <span className="font-medium">Fork engine</span>
+              {' — '}
+              speaker: {adapters.fork_engine.speaker ?? 'unknown'}
+              {typeof adapters.fork_engine.trained_epochs === 'number' && ` · epochs: ${adapters.fork_engine.trained_epochs}`}
+              {adapters.fork_engine.f0_method && ` · F0: ${adapters.fork_engine.f0_method}`}
+            </div>
+          )}
 
           {/* Profile Training Info */}
           <div className="grid grid-cols-2 gap-4 mt-4">
@@ -1330,6 +1359,7 @@ export function VoiceProfilePage() {
                 )}>
                   {profile.profile_role === 'source_artist' ? 'Source' : 'Target'}
                 </span>
+                {profile.fork_backed && <ForkHqBadge />}
                 {profile.has_trained_model && (
                   <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded-full text-xs font-medium">
                     <Award size={12} />

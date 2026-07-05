@@ -58,11 +58,11 @@ def _create_profile(local_app, profile_id: str, name: str, role: str = "target_u
 def test_sample_review_returns_quality_and_trainable_fields(local_app, local_client, tmp_path):
     store = _create_profile(local_app, "profile-a", "Profile A")
     source = tmp_path / "source.wav"
-    write_voiced_wav(source, duration_seconds=1.0, sample_rate=22050)
+    write_voiced_wav(source, duration_seconds=3.5, sample_rate=22050)
     store.add_training_sample(
         "profile-a",
         vocals_path=str(source),
-        duration=1.0,
+        duration=3.5,
         source_file="source.wav",
         extra_metadata={"source": "browser_singalong", "consent_status": "granted"},
     )

@@ -211,7 +211,7 @@ class TestSpeakerDiarizerInit:
         assert diarizer._model is None
         assert diarizer._feature_extractor is None
         assert diarizer._model_load_failed is True
-        assert embedding.shape == (512,)
+        assert embedding.shape == (256,)
         assert np.isfinite(embedding).all()
 
 

@@ -19,7 +19,7 @@ def store(tmp_path):
 
 def _wav(tmp_path):
     path = os.path.join(str(tmp_path), 'a.wav')
-    sf.write(path, (np.random.randn(22050) * 0.1).astype('float32'), 22050)
+    sf.write(path, (np.random.randn(int(22050 * 3.5)) * 0.1).astype('float32'), 22050)
     return path
 
 

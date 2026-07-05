@@ -114,6 +114,40 @@ export type OfflinePipelineType =
 
 export type LivePipelineType = 'realtime' | 'realtime_meanvc'
 
+// Per-speaker (backing vocals) conversion info reported by the fork HQ lane
+export interface MultiSpeakerInfo {
+  // Cluster fields are absent when the karaoke-model separator is used
+  num_speakers?: number
+  primary_speaker?: string
+  backing_s?: number
+  reassigned_blips?: number
+  roles?: Record<string, 'lead_merge' | 'backing' | 'backing_stem'>
+  voiced?: Record<string, number>
+  coverage?: number
+  // Which lead/backing splitter ran: 'diarization' | 'karaoke_model'
+  separator?: string
+  backing_energy_ratio?: number
+  // Backing-vocal handling: kept original, fully converted, or partial
+  backing_mode?: 'kept' | 'converted' | 'partial'
+  harmony_lines?: { detected: number; converted: number }
+}
+
+// Pipeline result metadata surfaced verbatim by the backend (conversion_metadata)
+export interface ConversionMetadata {
+  preset?: string
+  pitch_shift?: number
+  vocal_volume?: number
+  instrumental_volume?: number
+  processing_time?: number
+  target_profile_id?: string
+  active_model_type?: string
+  speaker_id?: string
+  quality_post_processing?: string[]
+  stereo?: boolean
+  multi_speaker?: boolean
+  multi_speaker_info?: MultiSpeakerInfo
+}
+
 export interface ConversionRecord {
   id: string
   status: 'queued' | 'processing' | 'in_progress' | 'complete' | 'completed' | 'error' | 'failed' | 'cancelled'
@@ -142,6 +176,8 @@ export interface ConversionRecord {
   download_url?: string
   stem_urls?: Partial<Record<'vocals' | 'instrumental', string>>
   reassemble_url?: string
+  // Pipeline result metadata (stereo HQ, multi-speaker info, actual engine)
+  conversion_metadata?: ConversionMetadata
   // Additional fields used by ConversionHistoryPage
   timestamp?: Date
   isFavorite?: boolean
@@ -225,6 +261,15 @@ export interface VoiceProfile {
   active_model_type?: ActiveModelType
   selected_adapter?: 'hq' | 'nvfp4' | 'unified' | null
   readiness?: ProfileReadiness
+  // Profile is served by the so-vits-svc-fork HQ lane (fork_models registry)
+  fork_backed?: boolean
+}
+
+// Fork engine registry info (adapters endpoint, fork-backed profiles only)
+export interface ForkEngineInfo {
+  speaker?: string
+  trained_epochs?: number
+  f0_method?: string
 }
 
 // Training status for voice profiles
@@ -254,6 +299,8 @@ export interface AdapterListResponse {
   adapters: Adapter[]
   selected: AdapterType | null
   count: number
+  fork_backed?: boolean
+  fork_engine?: ForkEngineInfo
 }
 
 export interface AdapterMetrics {
@@ -495,6 +542,8 @@ export interface TrainingConfig {
   // Prior preservation
   use_prior_preservation: boolean
   prior_loss_weight: number
+  // Decoder architecture ('svc_fork' = so-vits-svc-fork, best quality)
+  architecture?: 'diffusion_mel' | 'mel_gan' | 'svc_fork'
 }
 
 export interface TrainingPreset {
@@ -517,7 +566,10 @@ export interface TrainingConfigOptions {
     optimizer: Array<'adamw' | 'adam'>
     scheduler: Array<'exponential' | 'none'>
     lora_target_modules: string[]
+    architecture?: Array<'diffusion_mel' | 'mel_gan' | 'svc_fork'>
   }
+  // Architecture choices with display labels (from /training/config-options)
+  architectures?: Array<{ id: string; label: string; description?: string }>
   presets: TrainingPreset[]
   devices: Array<{ id: string; label: string; available: boolean; reason?: string; memory_total_gb?: number }>
   full_model_unlock_minutes: number
@@ -610,6 +662,11 @@ export interface ConversionConfig {
   preserve_techniques: boolean
   encoder_backend: EncoderBackend
   vocoder_type: VocoderType
+  // Backing vocals: null = server default (Auto), true = per-speaker
+  // conversion on, false = single-stem
+  enable_multi_speaker: boolean | null
+  // Experimental: also convert backing harmonies to the target voice
+  convert_backing: boolean | null
 }
 
 export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
@@ -622,6 +679,8 @@ export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
   preserve_techniques: true,
   encoder_backend: 'hubert',
   vocoder_type: 'hifigan',
+  enable_multi_speaker: null,
+  convert_backing: null,
 }
 
 // Quality preset details matching backend PRESETS
@@ -906,6 +965,7 @@ export interface ConversionJobResponse {
   runtime_backend?: string
   original_audio_asset_id?: string | null
   original_audio_url?: string | null
+  conversion_metadata?: ConversionMetadata
 }
 
 // Extended conversion status (from GET /convert/status/{job_id})
@@ -1405,6 +1465,8 @@ class ApiService {
       pipeline_type?: OfflinePipelineType
       adapter_type?: 'hq' | 'nvfp4' | 'unified'
       return_stems?: boolean
+      enable_multi_speaker?: boolean | null
+      convert_backing?: boolean | null
     }
   ): Promise<ConversionJobResponse> {
     const formData = new FormData()
@@ -1418,6 +1480,8 @@ class ApiService {
     if (settings?.pipeline_type) formData.append('pipeline_type', settings.pipeline_type)
     if (settings?.adapter_type) formData.append('adapter_type', settings.adapter_type)
     if (settings?.return_stems != null) formData.append('return_stems', String(settings.return_stems))
+    if (settings?.enable_multi_speaker != null) formData.append('enable_multi_speaker', String(settings.enable_multi_speaker))
+    if (settings?.convert_backing != null) formData.append('convert_backing', String(settings.convert_backing))
 
     const response = await apiFetch(`${API_BASE}/convert/song`, {
       method: 'POST',
@@ -1507,6 +1571,8 @@ class ApiService {
       pipeline_type?: OfflinePipelineType
       adapter_type?: 'hq' | 'nvfp4' | 'unified'
       return_stems?: boolean
+      enable_multi_speaker?: boolean | null
+      convert_backing?: boolean | null
     }
   ): Promise<ConversionJobResponse> {
     return this.request(`/convert/workflows/${workflowId}/convert`, {

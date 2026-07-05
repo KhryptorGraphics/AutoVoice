@@ -37,7 +37,23 @@ TRAINING_CONFIG_ENUMS = {
     'optimizer': ['adamw', 'adam'],
     'scheduler': ['exponential', 'none'],
     'lora_target_modules': ['q_proj', 'v_proj', 'k_proj', 'o_proj', 'content_encoder'],
+    'architecture': ['diffusion_mel', 'mel_gan', 'svc_fork'],
 }
+
+# Decoder architectures surfaced to the training UI. 'svc_fork' is the
+# recommended path (pretrained base fine-tuned per profile); it requires the
+# isolated svcfork conda env, so it is opt-in rather than the default.
+TRAINING_ARCHITECTURES = [
+    {'id': 'diffusion_mel', 'label': 'Diffusion (default)'},
+    {'id': 'mel_gan', 'label': 'MelGAN'},
+    {
+        'id': 'svc_fork',
+        'label': 'so-vits-svc-fork — best quality (recommended)',
+        'description': (
+            'Pretrained base fine-tuned per profile; requires the svcfork conda env'
+        ),
+    },
+]
 
 TRAINING_PRESETS = [
     {
@@ -198,6 +214,7 @@ def get_training_config_options():
         'defaults': {
             'training_mode': 'lora',
             'initialization_mode': 'scratch',
+            'architecture': 'diffusion_mel',
             'lora_rank': 8,
             'lora_alpha': 16,
             'lora_dropout': 0.1,
@@ -227,6 +244,7 @@ def get_training_config_options():
         },
         'limits': TRAINING_CONFIG_LIMITS,
         'enums': TRAINING_CONFIG_ENUMS,
+        'architectures': TRAINING_ARCHITECTURES,
         'presets': TRAINING_PRESETS,
         'devices': _available_training_devices(),
         # Accepted for config compatibility but not implemented by the

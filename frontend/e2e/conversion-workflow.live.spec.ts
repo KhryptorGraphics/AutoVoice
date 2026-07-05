@@ -19,7 +19,7 @@ test.describe('Live backend conversion workflow', () => {
       buffer: createWavBuffer(),
     })
 
-    await expect(page.getByText('Ready for Conversion')).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByText('Ready for Conversion').first()).toBeVisible({ timeout: 20_000 })
     await page.getByRole('button', { name: /Convert Workflow Song/ }).click()
 
     await expect(page.getByText('Conversion complete', { exact: true })).toBeVisible({ timeout: 15_000 })

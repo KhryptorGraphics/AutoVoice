@@ -3,6 +3,13 @@ import { Settings, Info, ChevronDown, ChevronUp } from 'lucide-react'
 import { TrainingConfig, TrainingConfigOptions, DEFAULT_TRAINING_CONFIG } from '../services/api'
 import clsx from 'clsx'
 
+// Fallback architecture choices when the backend doesn't send options.architectures.
+const FALLBACK_ARCHITECTURES: Array<{ id: string; label: string; description?: string }> = [
+  { id: 'diffusion_mel', label: 'Diffusion (default)', description: 'Diffusion mel decoder — the default AutoVoice training path.' },
+  { id: 'mel_gan', label: 'MelGAN', description: 'MelGAN decoder — faster training, lower fidelity than diffusion.' },
+  { id: 'svc_fork', label: 'so-vits-svc-fork — best quality (recommended)', description: 'Trains a so-vits-svc-fork model in the isolated svcfork environment for the highest conversion quality.' },
+]
+
 interface TrainingConfigPanelProps {
   config: TrainingConfig
   onChange: (config: TrainingConfig) => void
@@ -165,6 +172,13 @@ export function TrainingConfigPanel({
   // the common case, and operators can Expand for full control.
   const [expanded, setExpanded] = useState(false)
 
+  const architectureList = options?.architectures?.length ? options.architectures : FALLBACK_ARCHITECTURES
+  const architecture = config.architecture ?? 'diffusion_mel'
+  const selectedArchitecture = architectureList.find((item) => item.id === architecture)
+  const isSvcFork = architecture === 'svc_fork'
+  // so-vits-svc-fork is a distinct training path — LoRA hyperparameters don't apply.
+  const loraDisabled = disabled || isSvcFork
+
   const update = <K extends keyof TrainingConfig>(key: K, value: TrainingConfig[K]) => {
     onChange({ ...config, [key]: value })
   }
@@ -325,6 +339,35 @@ export function TrainingConfigPanel({
         )}
       </div>
 
+      {/* Decoder architecture */}
+      <div className="space-y-2" data-testid="training-architecture-selector">
+        <label className="text-sm text-gray-400 flex items-center gap-1">
+          Architecture
+          <span title="Decoder architecture used for this profile's model. so-vits-svc-fork gives the best conversion quality." className="cursor-help">
+            <Info size={12} className="text-gray-500" />
+          </span>
+        </label>
+        <select
+          value={architecture}
+          onChange={e => update('architecture', e.target.value as TrainingConfig['architecture'])}
+          disabled={disabled}
+          data-testid="training-architecture-select"
+          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+        >
+          {architectureList.map(item => (
+            <option key={item.id} value={item.id}>{item.label}</option>
+          ))}
+        </select>
+        {selectedArchitecture?.description && (
+          <p className="text-xs text-gray-500">{selectedArchitecture.description}</p>
+        )}
+        {isSvcFork && (
+          <p className="text-xs text-emerald-400">
+            Trains a so-vits-svc-fork model in the isolated svcfork environment; LoRA options below don't apply.
+          </p>
+        )}
+      </div>
+
       <div className="space-y-2">
         <label className="text-sm text-gray-400 flex items-center gap-1">
           Training Initialization
@@ -394,7 +437,7 @@ export function TrainingConfigPanel({
             max={64}
             step={1}
             tooltip="Higher rank = more capacity but slower training (4-16 typical)"
-            disabled={disabled}
+            disabled={loraDisabled}
           />
         )}
         <SliderInput
@@ -466,7 +509,7 @@ export function TrainingConfigPanel({
                 onChange={v => update('lora_alpha', v)}
                 min={1}
                 tooltip="Scaling factor for LoRA weights (typically 2x rank)"
-                disabled={disabled}
+                disabled={loraDisabled}
               />
               <SliderInput
                 label="LoRA Dropout"
@@ -476,7 +519,7 @@ export function TrainingConfigPanel({
                 max={0.5}
                 step={0.05}
                 tooltip="Dropout rate for LoRA layers (0.1-0.2 typical)"
-                disabled={disabled}
+                disabled={loraDisabled}
               />
             </div>
             <div className="mt-3">
@@ -494,13 +537,13 @@ export function TrainingConfigPanel({
                         : [...config.lora_target_modules, module]
                       update('lora_target_modules', modules)
                     }}
-                    disabled={disabled}
+                    disabled={loraDisabled}
                     className={clsx(
                       'px-2 py-1 text-xs rounded transition-colors',
                       config.lora_target_modules.includes(module)
                         ? 'bg-blue-600 text-white'
                         : 'bg-gray-700 text-gray-400 hover:bg-gray-600',
-                      disabled && 'opacity-50 cursor-not-allowed'
+                      loraDisabled && 'opacity-50 cursor-not-allowed'
                     )}
                   >
                     {module}

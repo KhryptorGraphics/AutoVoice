@@ -42,7 +42,7 @@ class _FakeDiarizationResult:
     num_speakers: int
 
 
-def _copy_real_audio_excerpt(source: Path, destination: Path, *, seconds: float = 3.0) -> float:
+def _copy_real_audio_excerpt(source: Path, destination: Path, *, seconds: float = 8.0) -> float:
     with sf.SoundFile(source) as audio_file:
         frames = min(len(audio_file), int(audio_file.samplerate * seconds))
         audio = audio_file.read(frames, dtype="float32", always_2d=False)
@@ -130,7 +130,7 @@ class _FixtureDiarizer:
         del diarization
         target = Path(output_path) if output_path else Path(audio_path).with_name(f"{speaker_id}_review.wav")
         with sf.SoundFile(audio_path) as audio_file:
-            frames = min(len(audio_file), int(audio_file.samplerate * 1.0))
+            frames = min(len(audio_file), int(audio_file.samplerate * 4.0))
             audio = audio_file.read(frames, dtype="float32", always_2d=False)
             sf.write(target, audio, audio_file.samplerate)
         return target

@@ -28,6 +28,9 @@ const devHttps = localHttpsConfig()
 export default defineConfig({
   plugins: [react()],
   server: {
+    // Listen on all interfaces so the UI is reachable over the local network
+    // (override with --host; the playwright live config passes its own).
+    host: process.env.VITE_DEV_HOST || '0.0.0.0',
     port: frontendPort,
     ...(devHttps ? { https: devHttps } : {}),
     proxy: {

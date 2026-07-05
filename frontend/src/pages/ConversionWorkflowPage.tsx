@@ -4,6 +4,7 @@ import clsx from 'clsx'
 
 import { AdapterSelector, AdapterBadge } from '../components/AdapterSelector'
 import { ConversionHistoryTable } from '../components/ConversionHistoryTable'
+import { ConversionSettingsPanel } from '../components/ConversionSettingsPanel'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { PresetManager } from '../components/PresetManager'
 import { StatusBanner } from '../components/StatusBanner'
@@ -256,6 +257,7 @@ export function ConversionWorkflowPage() {
   const [pipelineStatus, setPipelineStatus] = useState<Record<string, { loaded: boolean; memory_gb?: number; latency_target_ms?: number }>>({})
   const [conversionStatus, setConversionStatus] = useState<ConversionRecord | null>(null)
   const [isConverting, setIsConverting] = useState(false)
+  const [mixAudioUrl, setMixAudioUrl] = useState<string | null>(null)
   const [reviewActions, setReviewActions] = useState<Record<string, { resolution: 'use_suggested' | 'use_existing' | 'create_new'; profile_id?: string; name?: string }>>({})
   const [lastSubmissionKey, setLastSubmissionKey] = useState<string | null>(null)
 
@@ -496,6 +498,8 @@ export function ConversionWorkflowPage() {
         pipeline_type: config.pipeline_type,
         adapter_type: targetProfileDetail?.active_model_type === 'full_model' ? undefined : (selectedAdapter || undefined),
         return_stems: config.return_stems,
+        ...(config.enable_multi_speaker != null ? { enable_multi_speaker: config.enable_multi_speaker } : {}),
+        ...(config.convert_backing != null ? { convert_backing: config.convert_backing } : {}),
       })
       const pollStatus = async () => {
         const status = await apiService.getConversionStatus(result.job_id)
@@ -518,6 +522,30 @@ export function ConversionWorkflowPage() {
       setIsConverting(false)
     }
   }
+
+  // Load the finished mix into an object URL for inline playback (same
+  // authenticated fetch as the Download Mix button); revoke on cleanup.
+  useEffect(() => {
+    const isComplete = conversionStatus?.status === 'complete' || conversionStatus?.status === 'completed'
+    if (!conversionStatus || !isComplete) {
+      setMixAudioUrl(null)
+      return
+    }
+    let cancelled = false
+    let objectUrl: string | null = null
+    apiService
+      .downloadResult(conversionStatus.id)
+      .then((blob) => {
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(blob)
+        setMixAudioUrl(objectUrl)
+      })
+      .catch((error) => console.error('Failed to load conversion preview audio:', error))
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [conversionStatus?.id, conversionStatus?.status])
 
   const triggerDownload = useCallback((blob: Blob, downloadName: string) => {
     const url = URL.createObjectURL(blob)
@@ -578,6 +606,18 @@ export function ConversionWorkflowPage() {
     }
     toast.info(`Loaded settings from ${record.originalFileName || record.input_file}`)
   }, [toast])
+
+  const conversionMetadata = conversionStatus?.conversion_metadata
+  const multiSpeakerInfo = conversionMetadata?.multi_speaker_info
+  const multiSpeakerTitle = multiSpeakerInfo?.roles
+    ? Object.keys(multiSpeakerInfo.roles)
+        .map((speaker) => {
+          const voiced = multiSpeakerInfo.voiced?.[speaker]
+          const voicedText = voiced != null ? ` · voiced ${voiced.toFixed(2)}` : ''
+          return `${speaker}: ${multiSpeakerInfo.roles?.[speaker]}${voicedText}`
+        })
+        .join('\n')
+    : undefined
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -1067,6 +1107,11 @@ export function ConversionWorkflowPage() {
 
             <div className="space-y-4">
               <PresetManager currentConfig={config} onLoadPreset={handlePresetLoad} />
+              <ConversionSettingsPanel
+                config={config}
+                onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
+                disabled={isConverting}
+              />
               <div className="rounded-lg border border-gray-700 p-4 space-y-2 text-sm text-gray-300">
                 <div>Training readiness: <strong>{formatReason(workflow.training_readiness.reason)}</strong></div>
                 <div>Conversion readiness: <strong>{formatReason(workflow.conversion_readiness.reason)}</strong></div>
@@ -1111,6 +1156,40 @@ export function ConversionWorkflowPage() {
                   </button>
                 </div>
               </div>
+
+              {conversionMetadata && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {conversionMetadata.stereo && (
+                    <span className="rounded-full bg-gray-700 px-2 py-1 text-xs text-gray-200">Stereo HQ</span>
+                  )}
+                  {conversionMetadata.active_model_type === 'svc_fork' && (
+                    <span className="rounded-full bg-purple-500/20 px-2 py-1 text-xs text-purple-200">Fork engine</span>
+                  )}
+                  {conversionMetadata.multi_speaker && multiSpeakerInfo && (
+                    <span
+                      title={multiSpeakerTitle}
+                      className="rounded-full bg-blue-500/20 px-2 py-1 text-xs text-blue-100"
+                    >
+                      {multiSpeakerInfo.backing_mode === 'converted' || multiSpeakerInfo.backing_mode === 'partial'
+                        ? `Backing vocals converted (${multiSpeakerInfo.harmony_lines?.converted ?? 0}/${multiSpeakerInfo.harmony_lines?.detected ?? 0} lines)`
+                        : 'Backing vocals preserved'}
+                      {multiSpeakerInfo.num_speakers != null ? ` · ${multiSpeakerInfo.num_speakers} singers` : ''}
+                      {multiSpeakerInfo.backing_s != null ? ` · ${multiSpeakerInfo.backing_s.toFixed(1)}s backing` : ''}
+                      {multiSpeakerInfo.coverage != null ? ` · ${Math.round(multiSpeakerInfo.coverage * 100)}% coverage` : ''}
+                    </span>
+                  )}
+                  {conversionMetadata.processing_time != null && (
+                    <span className="rounded-full bg-gray-700 px-2 py-1 text-xs text-gray-200">
+                      {Math.round(conversionMetadata.processing_time)}s processing
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {mixAudioUrl && (
+                // eslint-disable-next-line jsx-a11y/media-has-caption -- converted audio has no caption track
+                <audio controls className="w-full mt-3" src={mixAudioUrl} />
+              )}
             </div>
           )}
 

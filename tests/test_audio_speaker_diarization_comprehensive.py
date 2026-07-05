@@ -418,7 +418,7 @@ class TestExtractSpeakerEmbedding:
 
         # Mock model
         mock_model = MagicMock()
-        mock_model.return_value = MagicMock(embeddings=torch.randn(1, 512))
+        mock_model.return_value = MagicMock(last_hidden_state=torch.randn(1, 49, 768))
         diarizer._model = mock_model
 
         mock_extractor = MagicMock()
@@ -427,8 +427,8 @@ class TestExtractSpeakerEmbedding:
 
         embedding = diarizer.extract_speaker_embedding(audio_path)
 
-        # Should return 512-dim embedding
-        assert embedding.shape == (512,)
+        # Should return the 256-dim truncated embedding
+        assert embedding.shape == (256,)
 
     @patch.object(__import__('auto_voice.audio.speaker_diarization', fromlist=['SpeakerDiarizer']).SpeakerDiarizer, '_load_model')
     def test_extract_embedding_with_segment(self, mock_load, diarizer, tmp_path):
@@ -438,7 +438,7 @@ class TestExtractSpeakerEmbedding:
         sf.write(str(audio_path), audio, 16000)
 
         mock_model = MagicMock()
-        mock_model.return_value = MagicMock(embeddings=torch.randn(1, 512))
+        mock_model.return_value = MagicMock(last_hidden_state=torch.randn(1, 49, 768))
         diarizer._model = mock_model
 
         mock_extractor = MagicMock()
@@ -448,7 +448,7 @@ class TestExtractSpeakerEmbedding:
         # Extract from segment
         embedding = diarizer.extract_speaker_embedding(audio_path, start=2.0, end=5.0)
 
-        assert embedding.shape == (512,)
+        assert embedding.shape == (256,)
 
     @patch.object(__import__('auto_voice.audio.speaker_diarization', fromlist=['SpeakerDiarizer']).SpeakerDiarizer, '_load_model')
     def test_embedding_l2_normalized(self, mock_load, diarizer, tmp_path):
@@ -459,8 +459,8 @@ class TestExtractSpeakerEmbedding:
 
         # Mock with non-normalized embedding
         mock_model = MagicMock()
-        raw_embedding = torch.randn(1, 512) * 10  # Large values
-        mock_model.return_value = MagicMock(embeddings=raw_embedding)
+        raw_embedding = torch.randn(1, 49, 768) * 10  # Large values
+        mock_model.return_value = MagicMock(last_hidden_state=raw_embedding)
         diarizer._model = mock_model
 
         mock_extractor = MagicMock()

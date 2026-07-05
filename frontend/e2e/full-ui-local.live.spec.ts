@@ -11,7 +11,7 @@ const routes = [
   { path: '/history', heading: 'Conversion History' },
   { path: '/system', heading: 'Operator Console' },
   { path: '/karaoke', heading: 'Live Karaoke' },
-  { path: '/help', heading: 'Live Karaoke Help' },
+  { path: '/help', heading: 'AutoVoice Help' },
 ]
 
 test.describe('Local full UI workflow coverage', () => {
@@ -105,7 +105,7 @@ test.describe('Local full UI workflow coverage', () => {
       mimeType: 'audio/wav',
       buffer: createWavBuffer(24_000, 4),
     })
-    await expect(page.getByText('Ready for Conversion')).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByText('Ready for Conversion').first()).toBeVisible({ timeout: 20_000 })
     await page.getByRole('button', { name: /Convert Workflow Song/ }).click()
     await expect(page.getByText('Conversion complete', { exact: true })).toBeVisible({ timeout: 15_000 })
 

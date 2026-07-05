@@ -21,7 +21,7 @@ import torch
 from auto_voice.storage.voice_profiles import VoiceProfileStore
 
 
-def _write_wav(path: Path, frames: int = 1600) -> None:
+def _write_wav(path: Path, frames: int = 112000) -> None:  # bytes; 3.5s @16k s16
     import wave
 
     with wave.open(str(path), "w") as wav_file:

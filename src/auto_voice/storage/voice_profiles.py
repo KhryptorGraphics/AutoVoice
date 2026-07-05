@@ -568,8 +568,12 @@ class VoiceProfileStore:
             import soundfile as _sf
             measured_duration = float(_sf.info(vocals_path).duration)
         except Exception:
-            measured_duration = float(duration or 0.0)
-        if measured_duration < MIN_TRAINING_SAMPLE_SECONDS:
+            # Unreadable file: fall back to the caller-supplied duration; with
+            # none, skip the length gate so analyze_training_sample below
+            # raises the domain "Invalid training sample audio" error instead
+            # of a misleading "too short".
+            measured_duration = float(duration) if duration else None
+        if measured_duration is not None and measured_duration < MIN_TRAINING_SAMPLE_SECONDS:
             raise ValueError(
                 f"Training sample too short ({measured_duration:.1f}s). "
                 f"Minimum {MIN_TRAINING_SAMPLE_SECONDS:.1f}s required."

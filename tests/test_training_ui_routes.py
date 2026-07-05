@@ -72,13 +72,13 @@ def _prepare_running_job(app):
     store = app.voice_cloner.store
     profile = _create_target_profile(app)
     sample_path = Path(store.samples_dir) / "sample-preview.wav"
-    _write_wav(sample_path, duration_seconds=2.0)
+    _write_wav(sample_path, duration_seconds=3.5)
 
     sample = store.add_training_sample(
         profile_id=profile["profile_id"],
         vocals_path=str(sample_path),
         source_file="sample-preview.wav",
-        duration=2.0,
+        duration=3.5,
     )
 
     manager = app._training_job_manager

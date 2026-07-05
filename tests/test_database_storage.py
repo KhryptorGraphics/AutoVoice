@@ -750,7 +750,7 @@ class TestVoiceProfileStore:
         profile_id = store.save({'name': 'Speaker'})
 
         vocals_path = os.path.join(temp_storage['root'], 'vocals.wav')
-        _write_test_wav(vocals_path, duration=1.0)
+        _write_test_wav(vocals_path, duration=3.5)
 
         sample = store.add_training_sample(
             profile_id=profile_id,
@@ -788,7 +788,7 @@ class TestVoiceProfileStore:
         # Add multiple samples
         for i in range(3):
             vocals_path = os.path.join(temp_storage['root'], f'vocals_{i}.wav')
-            _write_test_wav(vocals_path, duration=1.0 + i * 0.1)
+            _write_test_wav(vocals_path, duration=3.2 + i * 0.1)
             store.add_training_sample(profile_id, vocals_path, duration=float(i))
 
         samples = store.list_training_samples(profile_id)
@@ -805,7 +805,7 @@ class TestVoiceProfileStore:
 
         for duration in [5.0, 10.0, 15.0]:
             vocals_path = os.path.join(temp_storage['root'], f'vocals_{duration}.wav')
-            _write_test_wav(vocals_path, duration=1.0)
+            _write_test_wav(vocals_path, duration=3.5)
             store.add_training_sample(profile_id, vocals_path, duration=duration)
 
         total = store.get_total_training_duration(profile_id)
@@ -821,7 +821,7 @@ class TestVoiceProfileStore:
         profile_id = store.save({'name': 'Speaker'})
 
         vocals_path = os.path.join(temp_storage['root'], 'vocals.wav')
-        _write_test_wav(vocals_path, duration=1.0)
+        _write_test_wav(vocals_path, duration=3.5)
 
         sample = store.add_training_sample(profile_id, vocals_path)
 
@@ -1113,7 +1113,7 @@ class TestStorageIntegration:
         # 3. Add training samples
         for i in range(3):
             vocals_path = os.path.join(temp_storage['root'], f'sample_{i}.wav')
-            _write_test_wav(vocals_path, duration=1.0 + i * 0.1)
+            _write_test_wav(vocals_path, duration=3.2 + i * 0.1)
             store.add_training_sample(profile_id, vocals_path, duration=float(i + 5))
 
         # 4. Simulate training (save LoRA weights)

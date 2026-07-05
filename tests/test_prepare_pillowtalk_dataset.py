@@ -17,7 +17,7 @@ import prepare_pillowtalk_dataset as dataset_script
 
 def _write_audio(path: Path, frequency: float) -> None:
     sample_rate = 16000
-    t = np.linspace(0.0, 1.0, sample_rate, endpoint=False)
+    t = np.linspace(0.0, 4.0, 4 * sample_rate, endpoint=False)
     audio = 0.2 * np.sin(2 * np.pi * frequency * t)
     path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(path, audio.astype(np.float32), sample_rate)
