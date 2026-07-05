@@ -85,7 +85,7 @@ class SpeakerDiarizer:
     def __init__(
         self,
         device: Optional[str] = None,
-        model_name: str = "microsoft/wavlm-base-sv",
+        model_name: str = "microsoft/wavlm-base-plus",
         min_segment_duration: float = 0.5,
         max_speakers: int = 10,
         max_memory_gb: Optional[float] = None,
@@ -125,12 +125,12 @@ class SpeakerDiarizer:
     def _load_model(self):
         """Lazy load the speaker embedding model."""
         if self._model is None and not self._model_load_failed:
-            from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector
+            from transformers import Wav2Vec2FeatureExtractor, WavLMModel
 
             logger.info(f"Loading speaker embedding model: {self.model_name}")
             try:
                 self._feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(self.model_name)
-                self._model = WavLMForXVector.from_pretrained(self.model_name).to(self.device)
+                self._model = WavLMModel.from_pretrained(self.model_name).to(self.device)
                 self._model.eval()
                 logger.info("Speaker embedding model loaded")
             except Exception as exc:
@@ -415,7 +415,8 @@ class SpeakerDiarizer:
         # Extract embedding
         with torch.no_grad():
             outputs = self._model(**inputs)
-            embedding = outputs.embeddings.cpu().numpy().squeeze()
+            hidden_states = outputs.last_hidden_state
+            embedding = hidden_states.mean(dim=1).squeeze().cpu().numpy()
 
         # L2 normalize
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
@@ -508,7 +509,8 @@ class SpeakerDiarizer:
 
             with torch.inference_mode():
                 outputs = self._model(**inputs)
-                batch_embeddings = outputs.embeddings.cpu().numpy()
+                last_hidden = outputs.last_hidden_state
+                batch_embeddings = last_hidden.mean(dim=1).cpu().numpy()
 
             for idx, embedding in zip(pending_indices, batch_embeddings):
                 normalized = embedding / (np.linalg.norm(embedding) + 1e-8)
