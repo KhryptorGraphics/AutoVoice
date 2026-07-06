@@ -104,6 +104,14 @@ export default function HelpPage() {
                 target voice: harmonies are split into individual lines and converted one by one, falling
                 back to preserving any line that cannot be cleanly isolated.
               </li>
+              <li>
+                <strong>Keep original singers</strong> — for duets and features where the target artist
+                already sings on the track. Enter a time range where they sing (e.g. <code>0:00-0:12</code>)
+                and that singer&apos;s parts are kept verbatim instead of being re-converted — the range is
+                matched to whichever detected singer owns it, so all of their sections across the song are
+                preserved. Comma-separate multiple ranges; cluster ids from a result&apos;s speaker badge
+                (e.g. <code>SPEAKER_02</code>) also work.
+              </li>
             </ul>
           </div>
 
@@ -151,6 +159,15 @@ export default function HelpPage() {
               <p className="text-gray-700">
                 That is intentional when <em>Preserve backing vocals</em> is on — only the lead is converted.
                 Turn it off to convert the entire vocal.
+              </p>
+            </div>
+            <div className="border-l-4 border-yellow-400 pl-4">
+              <h4 className="font-semibold">The target artist&apos;s own parts got re-converted</h4>
+              <p className="text-gray-700">
+                On duets/features the system cannot tell that a singer already <em>is</em> the target voice.
+                Use <strong>Keep original singers</strong> with a time range where that artist sings
+                (e.g. <code>0:00-0:12</code>) and re-run — their parts are then kept verbatim. The result
+                card&apos;s speaker badge shows which detected singers were converted, merged, or preserved.
               </p>
             </div>
           </div>

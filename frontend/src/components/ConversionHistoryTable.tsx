@@ -350,6 +350,21 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
                         {record.adapter_type && record.adapter_type !== 'unified' && (
                           <AdapterBadge adapterType={record.adapter_type as 'hq' | 'nvfp4'} />
                         )}
+                        {record.conversion_metadata?.multi_speaker_info?.backing_mode && (
+                          <span className="text-[11px] text-blue-300" data-testid="history-backing-badge">
+                            {record.conversion_metadata.multi_speaker_info.backing_mode === 'kept'
+                              ? 'Backing kept'
+                              : `Backing converted ${record.conversion_metadata.multi_speaker_info.harmony_lines?.converted ?? 0}/${record.conversion_metadata.multi_speaker_info.harmony_lines?.detected ?? 0}`}
+                          </span>
+                        )}
+                        {record.conversion_metadata?.multi_speaker_info?.preserved_speakers?.length ? (
+                          <span className="text-[11px] text-emerald-300" data-testid="history-preserved-badge">
+                            Original singer kept
+                            {record.conversion_metadata.multi_speaker_info.preserved_s != null
+                              ? ` · ${record.conversion_metadata.multi_speaker_info.preserved_s.toFixed(0)}s`
+                              : ''}
+                          </span>
+                        ) : null}
                         {!record.pipeline_type && !record.adapter_type && (
                           <span className="text-xs text-gray-500">-</span>
                         )}
