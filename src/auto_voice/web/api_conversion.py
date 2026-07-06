@@ -387,6 +387,25 @@ def convert_song():
         type_hint='bool',
     )
 
+    # Diarization cluster ids whose voice is already the target (e.g. the
+    # target artist featuring on the song): kept original, never converted.
+    # JSON array or comma-separated string; identity cannot be auto-detected
+    # on singing, so this is an explicit operator choice.
+    raw_preserve = (settings_data or {}).get('preserve_speakers',
+                                             request.form.get('preserve_speakers'))
+    preserve_speakers = None
+    if raw_preserve:
+        if isinstance(raw_preserve, str):
+            try:
+                parsed = json.loads(raw_preserve)
+            except ValueError:
+                parsed = [p.strip() for p in raw_preserve.split(',')]
+            raw_preserve = parsed
+        if isinstance(raw_preserve, (list, tuple)):
+            preserve_speakers = [str(p).strip() for p in raw_preserve if str(p).strip()]
+        if not preserve_speakers:
+            preserve_speakers = None
+
     try:
         output_quality = root.get_param(
             settings_data,
@@ -506,6 +525,7 @@ def convert_song():
                 'return_stems': return_stems,
                 'enable_multi_speaker': enable_multi_speaker,
                 'convert_backing': convert_backing,
+                'preserve_speakers': preserve_speakers,
                 'preset': preset,
                 'adapter_type': adapter_type,
                 'pipeline_type': requested_pipeline,

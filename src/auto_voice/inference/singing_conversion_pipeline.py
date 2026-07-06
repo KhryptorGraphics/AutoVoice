@@ -236,8 +236,15 @@ class SingingConversionPipeline:
             logger.info("Speaker diarizer loaded")
         return self._diarizer
 
-    def _select_speaker_spans(self, result, voc_mono, sr):
+    def _select_speaker_spans(self, result, voc_mono, sr, preserve=None):
         """Partition diarization segments into lead vs backing spans.
+
+        ``preserve`` lists diarization cluster ids whose voice is already the
+        target (e.g. the target artist featuring on the song): they are
+        excluded from primary selection, never merged into the converted lead,
+        and their spans ride along as kept-original backing. Identity cannot
+        be auto-detected on singing (SV-embedding negative result 2026-07-04),
+        so this is an explicit per-request operator choice.
 
         The primary speaker (most total speaking time) is the lead. Each other
         cluster is routed by *convertibility*, not identity (calibration
@@ -268,7 +275,14 @@ class SingingConversionPipeline:
         # Sorted so duration ties break deterministically (get_all_speaker_ids
         # returns set order).
         speakers = sorted(result.get_all_speaker_ids())
-        primary = max(speakers, key=result.get_speaker_total_duration)
+        preserved = {str(s) for s in (preserve or [])} & set(speakers)
+        candidates = [s for s in speakers if s not in preserved]
+        if not candidates:
+            logger.info(
+                "Multi-speaker path: all %d cluster(s) preserved, nothing to "
+                "convert; using single-stem", len(speakers))
+            return None
+        primary = max(candidates, key=result.get_speaker_total_duration)
         min_seg = float(self.config.get('multi_speaker_min_segment_s', 2.0))
         merge_voiced = float(self.config.get('multi_speaker_merge_voiced_min', 0.65))
 
@@ -279,6 +293,9 @@ class SingingConversionPipeline:
         merged_speakers = set()
         for spk in speakers:
             if spk == primary:
+                continue
+            if spk in preserved:
+                roles[spk] = 'preserved'
                 continue
             spans = [(s.start, s.end) for s in result.get_speaker_segments(spk)]
             active = _active_audio(voc_mono, sr, spans)
@@ -292,11 +309,14 @@ class SingingConversionPipeline:
             else:
                 roles[spk] = 'backing'
 
-        primary_spans, backing_spans = [], []
+        primary_spans, backing_spans, preserved_spans = [], [], []
         reassigned = 0
         for seg in result.segments:
             span = (seg.start, seg.end)
-            if seg.speaker_id == primary or seg.speaker_id in merged_speakers:
+            if seg.speaker_id in preserved:
+                # Preserved voices never blip-reassign into the converted lead.
+                preserved_spans.append(span)
+            elif seg.speaker_id == primary or seg.speaker_id in merged_speakers:
                 primary_spans.append(span)
             elif seg.duration < min_seg:
                 primary_spans.append(span)
@@ -316,27 +336,33 @@ class SingingConversionPipeline:
                                      max(primary_union[-1][1], end))
             else:
                 primary_union.append((start, end))
-        clipped = []
-        for start, end in backing_spans:
-            for u_start, u_end in primary_union:
-                if u_end <= start:
-                    continue
-                if u_start >= end:
-                    break
-                if u_start > start:
-                    clipped.append((start, u_start))
-                start = max(start, u_end)
-                if start >= end:
-                    break
-            if start < end:
-                clipped.append((start, end))
-        backing_spans = []
-        for start, end in clipped:
+        def _clip_against_lead(spans):
+            clipped = []
+            for start, end in spans:
+                for u_start, u_end in primary_union:
+                    if u_end <= start:
+                        continue
+                    if u_start >= end:
+                        break
+                    if u_start > start:
+                        clipped.append((start, u_start))
+                    start = max(start, u_end)
+                    if start >= end:
+                        break
+                if start < end:
+                    clipped.append((start, end))
+            return clipped
+
+        kept = []
+        for start, end in _clip_against_lead(backing_spans):
             if end - start >= min_seg:
-                backing_spans.append((start, end))
+                kept.append((start, end))
             else:
                 primary_spans.append((start, end))
                 reassigned += 1
+        # Preserved slivers stay original — reassigning them would convert an
+        # already-target voice.
+        backing_spans = kept + _clip_against_lead(preserved_spans)
 
         if not backing_spans:
             logger.info(
@@ -354,6 +380,9 @@ class SingingConversionPipeline:
             'roles': roles,
             'voiced': voiced,
         }
+        if preserved:
+            info['preserved_speakers'] = sorted(preserved)
+            info['preserved_s'] = round(sum(e - s for s, e in preserved_spans), 1)
         return primary_spans, backing_spans, info
 
     def _multi_speaker_enabled(self, override: Optional[bool] = None) -> bool:
@@ -542,7 +571,7 @@ class SingingConversionPipeline:
                              'lines_converted': converted_count}
 
     def _convert_multi_speaker(self, voc_mono, sr, target_profile_id, mm, pitch_shift,
-                               convert_backing=None):
+                               convert_backing=None, preserve_speakers=None):
         """Convert the lead vocal per-speaker; keep backing vocals as original.
 
         Diarizes the mono vocal stem, converts the primary speaker (most total
@@ -588,7 +617,8 @@ class SingingConversionPipeline:
                 sf.write(tmp, voc_for_spans, sr)
 
             result = self._get_diarizer().diarize(tmp)
-            selection = self._select_speaker_spans(result, voc_for_spans, sr)
+            selection = self._select_speaker_spans(
+                result, voc_for_spans, sr, preserve=preserve_speakers)
             if selection is None:
                 if simul_backing is None:
                     return None
@@ -618,6 +648,22 @@ class SingingConversionPipeline:
                     "(VAD missed vocal content), using single-stem", coverage, min_cov)
                 return None
 
+            # Experimental: convert the backing stack to the target voice too
+            # (per-line decomposition; falls back to keeping it original).
+            do_convert_backing = (bool(convert_backing) if convert_backing is not None
+                                  else bool(self.config.get('multi_speaker_convert_backing')))
+            preserved_active = bool(info.get('preserved_speakers'))
+            info['backing_mode'] = 'kept'
+            harmony = None
+
+            if (do_convert_backing and preserved_active and simul_backing is not None
+                    and float(np.abs(simul_backing).max()) > 1e-4):
+                # The span backing now carries preserved (already-target)
+                # voices verbatim — only the karaoke-separated simultaneous
+                # doubles are safe to convert. Do it before the merge.
+                simul_backing, harmony = self._convert_backing_stack(
+                    simul_backing, sr, target_profile_id, mm)
+
             if simul_backing is not None:
                 n2 = min(len(backing), len(simul_backing))
                 backing = (backing[:n2] + simul_backing[:n2]).astype(np.float32)
@@ -628,14 +674,11 @@ class SingingConversionPipeline:
                 info['simul_backing_s'] = karaoke_info.get('backing_s', 0.0)
                 info['backing_energy_ratio'] = karaoke_info.get('backing_energy_ratio')
 
-            # Experimental: convert the backing stack to the target voice too
-            # (per-line decomposition; falls back to keeping it original).
-            do_convert_backing = (bool(convert_backing) if convert_backing is not None
-                                  else bool(self.config.get('multi_speaker_convert_backing')))
-            info['backing_mode'] = 'kept'
-            if do_convert_backing and float(np.abs(backing).max()) > 1e-4:
+            if (do_convert_backing and not preserved_active
+                    and float(np.abs(backing).max()) > 1e-4):
                 backing, harmony = self._convert_backing_stack(
                     backing, sr, target_profile_id, mm)
+            if harmony is not None:
                 info['backing_mode'] = harmony['mode']
                 info['harmony_lines'] = {
                     'detected': harmony['lines_detected'],
@@ -673,7 +716,8 @@ class SingingConversionPipeline:
 
     def _convert_song_fork_hq(self, song_path, target_profile_id, vocal_volume,
                               instrumental_volume, return_stems, preset, pitch_shift,
-                              enable_multi_speaker=None, convert_backing=None):
+                              enable_multi_speaker=None, convert_backing=None,
+                              preserve_speakers=None):
         """Fork-backed conversion: stereo, native output rate.
 
         Bypasses the two quality losses of the legacy lane for so-vits-svc-fork
@@ -721,7 +765,8 @@ class SingingConversionPipeline:
         if self._multi_speaker_enabled(override=enable_multi_speaker):
             ms = self._convert_multi_speaker(
                 voc_mono, sr, target_profile_id, mm, pitch_shift,
-                convert_backing=convert_backing)
+                convert_backing=convert_backing,
+                preserve_speakers=preserve_speakers)
             if ms is not None:
                 converted, multi_speaker_info = ms
                 multi_speaker = True
@@ -1038,7 +1083,8 @@ class SingingConversionPipeline:
                      preset: str = 'balanced',
                      preserve_techniques: bool = True,
                      enable_multi_speaker: Optional[bool] = None,
-                     convert_backing: Optional[bool] = None) -> Dict[str, Any]:
+                     convert_backing: Optional[bool] = None,
+                     preserve_speakers: Optional[list] = None) -> Dict[str, Any]:
         """Convert a song to target voice.
 
         Args:
@@ -1078,6 +1124,8 @@ class SingingConversionPipeline:
                 fork_kwargs['enable_multi_speaker'] = enable_multi_speaker
             if convert_backing is not None:
                 fork_kwargs['convert_backing'] = convert_backing
+            if preserve_speakers:
+                fork_kwargs['preserve_speakers'] = list(preserve_speakers)
             return self._convert_song_fork_hq(
                 song_path, target_profile_id, vocal_volume,
                 instrumental_volume, return_stems, preset, pitch_shift,

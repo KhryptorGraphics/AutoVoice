@@ -313,6 +313,7 @@ class JobManager:
                 preset=settings.get('preset') or 'balanced',
                 enable_multi_speaker=settings.get('enable_multi_speaker'),
                 convert_backing=settings.get('convert_backing'),
+                preserve_speakers=settings.get('preserve_speakers'),
             )
             result.setdefault('metadata', {})
             result['metadata'].update({

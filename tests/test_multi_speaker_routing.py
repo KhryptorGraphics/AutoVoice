@@ -571,6 +571,74 @@ class TestConvertBackingStack:
         assert np.array_equal(out, noise)
 
 
+class TestPreserveSpeakers:
+    def _pipeline(self, monkeypatch, segments):
+        patch_voiced(monkeypatch, 0.9)  # clean voice: would normally lead_merge
+        p = make_pipeline()
+        p._diarizer = FakeDiarizer(make_result(segments))
+        return p
+
+    def test_preserved_cluster_kept_and_excluded_from_primary(self, monkeypatch):
+        sr = 8000
+        voc = np.zeros(12 * sr, dtype=np.float32)
+        voc[:int(11.5 * sr)] = 0.5
+        # Preserved speaker has MORE total time — without preserve it would be
+        # primary; with preserve the other cluster must lead. Includes a
+        # preserved blip (<2s) that must NOT reassign into the converted lead.
+        p = self._pipeline(monkeypatch, [
+            (0.0, 6.0, 'SPEAKER_00'),
+            (6.0, 10.0, 'SPEAKER_01'),
+            (10.2, 11.4, 'SPEAKER_00'),
+        ])
+        out = p._convert_multi_speaker(voc, sr, 'pid', IdentityMM(), 0.0,
+                                       preserve_speakers=['SPEAKER_00'])
+        assert out is not None
+        combined, info = out
+        assert info['primary_speaker'] == 'SPEAKER_01'
+        assert info['roles']['SPEAKER_00'] == 'preserved'
+        assert info['preserved_speakers'] == ['SPEAKER_00']
+        assert info['preserved_s'] == 7.2
+        assert info['reassigned_blips'] == 0
+        # preserved audio rides along in the output
+        assert float(np.abs(combined[int(1 * sr):int(5 * sr)]).max()) > 0.1
+
+    def test_preserve_skips_span_backing_conversion(self, monkeypatch):
+        sr = 8000
+        voc = np.zeros(12 * sr, dtype=np.float32)
+        voc[:10 * sr] = 0.5
+        p = self._pipeline(monkeypatch, [
+            (0.0, 6.0, 'SPEAKER_00'),
+            (6.0, 10.0, 'SPEAKER_01'),
+        ])
+        called = []
+
+        def fake_stack(backing, sr_, pid, mm):
+            called.append(1)
+            return backing, {'mode': 'converted', 'lines_detected': 1,
+                             'lines_converted': 1}
+        monkeypatch.setattr(p, '_convert_backing_stack', fake_stack)
+        out = p._convert_multi_speaker(voc, sr, 'pid', IdentityMM(), 0.0,
+                                       convert_backing=True,
+                                       preserve_speakers=['SPEAKER_00'])
+        assert out is not None
+        _, info = out
+        assert not called, "span backing with preserved voices must not be re-voiced"
+        assert info['backing_mode'] == 'kept'
+
+    def test_all_clusters_preserved_falls_back(self, monkeypatch):
+        sr = 8000
+        voc = np.zeros(10 * sr, dtype=np.float32)
+        voc[:8 * sr] = 0.5
+        p = self._pipeline(monkeypatch, [
+            (0.0, 4.0, 'SPEAKER_00'),
+            (4.0, 8.0, 'SPEAKER_01'),
+        ])
+        out = p._convert_multi_speaker(
+            voc, sr, 'pid', IdentityMM(), 0.0,
+            preserve_speakers=['SPEAKER_00', 'SPEAKER_01'])
+        assert out is None
+
+
 class TestConvertBackingWiring:
     def test_flag_off_by_default(self, monkeypatch):
         sr = 8000
