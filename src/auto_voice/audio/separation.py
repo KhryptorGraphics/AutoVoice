@@ -4,6 +4,7 @@ No fallback behavior - raises RuntimeError if Demucs is unavailable.
 """
 import logging
 import gc
+import os
 from typing import Dict, Optional
 
 import numpy as np
@@ -17,6 +18,14 @@ get_model = None
 apply_model = None
 
 
+def recommended_model_name() -> str:
+    """Recommended Demucs model for production separation quality.
+
+    Override with the AUTOVOICE_SEPARATION_MODEL environment variable.
+    """
+    return os.environ.get('AUTOVOICE_SEPARATION_MODEL', 'htdemucs_ft')
+
+
 class VocalSeparator:
     """Separates vocals from instrumental using Demucs HTDemucs.
 
@@ -25,7 +34,8 @@ class VocalSeparator:
     """
 
     def __init__(self, device=None, model_name: str = 'htdemucs',
-                 segment: Optional[float] = None):
+                 segment: Optional[float] = None, shifts: int = 1,
+                 overlap: Optional[float] = None):
         """Initialize VocalSeparator.
 
         Args:
@@ -33,6 +43,10 @@ class VocalSeparator:
             model_name: Demucs model name (e.g. 'htdemucs', 'htdemucs_ft').
             segment: Segment length in seconds for chunked processing.
                      Lower values use less GPU memory. None uses model default.
+            shifts: Number of random shifts for shift equivariance averaging.
+                    1 = disabled (demucs default). Higher improves quality,
+                    linearly slower.
+            overlap: Segment overlap fraction. None uses demucs default (0.25).
 
         Raises:
             RuntimeError: If demucs package is not installed.
@@ -74,6 +88,8 @@ class VocalSeparator:
         self.device = resolved_device
         self.model_name = model_name
         self.segment = segment
+        self.shifts = shifts
+        self.overlap = overlap
         self._model = None
         self._apply_model = apply_model
         self._get_model = get_model
@@ -181,7 +197,12 @@ class VocalSeparator:
         apply_kwargs = {}
         if self.segment is not None:
             apply_kwargs['segment'] = self.segment
-            # Let demucs use its default overlap (0.25) - don't override
+        # ponytail: only pass non-defaults so mocked-backend tests asserting
+        # exact kwargs keep passing; demucs defaults (shifts=1, overlap=0.25) apply otherwise
+        if self.shifts > 1:
+            apply_kwargs['shifts'] = self.shifts
+        if self.overlap is not None:
+            apply_kwargs['overlap'] = self.overlap
 
         with torch.no_grad():
             sources = self._apply_model(

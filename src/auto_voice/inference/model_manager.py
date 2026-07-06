@@ -368,11 +368,21 @@ class ModelManager:
                 audio_tensor, sr=sr
             )  # [1, N, 768]
 
-        # 2. Extract F0 (HOW it's being sung - original artist's melody)
-        f0, voiced, _ = librosa.pyin(
-            audio, fmin=50, fmax=1100, sr=sr, hop_length=512
+        # 2. Extract F0 (HOW it's being sung - original artist's melody).
+        # Quality-ordered chain: rmvpe -> torchcrepe -> pyin. The old in-repo
+        # RMVPEPitchExtractor shared zero state-dict keys with
+        # models/pretrained/rmvpe.pt (strict=False silently loaded nothing),
+        # so f0_extractor wraps the vendored seed-vc implementation whose
+        # architecture matches that checkpoint exactly.
+        from .f0_extractor import extract_f0
+        f0, f0_method = extract_f0(
+            audio, sr=sr, hop_length=512,
+            method=self.config.get('f0_method', 'rmvpe'),
+            device=self.device,
+            rmvpe_model_path=self.config.get('rmvpe_model_path'),
+            rmvpe_is_half=bool(self.config.get('rmvpe_is_half', False)),
         )
-        f0 = np.nan_to_num(f0, nan=0.0)
+        logger.debug("F0 extracted via %s (%d frames)", f0_method, len(f0))
         f0_tensor = torch.from_numpy(f0).float().unsqueeze(0).to(self.device)  # [1, T]
         # 5. SoVitsSvc inference -> mel spectrogram
         sovits = self._sovits_models[speaker_id]

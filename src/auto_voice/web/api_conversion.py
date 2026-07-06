@@ -45,6 +45,79 @@ def _parse_preserve_speakers(raw) -> list[str] | None:
     return tokens or None
 
 
+_QUALITY_OVERRIDE_BOOL_KEYS = frozenset({
+    'enable_nsf_harmonic_enhancement',
+    'enable_pupu_vocoder_refinement',
+    'enable_hq_super_resolution',
+    'enable_dereverb',
+    'enable_consonant_passthrough',
+    'enable_loudness_transfer',
+    'enable_f0_postprocess',
+})
+_QUALITY_OVERRIDE_FLOAT_KEYS = frozenset({
+    'dereverb_strength',
+    'consonant_passthrough_mix',
+})
+_QUALITY_OVERRIDE_F0_METHODS = frozenset({'rmvpe', 'pyin'})
+
+
+def _parse_quality_overrides(raw) -> tuple[Dict[str, Any] | None, str | None]:
+    """Sanitize the optional per-request quality_overrides payload.
+
+    Accepts a JSON object (or its string form from a multipart form field)
+    containing only the whitelisted per-request quality toggles. Booleans are
+    coerced from true/false/'1'/'0', floats are range-checked to 0..1 and
+    f0_method is whitelisted. Returns (sanitized_dict_or_None, error_or_None);
+    unknown keys are rejected rather than silently dropped.
+    """
+    if raw is None or raw == '':
+        return None, None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None, 'Invalid quality_overrides JSON'
+    if not isinstance(raw, dict):
+        return None, 'quality_overrides must be a JSON object'
+
+    unknown = sorted(
+        set(raw)
+        - _QUALITY_OVERRIDE_BOOL_KEYS
+        - _QUALITY_OVERRIDE_FLOAT_KEYS
+        - {'f0_method'}
+    )
+    if unknown:
+        return None, f"Unknown quality_overrides keys: {', '.join(unknown)}"
+
+    sanitized: Dict[str, Any] = {}
+    for key, value in raw.items():
+        if key in _QUALITY_OVERRIDE_BOOL_KEYS:
+            if isinstance(value, bool):
+                sanitized[key] = value
+            elif isinstance(value, (int, float)) and value in (0, 1):
+                sanitized[key] = bool(value)
+            elif isinstance(value, str) and value.strip().lower() in ('true', 'false', '1', '0'):
+                sanitized[key] = value.strip().lower() in ('true', '1')
+            else:
+                return None, f'quality_overrides.{key} must be a boolean'
+        elif key in _QUALITY_OVERRIDE_FLOAT_KEYS:
+            if isinstance(value, bool):
+                return None, f'quality_overrides.{key} must be a number between 0 and 1'
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return None, f'quality_overrides.{key} must be a number between 0 and 1'
+            if not 0.0 <= numeric <= 1.0:
+                return None, f'quality_overrides.{key} must be between 0 and 1'
+            sanitized[key] = numeric
+        else:  # f0_method
+            method = value.strip().lower() if isinstance(value, str) else None
+            if method not in _QUALITY_OVERRIDE_F0_METHODS:
+                return None, "quality_overrides.f0_method must be one of: 'rmvpe', 'pyin'"
+            sanitized[key] = method
+    return (sanitized or None), None
+
+
 def _register_conversion_original_asset(
     path: str,
     *,
@@ -292,6 +365,9 @@ def convert_from_workflow(workflow_id: str):
     """Queue a conversion job using the source song and resolved target profile from a workflow."""
     root = _root()
     payload = request.get_json(silent=True) or {}
+    quality_overrides, quality_error = _parse_quality_overrides(payload.get('quality_overrides'))
+    if quality_error:
+        return root.validation_error_response(quality_error)
     settings = {
         'preset': payload.get('preset'),
         'vocal_volume': payload.get('vocal_volume'),
@@ -305,6 +381,8 @@ def convert_from_workflow(workflow_id: str):
         'convert_backing': payload.get('convert_backing'),
         'preserve_speakers': _parse_preserve_speakers(payload.get('preserve_speakers')),
     }
+    if quality_overrides:
+        settings['quality_overrides'] = quality_overrides
     try:
         result = root._get_conversion_workflow_manager().create_conversion_job(workflow_id, settings)
     except KeyError as exc:
@@ -477,6 +555,14 @@ def convert_song():
         (settings_data or {}).get('preserve_speakers',
                                   request.form.get('preserve_speakers')))
 
+    # Optional per-request quality toggles (JSON object in the
+    # `quality_overrides` form field, or nested in the settings JSON).
+    quality_overrides, quality_error = _parse_quality_overrides(
+        (settings_data or {}).get('quality_overrides',
+                                  request.form.get('quality_overrides')))
+    if quality_error:
+        return root.validation_error_response(quality_error)
+
     try:
         output_quality = root.get_param(
             settings_data,
@@ -621,6 +707,8 @@ def convert_song():
                 'original_audio_asset_id': original_asset_id,
                 'original_audio_url': original_audio_url,
             }
+            if quality_overrides:
+                settings_dict['quality_overrides'] = quality_overrides
             job_id = job_manager.create_job(source_path, profile_id, settings_dict)
             if original_asset:
                 try:
@@ -698,6 +786,11 @@ def convert_song():
                 'original_audio_url': original_audio_url,
             })
         else:
+            # Forward quality overrides only when present so older
+            # convert_song signatures (and test stubs) stay compatible.
+            convert_kwargs = {}
+            if quality_overrides:
+                convert_kwargs['quality_overrides'] = quality_overrides
             result = singing_pipeline.convert_song(
                 song_path=source_path,
                 target_profile_id=profile_id,
@@ -706,6 +799,7 @@ def convert_song():
                 pitch_shift=pitch_shift,
                 return_stems=return_stems,
                 preset=preset,
+                **convert_kwargs,
             )
             result.setdefault('metadata', {})
             result['metadata'].update({

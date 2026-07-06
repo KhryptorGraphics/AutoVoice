@@ -804,7 +804,7 @@ class SingingConversionPipeline:
     def _convert_song_fork_hq(self, song_path, target_profile_id, vocal_volume,
                               instrumental_volume, return_stems, preset, pitch_shift,
                               enable_multi_speaker=None, convert_backing=None,
-                              preserve_speakers=None):
+                              preserve_speakers=None, quality_overrides=None):
         """Fork-backed conversion: stereo, native output rate.
 
         Bypasses the two quality losses of the legacy lane for so-vits-svc-fork
@@ -843,6 +843,17 @@ class SingingConversionPipeline:
         inst_st = np.atleast_2d(np.asarray(stems['instrumental'], dtype=np.float32))
         voc_mono = voc_st.mean(axis=0).astype(np.float32)
 
+        # Per-request quality settings (config defaults + sanitized overrides).
+        q = self._resolve_quality_settings(quality_overrides)
+        pre_stages = []
+        if q['enable_dereverb']:
+            try:
+                from ..audio.dereverb import dereverb_vocals
+                voc_mono = dereverb_vocals(voc_mono, sr, strength=q['dereverb_strength'])
+                pre_stages.append('dereverb')
+            except Exception as e:
+                logger.warning(f"De-reverb failed, using raw vocals: {e}")
+
         # Per-speaker path (opt-in): convert only the lead vocal and keep backing
         # vocals as-is. Returns None -> fall through to single-stem below. voc_mono
         # stays unshifted here; the helper pitch-shifts the lead track it builds.
@@ -873,7 +884,71 @@ class SingingConversionPipeline:
         n = min(inst_st.shape[-1], len(converted))
         if n == 0:
             raise ConversionError("Fork conversion produced empty audio")
-        conv = converted[:n] * float(vocal_volume)
+        converted = np.asarray(converted[:n], dtype=np.float32)
+
+        stages = ['svc_fork_hq_stereo'] + pre_stages
+        f0_original = self._extract_pitch(voc_mono, sr, method=q['f0_method'])
+        f0_contour = self._extract_pitch(converted, sr, method=q['f0_method'])
+        if q['enable_f0_postprocess']:
+            try:
+                from .f0_utils import postprocess_f0
+                f0_original = postprocess_f0(f0_original)
+                f0_contour = postprocess_f0(f0_contour)
+                stages.append('f0_postprocess')
+            except Exception as e:
+                logger.warning(f"F0 post-processing failed: {e}")
+
+        # Vocal-only enhancement stages at the native rate. HQ super-resolution
+        # is intentionally skipped: the fork lane already runs at output rate.
+        if q['enable_nsf_harmonic_enhancement']:
+            try:
+                if self._nsf_enhancer is None:
+                    from ..models.nsf_module import NSFHarmonicEnhancer
+                    self._nsf_enhancer = NSFHarmonicEnhancer(
+                        harmonic_strength=self.config.get('nsf_harmonic_strength', 0.12),
+                        max_harmonics=self.config.get('nsf_max_harmonics', 6),
+                        blend=self.config.get('nsf_blend', 0.2),
+                    )
+                converted = self._nsf_enhancer.enhance(converted, f0_contour, sr)
+                stages.append('nsf_harmonic_enhancement')
+            except Exception as e:
+                logger.warning(f"NSF enhancement failed: {e}")
+        if q['enable_pupu_vocoder_refinement']:
+            try:
+                if self._pupu_vocoder is None:
+                    from ..models.pupu_vocoder import PupuVocoderEnhancer
+                    self._pupu_vocoder = PupuVocoderEnhancer(
+                        brightness=self.config.get('pupu_brightness', 0.08),
+                        transient_boost=self.config.get('pupu_transient_boost', 0.1),
+                    )
+                converted = self._pupu_vocoder.refine(converted, sr)
+                stages.append('pupu_vocoder_refinement')
+            except Exception as e:
+                logger.warning(f"Pupu refinement failed: {e}")
+
+        # Post-mix repairs against the (dereverbed) source vocal.
+        try:
+            if q['enable_consonant_passthrough'] and f0_original.size:
+                from ..audio.post_mix import voicing_gated_passthrough
+                converted = voicing_gated_passthrough(
+                    voc_mono[:n], converted, sr, f0_original, 512,
+                    mix=float(q['consonant_passthrough_mix']),
+                )
+                stages.append('consonant_passthrough')
+            if q['enable_loudness_transfer']:
+                from ..audio.post_mix import transfer_loudness_envelope
+                converted = transfer_loudness_envelope(
+                    voc_mono[:n], converted, sr,
+                    strength=float(self.config.get('loudness_transfer_strength', 0.85)),
+                )
+                stages.append('loudness_transfer')
+        except Exception as e:
+            logger.warning(f"Post-mix repair failed, keeping converted vocals: {e}")
+
+        if len(stages) > 1:
+            f0_contour = self._extract_pitch(converted, sr)
+
+        conv = converted * float(vocal_volume)
         inst = inst_st[:, :n] * float(instrumental_volume)
         mixed = np.stack([inst[0] + conv, inst[1] + conv], axis=-1)  # (n, 2) stereo
         peak = float(np.abs(mixed).max())
@@ -881,8 +956,6 @@ class SingingConversionPipeline:
             mixed = mixed * (0.95 / peak)
 
         duration = n / sr
-        f0_original = self._extract_pitch(voc_mono, sr)
-        f0_contour = self._extract_pitch(converted[:n], sr)
         result = {
             'mixed_audio': mixed,
             'sample_rate': sr,
@@ -896,7 +969,7 @@ class SingingConversionPipeline:
                 'target_profile_id': target_profile_id,
                 'active_model_type': 'svc_fork',
                 'speaker_id': target_profile_id,
-                'quality_post_processing': ['svc_fork_hq_stereo'],
+                'quality_post_processing': stages,
                 'stereo': True,
                 'multi_speaker': multi_speaker,
             },
@@ -1040,17 +1113,35 @@ class SingingConversionPipeline:
         except RuntimeError as e:
             raise ConversionError(f"Voice conversion failed: {e}")
 
-    def _extract_pitch(self, audio: np.ndarray, sr: int) -> np.ndarray:
-        """Extract pitch contour (F0) from audio using librosa pyin.
+    def _extract_pitch(self, audio: np.ndarray, sr: int,
+                       method: Optional[str] = None) -> np.ndarray:
+        """Extract pitch contour (F0) from audio.
 
         Args:
             audio: Input audio signal (mono)
             sr: Sample rate of the audio
+            method: Optional per-request F0 backend ('rmvpe'/'pyin'). When set,
+                the quality-ordered f0_extractor chain is used (with automatic
+                fallback); when None the legacy librosa pyin path is kept so
+                default behavior is unchanged.
 
         Returns:
-            F0 contour array with NaN replaced by 0.0.
+            F0 contour array with NaN replaced by 0.0 (hop 512 frame grid).
             Falls back to zero array if extraction fails.
         """
+        if method:
+            try:
+                from .f0_extractor import extract_f0
+                f0, _used = extract_f0(
+                    np.asarray(audio, dtype=np.float32), sr=sr, hop_length=512,
+                    method=method, device=self.device,
+                    rmvpe_model_path=self.config.get('rmvpe_model_path'),
+                    rmvpe_is_half=bool(self.config.get('rmvpe_is_half', False)),
+                )
+                return np.asarray(f0, dtype=np.float32)
+            except Exception as e:
+                logger.warning(f"F0 extraction via '{method}' failed, "
+                               f"falling back to pyin: {e}")
         try:
             import librosa
             f0, voiced, _ = librosa.pyin(audio, fmin=50, fmax=1100, sr=sr)
@@ -1101,20 +1192,51 @@ class SingingConversionPipeline:
             target_sr=to_sr,
         ).astype(np.float32)
 
+    def _resolve_quality_settings(
+        self, overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Merge config-level quality toggles with per-request overrides.
+
+        Only whitelisted keys (mirroring the web layer's
+        ``_parse_quality_overrides`` contract) are honored; everything else in
+        ``overrides`` is ignored so a stale/forged settings dict can't reach
+        arbitrary config. Defaults keep every new stage OFF so behavior is
+        unchanged unless configured or explicitly requested.
+        """
+        q: Dict[str, Any] = {
+            'enable_nsf_harmonic_enhancement': bool(self.config.get('enable_nsf_harmonic_enhancement')),
+            'enable_pupu_vocoder_refinement': bool(self.config.get('enable_pupu_vocoder_refinement')),
+            'enable_hq_super_resolution': bool(self.config.get('enable_hq_super_resolution')),
+            'enable_dereverb': bool(self.config.get('enable_dereverb')),
+            'enable_consonant_passthrough': bool(self.config.get('enable_consonant_passthrough')),
+            'enable_loudness_transfer': bool(self.config.get('enable_loudness_transfer')),
+            'enable_f0_postprocess': bool(self.config.get('enable_f0_postprocess')),
+            'dereverb_strength': float(self.config.get('dereverb_strength', 0.5)),
+            'consonant_passthrough_mix': float(self.config.get('consonant_passthrough_mix', 0.6)),
+            'f0_method': self.config.get('f0_method'),
+        }
+        if overrides:
+            for key, value in overrides.items():
+                if key in q:
+                    q[key] = value
+        return q
+
     def _apply_quality_post_processing(
         self,
         converted_vocals: np.ndarray,
         instrumental: np.ndarray,
         sample_rate: int,
         f0_contour: np.ndarray,
+        quality_settings: Optional[Dict[str, Any]] = None,
     ) -> tuple[np.ndarray, np.ndarray, int, Dict[str, Any]]:
         """Apply optional quality upgrade stages in a portable order."""
+        q = quality_settings if quality_settings is not None else self.config
         metadata: Dict[str, Any] = {'post_processing': []}
         vocals = np.asarray(converted_vocals, dtype=np.float32)
         backing = np.asarray(instrumental, dtype=np.float32)
         output_sr = sample_rate
 
-        if self.config.get('enable_nsf_harmonic_enhancement'):
+        if q.get('enable_nsf_harmonic_enhancement'):
             if self._nsf_enhancer is None:
                 from ..models.nsf_module import NSFHarmonicEnhancer
 
@@ -1126,7 +1248,7 @@ class SingingConversionPipeline:
             vocals = self._nsf_enhancer.enhance(vocals, f0_contour, sample_rate)
             metadata['post_processing'].append('nsf_harmonic_enhancement')
 
-        if self.config.get('enable_pupu_vocoder_refinement'):
+        if q.get('enable_pupu_vocoder_refinement'):
             if self._pupu_vocoder is None:
                 from ..models.pupu_vocoder import PupuVocoderEnhancer
 
@@ -1137,7 +1259,7 @@ class SingingConversionPipeline:
             vocals = self._pupu_vocoder.refine(vocals, sample_rate)
             metadata['post_processing'].append('pupu_vocoder_refinement')
 
-        if self.config.get('enable_hq_super_resolution'):
+        if q.get('enable_hq_super_resolution'):
             try:
                 import torch
 
@@ -1171,7 +1293,8 @@ class SingingConversionPipeline:
                      preserve_techniques: bool = True,
                      enable_multi_speaker: Optional[bool] = None,
                      convert_backing: Optional[bool] = None,
-                     preserve_speakers: Optional[list] = None) -> Dict[str, Any]:
+                     preserve_speakers: Optional[list] = None,
+                     quality_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Convert a song to target voice.
 
         Args:
@@ -1183,6 +1306,9 @@ class SingingConversionPipeline:
             return_stems: Whether to return separate stems
             preset: Quality preset (draft/fast/balanced/high/studio)
             preserve_techniques: Detect and preserve vocal techniques (vibrato, melisma)
+            quality_overrides: Optional per-request quality toggles (already
+                sanitized by the web layer's whitelist); shadow config for
+                this call only — never mutate shared config.
 
         Returns:
             Dict with: mixed_audio, sample_rate, duration, metadata,
@@ -1213,6 +1339,8 @@ class SingingConversionPipeline:
                 fork_kwargs['convert_backing'] = convert_backing
             if preserve_speakers:
                 fork_kwargs['preserve_speakers'] = list(preserve_speakers)
+            if quality_overrides:
+                fork_kwargs['quality_overrides'] = dict(quality_overrides)
             return self._convert_song_fork_hq(
                 song_path, target_profile_id, vocal_volume,
                 instrumental_volume, return_stems, preset, pitch_shift,
@@ -1252,15 +1380,37 @@ class SingingConversionPipeline:
             active_model_type=profile.get('active_model_type'),
         )
 
+        # Per-request quality settings (config defaults + sanitized overrides).
+        q = self._resolve_quality_settings(quality_overrides)
+        pre_stages: list = []
+
         # Separate at the mix rate so the instrumental keeps full bandwidth;
         # only the vocals drop to the model's processing rate.
         stems = self._separate_vocals(audio, sr)
         instrumental = stems['instrumental']
+        source_vocals = np.asarray(stems['vocals'], dtype=np.float32)
+
+        if q['enable_dereverb']:
+            try:
+                from ..audio.dereverb import dereverb_vocals
+                source_vocals = dereverb_vocals(
+                    source_vocals, sr, strength=q['dereverb_strength'])
+                pre_stages.append('dereverb')
+            except Exception as e:
+                logger.warning(f"De-reverb failed, using raw vocals: {e}")
+
         proc_sr = self._sample_rate
-        vocals = self._resample_audio(stems['vocals'], sr, proc_sr)
+        vocals = self._resample_audio(source_vocals, sr, proc_sr)
 
         # Extract original pitch
-        f0_original = self._extract_pitch(vocals, proc_sr)
+        f0_original = self._extract_pitch(vocals, proc_sr, method=q['f0_method'])
+        if q['enable_f0_postprocess']:
+            try:
+                from .f0_utils import postprocess_f0
+                f0_original = postprocess_f0(f0_original)
+                pre_stages.append('f0_postprocess')
+            except Exception as e:
+                logger.warning(f"F0 post-processing failed: {e}")
 
         # Detect vocal techniques (vibrato, melisma) if requested
         techniques = None
@@ -1291,19 +1441,56 @@ class SingingConversionPipeline:
         )
 
         # Extract converted pitch
-        f0_contour = self._extract_pitch(converted_vocals, proc_sr)
+        f0_contour = self._extract_pitch(converted_vocals, proc_sr, method=q['f0_method'])
+        if q['enable_f0_postprocess']:
+            try:
+                from .f0_utils import postprocess_f0
+                f0_contour = postprocess_f0(f0_contour)
+            except Exception as e:
+                logger.warning(f"F0 post-processing failed: {e}")
         f0_rate = proc_sr
 
         # Bring converted vocals up to the mix rate before post-processing
         # and mixing with the full-bandwidth instrumental
         converted_vocals = self._resample_audio(converted_vocals, proc_sr, sr)
 
+        mix_sr = sr  # rate of source_vocals; helper may change sr (HQ super-res)
         converted_vocals, instrumental, sr, quality_metadata = self._apply_quality_post_processing(
             converted_vocals,
             instrumental,
             sr,
             f0_contour,
+            quality_settings=q,
         )
+
+        # Post-mix repairs against the (dereverbed) source vocals. `sr` already
+        # tracks the helper's output rate; the reference was captured at the
+        # original mix rate, so resample it if HQ super-resolution changed sr.
+        ref_vocals = source_vocals
+        if quality_metadata.get('post_processing') and 'hq_super_resolution' in quality_metadata['post_processing']:
+            ref_vocals = self._resample_audio(ref_vocals, mix_sr, sr)
+        try:
+            if q['enable_consonant_passthrough'] and f0_original.size:
+                from ..audio.post_mix import voicing_gated_passthrough
+                if ref_vocals.shape[0] != converted_vocals.shape[0]:
+                    ref_vocals = ref_vocals[:converted_vocals.shape[0]]
+                hop = max(1, int(round(512 * sr / float(proc_sr))))
+                converted_vocals = voicing_gated_passthrough(
+                    ref_vocals, converted_vocals, sr, f0_original, hop,
+                    mix=float(q['consonant_passthrough_mix']),
+                )
+                quality_metadata['post_processing'].append('consonant_passthrough')
+            if q['enable_loudness_transfer']:
+                from ..audio.post_mix import transfer_loudness_envelope
+                converted_vocals = transfer_loudness_envelope(
+                    ref_vocals, converted_vocals, sr,
+                    strength=float(self.config.get('loudness_transfer_strength', 0.85)),
+                )
+                quality_metadata['post_processing'].append('loudness_transfer')
+        except Exception as e:
+            logger.warning(f"Post-mix repair failed, keeping converted vocals: {e}")
+
+        quality_metadata['post_processing'] = pre_stages + quality_metadata['post_processing']
         if quality_metadata.get('post_processing'):
             f0_contour = self._extract_pitch(converted_vocals, sr)
             f0_rate = sr

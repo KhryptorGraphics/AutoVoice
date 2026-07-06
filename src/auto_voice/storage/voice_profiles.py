@@ -93,6 +93,67 @@ class TrainingSample:
         return cls(**payload)
 
 
+def aggregate_embeddings(
+    embeddings: 'List[np.ndarray]',
+    weights: 'Optional[List[float]]' = None,
+) -> np.ndarray:
+    """Aggregate per-clip speaker embeddings into a single unit-norm embedding.
+
+    Each embedding is L2-normalized to unit norm first, then a weighted
+    average is computed (weights typically being clip durations), and the
+    result is re-normalized to unit norm. Zero/non-finite embeddings are
+    skipped together with their weights so a silent clip cannot NaN-poison
+    the aggregate.
+
+    Args:
+        embeddings: Per-clip embeddings (all the same dimensionality)
+        weights: Optional non-negative per-clip weights (e.g. durations).
+            Defaults to equal weights.
+
+    Returns:
+        L2-normalized float32 aggregate embedding
+
+    Raises:
+        ValueError: If no embeddings are given, weights mismatch the
+            embeddings, all embeddings are zero, weights sum to zero, or the
+            weighted average cancels to the zero vector
+    """
+    if embeddings is None or len(embeddings) == 0:
+        raise ValueError("No embeddings provided")
+    if weights is not None:
+        if len(weights) != len(embeddings):
+            raise ValueError(
+                f"weights length ({len(weights)}) does not match embeddings length ({len(embeddings)})"
+            )
+        weight_values = [float(w) for w in weights]
+    else:
+        weight_values = [1.0] * len(embeddings)
+
+    unit_vectors: List[np.ndarray] = []
+    kept_weights: List[float] = []
+    for emb, weight in zip(embeddings, weight_values):
+        if weight < 0 or not np.isfinite(weight):
+            raise ValueError(f"Embedding weights must be finite and non-negative, got {weight}")
+        vec = np.asarray(emb, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(vec))
+        if norm == 0.0 or not np.isfinite(norm):
+            # Skip degenerate (silent) clips instead of propagating NaN
+            continue
+        unit_vectors.append(vec / norm)
+        kept_weights.append(weight)
+
+    if not unit_vectors:
+        raise ValueError("All embeddings are zero")
+    if sum(kept_weights) <= 0.0:
+        raise ValueError("Embedding weights sum to zero")
+
+    avg = np.average(np.stack(unit_vectors), axis=0, weights=kept_weights)
+    norm = float(np.linalg.norm(avg))
+    if norm == 0.0:
+        raise ValueError("All embeddings are zero after weighted averaging (embeddings cancelled out)")
+    return (avg / norm).astype(np.float32)
+
+
 class VoiceProfileStore:
     """File-based voice profile storage with progressive training sample support."""
 
@@ -292,6 +353,59 @@ class VoiceProfileStore:
             profile['embedding'] = np.load(emb_path)
 
         return self._normalize_profile(profile)
+
+    def recompute_profile_embedding(
+        self,
+        profile_id: str,
+        embeddings: 'list[np.ndarray]',
+        weights: 'list[float] | None' = None,
+    ) -> np.ndarray:
+        """Recompute a profile's speaker embedding from multiple clip embeddings.
+
+        Each clip embedding is L2-normalized, weighted-averaged (weights
+        typically being clip durations; equal weights when omitted), and the
+        result is re-normalized to unit norm. The aggregate is persisted via
+        the existing embedding persistence path (``np.save`` at
+        ``self._embedding_path(profile_id)``) and the profile metadata is
+        updated with ``embedding_clip_count`` and ``embedding_aggregation``.
+
+        Args:
+            profile_id: Voice profile ID
+            embeddings: Per-clip embeddings (same dimensionality)
+            weights: Optional non-negative per-clip weights (e.g. durations)
+
+        Returns:
+            The new L2-normalized float32 profile embedding
+
+        Raises:
+            ProfileNotFoundError: If the profile does not exist
+            ValueError: If the embeddings/weights are empty, mismatched,
+                all-zero, or cancel to the zero vector
+        """
+        if not self.exists(profile_id):
+            raise ProfileNotFoundError(f"Profile {profile_id} not found")
+
+        new_embedding = aggregate_embeddings(embeddings, weights)
+
+        # Existing embedding persistence path (same as save())
+        np.save(self._embedding_path(profile_id), new_embedding)
+
+        # Update metadata JSON in place (direct read-modify-write, matching
+        # save()'s direct-write convention; the embedding itself lives in the
+        # sidecar .npy and is never stored in the JSON).
+        profile_path = self._profile_path(profile_id)
+        with open(profile_path) as f:
+            profile = json.load(f)
+        profile['embedding_clip_count'] = len(embeddings)
+        profile['embedding_aggregation'] = 'l2_weighted_mean'
+        with open(profile_path, 'w') as f:
+            json.dump(profile, f, indent=2, default=str)
+
+        logger.info(
+            f"Recomputed embedding for profile {profile_id} from {len(embeddings)} clip(s) "
+            f"(l2_weighted_mean)"
+        )
+        return new_embedding
 
     def list_profiles(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """List all profiles, optionally filtered by user_id."""
@@ -754,24 +868,35 @@ class VoiceProfileStore:
     def save_speaker_embedding(
         self,
         profile_id: str,
-        embedding: np.ndarray,
+        embedding: 'np.ndarray | list[np.ndarray]',
+        weights: 'list[float] | None' = None,
     ) -> None:
         """Save speaker embedding for diarization matching.
 
         Args:
             profile_id: Voice profile ID
-            embedding: Speaker embedding (512-dim WavLM)
+            embedding: Speaker embedding (512-dim WavLM), or a list of
+                per-clip embeddings that are aggregated with
+                normalize -> weighted-average -> renormalize
+            weights: Optional per-clip weights (e.g. clip durations); only
+                used when ``embedding`` is a list of embeddings
 
         Raises:
             ProfileNotFoundError: If profile does not exist
+            ValueError: If a multi-clip aggregation is requested and the
+                embeddings/weights are empty, mismatched, or all-zero
         """
         if not self.exists(profile_id):
             raise ProfileNotFoundError(f"Profile {profile_id} not found")
 
-        # Ensure L2 normalization
-        norm = np.linalg.norm(embedding)
-        if norm > 0:
-            embedding = embedding / norm
+        if isinstance(embedding, (list, tuple)):
+            # Multi-clip: length-weighted average of unit-normalized embeddings
+            embedding = aggregate_embeddings(list(embedding), weights)
+        else:
+            # Single-clip flow unchanged: ensure L2 normalization
+            norm = np.linalg.norm(embedding)
+            if norm > 0:
+                embedding = embedding / norm
 
         emb_path = self._speaker_embedding_path(profile_id)
         np.save(emb_path, embedding.astype(np.float32))
@@ -894,7 +1019,7 @@ class VoiceProfileStore:
     def create_profile_from_diarization(
         self,
         name: str,
-        speaker_embedding: np.ndarray,
+        speaker_embedding: 'np.ndarray | list[np.ndarray]',
         user_id: str = "system",
         audio_segments: Optional[List[str]] = None,
         profile_role: str = PROFILE_ROLE_SOURCE_ARTIST,
@@ -904,7 +1029,10 @@ class VoiceProfileStore:
 
         Args:
             name: Name for the new profile
-            speaker_embedding: Speaker embedding from diarization
+            speaker_embedding: Speaker embedding from diarization. A list of
+                per-clip embeddings is aggregated (normalize -> weighted
+                average -> renormalize) by save_speaker_embedding; a single
+                ndarray keeps the existing single-clip behavior.
             user_id: User ID for the profile
             audio_segments: Optional list of audio file paths to add as samples
             profile_role: Profile role for workflow routing

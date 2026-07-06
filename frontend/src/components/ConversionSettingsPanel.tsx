@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Sliders, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react'
 
-import { ConversionConfig, QUALITY_PRESETS, QualityPreset } from '../services/api'
+import { ConversionConfig, QUALITY_PRESETS, QualityOverrides, QualityPreset } from '../services/api'
 
 interface ConversionSettingsPanelProps {
   config: ConversionConfig
@@ -62,8 +62,72 @@ function VolumeSlider({
   )
 }
 
+function QualityToggle({
+  label,
+  checked,
+  onChange,
+  disabled,
+  testId,
+}: {
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+  disabled?: boolean
+  testId?: string
+}) {
+  return (
+    <label className="flex items-center gap-3 text-sm text-gray-300">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        disabled={disabled}
+        data-testid={testId}
+        className="h-4 w-4 accent-blue-500 disabled:opacity-40"
+      />
+      {label}
+    </label>
+  )
+}
+
+function MixSlider({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string
+  value: number
+  onChange: (value: number) => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="space-y-1 pl-7">
+      <div className="flex justify-between items-center">
+        <label className="text-sm text-gray-400">{label}</label>
+        <span className="text-sm font-mono">{value.toFixed(2)}</span>
+      </div>
+      <input
+        type="range"
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        min={0}
+        max={1}
+        step={0.05}
+        disabled={disabled}
+        className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed accent-blue-500"
+      />
+    </div>
+  )
+}
+
 export function ConversionSettingsPanel({ config, onChange, disabled }: ConversionSettingsPanelProps) {
   const [expanded, setExpanded] = useState(true)
+  const [qualityExpanded, setQualityExpanded] = useState(false)
+
+  const quality = config.quality_overrides
+  const patchQuality = (patch: Partial<QualityOverrides>) =>
+    onChange({ quality_overrides: { ...quality, ...patch } })
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 space-y-4" data-testid="conversion-settings-panel">
@@ -191,6 +255,101 @@ export function ConversionSettingsPanel({ config, onChange, disabled }: Conversi
               they sing solo — that singer is kept original instead of being re-converted. Comma-separate
               multiple ranges. Cluster ids from a previous result&apos;s speaker list also work.
             </p>
+          </div>
+
+          <div className="space-y-3 border-t border-gray-700 pt-3" data-testid="quality-enhancements-section">
+            <button
+              type="button"
+              onClick={() => setQualityExpanded(!qualityExpanded)}
+              className="flex items-center justify-between w-full text-sm text-gray-300 hover:text-white"
+            >
+              <span className="font-medium">Quality Enhancements</span>
+              {qualityExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            </button>
+
+            {qualityExpanded && (
+              <div className="space-y-3">
+                <QualityToggle
+                  label="NSF harmonic enhancement"
+                  checked={quality.enable_nsf_harmonic_enhancement ?? false}
+                  onChange={(v) => patchQuality({ enable_nsf_harmonic_enhancement: v })}
+                  disabled={disabled}
+                  testId="quality-nsf-harmonic"
+                />
+                <QualityToggle
+                  label="PuPu vocoder refinement"
+                  checked={quality.enable_pupu_vocoder_refinement ?? false}
+                  onChange={(v) => patchQuality({ enable_pupu_vocoder_refinement: v })}
+                  disabled={disabled}
+                  testId="quality-pupu-vocoder"
+                />
+                <QualityToggle
+                  label="HQ super-resolution"
+                  checked={quality.enable_hq_super_resolution ?? false}
+                  onChange={(v) => patchQuality({ enable_hq_super_resolution: v })}
+                  disabled={disabled}
+                  testId="quality-hq-super-resolution"
+                />
+                <QualityToggle
+                  label="De-reverb input vocals"
+                  checked={quality.enable_dereverb ?? false}
+                  onChange={(v) => patchQuality({ enable_dereverb: v })}
+                  disabled={disabled}
+                  testId="quality-dereverb"
+                />
+                {(quality.enable_dereverb ?? false) && (
+                  <MixSlider
+                    label="De-reverb strength"
+                    value={quality.dereverb_strength ?? 0.5}
+                    onChange={(v) => patchQuality({ dereverb_strength: v })}
+                    disabled={disabled}
+                  />
+                )}
+                <QualityToggle
+                  label="Consonant passthrough"
+                  checked={quality.enable_consonant_passthrough ?? false}
+                  onChange={(v) => patchQuality({ enable_consonant_passthrough: v })}
+                  disabled={disabled}
+                  testId="quality-consonant-passthrough"
+                />
+                {(quality.enable_consonant_passthrough ?? false) && (
+                  <MixSlider
+                    label="Consonant passthrough mix"
+                    value={quality.consonant_passthrough_mix ?? 0.6}
+                    onChange={(v) => patchQuality({ consonant_passthrough_mix: v })}
+                    disabled={disabled}
+                  />
+                )}
+                <QualityToggle
+                  label="Loudness transfer"
+                  checked={quality.enable_loudness_transfer ?? false}
+                  onChange={(v) => patchQuality({ enable_loudness_transfer: v })}
+                  disabled={disabled}
+                  testId="quality-loudness-transfer"
+                />
+                <QualityToggle
+                  label="F0 post-processing (pitch smoothing)"
+                  checked={quality.enable_f0_postprocess ?? true}
+                  onChange={(v) => patchQuality({ enable_f0_postprocess: v })}
+                  disabled={disabled}
+                  testId="quality-f0-postprocess"
+                />
+
+                <div className="space-y-1">
+                  <label className="text-sm text-gray-400">F0 method</label>
+                  <select
+                    value={quality.f0_method ?? 'rmvpe'}
+                    onChange={(e) => patchQuality({ f0_method: e.target.value as QualityOverrides['f0_method'] })}
+                    disabled={disabled}
+                    data-testid="quality-f0-method"
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                  >
+                    <option value="rmvpe">RMVPE (recommended)</option>
+                    <option value="pyin">PYIN (legacy)</option>
+                  </select>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -13,6 +13,7 @@ from ..storage.voice_profiles import (
     ProfileNotFoundError,
     TrainingSample,
     PROFILE_ROLE_TARGET_USER,
+    aggregate_embeddings,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,12 +161,34 @@ class VoiceCloner:
 
         return self._extract_mel_stat_embedding(audio_path)
 
-    def create_speaker_embedding(self, audio_paths: List[str]) -> np.ndarray:
-        """Create averaged speaker embedding from multiple singing recordings.
+    def _clip_duration(self, audio_path: str) -> float:
+        """Get clip duration in seconds (used as the length weight for averaging).
 
-        Computes individual embeddings from each audio file and averages them to
-        create a more robust speaker representation. Useful when multiple reference
-        samples are available.
+        Raises:
+            InvalidAudioError: If the duration cannot be determined
+        """
+        try:
+            import librosa
+            try:
+                duration = float(librosa.get_duration(path=audio_path))
+            except TypeError:
+                # librosa < 0.10 uses the ``filename`` keyword
+                duration = float(librosa.get_duration(filename=audio_path))
+        except Exception as e:
+            raise InvalidAudioError(f"Failed to determine duration of {audio_path}: {e}")
+        if duration <= 0 or not np.isfinite(duration):
+            raise InvalidAudioError(f"Invalid duration ({duration}) for {audio_path}")
+        return duration
+
+    def create_speaker_embedding(self, audio_paths: List[str]) -> np.ndarray:
+        """Create length-weighted averaged speaker embedding from multiple recordings.
+
+        Computes individual embeddings from each audio file, L2-normalizes each
+        to unit norm, averages them weighted by clip duration, and re-normalizes
+        to unit norm. This creates a more robust speaker representation when
+        multiple reference samples are available; longer clips contribute
+        proportionally more. With a single clip, behavior is unchanged (the
+        clip's unit-norm embedding is returned).
 
         Args:
             audio_paths: List of paths to audio files containing target speaker
@@ -179,12 +202,33 @@ class VoiceCloner:
         """
         if not audio_paths:
             raise InvalidAudioError("No audio files provided")
-        embeddings = [self._extract_embedding(p) for p in audio_paths]
-        avg = np.mean(embeddings, axis=0)
-        norm = np.linalg.norm(avg)
-        if norm == 0:
+
+        # Extract and unit-normalize first; skip zero (silent) embeddings so
+        # they cannot drag the average toward zero. Durations are only read
+        # for clips that produced a usable embedding.
+        kept_paths: List[str] = []
+        kept_embeddings: List[np.ndarray] = []
+        for path in audio_paths:
+            emb = np.asarray(self._extract_embedding(path), dtype=np.float32).reshape(-1)
+            norm = float(np.linalg.norm(emb))
+            if norm == 0.0 or not np.isfinite(norm):
+                continue
+            kept_paths.append(path)
+            kept_embeddings.append(emb / norm)
+
+        if not kept_embeddings:
             raise InvalidAudioError("All embeddings are zero")
-        return (avg / norm).astype(np.float32)
+
+        if len(kept_embeddings) == 1:
+            # Single usable clip: unchanged behavior, no duration lookup needed
+            return kept_embeddings[0].astype(np.float32)
+
+        weights = [self._clip_duration(p) for p in kept_paths]
+        try:
+            return aggregate_embeddings(kept_embeddings, weights)
+        except ValueError as e:
+            # e.g. opposing embeddings cancelled out under weighted averaging
+            raise InvalidAudioError(f"All embeddings are zero: {e}")
 
     def _estimate_vocal_range(self, audio_path: str) -> Dict[str, float]:
         """Estimate vocal range from audio using pitch tracking.
@@ -273,15 +317,24 @@ class VoiceCloner:
             logger.warning(f"Vocal separation failed, using original audio: {e}")
             return None
 
-    def create_voice_profile(self, audio: str, user_id: Optional[str] = None, name: Optional[str] = None) -> Dict[str, Any]:
-        """Create a voice profile from audio file.
+    def create_voice_profile(self, audio: 'str | List[str]', user_id: Optional[str] = None, name: Optional[str] = None) -> Dict[str, Any]:
+        """Create a voice profile from one or more audio files.
 
         Automatically separates vocals from instrumentals when possible,
         ensuring the voice model is trained only on the vocal track.
         Separated tracks are saved permanently for later use.
 
+        When a list of audio files is given, the first clip is the primary
+        reference (used for vocal separation, duration, vocal range, and the
+        initial training sample — unchanged from the single-clip flow) and the
+        profile embedding is computed as the length-weighted average of the
+        per-clip embeddings: each clip embedding is L2-normalized to unit
+        norm, weighted by clip duration, averaged, and re-normalized. With a
+        single clip, behavior is unchanged.
+
         Args:
-            audio: Path to reference audio file
+            audio: Path to reference audio file, or list of paths (first is
+                the primary reference)
             user_id: Optional user identifier
             name: Optional profile name (e.g., artist name)
 
@@ -289,8 +342,18 @@ class VoiceCloner:
             Dict with profile_id, user_id, name, audio_duration, vocal_range,
             separated_tracks (if available), and created_at
         """
+        extra_clips: List[str] = []
+        if isinstance(audio, (list, tuple)):
+            if not audio:
+                raise InvalidAudioError("No audio files provided")
+            extra_clips = [str(p) for p in audio[1:]]
+            audio = str(audio[0])
+
         if not os.path.exists(audio):
             raise InvalidAudioError(f"Audio file not found: {audio}")
+        for clip in extra_clips:
+            if not os.path.exists(clip):
+                raise InvalidAudioError(f"Audio file not found: {clip}")
 
         # Generate profile_id first (needed for separation directory)
         profile_id = str(uuid.uuid4())
@@ -320,6 +383,19 @@ class VoiceCloner:
         # Estimate vocal range from vocals
         vocal_range = self._estimate_vocal_range(audio_for_embedding)
 
+        # Multi-clip: length-weighted average of unit-normalized per-clip
+        # embeddings (primary clip weighted by its measured duration)
+        if extra_clips:
+            clip_embeddings = [embedding]
+            clip_weights = [audio_duration if audio_duration > 0 else 1.0]
+            for clip in extra_clips:
+                clip_embeddings.append(self._extract_embedding(clip))
+                clip_weights.append(self._clip_duration(clip))
+            try:
+                embedding = aggregate_embeddings(clip_embeddings, clip_weights)
+            except ValueError as e:
+                raise InvalidAudioError(f"Failed to aggregate clip embeddings: {e}")
+
         # Build profile with separation paths
         profile_data = {
             'profile_id': profile_id,
@@ -334,6 +410,9 @@ class VoiceCloner:
             'embedding': embedding,
             'created_at': datetime.now(timezone.utc).isoformat(),
         }
+        if extra_clips:
+            profile_data['embedding_clip_count'] = 1 + len(extra_clips)
+            profile_data['embedding_aggregation'] = 'l2_weighted_mean'
 
         # Save (note: store.save() pops embedding from dict, so preserve it)
         saved_embedding = embedding  # Keep reference before save mutates dict

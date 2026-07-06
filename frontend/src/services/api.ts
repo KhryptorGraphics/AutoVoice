@@ -660,6 +660,37 @@ export type QualityPreset = 'draft' | 'fast' | 'balanced' | 'high' | 'studio'
 export type EncoderBackend = 'hubert' | 'contentvec'
 export type VocoderType = 'hifigan' | 'bigvgan'
 
+// Per-request quality enhancement toggles. Keys are the exact snake_case
+// names of the backend `quality_overrides` contract (sent as a JSON object
+// in the `quality_overrides` multipart form field) — do NOT rename/camelCase.
+export interface QualityOverrides {
+  enable_nsf_harmonic_enhancement?: boolean
+  enable_pupu_vocoder_refinement?: boolean
+  enable_hq_super_resolution?: boolean
+  enable_dereverb?: boolean
+  // 0..1, backend default 0.5
+  dereverb_strength?: number
+  enable_consonant_passthrough?: boolean
+  // 0..1, backend default 0.6
+  consonant_passthrough_mix?: number
+  enable_loudness_transfer?: boolean
+  enable_f0_postprocess?: boolean
+  f0_method?: 'rmvpe' | 'pyin'
+}
+
+export const DEFAULT_QUALITY_OVERRIDES: QualityOverrides = {
+  enable_nsf_harmonic_enhancement: false,
+  enable_pupu_vocoder_refinement: false,
+  enable_hq_super_resolution: false,
+  enable_dereverb: false,
+  dereverb_strength: 0.5,
+  enable_consonant_passthrough: false,
+  consonant_passthrough_mix: 0.6,
+  enable_loudness_transfer: false,
+  enable_f0_postprocess: true,
+  f0_method: 'rmvpe',
+}
+
 export interface ConversionConfig {
   pipeline_type: OfflinePipelineType
   vocal_volume: number
@@ -678,6 +709,8 @@ export interface ConversionConfig {
   // Keep already-target singers original: comma-separated time ranges
   // ("1:23-1:40") or diarization cluster ids ("SPEAKER_02"); '' = none
   preserve_speakers: string
+  // Per-request quality enhancement toggles (see QualityOverrides)
+  quality_overrides: QualityOverrides
 }
 
 export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
@@ -693,6 +726,7 @@ export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
   enable_multi_speaker: null,
   convert_backing: null,
   preserve_speakers: '',
+  quality_overrides: { ...DEFAULT_QUALITY_OVERRIDES },
 }
 
 // Quality preset details matching backend PRESETS
@@ -1480,6 +1514,7 @@ class ApiService {
       enable_multi_speaker?: boolean | null
       convert_backing?: boolean | null
       preserve_speakers?: string
+      quality_overrides?: QualityOverrides
     }
   ): Promise<ConversionJobResponse> {
     const formData = new FormData()
@@ -1496,6 +1531,9 @@ class ApiService {
     if (settings?.enable_multi_speaker != null) formData.append('enable_multi_speaker', String(settings.enable_multi_speaker))
     if (settings?.convert_backing != null) formData.append('convert_backing', String(settings.convert_backing))
     if (settings?.preserve_speakers?.trim()) formData.append('preserve_speakers', settings.preserve_speakers.trim())
+    if (settings?.quality_overrides && Object.keys(settings.quality_overrides).length > 0) {
+      formData.append('quality_overrides', JSON.stringify(settings.quality_overrides))
+    }
 
     const response = await apiFetch(`${API_BASE}/convert/song`, {
       method: 'POST',
@@ -1595,6 +1633,7 @@ class ApiService {
       enable_multi_speaker?: boolean | null
       convert_backing?: boolean | null
       preserve_speakers?: string
+      quality_overrides?: QualityOverrides
     }
   ): Promise<ConversionJobResponse> {
     return this.request(`/convert/workflows/${workflowId}/convert`, {

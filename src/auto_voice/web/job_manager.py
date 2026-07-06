@@ -303,6 +303,11 @@ class JobManager:
             # Only the SingingConversionPipeline (fork HQ lane) honours
             # enable_multi_speaker; the realtime/seedvc/shortcut branches above
             # never reach this call, so no other pipeline sees the kwarg.
+            # quality_overrides is forwarded only when present so older
+            # convert_song signatures (and existing test stubs) keep working.
+            convert_kwargs = {}
+            if settings.get('quality_overrides'):
+                convert_kwargs['quality_overrides'] = settings['quality_overrides']
             result = self.singing_pipeline.convert_song(
                 song_path=job['file_path'],
                 target_profile_id=job['profile_id'],
@@ -314,6 +319,7 @@ class JobManager:
                 enable_multi_speaker=settings.get('enable_multi_speaker'),
                 convert_backing=settings.get('convert_backing'),
                 preserve_speakers=settings.get('preserve_speakers'),
+                **convert_kwargs,
             )
             result.setdefault('metadata', {})
             result['metadata'].update({
