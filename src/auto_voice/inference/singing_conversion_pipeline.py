@@ -517,6 +517,26 @@ class SingingConversionPipeline:
 
         if converted_count == 0:
             return backing, kept
+
+        # Per-line RMS matching targets the comb-mask extract, which captures
+        # only part of each line's true level (concentration 0.25-0.35 on real
+        # stacks) — converted harmonies landed audibly weak. Restore the
+        # stem's active loudness, then apply the operator taste knob.
+        import librosa
+        intervals = librosa.effects.split(backing, top_db=40)
+        if len(intervals):
+            orig_act = np.concatenate([backing[s:e] for s, e in intervals])
+            new_act = np.concatenate([new_backing[s:e] for s, e in intervals])
+            orig_rms = float(np.sqrt(np.mean(np.square(orig_act, dtype=np.float64))))
+            new_rms = float(np.sqrt(np.mean(np.square(new_act, dtype=np.float64))) + 1e-12)
+            if orig_rms > 0.0:
+                new_backing = new_backing * (orig_rms / new_rms)
+        new_backing = new_backing * float(
+            self.config.get('multi_speaker_backing_gain', 1.0))
+        peak = float(np.abs(new_backing).max())
+        if peak > 0.99:
+            new_backing = new_backing * (0.99 / peak)
+
         mode = 'converted' if converted_count == len(lines) else 'partial'
         return new_backing, {'mode': mode, 'lines_detected': len(lines),
                              'lines_converted': converted_count}

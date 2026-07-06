@@ -41,3 +41,12 @@ job_manager:
 # fine-tuned (cleaner, ~4x slower) variant used for fork-backed HQ conversions;
 # 'htdemucs' is the faster default.
 separation_model: htdemucs_ft
+
+# Multi-speaker lead/backing split. 'karaoke_model' (Mel-Band RoFormer via the
+# uvr bridge) promoted to operator default after listening review 2026-07-05;
+# falls back to diarization spans automatically when the bridge is unavailable.
+multi_speaker_separator: karaoke_model
+
+# Taste knob for converted-harmony level: 1.0 = match the original backing
+# stem's active loudness. Raised after "backing a little weak" review note.
+multi_speaker_backing_gain: 1.2

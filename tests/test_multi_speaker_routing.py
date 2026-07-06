@@ -538,6 +538,30 @@ class TestConvertBackingStack:
         assert info['mode'] == 'converted'
         assert info['lines_detected'] == 2 and info['lines_converted'] == 2
 
+    def test_backing_gain_knob_scales_output(self, monkeypatch):
+        # multi_speaker_backing_gain is the operator taste knob for converted
+        # harmony level; identity engine + level match means the knob alone
+        # sets the output/input ratio.
+        sr = 8000
+        t = np.arange(4 * sr) / sr
+
+        def voice(f0, amp):
+            return amp * sum((1.0 / k) * np.sin(2 * np.pi * k * f0 * t)
+                             for k in range(1, 5)) / 2.0
+        stack = (voice(220.0, 0.5) + voice(330.0, 0.4)).astype(np.float32)
+        notes = [_note(0, 4, 57), _note(0, 4, 64)]
+
+        import auto_voice.inference.separation_bridge as bridge
+        monkeypatch.setattr(bridge, 'polyphonic_notes', lambda a, sr: notes)
+        base = make_pipeline()
+        boosted = make_pipeline(multi_speaker_backing_gain=1.5)
+        out1, info1 = base._convert_backing_stack(stack, sr, 'pid', IdentityMM())
+        out2, info2 = boosted._convert_backing_stack(stack, sr, 'pid', IdentityMM())
+        assert info1['mode'] == info2['mode'] == 'converted'
+        rms1 = float(np.sqrt((out1 ** 2).mean()))
+        rms2 = float(np.sqrt((out2 ** 2).mean()))
+        assert 1.3 < rms2 / rms1 < 1.7
+
     def test_unvoiced_lines_kept(self, monkeypatch):
         sr = 8000
         noise = (np.random.default_rng(0).standard_normal(4 * sr) * 0.2).astype(np.float32)
