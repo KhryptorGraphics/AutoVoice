@@ -154,16 +154,28 @@ class ConversionWorkflowManager:
     def create_workflow(
         self,
         *,
-        artist_song,
+        artist_song=None,
         user_vocals: Iterable[Any],
         target_profile_override: Optional[str] = None,
         dominant_source_profile_override: Optional[str] = None,
+        artist_song_source_path: Optional[str] = None,
+        artist_song_filename: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if artist_song is None and not artist_song_source_path:
+            raise ValueError("artist_song upload or artist_song_source_path is required")
         workflow_id = str(uuid.uuid4())
         workflow_dir = self._workflow_dir(workflow_id)
-        artist_name = _safe_name(getattr(artist_song, "filename", None), "artist_song")
-        artist_song_path = workflow_dir / f"artist_song{Path(getattr(artist_song, 'filename', '') or '.wav').suffix or '.wav'}"
-        self._save_upload(artist_song, artist_song_path)
+        if artist_song is not None:
+            source_filename = getattr(artist_song, "filename", None)
+        else:
+            source_filename = artist_song_filename or Path(artist_song_source_path).name
+        artist_name = _safe_name(source_filename, "artist_song")
+        artist_song_path = workflow_dir / f"artist_song{Path(source_filename or '.wav').suffix or '.wav'}"
+        if artist_song is not None:
+            self._save_upload(artist_song, artist_song_path)
+        else:
+            artist_song_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(artist_song_source_path, artist_song_path)
 
         saved_user_vocals: List[Dict[str, Any]] = []
         user_vocals_dir = workflow_dir / "user_vocals"
@@ -182,7 +194,7 @@ class ConversionWorkflowManager:
             "stage": "uploaded",
             "progress": 0,
             "artist_song": {
-                "filename": getattr(artist_song, "filename", artist_song_path.name) or artist_song_path.name,
+                "filename": source_filename or artist_song_path.name,
                 "path": str(artist_song_path),
             },
             "user_vocals": saved_user_vocals,

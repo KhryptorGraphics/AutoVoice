@@ -1519,15 +1519,22 @@ class ApiService {
   }
 
   async createConversionWorkflow(
-    artistSong: File,
+    artistSong: File | null,
     userVocalFiles: File[],
     options?: {
       target_profile_id?: string | null
       dominant_source_profile_id?: string | null
+      source_asset_id?: string | null
     }
   ): Promise<ConversionWorkflow> {
     const formData = new FormData()
-    formData.append('artist_song', artistSong)
+    if (artistSong) {
+      formData.append('artist_song', artistSong)
+    } else if (options?.source_asset_id) {
+      formData.append('source_asset_id', options.source_asset_id)
+    } else {
+      throw new ApiError('An artist song file or an existing song selection is required', 400)
+    }
     appendMediaAttestation(formData)
     userVocalFiles.forEach((file) => formData.append('user_vocals', file))
     if (options?.target_profile_id) {

@@ -227,6 +227,64 @@ class TestConvertSongEndpoint:
         assert payload['active_model_type'] == 'full_model'
         assert payload['adapter_type'] is None
 
+    def test_convert_reuses_existing_source_asset(self, client_full, monkeypatch, tmp_path):
+        profile_id = '00000000-0000-0000-0000-000000000103'
+        _save_test_profile(client_full, profile_id, role='target_user', has_full_model=True)
+
+        source_file = tmp_path / 'reused_song.wav'
+        source_file.write_bytes(b'audio-bytes')
+        store = client_full.application.state_store
+        asset = store.register_asset(
+            str(source_file),
+            kind='uploaded_song_original',
+            metadata={'filename': 'reused_song.wav'},
+        )
+
+        captured = {}
+
+        def _fake_convert_song(**kwargs):
+            captured.update(kwargs)
+            return {
+                'mixed_audio': np.zeros(22050, dtype=np.float32),
+                'sample_rate': 22050,
+                'duration': 1.0,
+                'metadata': {
+                    'target_profile_id': profile_id,
+                    'active_model_type': 'full_model',
+                },
+                'f0_contour': np.array([], dtype=np.float32),
+                'f0_original': np.array([], dtype=np.float32),
+            }
+
+        monkeypatch.setattr(client_full.application, 'job_manager', None, raising=False)
+        monkeypatch.setattr(
+            client_full.application.singing_conversion_pipeline,
+            'convert_song',
+            _fake_convert_song,
+        )
+
+        data = {
+            'profile_id': profile_id,
+            'source_asset_id': asset['asset_id'],
+        }
+        resp = client_full.post('/api/v1/convert/song', data=data,
+                                content_type='multipart/form-data')
+        assert resp.status_code == 200
+        assert captured['song_path'] == str(source_file)
+
+    def test_convert_unknown_source_asset_returns_400(self, client_full):
+        profile_id = '00000000-0000-0000-0000-000000000104'
+        _save_test_profile(client_full, profile_id, role='target_user', has_full_model=True)
+
+        data = {
+            'profile_id': profile_id,
+            'source_asset_id': 'not-a-real-asset',
+        }
+        resp = client_full.post('/api/v1/convert/song', data=data,
+                                content_type='multipart/form-data')
+        assert resp.status_code == 400
+        assert 'reusable original song' in resp.get_json()['error']
+
 
 class TestConvertStatusEndpoint:
     """Conversion status endpoint tests."""

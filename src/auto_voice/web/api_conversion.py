@@ -67,6 +67,39 @@ def _register_conversion_original_asset(
         return None
 
 
+# Managed asset kinds that may be reused as the source song for a new
+# conversion without re-uploading the audio file.
+_REUSABLE_SOURCE_KINDS = {
+    'uploaded_song_original',
+    'youtube_audio',
+    'source_audio',
+    'conversion_original',
+}
+
+
+def _resolve_reusable_source_asset(asset_id: str) -> tuple[Dict[str, Any], str, str] | None:
+    """Resolve an existing managed original-song asset for conversion reuse.
+
+    Returns ``(asset, source_path, filename)`` or ``None`` when the asset is
+    unknown, not a reusable original song, or its file is gone from disk.
+    """
+    try:
+        store = _root()._get_state_store()
+    except Exception:
+        return None
+    if store is None:
+        return None
+    asset = store.get_asset(asset_id)
+    if not asset or asset.get('kind') not in _REUSABLE_SOURCE_KINDS:
+        return None
+    path = str(asset.get('path') or '')
+    if not path or not os.path.isfile(path):
+        return None
+    metadata = dict(asset.get('metadata') or {})
+    filename = str(metadata.get('filename') or '') or os.path.basename(path)
+    return asset, path, secure_filename(filename) or os.path.basename(path)
+
+
 def _data_dir_path(*parts: str) -> str:
     return os.path.join(str(current_app.config.get('DATA_DIR', 'data')), *parts)
 
@@ -154,26 +187,50 @@ def list_conversion_workflows():
 
 
 def create_conversion_workflow():
-    """Create a dual-upload conversion intake workflow."""
+    """Create a dual-upload conversion intake workflow.
+
+    The artist song can be provided either as an ``artist_song`` file upload
+    or as a ``source_asset_id`` form field referencing an existing managed
+    original-song asset (no re-upload required).
+    """
     root = _root()
     artist_song = request.files.get('artist_song')
     user_vocals = request.files.getlist('user_vocals')
+    source_asset_id = (request.form.get('source_asset_id') or '').strip() or None
 
-    if artist_song is None or artist_song.filename == '':
-        return root.validation_error_response('artist_song file is required')
+    has_artist_upload = artist_song is not None and artist_song.filename != ''
+    if not has_artist_upload and not source_asset_id:
+        return root.validation_error_response('artist_song file or source_asset_id is required')
     if not user_vocals:
         return root.validation_error_response('At least one user_vocals file is required')
     if any(upload.filename == '' for upload in user_vocals):
         return root.validation_error_response('All user_vocals files must have a filename')
 
+    artist_song_source_path = None
+    artist_song_filename = None
+    if not has_artist_upload:
+        reused_source = _resolve_reusable_source_asset(source_asset_id)
+        if reused_source is None:
+            return root.validation_error_response(
+                'source_asset_id does not reference a reusable original song'
+            )
+        _asset, artist_song_source_path, artist_song_filename = reused_source
+        root.logger.info(
+            "Reusing managed source asset %s (%s) for conversion workflow",
+            source_asset_id,
+            artist_song_filename,
+        )
+
     dominant_source_profile_override = request.form.get('dominant_source_profile_id') or None
     target_profile_override = request.form.get('target_profile_id') or None
 
     workflow = root._get_conversion_workflow_manager().create_workflow(
-        artist_song=artist_song,
+        artist_song=artist_song if has_artist_upload else None,
         user_vocals=user_vocals,
         target_profile_override=target_profile_override,
         dominant_source_profile_override=dominant_source_profile_override,
+        artist_song_source_path=artist_song_source_path,
+        artist_song_filename=artist_song_filename,
     )
     return jsonify(workflow), 201
 
@@ -274,18 +331,22 @@ def convert_song():
     if not root.NUMPY_AVAILABLE:
         return root.service_unavailable_response('numpy required for audio processing')
 
-    if 'song' not in request.files and 'audio' not in request.files:
-        return root.validation_error_response('No song file provided')
-
     song_file = request.files.get('song') or request.files.get('audio')
-    if song_file is None:
+    source_asset_id = (request.form.get('source_asset_id') or '').strip() or None
+
+    if song_file is None and not source_asset_id:
         return root.validation_error_response('No song file provided')
 
-    if not getattr(song_file, 'filename', ''):
-        return root.validation_error_response('No selected file')
-
-    if not root.allowed_file(song_file.filename):
-        return root.validation_error_response('Invalid file type')
+    if song_file is not None:
+        if not getattr(song_file, 'filename', ''):
+            if source_asset_id:
+                # Empty file input submitted alongside an asset reference:
+                # treat the managed asset as the source.
+                song_file = None
+            else:
+                return root.validation_error_response('No selected file')
+        elif not root.allowed_file(song_file.filename):
+            return root.validation_error_response('Invalid file type')
 
     profile_id = request.form.get('profile_id')
     if not profile_id:
@@ -507,23 +568,36 @@ def convert_song():
     singing_pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
 
     try:
-        secure_name = secure_filename(song_file.filename)
-        source_id = str(uuid.uuid4())
-        source_dir = _data_dir_path('conversions', 'originals', profile_id)
-        os.makedirs(source_dir, exist_ok=True)
-        source_path = os.path.join(source_dir, f"{source_id}_{secure_name}")
-        song_file.save(source_path)
-        original_asset = _register_conversion_original_asset(
-            source_path,
-            owner_id=profile_id,
-            metadata={
-                'source': 'conversion_upload',
-                'profile_id': profile_id,
-                'source_id': source_id,
-                'filename': secure_name,
-                'title': os.path.splitext(secure_name)[0],
-            },
-        )
+        if song_file is not None:
+            secure_name = secure_filename(song_file.filename)
+            source_id = str(uuid.uuid4())
+            source_dir = _data_dir_path('conversions', 'originals', profile_id)
+            os.makedirs(source_dir, exist_ok=True)
+            source_path = os.path.join(source_dir, f"{source_id}_{secure_name}")
+            song_file.save(source_path)
+            original_asset = _register_conversion_original_asset(
+                source_path,
+                owner_id=profile_id,
+                metadata={
+                    'source': 'conversion_upload',
+                    'profile_id': profile_id,
+                    'source_id': source_id,
+                    'filename': secure_name,
+                    'title': os.path.splitext(secure_name)[0],
+                },
+            )
+        else:
+            reused_source = _resolve_reusable_source_asset(source_asset_id)
+            if reused_source is None:
+                return root.validation_error_response(
+                    'source_asset_id does not reference a reusable original song'
+                )
+            original_asset, source_path, secure_name = reused_source
+            root.logger.info(
+                "Reusing managed source asset %s (%s) for conversion",
+                source_asset_id,
+                secure_name,
+            )
         original_asset_id = original_asset.get('asset_id') if original_asset else None
         original_audio_url = _singalong_source_url(original_asset_id) if original_asset_id else None
 
@@ -549,14 +623,24 @@ def convert_song():
             }
             job_id = job_manager.create_job(source_path, profile_id, settings_dict)
             if original_asset:
-                _register_conversion_original_asset(
-                    source_path,
-                    owner_id=profile_id,
-                    metadata={
-                        **dict(original_asset.get('metadata') or {}),
-                        'job_id': job_id,
-                    },
-                )
+                try:
+                    # Preserve the asset's original kind/owner (e.g. a reused
+                    # youtube_audio asset must stay a youtube_audio asset).
+                    _root()._get_state_store().register_asset(
+                        source_path,
+                        kind=original_asset.get('kind') or 'conversion_original',
+                        owner_id=original_asset.get('owner_id') or profile_id,
+                        metadata={
+                            **dict(original_asset.get('metadata') or {}),
+                            'job_id': job_id,
+                            'last_conversion_profile_id': profile_id,
+                        },
+                    )
+                except Exception:
+                    root.logger.warning(
+                        "Failed to update conversion original asset metadata",
+                        exc_info=True,
+                    )
 
             root.logger.info("Created async job %s for song conversion", job_id)
             try:

@@ -21,6 +21,7 @@ import {
   DEFAULT_CONVERSION_CONFIG,
   DEFAULT_TRAINING_CONFIG,
   type OfflinePipelineType,
+  type SingAlongSource,
   type TrainingConfig,
   type TrainingConfigOptions,
   type TrainingJob,
@@ -234,6 +235,8 @@ export function ConversionWorkflowPage() {
   const toast = useToastContext()
   const [profiles, setProfiles] = useState<VoiceProfile[]>([])
   const [artistSong, setArtistSong] = useState<File | null>(null)
+  const [existingSources, setExistingSources] = useState<SingAlongSource[]>([])
+  const [selectedSourceAssetId, setSelectedSourceAssetId] = useState<string>('')
   const [userVocalFiles, setUserVocalFiles] = useState<File[]>([])
   const [targetProfileOverride, setTargetProfileOverride] = useState<string>('')
   const [dominantSourceProfileOverride, setDominantSourceProfileOverride] = useState<string>('')
@@ -270,15 +273,23 @@ export function ConversionWorkflowPage() {
     [profiles]
   )
 
+  const selectedSource = useMemo(
+    () => existingSources.find((source) => source.asset_id === selectedSourceAssetId) || null,
+    [existingSources, selectedSourceAssetId]
+  )
+
+  const artistSongName = artistSong?.name || selectedSource?.filename || selectedSource?.label || null
+
   const submissionKey = useMemo(() => {
-    if (!artistSong || userVocalFiles.length === 0) return null
+    if ((!artistSong && !selectedSourceAssetId) || userVocalFiles.length === 0) return null
     return JSON.stringify({
-      artist: [artistSong.name, artistSong.size, artistSong.lastModified],
+      artist: artistSong ? [artistSong.name, artistSong.size, artistSong.lastModified] : null,
+      sourceAssetId: artistSong ? null : selectedSourceAssetId,
       user: userVocalFiles.map((file) => [file.name, file.size, file.lastModified]),
       targetProfileOverride,
       dominantSourceProfileOverride,
     })
-  }, [artistSong, userVocalFiles, targetProfileOverride, dominantSourceProfileOverride])
+  }, [artistSong, selectedSourceAssetId, userVocalFiles, targetProfileOverride, dominantSourceProfileOverride])
 
   const loadProfiles = useCallback(async () => {
     try {
@@ -292,6 +303,22 @@ export function ConversionWorkflowPage() {
   useEffect(() => {
     void loadProfiles()
   }, [loadProfiles])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadSources = async () => {
+      try {
+        const sources = await apiService.listSingAlongSources()
+        if (!cancelled) setExistingSources(sources)
+      } catch (error) {
+        console.error('Failed to load existing songs:', error)
+      }
+    }
+    void loadSources()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -343,37 +370,32 @@ export function ConversionWorkflowPage() {
     }
   }, [workflow?.workflow_id])
 
-  useEffect(() => {
+  const handleStartConversion = useCallback(async () => {
     if (!submissionKey || submittingWorkflow) return
-    if (submissionKey === lastSubmissionKey) return
-
-    const startWorkflow = async () => {
-      if (!artistSong || userVocalFiles.length === 0) return
-      setSubmittingWorkflow(true)
-      setWorkflowError(null)
-      setConversionStatus(null)
-      try {
-        const created = await apiService.createConversionWorkflow(artistSong, userVocalFiles, {
-          target_profile_id: targetProfileOverride || null,
-          dominant_source_profile_id: dominantSourceProfileOverride || null,
-        })
-        setWorkflow(created)
-        setLastSubmissionKey(submissionKey)
-        toast.success('Conversion intake workflow started')
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to start conversion workflow'
-        setWorkflowError(message)
-        toast.error(message)
-      } finally {
-        setSubmittingWorkflow(false)
-      }
+    if ((!artistSong && !selectedSourceAssetId) || userVocalFiles.length === 0) return
+    setSubmittingWorkflow(true)
+    setWorkflowError(null)
+    setConversionStatus(null)
+    try {
+      const created = await apiService.createConversionWorkflow(artistSong, userVocalFiles, {
+        target_profile_id: targetProfileOverride || null,
+        dominant_source_profile_id: dominantSourceProfileOverride || null,
+        source_asset_id: artistSong ? null : selectedSourceAssetId || null,
+      })
+      setWorkflow(created)
+      setLastSubmissionKey(submissionKey)
+      toast.success('Conversion intake workflow started')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to start conversion workflow'
+      setWorkflowError(message)
+      toast.error(message)
+    } finally {
+      setSubmittingWorkflow(false)
     }
-
-    void startWorkflow()
   }, [
     artistSong,
     dominantSourceProfileOverride,
-    lastSubmissionKey,
+    selectedSourceAssetId,
     submissionKey,
     submittingWorkflow,
     targetProfileOverride,
@@ -560,20 +582,20 @@ export function ConversionWorkflowPage() {
   const handleDownload = async () => {
     if (!conversionStatus) return
     const blob = await apiService.downloadResult(conversionStatus.id)
-    triggerDownload(blob, `converted_${artistSong?.name || 'song.wav'}`)
+    triggerDownload(blob, `converted_${artistSongName || 'song.wav'}`)
   }
 
   const handleDownloadStem = async (variant: 'vocals' | 'instrumental') => {
     if (!conversionStatus) return
     const blob = await apiService.downloadConversionAsset(conversionStatus.id, variant)
-    const baseName = artistSong?.name?.replace(/\.[^/.]+$/, '') || 'song'
+    const baseName = artistSongName?.replace(/\.[^/.]+$/, '') || 'song'
     triggerDownload(blob, `${baseName}_${variant}.wav`)
   }
 
   const handleReassemble = async () => {
     if (!conversionStatus) return
     const blob = await apiService.reassembleConversion(conversionStatus.id)
-    const baseName = artistSong?.name?.replace(/\.[^/.]+$/, '') || 'song'
+    const baseName = artistSongName?.replace(/\.[^/.]+$/, '') || 'song'
     triggerDownload(blob, `${baseName}_reassembled.wav`)
   }
 
@@ -648,10 +670,39 @@ export function ConversionWorkflowPage() {
             inputId="artist-song-upload"
             onChange={(files) => {
               setArtistSong(files[0] || null)
+              if (files[0]) setSelectedSourceAssetId('')
               setWorkflow(null)
               setLastSubmissionKey(null)
             }}
           />
+          {existingSources.length > 0 && (
+            <div className="bg-gray-800 rounded-lg p-4">
+              <label className="block text-sm text-gray-400 mb-2">…or reuse an existing uploaded song</label>
+              <select
+                value={selectedSourceAssetId}
+                onChange={(event) => {
+                  setSelectedSourceAssetId(event.target.value)
+                  if (event.target.value) setArtistSong(null)
+                  setWorkflow(null)
+                  setLastSubmissionKey(null)
+                }}
+                className="w-full p-3 bg-gray-700 rounded-lg"
+                data-testid="existing-song-select"
+              >
+                <option value="">Upload a new file above</option>
+                {existingSources.map((source) => (
+                  <option key={source.asset_id} value={source.asset_id}>
+                    {source.label || source.filename}
+                  </option>
+                ))}
+              </select>
+              {selectedSource && !artistSong && (
+                <p className="text-xs text-gray-500 mt-2">
+                  Reusing “{selectedSource.filename}” — no re-upload needed.
+                </p>
+              )}
+            </div>
+          )}
           <div className="bg-gray-800 rounded-lg p-4">
             <label className="block text-sm text-gray-400 mb-2">Optional dominant artist override</label>
             <select
@@ -706,6 +757,30 @@ export function ConversionWorkflowPage() {
             </select>
           </div>
         </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+        <button
+          type="button"
+          onClick={() => void handleStartConversion()}
+          disabled={!submissionKey || submittingWorkflow}
+          data-testid="start-generation-button"
+          className="px-6 py-3 rounded-lg font-semibold bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+        >
+          <Wand2 size={18} />
+          {submittingWorkflow
+            ? 'Starting…'
+            : workflow && submissionKey === lastSubmissionKey
+              ? 'Restart Generation'
+              : 'Start Generation'}
+        </button>
+        <p className="text-sm text-gray-400">
+          {!submissionKey
+            ? 'Provide an artist song (upload or reuse) and at least one user vocal clip to enable generation.'
+            : workflow && submissionKey === lastSubmissionKey
+              ? 'These inputs are already running below — restart only if you want a fresh workflow.'
+              : 'Ready — click to start the conversion workflow.'}
+        </p>
       </div>
 
       <div className="bg-gray-800 rounded-lg p-6 space-y-4">
