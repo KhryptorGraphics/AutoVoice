@@ -88,3 +88,9 @@ checkpoints/
 logs/security/
 .gitnexus
 frontend/test-results/
+
+# Local code-intelligence / agent tooling artifacts
+.codegraph/
+agentdb.rvf
+agentdb.rvf.lock
+ruvector.db
