@@ -134,7 +134,11 @@
     "allow": [
       "Bash(npx claude-flow:*)",
       "Bash(npx @claude-flow/cli:*)",
-      "mcp__claude-flow__:*"
+      "mcp__claude-flow__:*",
+      "Bash(npx @claude-flow*)",
+      "Bash(npx claude-flow*)",
+      "Bash(node .claude/*)",
+      "mcp__claude-flow__*"
     ],
     "deny": []
   },
@@ -237,5 +241,10 @@
       "cveCheck": true,
       "threatModel": true
     }
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_FLOW_V3_ENABLED": "true",
+    "CLAUDE_FLOW_HOOKS_ENABLED": "true"
   }
 }
