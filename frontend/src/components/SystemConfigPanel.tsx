@@ -506,6 +506,31 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       below the gate stay original. Lower = more lines converted (riskier).
                     </p>
                   </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Karaoke leak guard</label>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={0.95}
+                      step={0.05}
+                      value={appSettings.multi_speaker_karaoke_leak_voiced_min ?? 0.65}
+                      onChange={e => updateAppSettingsMutation.mutate({
+                        multi_speaker_karaoke_leak_voiced_min: parseFloat(e.target.value),
+                      })}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Cautious (0.3)</span>
+                      <span>{(appSettings.multi_speaker_karaoke_leak_voiced_min ?? 0.65).toFixed(2)}</span>
+                      <span>Trusting (0.95)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      When the karaoke split&apos;s backing stem sounds this lead-like, the split is rejected
+                      as a leak and diarization is used instead. Solo covers with strong self-harmony doubles
+                      can trip the guard — raise toward 0.85 to accept the split on such tracks.
+                    </p>
+                  </div>
                 </div>
               )}
             </div>

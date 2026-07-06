@@ -390,6 +390,7 @@ export interface AppSettings {
   multi_speaker_separator?: 'diarization' | 'karaoke_model'
   multi_speaker_backing_gain?: number
   multi_speaker_backing_voiced_min?: number
+  multi_speaker_karaoke_leak_voiced_min?: number
   last_updated?: string | null
 }
 

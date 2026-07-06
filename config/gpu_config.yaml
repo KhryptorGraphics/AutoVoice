@@ -56,3 +56,9 @@ multi_speaker_backing_gain: 1.2
 # 0.60-0.66), so this sits a notch under the merge gate, inside the
 # calibrated 0.51-0.76 margin.
 multi_speaker_backing_voiced_min: 0.6
+
+# Leak guard for the karaoke split: when its backing stem measures at least
+# this voiced, treat the split as lead-retention and fall back to diarization
+# spans. Solo covers with strongly-voiced self-doubles can trip it (measured
+# 0.76 on a real case) — raise toward 0.85 to accept the split anyway.
+multi_speaker_karaoke_leak_voiced_min: 0.65

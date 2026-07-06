@@ -294,7 +294,8 @@ def _init_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
             try:
                 stored = app.state_store.get_app_settings() or {}
                 for key in ('multi_speaker_separator', 'multi_speaker_backing_gain',
-                            'multi_speaker_backing_voiced_min'):
+                            'multi_speaker_backing_voiced_min',
+                            'multi_speaker_karaoke_leak_voiced_min'):
                     if stored.get(key) is not None:
                         singing_pipeline.config[key] = stored[key]
                         logger.info(f"Applied stored app setting {key}={stored[key]}")

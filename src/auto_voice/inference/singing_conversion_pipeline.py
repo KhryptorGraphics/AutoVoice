@@ -493,11 +493,17 @@ class SingingConversionPipeline:
                   if len(intervals) else np.zeros(0, dtype=np.float32))
         backing_s = float(sum(int(e) - int(s) for s, e in intervals)) / sr
         vf = _voiced_fraction(active, sr) if len(active) >= int(1.5 * sr) else 0.0
-        merge_voiced = float(self.config.get('multi_speaker_merge_voiced_min', 0.65))
-        if vf >= merge_voiced:
+        # Dedicated leak-guard knob: the merge threshold is the default, but
+        # solo covers with strongly-voiced self-harmony doubles legitimately
+        # measure in the clean-lead band — raising this accepts the karaoke
+        # split anyway (the backing then goes through the normal line gates).
+        leak_voiced = float(self.config.get(
+            'multi_speaker_karaoke_leak_voiced_min',
+            self.config.get('multi_speaker_merge_voiced_min', 0.65)))
+        if vf >= leak_voiced:
             logger.info(
                 "Karaoke separation: backing stem looks like clean lead "
-                "(voiced %.2f >= %.2f); using diarization spans", vf, merge_voiced)
+                "(voiced %.2f >= %.2f); using diarization spans", vf, leak_voiced)
             return None
 
         info = {

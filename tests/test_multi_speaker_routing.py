@@ -390,6 +390,22 @@ class TestKaraokeSeparatorRouting:
         p._diarizer = FakeDiarizer(make_result([(0.0, 10.0, 'SPEAKER_00')]))
         assert p._convert_multi_speaker(voc, sr, 'pid', IdentityMM(), 0.0) is None
 
+    def test_leak_guard_knob_accepts_voiced_backing(self, monkeypatch):
+        # Raising multi_speaker_karaoke_leak_voiced_min above the measured
+        # backing voicing accepts the split (solo self-doubles case) instead
+        # of falling back to spans.
+        sr = 8000
+        voc = np.ones(10 * sr, dtype=np.float32) * 0.5
+        self._patch_bridge(monkeypatch, voc * 0.5, voc * 0.5)
+        patch_voiced(monkeypatch, 0.76)  # the real measured leak case
+        p = make_pipeline(multi_speaker_separator='karaoke_model',
+                          multi_speaker_karaoke_leak_voiced_min=0.85)
+        p._diarizer = FakeDiarizer(make_result([(0.0, 10.0, 'SPEAKER_00')]))
+        out = p._convert_multi_speaker(voc, sr, 'pid', IdentityMM(), 0.0)
+        assert out is not None
+        _, info = out
+        assert info['separator'] == 'karaoke_model+diarization'
+
     def test_bridge_unavailable_falls_back(self, monkeypatch):
         sr = 8000
         voc = np.ones(10 * sr, dtype=np.float32) * 0.5

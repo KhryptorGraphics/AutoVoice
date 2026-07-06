@@ -345,6 +345,10 @@ def get_app_settings():
             'multi_speaker_backing_voiced_min',
             float(cfg.get('multi_speaker_backing_voiced_min',
                           cfg.get('multi_speaker_merge_voiced_min', 0.65))))
+        payload.setdefault(
+            'multi_speaker_karaoke_leak_voiced_min',
+            float(cfg.get('multi_speaker_karaoke_leak_voiced_min',
+                          cfg.get('multi_speaker_merge_voiced_min', 0.65))))
         return jsonify(payload)
     except Exception as exc:
         root.logger.error("Error reading app settings: %s", exc, exc_info=True)
@@ -400,6 +404,7 @@ def update_app_settings():
         for key, lo, hi in (
             ('multi_speaker_backing_gain', 0.1, 3.0),
             ('multi_speaker_backing_voiced_min', 0.3, 0.95),
+            ('multi_speaker_karaoke_leak_voiced_min', 0.3, 0.95),
         ):
             if key in data:
                 try:
@@ -424,7 +429,8 @@ def update_app_settings():
         pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
         if pipeline is not None and isinstance(getattr(pipeline, 'config', None), dict):
             for key in ('multi_speaker_separator', 'multi_speaker_backing_gain',
-                        'multi_speaker_backing_voiced_min'):
+                        'multi_speaker_backing_voiced_min',
+                        'multi_speaker_karaoke_leak_voiced_min'):
                 if key in updates:
                     pipeline.config[key] = updates[key]
 
