@@ -68,7 +68,10 @@ def get_fork_model(profile_id: str, data_dir: str = "data") -> Optional[dict]:
             and os.path.exists(candidate["config_path"])
         ):
             entry = candidate
-    _CACHE[key] = entry
+    # Cache hits only: a miss may be transient (registry/model files can
+    # appear after startup), and a cached None would demand a server restart.
+    if entry is not None:
+        _CACHE[key] = entry
     return entry
 
 
