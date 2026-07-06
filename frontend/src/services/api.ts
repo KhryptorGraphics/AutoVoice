@@ -386,6 +386,10 @@ export interface AppSettings {
   preferred_pipeline: 'realtime' | 'quality'
   preferred_offline_pipeline: OfflinePipelineType
   preferred_live_pipeline: LivePipelineType
+  // Multi-speaker conversion knobs — applied to the live pipeline on PATCH
+  multi_speaker_separator?: 'diarization' | 'karaoke_model'
+  multi_speaker_backing_gain?: number
+  multi_speaker_backing_voiced_min?: number
   last_updated?: string | null
 }
 

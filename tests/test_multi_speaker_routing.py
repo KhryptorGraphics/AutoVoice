@@ -538,6 +538,34 @@ class TestConvertBackingStack:
         assert info['mode'] == 'converted'
         assert info['lines_detected'] == 2 and info['lines_converted'] == 2
 
+    def test_backing_voiced_min_knob_overrides_merge_gate(self, monkeypatch):
+        # A dedicated backing-line gate: with the knob above the (patched)
+        # line voicing, lines are kept; lowering it converts them — without
+        # touching the cluster merge threshold.
+        sr = 8000
+        t = np.arange(4 * sr) / sr
+
+        def voice(f0, amp):
+            return amp * sum((1.0 / k) * np.sin(2 * np.pi * k * f0 * t)
+                             for k in range(1, 5)) / 2.0
+        stack = (voice(220.0, 0.5) + voice(330.0, 0.4)).astype(np.float32)
+        notes = [_note(0, 4, 57), _note(0, 4, 64)]
+
+        import auto_voice.inference.separation_bridge as bridge
+        monkeypatch.setattr(bridge, 'polyphonic_notes', lambda a, sr: notes)
+        # Real lines here measure ~1.0 voiced; a 0.95 gate still passes them,
+        # so patch the measurement to a mid value and bracket it with the knob.
+        import auto_voice.inference.singing_conversion_pipeline as scp
+        monkeypatch.setattr(scp, '_voiced_fraction', lambda a, s, max_s=20.0: 0.5)
+
+        strict = make_pipeline(multi_speaker_backing_voiced_min=0.6)
+        out, info = strict._convert_backing_stack(stack, sr, 'pid', IdentityMM())
+        assert info['mode'] == 'kept'
+
+        loose = make_pipeline(multi_speaker_backing_voiced_min=0.4)
+        out, info = loose._convert_backing_stack(stack, sr, 'pid', IdentityMM())
+        assert info['mode'] == 'converted'
+
     def test_backing_gain_knob_scales_output(self, monkeypatch):
         # multi_speaker_backing_gain is the operator taste knob for converted
         # harmony level; identity engine + level match means the knob alone

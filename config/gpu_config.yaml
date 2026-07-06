@@ -50,3 +50,9 @@ multi_speaker_separator: karaoke_model
 # Taste knob for converted-harmony level: 1.0 = match the original backing
 # stem's active loudness. Raised after "backing a little weak" review note.
 multi_speaker_backing_gain: 1.2
+
+# Voiced gate for converting individual backing-harmony lines. Comb extracts
+# measure slightly below cluster audio (real lines straddled 0.65 at
+# 0.60-0.66), so this sits a notch under the merge gate, inside the
+# calibrated 0.51-0.76 margin.
+multi_speaker_backing_voiced_min: 0.6

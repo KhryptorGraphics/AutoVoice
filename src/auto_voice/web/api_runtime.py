@@ -331,7 +331,21 @@ def get_app_settings():
     """Return durable app-level settings used by the frontend."""
     root = _root()
     try:
-        return jsonify(root._normalize_app_settings_payload(root._get_state_store().get_app_settings()))
+        payload = root._normalize_app_settings_payload(
+            root._get_state_store().get_app_settings())
+        # Surface the effective multi-speaker knobs (config defaults when the
+        # operator has not overridden them via PATCH).
+        pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
+        cfg = getattr(pipeline, 'config', None) or {}
+        payload.setdefault('multi_speaker_separator',
+                           cfg.get('multi_speaker_separator', 'diarization'))
+        payload.setdefault('multi_speaker_backing_gain',
+                           float(cfg.get('multi_speaker_backing_gain', 1.0)))
+        payload.setdefault(
+            'multi_speaker_backing_voiced_min',
+            float(cfg.get('multi_speaker_backing_voiced_min',
+                          cfg.get('multi_speaker_merge_voiced_min', 0.65))))
+        return jsonify(payload)
     except Exception as exc:
         root.logger.error("Error reading app settings: %s", exc, exc_info=True)
         return root.error_response(str(exc))
@@ -375,11 +389,45 @@ def update_app_settings():
                 )
             updates['preferred_live_pipeline'] = preferred_live_pipeline
 
+        if 'multi_speaker_separator' in data:
+            separator = str(data['multi_speaker_separator']).strip().lower()
+            if separator not in ('diarization', 'karaoke_model'):
+                return root.validation_error_response(
+                    'multi_speaker_separator must be one of: diarization, karaoke_model'
+                )
+            updates['multi_speaker_separator'] = separator
+
+        for key, lo, hi in (
+            ('multi_speaker_backing_gain', 0.1, 3.0),
+            ('multi_speaker_backing_voiced_min', 0.3, 0.95),
+        ):
+            if key in data:
+                try:
+                    value = float(data[key])
+                except (TypeError, ValueError):
+                    return root.validation_error_response(f'{key} must be a number')
+                if not (lo <= value <= hi):
+                    return root.validation_error_response(
+                        f'{key} must be between {lo} and {hi}'
+                    )
+                updates[key] = value
+
         if not updates:
             return root.validation_error_response('No supported app settings were provided')
 
         updates['last_updated'] = root._utcnow_iso()
         settings = root._get_state_store().update_app_settings(updates)
+
+        # Apply multi-speaker knobs to the live pipeline: it reads its config
+        # at call time, so mutating the dict takes effect on the next job
+        # without a restart (create_app reapplies persisted values on boot).
+        pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
+        if pipeline is not None and isinstance(getattr(pipeline, 'config', None), dict):
+            for key in ('multi_speaker_separator', 'multi_speaker_backing_gain',
+                        'multi_speaker_backing_voiced_min'):
+                if key in updates:
+                    pipeline.config[key] = updates[key]
+
         return jsonify(root._normalize_app_settings_payload(settings))
     except Exception as exc:
         root.logger.error("Error updating app settings: %s", exc, exc_info=True)

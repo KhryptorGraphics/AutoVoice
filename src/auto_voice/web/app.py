@@ -288,6 +288,18 @@ def _init_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
             singing_pipeline = SingingConversionPipeline(device=device, config=config)
             app.singing_conversion_pipeline = singing_pipeline
             logger.info(f"Singing conversion pipeline initialized on {device}")
+            # Reapply operator-tuned multi-speaker knobs persisted via
+            # PATCH /settings/app so they survive restarts (yaml config only
+            # carries repo defaults).
+            try:
+                stored = app.state_store.get_app_settings() or {}
+                for key in ('multi_speaker_separator', 'multi_speaker_backing_gain',
+                            'multi_speaker_backing_voiced_min'):
+                    if stored.get(key) is not None:
+                        singing_pipeline.config[key] = stored[key]
+                        logger.info(f"Applied stored app setting {key}={stored[key]}")
+            except Exception as e:
+                logger.warning(f"Could not apply stored multi-speaker settings: {e}")
         except Exception as e:
             logger.warning(f"Failed to initialize singing conversion pipeline: {e}")
 

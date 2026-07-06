@@ -138,6 +138,39 @@ def test_app_settings_round_trip(training_ui_client):
     assert split_payload["preferred_pipeline"] == "quality"
 
 
+def test_app_settings_multi_speaker_knobs(training_ui_client):
+    update = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={
+            "multi_speaker_separator": "karaoke_model",
+            "multi_speaker_backing_gain": 1.4,
+            "multi_speaker_backing_voiced_min": 0.55,
+        },
+    )
+    assert update.status_code == 200
+    payload = update.get_json()
+    assert payload["multi_speaker_separator"] == "karaoke_model"
+    assert payload["multi_speaker_backing_gain"] == 1.4
+    assert payload["multi_speaker_backing_voiced_min"] == 0.55
+
+    # Persisted: GET returns the stored values, not config defaults.
+    fetched = training_ui_client.get("/api/v1/settings/app").get_json()
+    assert fetched["multi_speaker_separator"] == "karaoke_model"
+    assert fetched["multi_speaker_backing_gain"] == 1.4
+
+    bad_separator = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"multi_speaker_separator": "spectral_magic"},
+    )
+    assert bad_separator.status_code == 400
+
+    bad_gain = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"multi_speaker_backing_gain": 99},
+    )
+    assert bad_gain.status_code == 400
+
+
 def test_training_pause_resume_and_telemetry_routes(training_ui_app, training_ui_client):
     job, sample = _prepare_running_job(training_ui_app)
 

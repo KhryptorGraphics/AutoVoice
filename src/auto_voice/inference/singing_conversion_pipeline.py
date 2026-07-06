@@ -526,7 +526,13 @@ class SingingConversionPipeline:
         """
         from . import separation_bridge
 
-        merge_voiced = float(self.config.get('multi_speaker_merge_voiced_min', 0.65))
+        # Backing lines get their own gate: comb extracts measure voicing
+        # slightly below cluster audio (HB's real harmony lines straddled the
+        # 0.65 merge threshold at 0.60-0.66), so the default sits a notch under
+        # the merge gate while staying inside the calibrated 0.51-0.76 margin.
+        merge_voiced = float(self.config.get(
+            'multi_speaker_backing_voiced_min',
+            self.config.get('multi_speaker_merge_voiced_min', 0.65)))
         kept = {'mode': 'kept', 'lines_detected': 0, 'lines_converted': 0}
         try:
             notes = separation_bridge.polyphonic_notes(backing, sr)

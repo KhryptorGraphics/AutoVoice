@@ -80,6 +80,11 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
     queryFn: () => apiService.getAudioRouterConfig(),
   })
 
+  const { data: appSettings } = useQuery({
+    queryKey: ['appSettings'],
+    queryFn: () => apiService.getAppSettings(),
+  })
+
   // Mutations for updating configs
   const updateSeparationMutation = useMutation({
     mutationFn: (config: Partial<SeparationConfig>) => apiService.updateSeparationConfig(config),
@@ -114,6 +119,19 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : 'Failed to update audio router config')
+    },
+  })
+
+  const updateAppSettingsMutation = useMutation({
+    mutationFn: (settings: Parameters<typeof apiService.updateAppSettings>[0]) =>
+      apiService.updateAppSettings(settings),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['appSettings'] })
+      onConfigChange?.()
+      toast.success('Multi-speaker settings updated (applies to the next conversion)')
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : 'Failed to update multi-speaker settings')
     },
   })
 
@@ -413,6 +431,80 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                     <div className="text-xs text-gray-500 text-right">
                       {(separationConfig.overlap * 100).toFixed(0)}%
                     </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Multi-Speaker Conversion */}
+            <div>
+              <SectionHeader id="multiSpeaker" title="Multi-Speaker Conversion" />
+              {expandedSections.has('multiSpeaker') && appSettings && (
+                <div className="mt-2 p-3 bg-gray-750 rounded-lg space-y-4" data-testid="multi-speaker-settings">
+                  <div>
+                    <label className="text-sm text-gray-400">Lead/backing separator</label>
+                    <select
+                      value={appSettings.multi_speaker_separator ?? 'diarization'}
+                      onChange={e => updateAppSettingsMutation.mutate({
+                        multi_speaker_separator: e.target.value as 'diarization' | 'karaoke_model',
+                      })}
+                      className="mt-1 w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"
+                      data-testid="multi-speaker-separator-select"
+                    >
+                      <option value="karaoke_model">Karaoke model (splits simultaneous harmonies)</option>
+                      <option value="diarization">Diarization spans (turn-taking only)</option>
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      The karaoke model pulls harmony doubles out from under the lead; it falls back to
+                      diarization automatically when its bridge is unavailable.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Converted-backing loudness</label>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={2}
+                      step={0.05}
+                      value={appSettings.multi_speaker_backing_gain ?? 1.0}
+                      onChange={e => updateAppSettingsMutation.mutate({
+                        multi_speaker_backing_gain: parseFloat(e.target.value),
+                      })}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Quieter (0.5×)</span>
+                      <span>{(appSettings.multi_speaker_backing_gain ?? 1.0).toFixed(2)}×</span>
+                      <span>Louder (2×)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      1.0× matches the original backing stem&apos;s loudness.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Harmony-line conversion strictness</label>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={0.95}
+                      step={0.05}
+                      value={appSettings.multi_speaker_backing_voiced_min ?? 0.65}
+                      onChange={e => updateAppSettingsMutation.mutate({
+                        multi_speaker_backing_voiced_min: parseFloat(e.target.value),
+                      })}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Convert more (0.3)</span>
+                      <span>{(appSettings.multi_speaker_backing_voiced_min ?? 0.65).toFixed(2)}</span>
+                      <span>Convert less (0.95)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Minimum voicing a harmony line needs before it is re-sung in the target voice; lines
+                      below the gate stay original. Lower = more lines converted (riskier).
+                    </p>
                   </div>
                 </div>
               )}
