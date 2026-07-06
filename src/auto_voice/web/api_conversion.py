@@ -25,6 +25,26 @@ def _singalong_source_url(asset_id: str) -> str:
     return f"/api/v1/singalong/sources/{asset_id}/audio"
 
 
+def _parse_preserve_speakers(raw) -> list[str] | None:
+    """Normalize preserve_speakers input to a list of tokens or None.
+
+    Accepts a JSON array, a list, or a comma-separated string of diarization
+    cluster ids ("SPEAKER_02") and/or time ranges ("1:23-1:40"); the pipeline
+    resolves ranges against its own diarization run.
+    """
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = [p.strip() for p in raw.split(',')]
+    if not isinstance(raw, (list, tuple)):
+        return None
+    tokens = [str(p).strip() for p in raw if str(p).strip()]
+    return tokens or None
+
+
 def _register_conversion_original_asset(
     path: str,
     *,
@@ -226,6 +246,7 @@ def convert_from_workflow(workflow_id: str):
         'return_stems': payload.get('return_stems', True),
         'enable_multi_speaker': payload.get('enable_multi_speaker'),
         'convert_backing': payload.get('convert_backing'),
+        'preserve_speakers': _parse_preserve_speakers(payload.get('preserve_speakers')),
     }
     try:
         result = root._get_conversion_workflow_manager().create_conversion_job(workflow_id, settings)
@@ -387,24 +408,13 @@ def convert_song():
         type_hint='bool',
     )
 
-    # Diarization cluster ids whose voice is already the target (e.g. the
-    # target artist featuring on the song): kept original, never converted.
-    # JSON array or comma-separated string; identity cannot be auto-detected
-    # on singing, so this is an explicit operator choice.
-    raw_preserve = (settings_data or {}).get('preserve_speakers',
-                                             request.form.get('preserve_speakers'))
-    preserve_speakers = None
-    if raw_preserve:
-        if isinstance(raw_preserve, str):
-            try:
-                parsed = json.loads(raw_preserve)
-            except ValueError:
-                parsed = [p.strip() for p in raw_preserve.split(',')]
-            raw_preserve = parsed
-        if isinstance(raw_preserve, (list, tuple)):
-            preserve_speakers = [str(p).strip() for p in raw_preserve if str(p).strip()]
-        if not preserve_speakers:
-            preserve_speakers = None
+    # Singers whose voice is already the target (e.g. the target artist
+    # featuring on the song): kept original, never converted. Cluster ids or
+    # time ranges; identity cannot be auto-detected on singing, so this is an
+    # explicit operator choice.
+    preserve_speakers = _parse_preserve_speakers(
+        (settings_data or {}).get('preserve_speakers',
+                                  request.form.get('preserve_speakers')))
 
     try:
         output_quality = root.get_param(

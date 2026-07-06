@@ -121,7 +121,7 @@ export interface MultiSpeakerInfo {
   primary_speaker?: string
   backing_s?: number
   reassigned_blips?: number
-  roles?: Record<string, 'lead_merge' | 'backing' | 'backing_stem'>
+  roles?: Record<string, 'lead_merge' | 'backing' | 'backing_stem' | 'preserved'>
   voiced?: Record<string, number>
   coverage?: number
   // Which lead/backing splitter ran: 'diarization' | 'karaoke_model'
@@ -130,6 +130,9 @@ export interface MultiSpeakerInfo {
   // Backing-vocal handling: kept original, fully converted, or partial
   backing_mode?: 'kept' | 'converted' | 'partial'
   harmony_lines?: { detected: number; converted: number }
+  // Clusters kept original because their voice is already the target
+  preserved_speakers?: string[]
+  preserved_s?: number
 }
 
 // Pipeline result metadata surfaced verbatim by the backend (conversion_metadata)
@@ -667,6 +670,9 @@ export interface ConversionConfig {
   enable_multi_speaker: boolean | null
   // Experimental: also convert backing harmonies to the target voice
   convert_backing: boolean | null
+  // Keep already-target singers original: comma-separated time ranges
+  // ("1:23-1:40") or diarization cluster ids ("SPEAKER_02"); '' = none
+  preserve_speakers: string
 }
 
 export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
@@ -681,6 +687,7 @@ export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
   vocoder_type: 'hifigan',
   enable_multi_speaker: null,
   convert_backing: null,
+  preserve_speakers: '',
 }
 
 // Quality preset details matching backend PRESETS
@@ -1467,6 +1474,7 @@ class ApiService {
       return_stems?: boolean
       enable_multi_speaker?: boolean | null
       convert_backing?: boolean | null
+      preserve_speakers?: string
     }
   ): Promise<ConversionJobResponse> {
     const formData = new FormData()
@@ -1482,6 +1490,7 @@ class ApiService {
     if (settings?.return_stems != null) formData.append('return_stems', String(settings.return_stems))
     if (settings?.enable_multi_speaker != null) formData.append('enable_multi_speaker', String(settings.enable_multi_speaker))
     if (settings?.convert_backing != null) formData.append('convert_backing', String(settings.convert_backing))
+    if (settings?.preserve_speakers?.trim()) formData.append('preserve_speakers', settings.preserve_speakers.trim())
 
     const response = await apiFetch(`${API_BASE}/convert/song`, {
       method: 'POST',
@@ -1573,6 +1582,7 @@ class ApiService {
       return_stems?: boolean
       enable_multi_speaker?: boolean | null
       convert_backing?: boolean | null
+      preserve_speakers?: string
     }
   ): Promise<ConversionJobResponse> {
     return this.request(`/convert/workflows/${workflowId}/convert`, {

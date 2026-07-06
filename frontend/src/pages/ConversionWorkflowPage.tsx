@@ -500,6 +500,7 @@ export function ConversionWorkflowPage() {
         return_stems: config.return_stems,
         ...(config.enable_multi_speaker != null ? { enable_multi_speaker: config.enable_multi_speaker } : {}),
         ...(config.convert_backing != null ? { convert_backing: config.convert_backing } : {}),
+        ...(config.preserve_speakers.trim() ? { preserve_speakers: config.preserve_speakers.trim() } : {}),
       })
       const pollStatus = async () => {
         const status = await apiService.getConversionStatus(result.job_id)
@@ -1178,6 +1179,28 @@ export function ConversionWorkflowPage() {
                       {multiSpeakerInfo.coverage != null ? ` · ${Math.round(multiSpeakerInfo.coverage * 100)}% coverage` : ''}
                     </span>
                   )}
+                  {multiSpeakerInfo?.preserved_speakers?.length ? (
+                    <span
+                      title="These singers' original voices were kept (already the target artist)"
+                      className="rounded-full bg-emerald-500/20 px-2 py-1 text-xs text-emerald-100"
+                      data-testid="preserved-speakers-chip"
+                    >
+                      Original singer kept: {multiSpeakerInfo.preserved_speakers.join(', ')}
+                      {multiSpeakerInfo.preserved_s != null ? ` · ${multiSpeakerInfo.preserved_s.toFixed(1)}s` : ''}
+                    </span>
+                  ) : null}
+                  {multiSpeakerInfo?.roles && Object.keys(multiSpeakerInfo.roles).length > 0 && (
+                    <span
+                      title="Diarization clusters and how each was routed — use these ids (or a time range) in Keep original singers to re-run with a singer preserved"
+                      className="rounded-full bg-gray-700 px-2 py-1 text-xs text-gray-300"
+                      data-testid="speaker-roles-chip"
+                    >
+                      {multiSpeakerInfo.primary_speaker ? `${multiSpeakerInfo.primary_speaker} lead` : ''}
+                      {Object.entries(multiSpeakerInfo.roles)
+                        .map(([spk, role]) => ` · ${spk} ${role === 'lead_merge' ? 'merged' : role}`)
+                        .join('')}
+                    </span>
+                  )}
                   {conversionMetadata.processing_time != null && (
                     <span className="rounded-full bg-gray-700 px-2 py-1 text-xs text-gray-200">
                       {Math.round(conversionMetadata.processing_time)}s processing
@@ -1187,7 +1210,6 @@ export function ConversionWorkflowPage() {
               )}
 
               {mixAudioUrl && (
-                // eslint-disable-next-line jsx-a11y/media-has-caption -- converted audio has no caption track
                 <audio controls className="w-full mt-3" src={mixAudioUrl} />
               )}
             </div>

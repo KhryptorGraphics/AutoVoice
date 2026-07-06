@@ -174,6 +174,24 @@ export function ConversionSettingsPanel({ config, onChange, disabled }: Conversi
               each harmony line in the target voice (experimental; falls back to preserving when unsure).
             </p>
           </div>
+
+          <div className="space-y-1">
+            <label className="text-sm text-gray-400">Keep original singers</label>
+            <input
+              type="text"
+              value={config.preserve_speakers}
+              onChange={(e) => onChange({ preserve_speakers: e.target.value })}
+              disabled={disabled}
+              placeholder="e.g. 1:23-1:40 (time where they sing) or SPEAKER_02"
+              data-testid="preserve-speakers-input"
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50 placeholder:text-gray-500"
+            />
+            <p className="text-xs text-gray-500">
+              When the target artist already sings on this track (duets, features), give a time range where
+              they sing solo — that singer is kept original instead of being re-converted. Comma-separate
+              multiple ranges. Cluster ids from a previous result&apos;s speaker list also work.
+            </p>
+          </div>
         </div>
       )}
     </div>

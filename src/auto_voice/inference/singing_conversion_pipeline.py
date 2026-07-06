@@ -275,7 +275,48 @@ class SingingConversionPipeline:
         # Sorted so duration ties break deterministically (get_all_speaker_ids
         # returns set order).
         speakers = sorted(result.get_all_speaker_ids())
-        preserved = {str(s) for s in (preserve or [])} & set(speakers)
+
+        # Preserve tokens are cluster ids ("SPEAKER_02") or time ranges
+        # ("1:23-1:40" / "83.5-100"). Ranges resolve against THIS run's
+        # clustering (labels are not stable run-to-run), picking the cluster
+        # with the most singing time inside the range.
+        def _parse_ts(tok):
+            parts = tok.strip().split(':')
+            try:
+                if len(parts) == 2:
+                    return float(parts[0]) * 60.0 + float(parts[1])
+                return float(tok)
+            except ValueError:
+                return None
+
+        preserved = set()
+        for item in (preserve or []):
+            item = str(item).strip()
+            if not item:
+                continue
+            if item in speakers:
+                preserved.add(item)
+                continue
+            lo_tok, sep, hi_tok = item.partition('-')
+            lo_s = _parse_ts(lo_tok) if sep else None
+            hi_s = _parse_ts(hi_tok) if sep else None
+            if lo_s is None or hi_s is None or hi_s <= lo_s:
+                logger.warning("Preserve token %r matches no cluster and is not "
+                               "a valid time range; ignored", item)
+                continue
+            best, best_ov = None, 0.0
+            for spk in speakers:
+                ov = sum(max(0.0, min(seg.end, hi_s) - max(seg.start, lo_s))
+                         for seg in result.get_speaker_segments(spk))
+                if ov > best_ov:
+                    best, best_ov = spk, ov
+            if best is not None:
+                logger.info("Preserve range %s -> cluster %s (%.1fs overlap)",
+                            item, best, best_ov)
+                preserved.add(best)
+            else:
+                logger.warning("Preserve range %s overlaps no diarized singing; "
+                               "ignored", item)
         candidates = [s for s in speakers if s not in preserved]
         if not candidates:
             logger.info(

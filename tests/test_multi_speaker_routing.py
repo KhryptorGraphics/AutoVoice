@@ -625,6 +625,25 @@ class TestPreserveSpeakers:
         assert not called, "span backing with preserved voices must not be re-voiced"
         assert info['backing_mode'] == 'kept'
 
+    def test_preserve_by_time_range_resolves_cluster(self, monkeypatch):
+        # Cluster labels are not stable run-to-run; a time range where the
+        # already-target singer performs must resolve to whichever cluster
+        # owns that range in this run's diarization.
+        sr = 8000
+        voc = np.zeros(12 * sr, dtype=np.float32)
+        voc[:int(11 * sr)] = 0.5
+        p = self._pipeline(monkeypatch, [
+            (0.0, 6.0, 'SPEAKER_00'),
+            (6.0, 11.0, 'SPEAKER_01'),
+        ])
+        out = p._convert_multi_speaker(voc, sr, 'pid', IdentityMM(), 0.0,
+                                       preserve_speakers=['0:07-0:10'])
+        assert out is not None
+        _, info = out
+        assert info['preserved_speakers'] == ['SPEAKER_01']
+        assert info['primary_speaker'] == 'SPEAKER_00'
+        assert info['roles']['SPEAKER_01'] == 'preserved'
+
     def test_all_clusters_preserved_falls_back(self, monkeypatch):
         sr = 8000
         voc = np.zeros(10 * sr, dtype=np.float32)
