@@ -88,3 +88,11 @@ checkpoints/
 logs/security/
 .gitnexus
 frontend/test-results/
+
+# Local tooling artifacts / machine-local state
+ruvector.db
+.codegraph/
+frontend/playwright-report-live/
+.claude/settings.local.json
+# Local debug launchers (contain the flask secret inline)
+test_server*.py
