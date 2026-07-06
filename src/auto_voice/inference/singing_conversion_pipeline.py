@@ -540,6 +540,35 @@ class SingingConversionPipeline:
             'multi_speaker_backing_voiced_min',
             self.config.get('multi_speaker_merge_voiced_min', 0.65)))
         kept = {'mode': 'kept', 'lines_detected': 0, 'lines_converted': 0}
+
+        import librosa
+        intervals = librosa.effects.split(backing, top_db=40)
+        active = (np.concatenate([backing[s:e] for s, e in intervals])
+                  if len(intervals) else np.zeros(0, dtype=np.float32))
+        stem_vf = _voiced_fraction(active, sr) if len(active) >= int(1.5 * sr) else 0.0
+        whole_min = float(self.config.get(
+            'multi_speaker_backing_whole_voiced_min', 0.7))
+
+        if stem_vf >= whole_min:
+            # Near-monophonic backing — a single doubled voice rather than a
+            # polyphonic stack — converts cleanly as one piece, and whole-stem
+            # conversion leaves NO original residual between notes (per-line
+            # comb swaps keep unmatched content original, which audibly
+            # speckles the source voice through doubles-heavy tracks).
+            converted = np.asarray(
+                mm.infer(backing, target_profile_id,
+                         np.zeros(256, dtype=np.float32), sr),
+                dtype=np.float32)
+            new_backing = backing.astype(np.float32).copy()
+            n = min(len(converted), len(new_backing))
+            new_backing[:n] = converted[:n]
+            lines_detected = lines_converted = 1
+            method = 'whole_stem'
+            logger.info("Backing conversion: near-monophonic stem "
+                        "(voiced %.2f >= %.2f); converted whole", stem_vf, whole_min)
+            return self._finish_backing(backing, new_backing, intervals,
+                                        lines_detected, lines_converted, method)
+
         try:
             notes = separation_bridge.polyphonic_notes(backing, sr)
         except Exception as e:
@@ -599,13 +628,18 @@ class SingingConversionPipeline:
 
         if converted_count == 0:
             return backing, kept
+        return self._finish_backing(backing, new_backing, intervals,
+                                    len(lines), converted_count, 'lines')
 
-        # Per-line RMS matching targets the comb-mask extract, which captures
-        # only part of each line's true level (concentration 0.25-0.35 on real
-        # stacks) — converted harmonies landed audibly weak. Restore the
-        # stem's active loudness, then apply the operator taste knob.
-        import librosa
-        intervals = librosa.effects.split(backing, top_db=40)
+    def _finish_backing(self, backing, new_backing, intervals,
+                        lines_detected, lines_converted, method):
+        """Level-match a converted backing stem and build its harmony info.
+
+        Per-line RMS matching targets the comb-mask extract, which captures
+        only part of each line's true level — converted harmonies landed
+        audibly weak. Restore the stem's active loudness, then apply the
+        operator taste knob and a peak guard.
+        """
         if len(intervals):
             orig_act = np.concatenate([backing[s:e] for s, e in intervals])
             new_act = np.concatenate([new_backing[s:e] for s, e in intervals])
@@ -619,9 +653,9 @@ class SingingConversionPipeline:
         if peak > 0.99:
             new_backing = new_backing * (0.99 / peak)
 
-        mode = 'converted' if converted_count == len(lines) else 'partial'
-        return new_backing, {'mode': mode, 'lines_detected': len(lines),
-                             'lines_converted': converted_count}
+        mode = 'converted' if lines_converted == lines_detected else 'partial'
+        return new_backing, {'mode': mode, 'lines_detected': lines_detected,
+                             'lines_converted': lines_converted, 'method': method}
 
     def _convert_multi_speaker(self, voc_mono, sr, target_profile_id, mm, pitch_shift,
                                convert_backing=None, preserve_speakers=None):

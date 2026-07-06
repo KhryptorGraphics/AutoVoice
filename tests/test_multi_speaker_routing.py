@@ -530,11 +530,36 @@ class TestConvertBackingStack:
         stack = (voice(220.0, 0.5) + voice(330.0, 0.4)).astype(np.float32)
         p = self._pipeline_with_notes(
             monkeypatch, [_note(0, 4, 57), _note(0, 4, 64)])
+        # Pin the per-line path (a clean synthetic stack measures fully voiced,
+        # which would otherwise route to whole-stem conversion).
+        p.config['multi_speaker_backing_whole_voiced_min'] = 2.0
         out, info = p._convert_backing_stack(stack, sr, 'pid', IdentityMM())
         assert info['mode'] == 'converted'
         assert info['lines_detected'] == 2 and info['lines_converted'] == 2
+        assert info['method'] == 'lines'
         # identity engine + RMS matching: output stays close to the stack
         assert np.sqrt(((out - stack) ** 2).mean()) < 0.2
+
+    def test_near_monophonic_backing_converted_whole(self, monkeypatch):
+        # A doubled voice (not a stack) routes to whole-stem conversion —
+        # no basic-pitch call, no per-line residual.
+        sr = 8000
+        t = np.arange(4 * sr) / sr
+        stem = (0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+        import auto_voice.inference.separation_bridge as bridge
+
+        def boom(a, sr_):
+            raise AssertionError('polyphonic_notes must not be called')
+        monkeypatch.setattr(bridge, 'polyphonic_notes', boom)
+        patch_voiced(monkeypatch, 0.8)
+        p = make_pipeline()
+        out, info = p._convert_backing_stack(stem, sr, 'pid', IdentityMM())
+        assert info['mode'] == 'converted'
+        assert info['method'] == 'whole_stem'
+        assert info['lines_detected'] == 1 and info['lines_converted'] == 1
+        # identity engine + level match: output stays close to the stem
+        assert np.sqrt(((out - stem) ** 2).mean()) < 0.2
 
     def test_late_start_clean_lines_converted(self, monkeypatch):
         # Regression: voicing must be measured on span-active audio, not the
@@ -550,6 +575,7 @@ class TestConvertBackingStack:
         stack[24 * sr:28 * sr] = (voice(220.0, 0.5) + voice(330.0, 0.4)).astype(np.float32)
         p = self._pipeline_with_notes(
             monkeypatch, [_note(24, 28, 57), _note(24, 28, 64)])
+        p.config['multi_speaker_backing_whole_voiced_min'] = 2.0
         out, info = p._convert_backing_stack(stack, sr, 'pid', IdentityMM())
         assert info['mode'] == 'converted'
         assert info['lines_detected'] == 2 and info['lines_converted'] == 2

@@ -62,3 +62,9 @@ multi_speaker_backing_voiced_min: 0.6
 # spans. Solo covers with strongly-voiced self-doubles can trip it (measured
 # 0.76 on a real case) — raise toward 0.85 to accept the split anyway.
 multi_speaker_karaoke_leak_voiced_min: 0.65
+
+# When the backing stem itself is near-monophonic (a doubled voice, not a
+# polyphonic stack), convert it whole instead of per-line: whole-stem
+# conversion leaves no original residual between notes (per-line comb swaps
+# audibly speckle the source voice through doubles-heavy tracks).
+multi_speaker_backing_whole_voiced_min: 0.7
