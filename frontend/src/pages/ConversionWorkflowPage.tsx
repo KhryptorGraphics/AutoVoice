@@ -523,6 +523,7 @@ export function ConversionWorkflowPage() {
         ...(config.enable_multi_speaker != null ? { enable_multi_speaker: config.enable_multi_speaker } : {}),
         ...(config.convert_backing != null ? { convert_backing: config.convert_backing } : {}),
         ...(config.preserve_speakers.trim() ? { preserve_speakers: config.preserve_speakers.trim() } : {}),
+        ...(Object.keys(config.quality_overrides).length ? { quality_overrides: config.quality_overrides } : {}),
       })
       const pollStatus = async () => {
         const status = await apiService.getConversionStatus(result.job_id)
