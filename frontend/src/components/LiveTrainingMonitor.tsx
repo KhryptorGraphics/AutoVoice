@@ -104,11 +104,26 @@ export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTraini
   const audioRef = useRef<HTMLAudioElement>(null)
   const chartRef = useRef<SVGSVGElement>(null)
   const logOffsetRef = useRef(0)
+  const logFetchInFlightRef = useRef(false)
+  const jobIdRef = useRef(jobId)
 
 
   const fetchJobLogs = useCallback(async () => {
+    // Serialize fetches: the immediate poll, the 1500ms interval, and (in dev)
+    // React StrictMode's double-invoked effect can otherwise all fire at
+    // offset 0 before logOffsetRef advances, appending the first lines twice.
+    if (logFetchInFlightRef.current) {
+      return
+    }
+    logFetchInFlightRef.current = true
     try {
       const response = await apiService.getTrainingJobLogs(jobId, logOffsetRef.current)
+      // Discard a response whose job switched mid-flight (cancel -> start new):
+      // otherwise the old job's lines append into the new job's log and clobber
+      // the reset offset.
+      if (jobId !== jobIdRef.current) {
+        return
+      }
       if (response.lines.length > 0) {
         setLogLines((prev) => [...prev, ...response.lines])
       }
@@ -116,10 +131,13 @@ export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTraini
       setLogOffset(response.next_offset)
     } catch (error) {
       console.error('Failed to load training output:', error)
+    } finally {
+      logFetchInFlightRef.current = false
     }
   }, [jobId])
 
   useEffect(() => {
+    jobIdRef.current = jobId
     setLogLines([])
     setLogOffset(0)
     logOffsetRef.current = 0
