@@ -5,6 +5,7 @@ import clsx from 'clsx'
 
 // Fallback architecture choices when the backend doesn't send options.architectures.
 const FALLBACK_ARCHITECTURES: Array<{ id: string; label: string; description?: string }> = [
+  { id: 'como', label: 'CoMoSVC — LoRA-capable', description: 'Regression decoder; trains LoRA adapter deltas instead of a full model.' },
   { id: 'diffusion_mel', label: 'Diffusion (default)', description: 'Diffusion mel decoder — the default AutoVoice training path.' },
   { id: 'mel_gan', label: 'MelGAN', description: 'MelGAN decoder — faster training, lower fidelity than diffusion.' },
   { id: 'svc_fork', label: 'so-vits-svc-fork — best quality (recommended)', description: 'Trains a so-vits-svc-fork model in the isolated svcfork environment for the highest conversion quality.' },
@@ -183,19 +184,6 @@ export function TrainingConfigPanel({
     onChange({ ...config, [key]: value })
   }
 
-  useEffect(() => {
-    if (!allowFullTraining && config.training_mode === 'full') {
-      onChange({
-        ...config,
-        training_mode: 'lora',
-        initialization_mode: allowContinueLora ? config.initialization_mode : 'scratch',
-        epochs: Math.min(config.epochs, 100),
-        learning_rate: 1e-4,
-        lora_rank: config.lora_rank || DEFAULT_TRAINING_CONFIG.lora_rank,
-        lora_alpha: config.lora_alpha || DEFAULT_TRAINING_CONFIG.lora_alpha,
-      })
-    }
-  }, [allowContinueLora, allowFullTraining, config, onChange])
 
   useEffect(() => {
     const canContinueCurrent =
@@ -292,7 +280,8 @@ export function TrainingConfigPanel({
               onChange({
                 ...config,
                 training_mode: 'lora',
-                epochs: config.epochs > 200 ? 100 : config.epochs,
+                architecture: 'como',
+                epochs: Math.min(config.epochs, 100),
                 learning_rate: 1e-4,
               })
             }}
@@ -310,11 +299,11 @@ export function TrainingConfigPanel({
           </button>
           <button
             onClick={() => {
-              if (!allowFullTraining) return
               onChange({
                 ...config,
                 training_mode: 'full',
-                epochs: config.epochs < 200 ? 500 : config.epochs,
+                architecture: config.architecture && config.architecture !== 'como' ? config.architecture : 'diffusion_mel',
+                epochs: Math.max(config.epochs, 500),
                 learning_rate: 5e-5,
               })
             }}
@@ -324,7 +313,7 @@ export function TrainingConfigPanel({
               config.training_mode === 'full'
                 ? 'border-purple-500 bg-purple-500/10'
                 : 'border-gray-600 hover:border-gray-500',
-              !allowFullTraining && 'opacity-50',
+              !allowFullTraining && config.training_mode !== 'full' && 'border-yellow-500/60 bg-yellow-500/5',
               disabled && 'opacity-50 cursor-not-allowed'
             )}
           >
@@ -334,7 +323,7 @@ export function TrainingConfigPanel({
         </div>
         {!allowFullTraining && (
           <p className="text-xs text-yellow-400">
-            {fullTrainingHint || 'Full training is locked until this target profile reaches 30 minutes of clean vocals.'}
+            {fullTrainingHint || 'Full training normally unlocks after 30 clean-vocal minutes. Starting early in this single-user install sends force: true.'}
           </p>
         )}
       </div>
@@ -401,13 +390,13 @@ export function TrainingConfigPanel({
               if (!canContinue) return
               update('initialization_mode', 'continue')
             }}
-            disabled={disabled}
+            disabled={disabled || !(config.training_mode === 'full' ? allowContinueFull : allowContinueLora)}
             className={clsx(
               'p-3 rounded-lg border-2 transition-all text-left',
               config.initialization_mode === 'continue'
                 ? 'border-amber-500 bg-amber-500/10'
                 : 'border-gray-600 hover:border-gray-500',
-              !(config.training_mode === 'full' ? allowContinueFull : allowContinueLora) && 'opacity-50',
+              !(config.training_mode === 'full' ? allowContinueFull : allowContinueLora) && 'opacity-50 cursor-not-allowed',
               disabled && 'opacity-50 cursor-not-allowed'
             )}
           >

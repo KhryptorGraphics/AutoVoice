@@ -37,7 +37,7 @@ TRAINING_CONFIG_ENUMS = {
     'optimizer': ['adamw', 'adam'],
     'scheduler': ['exponential', 'none'],
     'lora_target_modules': ['q_proj', 'v_proj', 'k_proj', 'o_proj', 'content_encoder'],
-    'architecture': ['diffusion_mel', 'mel_gan', 'svc_fork'],
+    'architecture': ['como', 'diffusion_mel', 'mel_gan', 'svc_fork'],
 }
 
 # Decoder architectures surfaced to the training UI. 'svc_fork' is the
@@ -45,6 +45,14 @@ TRAINING_CONFIG_ENUMS = {
 # isolated svcfork conda env, so it is opt-in rather than the default.
 TRAINING_ARCHITECTURES = [
     {'id': 'diffusion_mel', 'label': 'Diffusion (default)'},
+    {
+        'id': 'como',
+        'label': 'CoMoSVC — LoRA-capable',
+        'description': (
+            'Regression decoder; the only architecture that trains LoRA '
+            'adapter deltas instead of a full model'
+        ),
+    },
     {'id': 'mel_gan', 'label': 'MelGAN'},
     {
         'id': 'svc_fork',
@@ -141,6 +149,7 @@ def register_training_routes(api_bp: Blueprint, **deps: Any) -> None:
     api_bp.add_url_rule('/training/jobs', view_func=list_training_jobs, methods=['GET'])
     api_bp.add_url_rule('/training/jobs', view_func=create_training_job, methods=['POST'])
     api_bp.add_url_rule('/training/jobs/<job_id>', view_func=get_training_job, methods=['GET'])
+    api_bp.add_url_rule('/training/jobs/<job_id>/logs', view_func=get_training_job_logs, methods=['GET'])
     api_bp.add_url_rule('/training/jobs/<job_id>/cancel', view_func=cancel_training_job, methods=['POST'])
     api_bp.add_url_rule('/profiles/<profile_id>/checkpoints', view_func=list_checkpoints, methods=['GET'])
     api_bp.add_url_rule(
@@ -281,6 +290,16 @@ def _normalize_training_config_payload(config_payload: Dict[str, Any]) -> Tuple[
         elif value not in allowed:
             return None, f'{key} must be one of: {", ".join(allowed)}'
 
+    # LoRA deltas only exist for the CoMoSVC regression decoder. The
+    # generative decoders (diffusion_mel / mel_gan) have no adapter form and
+    # silently upgrade to a full train downstream, so an explicit LoRA
+    # request is routed to the LoRA-capable architecture instead.
+    if (
+        normalized.get('training_mode') == 'lora'
+        and normalized.get('architecture') in (None, 'diffusion_mel', 'mel_gan')
+    ):
+        normalized['architecture'] = 'como'
+
     device_id = normalized.get('device_id', 'auto')
     if device_id != 'auto':
         try:
@@ -403,6 +422,8 @@ def create_training_job():
 
         training_mode = normalized_config['training_mode']
         initialization_mode = normalized_config['initialization_mode']
+        force = bool(data.get('force'))
+        eligibility_overridden = False
         job_manager = _dep('get_training_job_manager')()
 
         from ..training.job_manager import TrainingConfig
@@ -414,13 +435,23 @@ def create_training_job():
                 and initialization_mode in {'scratch', 'continue'}
             )
             if not eligibility['needs_full_model'] and not allow_existing_full_model:
-                minutes = eligibility.get('clean_vocal_seconds', 0.0) / 60.0
-                needed_minutes = eligibility.get('remaining_seconds', 0.0) / 60.0
-                return _dep('validation_error_response')(
-                    'Full model training is locked until this target profile has '
-                    f'30 minutes of clean singing vocals. Current clean vocal duration: '
-                    f'{minutes:.1f} minutes. Need {needed_minutes:.1f} more minutes.'
-                )
+                if force:
+                    eligibility_overridden = True
+                    logger.warning(
+                        "Full-model eligibility overridden by force flag for profile %s "
+                        "(clean vocal seconds: %.1f)",
+                        profile_id,
+                        eligibility.get('clean_vocal_seconds', 0.0),
+                    )
+                else:
+                    minutes = eligibility.get('clean_vocal_seconds', 0.0) / 60.0
+                    needed_minutes = eligibility.get('remaining_seconds', 0.0) / 60.0
+                    return _dep('validation_error_response')(
+                        'Full model training is locked until this target profile has '
+                        f'30 minutes of clean singing vocals. Current clean vocal duration: '
+                        f'{minutes:.1f} minutes. Need {needed_minutes:.1f} more minutes. '
+                        'Pass "force": true to override for this single-user install.'
+                    )
             normalized_config.setdefault('epochs', 500)
             normalized_config.setdefault('learning_rate', 5e-5)
             normalized_config['lora_rank'] = 0
@@ -462,12 +493,31 @@ def create_training_job():
             sample for sample in selected_samples
             if (sample.quality_metadata or {}).get('qa_status') in {'pass', 'warn'}
         ]
+        quality_gate_bypassed = False
         if not trainable_samples:
-            return _dep('validation_error_response')(
-                'No selected training samples passed the quality gates. Upload or re-run QA on clean voiced samples before starting training.',
-                details=quality_summary,
-                recommendations=quality_summary.get('recommendations'),
-            )
+            # Samples that were never QA'd ('unknown') are not failures.
+            # Hard-blocking them made runtime-registered voices untrainable
+            # from the web UI, so fall back to them with an explicit warning
+            # and keep blocking only samples that actively failed QA.
+            unqualified = [
+                sample for sample in selected_samples
+                if (sample.quality_metadata or {}).get('qa_status') != 'fail'
+            ]
+            if unqualified:
+                trainable_samples = unqualified
+                quality_gate_bypassed = True
+                logger.warning(
+                    "Quality gate bypassed for profile %s: training on %d sample(s) "
+                    "with qa_status=unknown",
+                    profile_id,
+                    len(unqualified),
+                )
+            else:
+                return _dep('validation_error_response')(
+                    'No selected training samples passed the quality gates. Upload or re-run QA on clean voiced samples before starting training.',
+                    details=quality_summary,
+                    recommendations=quality_summary.get('recommendations'),
+                )
         filtered_sample_ids = [sample.sample_id for sample in trainable_samples]
         rejected_sample_ids = sorted(set(sample_ids) - set(filtered_sample_ids))
 
@@ -478,6 +528,7 @@ def create_training_job():
                 config=training_config,
                 initialization_mode=initialization_mode,
                 sample_ids=filtered_sample_ids,
+                force=force,
             )
         else:
             job = job_manager.create_job(
@@ -488,6 +539,20 @@ def create_training_job():
         job_manager.execute_job(job.job_id)
 
         serialized = _sanitize_job(_dep('serialize_training_job')(job))
+        warnings = []
+        if quality_gate_bypassed:
+            serialized['quality_gate_bypassed'] = True
+            warnings.append(
+                'Training started with samples that have not passed quality '
+                'checks (qa_status=unknown).'
+            )
+        if eligibility_overridden:
+            serialized['eligibility_overridden'] = True
+            warnings.append(
+                'Full-model eligibility (30 min clean vocals) was overridden.'
+            )
+        if warnings:
+            serialized['warnings'] = warnings
         if rejected_sample_ids:
             serialized['rejected_sample_ids'] = rejected_sample_ids
             serialized['training_quality_summary'] = quality_summary
@@ -504,6 +569,28 @@ def get_training_job(job_id: str):
     if not job:
         return _dep('not_found_response')('Training job not found')
     return jsonify(_sanitize_job(_dep('serialize_training_job')(job)))
+
+
+def get_training_job_logs(job_id: str):
+    """Return buffered live output lines for a training job.
+
+    Query params:
+        offset: line index to resume from (use next_offset from the
+            previous response for incremental polling).
+    """
+    try:
+        job_manager = _dep('get_training_job_manager')()
+        job = job_manager.get_job(job_id)
+        if not job:
+            return jsonify({'error': 'Training job not found'}), 404
+        offset = request.args.get('offset', default=0, type=int)
+        payload = job_manager.get_job_logs(job_id, offset=max(offset or 0, 0))
+        payload['status'] = job.status
+        payload['progress'] = job.progress
+        return jsonify(payload)
+    except Exception as e:
+        _dep('logger').error(f"Error fetching training job logs: {e}", exc_info=True)
+        return _dep('error_response')(str(e))
 
 
 def cancel_training_job(job_id: str):

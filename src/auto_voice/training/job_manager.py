@@ -969,6 +969,60 @@ class TrainingJobManager:
             val = None
         self._gpu_util_cache = (now, val)
         return val
+    # ------------------------------------------------------------------
+    # Live job output buffer (consumed by GET /training/jobs/<id>/logs)
+    # ------------------------------------------------------------------
+    _JOB_LOG_LIMIT = 4000
+
+    def _job_log_state(self):
+        if not hasattr(self, '_job_logs'):
+            self._job_logs = {}
+            self._job_logs_lock = threading.Lock()
+        return self._job_logs, self._job_logs_lock
+
+    def append_job_log(self, job_id: str, line: str) -> None:
+        """Append a human-readable line to a job's live output buffer.
+
+        Lines are kept in a bounded in-memory ring, mirrored to
+        ``<data_dir>/training_logs/<job_id>.log`` so they survive restarts,
+        and emitted as ``training.log`` socket events for live consoles.
+        """
+        from datetime import datetime as _dt
+
+        entry = f"[{_dt.now().strftime('%H:%M:%S')}] {line}"
+        logs, lock = self._job_log_state()
+        with lock:
+            buffer = logs.setdefault(job_id, [])
+            buffer.append(entry)
+            if len(buffer) > self._JOB_LOG_LIMIT:
+                del buffer[: len(buffer) - self._JOB_LOG_LIMIT]
+        try:
+            log_dir = Path(self._data_dir) / 'training_logs'
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with open(log_dir / f'{job_id}.log', 'a', encoding='utf-8') as handle:
+                handle.write(entry + '\n')
+        except Exception:  # noqa: BLE001 - log persistence is best-effort
+            pass
+        self._emit_event('training.log', {'job_id': job_id, 'line': entry})
+
+    def get_job_logs(self, job_id: str, offset: int = 0) -> Dict[str, Any]:
+        """Return buffered log lines from ``offset`` plus the next offset."""
+        logs, lock = self._job_log_state()
+        with lock:
+            buffer = list(logs.get(job_id, ()))
+        if not buffer:
+            log_file = Path(self._data_dir) / 'training_logs' / f'{job_id}.log'
+            if log_file.exists():
+                try:
+                    buffer = log_file.read_text(encoding='utf-8').splitlines()
+                except Exception:  # noqa: BLE001
+                    buffer = []
+        offset = max(0, min(int(offset or 0), len(buffer)))
+        return {
+            'job_id': job_id,
+            'lines': buffer[offset:],
+            'next_offset': len(buffer),
+        }
 
     def emit_training_progress(
         self,
@@ -1110,6 +1164,12 @@ class TrainingJobManager:
         self._save_jobs()
         self._emit_started_event(job)
         logger.info(f"Starting training job {job_id}")
+        self.append_job_log(
+            job_id,
+            f"Job started on {device} "
+            f"(mode={getattr(job.config, 'training_mode', 'lora') if job.config else 'lora'}, "
+            f"architecture={getattr(job.config, 'architecture', 'diffusion_mel') if job.config else 'diffusion_mel'})",
+        )
 
         try:
             import shutil
@@ -1144,6 +1204,10 @@ class TrainingJobManager:
 
             if not sample_files:
                 raise ValueError("No valid audio samples could be loaded")
+
+            self.append_job_log(
+                job_id, f"Prepared {len(sample_files)} training sample(s)"
+            )
 
             # Run training in background thread to not block
             def run_training():
@@ -1279,6 +1343,12 @@ class TrainingJobManager:
                             device=device,
                         )
 
+                    self.append_job_log(
+                        job_id,
+                        f"Training {training_mode} / {architecture}: epochs={epochs} "
+                        f"lr={learning_rate} batch={batch_size} "
+                        f"resume={initialization_state['resume_checkpoint'] or 'none'}",
+                    )
                     trainer = Trainer(model=model, config=config, device=device)
                     trainer.resume_event = resume_event
                     trainer.cancel_event = cancel_event
@@ -1288,6 +1358,8 @@ class TrainingJobManager:
                         device,
                         training_mode,
                     )
+
+                    last_logged_epoch = {'epoch': 0}
 
                     def on_batch_end(batch_metrics: Dict[str, Any]) -> None:
                         job.update_progress(
@@ -1315,6 +1387,17 @@ class TrainingJobManager:
                         })
                         if checkpoint_path:
                             job.results['latest_checkpoint'] = checkpoint_path
+                            self.append_job_log(
+                                job_id, f"Checkpoint saved: {checkpoint_path}"
+                            )
+                        if batch_metrics['epoch'] != last_logged_epoch['epoch']:
+                            last_logged_epoch['epoch'] = batch_metrics['epoch']
+                            self.append_job_log(
+                                job_id,
+                                f"Epoch {batch_metrics['epoch']}/{batch_metrics['total_epochs']} "
+                                f"loss={batch_metrics['loss']:.5f} "
+                                f"lr={batch_metrics['learning_rate']:.2e}",
+                            )
                         self._save_jobs()
                         self.emit_training_progress(
                             job_id=job_id,
@@ -1348,6 +1431,12 @@ class TrainingJobManager:
                         job_id=job_id,
                         training_mode=training_mode,
                     )
+                    if adapter_saved:
+                        self.append_job_log(
+                            job_id,
+                            f"Saved {adapter_saved.get('artifact_type')} artifact: "
+                            f"{adapter_saved.get('adapter_path')}",
+                        )
 
                     # Get results
                     results = {
@@ -1361,6 +1450,8 @@ class TrainingJobManager:
                         'checkpoint_path': str(trainer.checkpoint_dir / 'final.pth'),
                         'job_type': job_type,
                         'adapter_path': adapter_saved.get('adapter_path') if adapter_saved else None,
+                        'adapter_model': adapter_saved.get('adapter_model') if adapter_saved else None,
+                        'serving_model_path': adapter_saved.get('serving_model_path') if adapter_saved else None,
                         'embedding_path': adapter_saved.get('embedding_path') if adapter_saved else None,
                         'manifest_path': adapter_saved.get('manifest_path') if adapter_saved else None,
                         'artifact_type': adapter_saved.get('artifact_type') if adapter_saved else None,
@@ -1390,17 +1481,25 @@ class TrainingJobManager:
                         'artifact_type': results.get('artifact_type'),
                     })
                     logger.info(f"Training job {job_id} completed successfully")
+                    self.append_job_log(
+                        job_id,
+                        f"Training complete — final_loss={results.get('final_loss')} "
+                        f"best={results.get('best_loss')} "
+                        f"epochs_ran={results.get('epochs_ran')}",
+                    )
 
                     # Cleanup temp directory
                     shutil.rmtree(train_dir, ignore_errors=True)
 
                 except training_cancelled_error as e:
                     logger.info("Training job %s cancelled: %s", job_id, e)
+                    self.append_job_log(job_id, f"Training cancelled: {e}")
                     job.cancel(str(e))
                     self._save_jobs()
                     self._emit_cancelled_event(job)
                 except Exception as e:
                     logger.error(f"Training job {job_id} failed: {e}", exc_info=True)
+                    self.append_job_log(job_id, f"ERROR: {e}")
                     job.fail(str(e))
                     self._mark_profile_training_failed(job.profile_id, str(e))
                     self._save_jobs()
@@ -1763,6 +1862,7 @@ class TrainingJobManager:
                     "profile_json": str(profiles_dir / f"{profile_id}.json"),
                     "speaker_embedding": str(embedding_path),
                     "adapter": str(adapter_path),
+                    "adapter_model": str(adapter_model_path),
                     "full_model": None,
                     "checkpoint": str(getattr(trainer, "checkpoint_dir", profiles_dir) / "final.pth"),
                 },
@@ -1770,12 +1870,15 @@ class TrainingJobManager:
                     "job_id": job_id,
                     "training_mode": training_mode,
                     "adapter_parameters": len(loaded_state),
+                    "serving_model_path": str(adapter_model_path),
                 },
             )
             manifest_path = store.save_runtime_artifact_manifest(profile_id, manifest.to_dict())
 
             return {
                 'adapter_path': str(adapter_path),
+                'adapter_model': str(adapter_model_path),
+                'serving_model_path': str(adapter_model_path),
                 'embedding_path': str(embedding_path),
                 'manifest_path': str(manifest_path),
                 'artifact_type': 'adapter',
@@ -1798,7 +1901,7 @@ class TrainingJobManager:
         profile['has_trained_model'] = True
         profile['last_trained_at'] = datetime.now().isoformat()
         profile['model_version'] = profile.get('model_version') or '1.0'
-        profile['model_path'] = results.get('adapter_path')
+        profile['model_path'] = results.get('serving_model_path') or results.get('adapter_model') or results.get('adapter_path')
         profile['runtime_artifact_manifest_path'] = results.get('manifest_path')
         profile['training_epochs'] = results.get('epochs_ran') or results.get('epochs_completed')
         profile['loss_final'] = results.get('final_loss')
@@ -2398,6 +2501,7 @@ class TrainingJobManager:
         config: Optional[TrainingConfig] = None,
         initialization_mode: str = "scratch",
         sample_ids: Optional[List[str]] = None,
+        force: bool = False,
     ) -> TrainingJob:
         """Create a full model training job (not LoRA).
 
@@ -2429,10 +2533,16 @@ class TrainingJobManager:
                     initialization_mode,
                 )
             elif check["clean_vocal_seconds"] < self.FULL_MODEL_UNLOCK_SECONDS:
-                raise ValueError(
-                    f"Profile {profile_id} has only {check['clean_vocal_seconds']:.1f}s "
-                    f"of clean vocals. Need at least "
-                    f"{self.FULL_MODEL_UNLOCK_SECONDS:.1f}s for full model training."
+                if not force:
+                    raise ValueError(
+                        f"Profile {profile_id} has only {check['clean_vocal_seconds']:.1f}s "
+                        f"of clean vocals. Need at least "
+                        f"{self.FULL_MODEL_UNLOCK_SECONDS:.1f}s for full model training."
+                    )
+                logger.warning(
+                    "Full model training force-enabled for %s with %.1fs clean vocals",
+                    profile_id,
+                    check["clean_vocal_seconds"],
                 )
             else:
                 raise ValueError(check["reason"])

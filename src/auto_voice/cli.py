@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -28,6 +29,43 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("config/gpu_config.yaml")
 DEFAULT_DATA_DIR = Path("data")
+_LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
+_SERVER_LOG_ENV = "AUTOVOICE_SERVER_LOG"
+
+
+def _attach_server_log_handler() -> None:
+    """Mirror server logs to data/server.log regardless of launch redirection.
+
+    ``scripts/start_autovoice.sh`` leaves stdout/stderr redirection to the
+    caller, so ad-hoc restarts (e.g. ``nohup ... > logs/foo.log``) used to
+    strand job telemetry outside ``data/server.log``. Attach a rotating file
+    handler unless a std stream already points at the same file (which would
+    duplicate every record). Set AUTOVOICE_SERVER_LOG to override the path,
+    or to an empty string to disable.
+    """
+    raw = os.environ.get(_SERVER_LOG_ENV)
+    if raw is not None and not raw.strip():
+        return  # explicitly disabled
+    log_path = Path(raw).expanduser() if raw else DEFAULT_DATA_DIR / "server.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.exists():
+            target = os.stat(log_path)
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    info = os.fstat(stream.fileno())
+                except (OSError, ValueError, AttributeError):
+                    continue
+                if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+                    return  # stream already redirected into the log file
+        handler = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+        logging.getLogger().addHandler(handler)
+        logger.info("Mirroring server logs to %s", log_path)
+    except OSError as exc:
+        logger.warning("Could not attach server log file %s: %s", log_path, exc)
 
 
 def _serve_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -257,11 +295,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        format=_LOG_FORMAT,
     )
 
     if args.command != "serve":
         raise SystemExit(f"Unsupported command: {args.command}")
+
+    _attach_server_log_handler()
 
     config = _load_config(args)
     ssl_files = _resolve_ssl_files(args)
