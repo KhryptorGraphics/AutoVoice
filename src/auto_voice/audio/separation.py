@@ -193,16 +193,36 @@ class VocalSeparator:
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
-        # Apply model with optional segment size for memory-efficient processing
+        # Apply model with optional segment size for memory-efficient processing.
         apply_kwargs = {}
         if self.segment is not None:
-            apply_kwargs['segment'] = self.segment
-        # ponytail: only pass non-defaults so mocked-backend tests asserting
-        # exact kwargs keep passing; demucs defaults (shifts=1, overlap=0.25) apply otherwise
-        if self.shifts > 1:
-            apply_kwargs['shifts'] = self.shifts
-        if self.overlap is not None:
-            apply_kwargs['overlap'] = self.overlap
+            # htdemucs' cross-domain transformer cannot process a segment longer
+            # than the model's training segment (~7.8s); a larger value crashes
+            # apply_model with a reshape error. Clamp to the model's max (min
+            # across sub-models for a htdemucs_ft BagOfModels).
+            seg = float(self.segment)
+            sub_models = getattr(self._model, 'models', None) or [self._model]
+            model_segs = [
+                float(getattr(m, 'segment'))
+                for m in sub_models
+                if getattr(m, 'segment', None) is not None
+            ]
+            if model_segs:
+                max_seg = min(model_segs)
+                if seg > max_seg:
+                    logger.warning(
+                        "Requested separation segment %.2fs exceeds model max "
+                        "%.2fs; clamping to avoid an htdemucs reshape crash.",
+                        seg, max_seg,
+                    )
+                    seg = max_seg
+            apply_kwargs['segment'] = seg
+            # ponytail: only pass non-defaults so mocked-backend tests asserting
+            # exact kwargs keep passing; demucs defaults (shifts=1, overlap=0.25) apply otherwise
+            if self.shifts > 1:
+                apply_kwargs['shifts'] = self.shifts
+            if self.overlap is not None:
+                apply_kwargs['overlap'] = self.overlap
 
         with torch.no_grad():
             sources = self._apply_model(

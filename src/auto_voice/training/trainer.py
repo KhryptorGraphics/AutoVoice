@@ -268,6 +268,19 @@ class VoiceDataset(Dataset):
         return item
 
 
+def resolve_precision(precision: str, capability: Optional[tuple]) -> str:
+    """Downgrade bf16 to fp16 on pre-Ampere GPUs.
+
+    bf16 autocast needs Ampere (compute capability sm80+). On older CUDA GPUs
+    (e.g. V100 sm70) it is unsupported/unstable, so a bf16 request is downgraded
+    to fp16. ``capability`` is a ``(major, minor)`` tuple or ``None`` (unknown ->
+    leave unchanged).
+    """
+    if precision == 'bf16' and capability is not None and capability[0] < 8:
+        return 'fp16'
+    return precision
+
+
 class Trainer:
     """Training loop for So-VITS-SVC model."""
 
@@ -303,6 +316,22 @@ class Trainer:
         self.warmup_steps = int(self.config.get('warmup_steps', 0) or 0)
         self.precision = str(self.config.get('precision', 'fp32')).lower()
         use_cuda = str(self.device) != 'cpu' and torch.cuda.is_available()
+        # bf16 needs Ampere (sm80+). On pre-Ampere CUDA GPUs (e.g. V100 sm70)
+        # autocast bf16 is unsupported/unstable, so downgrade to fp16.
+        if self.precision == 'bf16' and use_cuda:
+            try:
+                cap = torch.cuda.get_device_capability(self.device)
+            except Exception:
+                # Fail safe: unknown capability due to an error -> treat as
+                # pre-Ampere so bf16 downgrades to (universally safe) fp16.
+                cap = (0, 0)
+            resolved = resolve_precision(self.precision, cap)
+            if resolved != self.precision:
+                logger.warning(
+                    "bf16 precision requested but device capability %s < (8,0); "
+                    "using %s instead.", cap, resolved,
+                )
+                self.precision = resolved
         self._autocast_dtype = {
             'fp16': torch.float16,
             'bf16': torch.bfloat16,
