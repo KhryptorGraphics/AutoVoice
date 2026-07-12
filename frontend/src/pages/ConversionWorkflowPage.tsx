@@ -469,14 +469,21 @@ export function ConversionWorkflowPage() {
       toast.error('Select at least one QA-passing training sample.')
       return
     }
+    const forceTraining = trainingConfig.training_mode === 'full' && !allowFullTraining
     setStartingTraining(true)
     try {
       const sampleIds = targetSamples
         .filter((sample) => selectedTrainingSampleIds.has(sample.id))
         .map((sample) => sample.id)
-      const job = await apiService.createTrainingJob(workflow.resolved_target_profile_id, sampleIds, trainingConfig)
+      const job = await apiService.createTrainingJob(
+        workflow.resolved_target_profile_id,
+        sampleIds,
+        trainingConfig,
+        { force: forceTraining },
+      )
       const updated = await apiService.attachConversionWorkflowTrainingJob(workflow.workflow_id, job.job_id)
       setWorkflow(updated)
+      job.warnings?.forEach((warning) => toast.warning(warning))
       toast.success('Training started')
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to start training'
@@ -961,7 +968,7 @@ export function ConversionWorkflowPage() {
             fullTrainingHint={
               allowFullTraining
                 ? 'Full-model training is unlocked for this target profile.'
-                : `Full-model training unlocks after 30 minutes of clean user vocals. ${Math.max(remainingMinutes, 0).toFixed(1)} minutes remaining.`
+                : `Full training normally unlocks after 30 clean-vocal minutes. This single-user install will send force: true if started early. ${Math.max(remainingMinutes, 0).toFixed(1)} minutes remaining.`
             }
             continuationHint={continuationHint}
             options={trainingOptions}

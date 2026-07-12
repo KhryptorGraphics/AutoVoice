@@ -350,6 +350,9 @@ export interface TrainingJob {
   sample_ids: string[]
   rejected_sample_ids?: string[]
   training_quality_summary?: Record<string, unknown>
+  quality_gate_bypassed?: boolean
+  eligibility_overridden?: boolean
+  warnings?: string[]
   error?: string
   is_paused?: boolean
   results?: {
@@ -380,6 +383,14 @@ export interface TrainingJob {
       utilization_percent?: number
     }
   }
+}
+
+export interface TrainingJobLogsResponse {
+  job_id: string
+  lines: string[]
+  next_offset: number
+  status: TrainingJob['status']
+  progress: number
 }
 
 export interface AppSettings {
@@ -550,8 +561,8 @@ export interface TrainingConfig {
   // Prior preservation
   use_prior_preservation: boolean
   prior_loss_weight: number
-  // Decoder architecture ('svc_fork' = so-vits-svc-fork, best quality)
-  architecture?: 'diffusion_mel' | 'mel_gan' | 'svc_fork'
+  // Decoder architecture ('como' is LoRA-capable; generative decoders train full models)
+  architecture?: 'como' | 'diffusion_mel' | 'mel_gan' | 'svc_fork'
 }
 
 export interface TrainingPreset {
@@ -574,7 +585,7 @@ export interface TrainingConfigOptions {
     optimizer: Array<'adamw' | 'adam'>
     scheduler: Array<'exponential' | 'none'>
     lora_target_modules: string[]
-    architecture?: Array<'diffusion_mel' | 'mel_gan' | 'svc_fork'>
+    architecture?: Array<'como' | 'diffusion_mel' | 'mel_gan' | 'svc_fork'>
   }
   // Architecture choices with display labels (from /training/config-options)
   architectures?: Array<{ id: string; label: string; description?: string }>
@@ -614,6 +625,7 @@ export const DEFAULT_TRAINING_CONFIG: TrainingConfig = {
   ewc_lambda: 1000.0,
   use_prior_preservation: false,
   prior_loss_weight: 0.5,
+  architecture: 'diffusion_mel',
 }
 
 export interface AudioDevice {
@@ -1401,14 +1413,23 @@ class ApiService {
     return this.request(`/training/jobs/${jobId}`)
   }
 
+  async getTrainingJobLogs(jobId: string, offset = 0): Promise<TrainingJobLogsResponse> {
+    return this.request(`/training/jobs/${jobId}/logs?offset=${offset}`)
+  }
+
   async getTrainingConfigOptions(): Promise<TrainingConfigOptions> {
     return this.request('/training/config-options')
   }
 
-  async createTrainingJob(profileId: string, sampleIds: string[], config?: Partial<TrainingConfig>): Promise<TrainingJob> {
+  async createTrainingJob(
+    profileId: string,
+    sampleIds: string[],
+    config?: Partial<TrainingConfig>,
+    options?: { force?: boolean }
+  ): Promise<TrainingJob> {
     return this.request('/training/jobs', {
       method: 'POST',
-      body: JSON.stringify({ profile_id: profileId, sample_ids: sampleIds, config }),
+      body: JSON.stringify({ profile_id: profileId, sample_ids: sampleIds, config, ...(options?.force ? { force: true } : {}) }),
     })
   }
 

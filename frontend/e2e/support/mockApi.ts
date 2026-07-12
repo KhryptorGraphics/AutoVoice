@@ -36,6 +36,7 @@ type MockCommonApiOptions = {
   apiToken?: string
   conversionRecords?: MockConversionRecord[]
   webhooks?: Array<Record<string, unknown>>
+  profileOverrides?: Partial<Record<string, unknown>>
 }
 
 type MockConversionRecord = {
@@ -211,7 +212,14 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     }
   }, { streamingStartError: options.streamingStartError ?? null, apiToken: options.apiToken ?? null })
 
-  const profiles = [
+  type MockProfile = Record<string, unknown> & {
+    profile_id: string
+    name: string
+    sample_count: number
+    training_sample_count: number
+  }
+
+  const profiles: MockProfile[] = [
     {
       profile_id: 'profile-1',
       name: 'Smoke Profile',
@@ -232,6 +240,9 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       training_history: [],
     },
   ]
+  if (options.profileOverrides) {
+    Object.assign(profiles[0], options.profileOverrides)
+  }
 
   const voiceModels = [
     {
@@ -854,6 +865,66 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     return jsonResponse(route, trainingSamples)
   })
 
+  let conversionWorkflow = {
+    workflow_id: 'workflow-1',
+    status: 'ready_for_training',
+    stage: 'ready_for_training',
+    progress: 70,
+    artist_song: { filename: 'artist-song.wav', path: '/tmp/artist-song.wav' },
+    user_vocals: [{ filename: 'user-vocal.wav', path: '/tmp/user-vocal.wav' }],
+    artist_vocals_path: '/tmp/artist-song-vocals.wav',
+    instrumental_path: '/tmp/artist-song-instrumental.wav',
+    diarization_id: null,
+    resolved_source_profiles: [],
+    resolved_target_profile_id: 'profile-1',
+    resolved_target_profile: {
+      profile_id: 'profile-1',
+      name: 'Smoke Profile',
+      sample_count: profiles[0].sample_count,
+      clean_vocal_minutes: profiles[0].clean_vocal_minutes,
+      active_model_type: profiles[0].active_model_type,
+      has_trained_model: profiles[0].has_trained_model,
+    },
+    review_items: [],
+    training_readiness: {
+      ready: true,
+      reason: 'ready',
+      sample_count: trainingSamples.length,
+      clean_vocal_minutes: profiles[0].clean_vocal_minutes,
+    },
+    conversion_readiness: {
+      ready: false,
+      reason: 'needs_training',
+    },
+    current_training_job_id: null,
+    created_at: '2026-04-18T00:00:00Z',
+    updated_at: '2026-04-18T00:00:00Z',
+    error: null,
+  }
+
+  await page.route(/\/api\/v1\/convert\/workflows(?:\?.*)?$/, async (route) => {
+    if (route.request().method() === 'POST') {
+      return jsonResponse(route, conversionWorkflow, 201)
+    }
+    return jsonResponse(route, [conversionWorkflow])
+  })
+
+  await page.route('**/api/v1/convert/workflows/workflow-1', async (route) => {
+    return jsonResponse(route, conversionWorkflow)
+  })
+
+  await page.route('**/api/v1/convert/workflows/workflow-1/training-job', async (route) => {
+    conversionWorkflow = {
+      ...conversionWorkflow,
+      status: 'training_in_progress',
+      stage: 'training',
+      progress: 80,
+      current_training_job_id: 'job-created',
+      updated_at: '2026-04-18T00:01:00Z',
+    }
+    return jsonResponse(route, conversionWorkflow)
+  })
+
   await page.route(/\/api\/v1\/samples\/review(?:\?.*)?$/, async (route) => {
     sampleReviewRequests += 1
     const url = new URL(route.request().url())
@@ -1196,6 +1267,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       defaults: {
         training_mode: 'lora',
         initialization_mode: 'scratch',
+        architecture: 'diffusion_mel',
         lora_rank: 8,
         lora_alpha: 16,
         lora_dropout: 0.1,
@@ -1231,7 +1303,14 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
         optimizer: ['adamw', 'adam'],
         scheduler: ['exponential', 'none'],
         lora_target_modules: ['q_proj', 'v_proj', 'k_proj', 'o_proj', 'content_encoder'],
+        architecture: ['como', 'diffusion_mel', 'mel_gan', 'svc_fork'],
       },
+      architectures: [
+        { id: 'como', label: 'CoMoSVC — LoRA-capable', description: 'Regression decoder; trains LoRA adapter deltas instead of a full model.' },
+        { id: 'diffusion_mel', label: 'Diffusion (default)', description: 'Diffusion mel decoder — the default AutoVoice training path.' },
+        { id: 'mel_gan', label: 'MelGAN', description: 'MelGAN decoder — faster training, lower fidelity than diffusion.' },
+        { id: 'svc_fork', label: 'so-vits-svc-fork — best quality (recommended)', description: 'Trains a so-vits-svc-fork model in the isolated svcfork environment for the highest conversion quality.' },
+      ],
       presets: [
         {
           id: 'quality_lora',
@@ -1303,10 +1382,25 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
     ])
   })
 
-  await page.route('**/api/v1/training/jobs/job-1/telemetry', async (route) => {
+  await page.route('**/api/v1/training/jobs/*/logs**', async (route) => {
+    const jobId = route.request().url().match(/\/training\/jobs\/([^/]+)\/logs/)?.[1] ?? 'job-1'
+    return jsonResponse(route, {
+      job_id: decodeURIComponent(jobId),
+      lines: [
+        '[00:00:01] Job started on cuda:0',
+        '[00:00:02] Epoch 1/10 loss=0.24000 lr=1.00e-04',
+      ],
+      next_offset: 2,
+      status: 'running',
+      progress: 40,
+    })
+  })
+
+  await page.route('**/api/v1/training/jobs/*/telemetry', async (route) => {
+    const jobId = route.request().url().match(/\/training\/jobs\/([^/]+)\/telemetry/)?.[1] ?? 'job-1'
     return jsonResponse(route, {
       job: {
-        job_id: 'job-1',
+        job_id: decodeURIComponent(jobId),
         profile_id: 'profile-1',
         status: 'running',
         created_at: '2026-04-18T00:00:00Z',
@@ -1316,11 +1410,13 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
         is_paused: paused,
       },
       runtime_metrics: {
-        epoch: 2,
+        epoch: 1,
         total_epochs: 10,
-        step: 18,
-        total_steps: 40,
+        step: 120,
+        total_steps: 1000,
         loss: 0.24,
+        elapsed_seconds: 12.3,
+        estimated_remaining_seconds: 92.7,
         learning_rate: 0.0001,
         gpu_metrics: {
           available: true,
@@ -1333,8 +1429,6 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
         },
         checkpoint_path: '/tmp/checkpoint_step_1000.pth',
       },
-      preview_available: true,
-      preview_sample_id: 'sample-1',
     })
   })
 

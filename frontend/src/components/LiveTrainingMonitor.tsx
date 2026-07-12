@@ -73,6 +73,13 @@ function applyProgressEvent(prev: LiveStats, progress: TrainingProgressEvent): L
   }
 }
 
+function eventJobId(data: unknown): string | null {
+  if (data && typeof data === 'object' && 'job_id' in data && typeof data.job_id === 'string') {
+    return data.job_id
+  }
+  return null
+}
+
 export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTrainingMonitorProps) {
   const [stats, setStats] = useState<LiveStats>({
     epoch: 0,
@@ -92,9 +99,31 @@ export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTraini
   const [loadingPreview, setLoadingPreview] = useState(false)
   const [updatingState, setUpdatingState] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [logLines, setLogLines] = useState<string[]>([])
+  const [logOffset, setLogOffset] = useState(0)
   const audioRef = useRef<HTMLAudioElement>(null)
   const chartRef = useRef<SVGSVGElement>(null)
+  const logOffsetRef = useRef(0)
 
+
+  const fetchJobLogs = useCallback(async () => {
+    try {
+      const response = await apiService.getTrainingJobLogs(jobId, logOffsetRef.current)
+      if (response.lines.length > 0) {
+        setLogLines((prev) => [...prev, ...response.lines])
+      }
+      logOffsetRef.current = response.next_offset
+      setLogOffset(response.next_offset)
+    } catch (error) {
+      console.error('Failed to load training output:', error)
+    }
+  }, [jobId])
+
+  useEffect(() => {
+    setLogLines([])
+    setLogOffset(0)
+    logOffsetRef.current = 0
+  }, [jobId])
   useEffect(() => {
     wsManager.connect()
     setIsConnected(true)
@@ -147,27 +176,37 @@ export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTraini
       setStats((prev) => applyProgressEvent(prev, progress))
     })
 
+    const handleTerminalEvent = () => {
+      void fetchJobLogs().finally(() => onComplete?.())
+    }
+
     const unsubComplete = wsManager.subscribe('training_complete', (event) => {
-      if ((event.data as { job_id?: string }).job_id === jobId) {
-        onComplete?.()
+      if (eventJobId(event.data) === jobId) {
+        handleTerminalEvent()
       }
     })
 
     const unsubPaused = wsManager.subscribe('training_paused', (event) => {
-      if ((event.data as { job_id?: string }).job_id === jobId) {
+      if (eventJobId(event.data) === jobId) {
         setIsPaused(true)
       }
     })
 
     const unsubResumed = wsManager.subscribe('training_resumed', (event) => {
-      if ((event.data as { job_id?: string }).job_id === jobId) {
+      if (eventJobId(event.data) === jobId) {
         setIsPaused(false)
       }
     })
 
     const unsubCancelled = wsManager.subscribe('training_cancelled', (event) => {
-      if ((event.data as { job_id?: string }).job_id === jobId) {
-        onComplete?.()
+      if (eventJobId(event.data) === jobId) {
+        handleTerminalEvent()
+      }
+    })
+
+    const unsubError = wsManager.subscribe('training_error', (event) => {
+      if (eventJobId(event.data) === jobId) {
+        handleTerminalEvent()
       }
     })
 
@@ -178,8 +217,30 @@ export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTraini
       unsubPaused()
       unsubResumed()
       unsubCancelled()
+      unsubError()
     }
-  }, [jobId, onComplete])
+  }, [fetchJobLogs, jobId, onComplete])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const pollLogs = async () => {
+      if (cancelled) {
+        return
+      }
+      await fetchJobLogs()
+    }
+
+    void pollLogs()
+    const intervalId = window.setInterval(() => {
+      void pollLogs()
+    }, 1500)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [fetchJobLogs])
 
   useEffect(() => {
     return () => {
@@ -471,6 +532,28 @@ export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTraini
             <Gauge size={12} />
             GPU Util
           </div>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-400">Training Output</span>
+          {logOffset > 0 && <span className="text-xs text-gray-500">{logOffset} lines</span>}
+        </div>
+        <div
+          data-testid="training-output-log"
+          data-log-offset={logOffset}
+          className="max-h-56 overflow-y-auto rounded-lg bg-gray-950 p-3 font-mono text-xs text-gray-200 border border-gray-700"
+        >
+          {logLines.length === 0 ? (
+            <div className="text-gray-500">Training output will appear here after the job starts.</div>
+          ) : (
+            logLines.map((line, index) => (
+              <div key={`${index}-${line}`} className="whitespace-pre-wrap leading-5">
+                {line}
+              </div>
+            ))
+          )}
         </div>
       </div>
 

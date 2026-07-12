@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 
 import threading
 from pathlib import Path
@@ -201,3 +202,124 @@ def test_training_preview_endpoint_returns_audio(training_ui_app, training_ui_cl
     assert response.status_code == 200
     assert response.mimetype == "audio/wav"
     assert response.data[:4] == b"RIFF"
+
+
+def test_training_config_options_include_como_architecture(training_ui_client):
+    response = training_ui_client.get("/api/v1/training/config-options")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert any(item["id"] == "como" for item in payload["architectures"])
+    assert "como" in payload["enums"]["architecture"]
+    assert payload["defaults"]["training_mode"] == "lora"
+
+
+def test_create_lora_training_job_uses_unknown_samples_with_warning(
+    training_ui_app,
+    training_ui_client,
+    monkeypatch,
+):
+    profile = _create_target_profile(training_ui_app, "profile-lora-unknown-qa")
+    store = training_ui_app.voice_cloner.store
+    sample_path = Path(store.samples_dir) / "unknown-qa.wav"
+    _write_wav(sample_path, duration_seconds=3.5)
+    sample = store.add_training_sample(
+        profile_id=profile["profile_id"],
+        vocals_path=str(sample_path),
+        source_file="unknown-qa.wav",
+        duration=3.5,
+    )
+    metadata_path = Path(sample.vocals_path).parent / "metadata.json"
+    metadata = sample.to_dict()
+    metadata.pop("quality_metadata", None)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setattr(TrainingJobManager, "execute_job", lambda self, job_id: None)
+
+    response = training_ui_client.post(
+        "/api/v1/training/jobs",
+        json={
+            "profile_id": profile["profile_id"],
+            "config": {"training_mode": "lora"},
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["quality_gate_bypassed"] is True
+    assert any("qa_status=unknown" in warning for warning in payload["warnings"])
+    assert payload["sample_ids"] == [sample.sample_id]
+
+
+def test_create_full_training_job_force_overrides_clean_minutes(
+    training_ui_app,
+    training_ui_client,
+    monkeypatch,
+):
+    profile = _create_target_profile(training_ui_app, "profile-full-force")
+    store = training_ui_app.voice_cloner.store
+    sample_path = Path(store.samples_dir) / "full-force.wav"
+    _write_wav(sample_path, duration_seconds=3.5)
+    store.add_training_sample(
+        profile_id=profile["profile_id"],
+        vocals_path=str(sample_path),
+        source_file="full-force.wav",
+        duration=3.5,
+    )
+    payload = {
+        "profile_id": profile["profile_id"],
+        "config": {"training_mode": "full"},
+    }
+    monkeypatch.setattr(TrainingJobManager, "execute_job", lambda self, job_id: None)
+
+    blocked_response = training_ui_client.post("/api/v1/training/jobs", json=payload)
+    assert blocked_response.status_code == 400
+
+    forced_response = training_ui_client.post(
+        "/api/v1/training/jobs",
+        json={**payload, "force": True},
+    )
+
+    assert forced_response.status_code == 201
+    forced_payload = forced_response.get_json()
+    assert forced_payload["eligibility_overridden"] is True
+    assert any("Full-model eligibility" in warning for warning in forced_payload["warnings"])
+
+
+def test_training_job_logs_endpoint_returns_buffered_lines(training_ui_app, training_ui_client):
+    job, _sample = _prepare_running_job(training_ui_app)
+    manager = training_ui_app._training_job_manager
+
+    manager.append_job_log(job.job_id, "hello")
+
+    response = training_ui_client.get(f"/api/v1/training/jobs/{job.job_id}/logs")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert any("hello" in line for line in payload["lines"])
+    assert payload["next_offset"] == 1
+
+    offset_response = training_ui_client.get(
+        f"/api/v1/training/jobs/{job.job_id}/logs?offset=1"
+    )
+    assert offset_response.status_code == 200
+    assert offset_response.get_json()["lines"] == []
+
+
+def test_profile_training_state_prefers_serving_model_path(training_ui_app):
+    profile = _create_target_profile(training_ui_app, "profile-serving-model")
+    manager = training_ui_app._training_job_manager
+
+    manager._update_profile_training_state(
+        profile_id=profile["profile_id"],
+        results={
+            "adapter_path": "/tmp/profile-serving-model_adapter.pt",
+            "serving_model_path": "/tmp/profile-serving-model_adapter_model.pt",
+            "manifest_path": "/tmp/profile-serving-model_manifest.json",
+            "artifact_type": "adapter",
+            "epochs_completed": 3,
+            "final_loss": 0.2,
+        },
+        sample_count=1,
+    )
+
+    saved = training_ui_app.voice_cloner.store.load(profile["profile_id"])
+    assert saved["model_path"] == "/tmp/profile-serving-model_adapter_model.pt"
