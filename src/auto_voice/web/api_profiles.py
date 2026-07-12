@@ -1403,9 +1403,9 @@ def add_sample_from_path(profile_id: str):
                 _dep('torch').cuda.empty_cache()
                 _dep('torch').cuda.synchronize()
 
-            separator = VocalSeparator(segment=10.0)
+            separator = VocalSeparator()
             duration_sec = len(audio) / sr if audio.ndim == 1 else audio.shape[-1] / sr
-            logger.info(f"Starting vocal separation ({duration_sec:.1f}s audio, 10s segments)...")
+            logger.info(f"Starting vocal separation ({duration_sec:.1f}s audio, model-default segments)...")
             result = separator.separate(audio.T if audio.ndim > 1 else audio, sr)
             vocals = result['vocals']
             instrumental = result['instrumental']

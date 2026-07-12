@@ -661,7 +661,18 @@ class VoiceProfileStore:
                 try:
                     with open(metadata_path) as f:
                         data = json.load(f)
-                    samples.append(TrainingSample.from_dict(data))
+                    sample = TrainingSample.from_dict(data)
+                    # Re-anchor stored paths to THIS store's location: metadata
+                    # persists absolute paths that break when the data dir moves
+                    # (cross-machine sync, relocation). The canonical files live
+                    # in sample_dir, so prefer them when present.
+                    for _attr in ('vocals_path', 'instrumental_path'):
+                        _stored = getattr(sample, _attr, None)
+                        if _stored:
+                            _local = os.path.join(sample_dir, os.path.basename(_stored))
+                            if os.path.exists(_local):
+                                setattr(sample, _attr, _local)
+                    samples.append(sample)
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning(f"Failed to load sample metadata: {e}")
 
