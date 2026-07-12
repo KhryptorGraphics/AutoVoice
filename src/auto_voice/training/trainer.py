@@ -425,12 +425,24 @@ class Trainer:
         # across epochs; without it the cache is rebuilt every epoch.
         # Per-item cost is dominated by single-threaded librosa.pyin, so
         # feed the GPU with more parallel workers and deeper prefetch.
-        loader_workers = min(int(self.config.get('num_workers', 12)), os.cpu_count() or 4)
+        # 16 spawn workers by default (operator directive): the single long
+        # sample is sliced into many windows whose per-item cost is
+        # single-threaded librosa.pyin, so parallel workers cut first-epoch
+        # wall-time. Override via config['num_workers'].
+        loader_workers = int(self.config.get('num_workers', 16))
+        # CUDA-fork safety: the GPU ContentVec precompute above initializes a
+        # CUDA context in this process. Forked DataLoader workers inherit it and
+        # deadlock in futex_wait the moment torch touches CUDA. Spawn gives each
+        # worker a fresh CUDA-free interpreter. Passed only when workers>0:
+        # DataLoader rejects a context with num_workers==0.
+        mp_ctx = torch.multiprocessing.get_context('spawn')
         train_loader = DataLoader(
             train_dataset, batch_size=actual_batch_size,
             shuffle=True, num_workers=loader_workers, pin_memory=True,
             drop_last=(len(train_dataset) >= self.batch_size),
-            persistent_workers=True, prefetch_factor=4,
+            persistent_workers=(loader_workers > 0),
+            prefetch_factor=(4 if loader_workers > 0 else None),
+            multiprocessing_context=(mp_ctx if loader_workers > 0 else None),
         )
 
         val_loader = None
@@ -440,7 +452,8 @@ class Trainer:
         if val_dataset is not None:
             val_loader = DataLoader(val_dataset, batch_size=self.batch_size,
                                     shuffle=False, num_workers=2,
-                                    persistent_workers=True)
+                                    persistent_workers=True,
+                                    multiprocessing_context=mp_ctx)
             self.monitored_metric = 'val'
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -572,13 +585,18 @@ class Trainer:
             # Compute spectrogram for posterior encoder
             spec = self._compute_spec(audio, n_mel_frames)
 
-            # Linear LR warmup over the first warmup_steps global steps,
-            # scaled from the scheduler's current base LR so the epoch-level
-            # ExponentialLR keeps compounding correctly afterwards
+            # Linear LR warmup over the first warmup_steps global steps.
+            # MUST scale from the scheduler's IMMUTABLE base_lrs, never
+            # get_last_lr(): ExponentialLR.get_lr() chains off the *current*
+            # group lr, so feeding the already-warmup-scaled lr back multiplies
+            # `scale` (<1) in every epoch and collapses the lr toward zero
+            # (catastrophic when steps/epoch is small -- e.g. 1.3e-35 on a
+            # single-file dataset). base_lrs is stable, so warmup is a clean
+            # ramp and the scheduler resumes normal decay from base afterward.
             if self.warmup_steps > 0 and self.global_step <= self.warmup_steps:
                 scale = min(1.0, (self.global_step + 1) / float(self.warmup_steps))
                 base_lrs = (
-                    self.scheduler.get_last_lr()
+                    list(self.scheduler.base_lrs)
                     if self.scheduler is not None
                     else [self.lr] * len(self.optimizer.param_groups)
                 )

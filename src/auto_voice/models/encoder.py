@@ -457,6 +457,12 @@ class ContentVecEncoder(nn.Module):
         if self._model is None:
             self._load_model()
 
+        # Align the HF model to the input's device before the forward pass.
+        # Lazy loading + parent-module .to() ordering can leave the model on
+        # CPU while callers feed CUDA tensors; this only crashes on the
+        # on-the-fly extraction path (the cached-sidecar path sidesteps it),
+        # so it stayed latent until multi-sample training skipped the cache.
+        self._model.to(audio.device)
         self._model.eval()
         with torch.no_grad():
             outputs = self._model(
