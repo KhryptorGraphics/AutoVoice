@@ -589,7 +589,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                     <div>
                       <div className="text-sm">{sample.audio_path.split('/').pop()}</div>
                       <div className="text-xs text-gray-500">
-                        {sample.duration_seconds.toFixed(1)}s · {sample.sample_rate}Hz · {sampleQualityLabel(sample)}
+                        {sample.duration_seconds?.toFixed(1) ?? '?'}s · {sample.sample_rate}Hz · {sampleQualityLabel(sample)}
                       </div>
                     </div>
                   </div>

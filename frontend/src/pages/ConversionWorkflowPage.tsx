@@ -1021,7 +1021,7 @@ export function ConversionWorkflowPage() {
                     <span>{sample.audio_path.split('/').pop()}</span>
                   </span>
                   <span className="text-xs text-gray-500">
-                    {sample.duration_seconds.toFixed(1)}s · {isTrainableSample(sample) ? 'QA pass' : 'QA failed'}
+                    {sample.duration_seconds?.toFixed(1) ?? '?'}s · {isTrainableSample(sample) ? 'QA pass' : 'QA failed'}
                   </span>
                 </label>
               ))}

@@ -804,14 +804,14 @@ export interface QualityMetrics {
   pitch_accuracy: {
     rmse_hz: number
     correlation: number
-    mean_error_cents: number
+    mean_error_cents?: number
   }
   speaker_similarity: {
     cosine_similarity: number
-    embedding_distance: number
+    embedding_distance?: number
   }
   naturalness: {
-    spectral_distortion: number
+    spectral_distortion?: number
     mos_estimate: number
   }
   intelligibility?: {

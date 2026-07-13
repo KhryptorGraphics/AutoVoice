@@ -131,7 +131,7 @@ function JobCard({ job, onCancel, onSelect }: { job: TrainingJob; onCancel: (id:
             </span>
           </div>
         )}
-        {job.results?.final_loss !== undefined && (
+        {typeof job.results?.final_loss === 'number' && (
           <div>
             <span className="text-gray-500">Final Loss:</span>{' '}
             <span className="text-gray-300">{job.results.final_loss.toFixed(4)}</span>

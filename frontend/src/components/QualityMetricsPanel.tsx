@@ -20,7 +20,7 @@ interface QualityMetricsPanelProps {
 }
 
 interface GaugeProps {
-  value: number
+  value: number | undefined
   max: number
   target?: number
   label: string
@@ -29,9 +29,9 @@ interface GaugeProps {
 }
 
 function MetricGauge({ value, max, target, label, format = (v) => v.toFixed(2), colorScale = 'default' }: GaugeProps) {
-  const percentage = Math.min((value / max) * 100, 100)
+  const percentage = typeof value === 'number' ? Math.min((value / max) * 100, 100) : 0
   const targetPercentage = target ? (target / max) * 100 : null
-  const meetsTarget = target ? value >= target : true
+  const meetsTarget = target ? typeof value === 'number' && value >= target : true
 
   // Determine color based on scale type and value
   const getColor = () => {
@@ -62,7 +62,7 @@ function MetricGauge({ value, max, target, label, format = (v) => v.toFixed(2), 
           'font-mono',
           meetsTarget ? 'text-green-400' : target ? 'text-red-400' : 'text-gray-300'
         )}>
-          {format(value)}
+          {typeof value === 'number' ? format(value) : 'N/A'}
           {target && (
             <span className="text-xs text-gray-500 ml-1">
               (target: {format(target)})
@@ -293,7 +293,7 @@ export function QualityMetricsPanel({
           <div className="flex justify-between text-xs">
             <span className="text-gray-500">Mean Error</span>
             <span className="text-gray-300 font-mono">
-              {metrics.pitch_accuracy.mean_error_cents.toFixed(1)} cents
+              {metrics.pitch_accuracy.mean_error_cents?.toFixed(1) ?? 'N/A'} cents
             </span>
           </div>
         </MetricCard>

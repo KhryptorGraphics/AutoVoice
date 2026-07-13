@@ -15,7 +15,7 @@ interface Checkpoint {
   version: string
   created_at: string
   epochs_trained: number
-  final_loss: number
+  final_loss?: number
   is_active: boolean
   file_size_mb: number
   training_samples: number
@@ -103,7 +103,8 @@ export function CheckpointBrowser({ profileId, onRollback, onCompare }: Checkpoi
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
 
-  const formatSize = (mb: number) => {
+  const formatSize = (mb?: number) => {
+    if (typeof mb !== 'number' || Number.isNaN(mb)) return 'N/A'
     if (mb < 1024) return `${mb.toFixed(1)} MB`
     return `${(mb / 1024).toFixed(2)} GB`
   }
@@ -203,7 +204,7 @@ export function CheckpointBrowser({ profileId, onRollback, onCompare }: Checkpoi
                       <span>•</span>
                       <span>{checkpoint.epochs_trained} epochs</span>
                       <span>•</span>
-                      <span>Loss: {checkpoint.final_loss.toFixed(4)}</span>
+                      <span>Loss: {checkpoint.final_loss?.toFixed(4) ?? 'N/A'}</span>
                     </div>
                   </div>
 
@@ -263,7 +264,7 @@ export function CheckpointBrowser({ profileId, onRollback, onCompare }: Checkpoi
                     </div>
                     <div>
                       <div className="text-gray-500">Final Loss</div>
-                      <div className="font-mono">{checkpoint.final_loss.toFixed(6)}</div>
+                      <div className="font-mono">{checkpoint.final_loss?.toFixed(6) ?? 'N/A'}</div>
                     </div>
                     <div>
                       <div className="text-gray-500">Epochs Trained</div>
