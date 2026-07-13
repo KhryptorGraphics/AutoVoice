@@ -58,7 +58,7 @@ export function GPUMonitor({ refreshInterval = 2000, className = '' }: GPUMonito
           )}
 
           {/* GPU Utilization */}
-          {status.gpu_utilization !== undefined && (
+          {typeof status.gpu_utilization === 'number' && (
             <div>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center space-x-2">
