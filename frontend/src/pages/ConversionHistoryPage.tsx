@@ -403,12 +403,12 @@ export function ConversionHistoryPage() {
                         {item.adapter_type && item.adapter_type !== 'unified' && (
                           <AdapterBadge adapterType={item.adapter_type as 'hq' | 'nvfp4'} />
                         )}
-                        {item.rtf !== undefined && (
+                        {typeof item.rtf === 'number' && (
                           <span className="text-xs text-gray-500">
                             RTF: {item.rtf.toFixed(2)}x
                           </span>
                         )}
-                        {item.processing_time_seconds !== undefined && (
+                        {typeof item.processing_time_seconds === 'number' && (
                           <span className="text-xs text-gray-500">
                             Processed in {item.processing_time_seconds.toFixed(1)}s
                           </span>
