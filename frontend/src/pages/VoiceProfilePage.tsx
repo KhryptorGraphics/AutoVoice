@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { User, Plus, Trash2, RefreshCw, ChevronRight, XCircle, Loader2, Upload, Download, Mic, Play, CheckCircle2, Clock, AlertCircle, Users, Award, Search, Filter, Info } from 'lucide-react'
-import { apiService, VoiceProfile, TrainingJob, TrainingConfig, TrainingConfigOptions, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType, RetrainCheckResult, DuplicateProfileCheck } from '../services/api'
+import { apiService, wsManager, VoiceProfile, TrainingJob, TrainingConfig, TrainingConfigOptions, DEFAULT_TRAINING_CONFIG, TrainingSample, TrainingStatusType, AdapterListResponse, AdapterType, RetrainCheckResult, DuplicateProfileCheck, WSEvent } from '../services/api'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { TrainingJobQueue } from '../components/TrainingJobQueue'
 import { LossCurveChart } from '../components/LossCurveChart'
@@ -12,6 +12,17 @@ import { CheckpointBrowser } from '../components/CheckpointBrowser'
 import { ConfirmActionButton } from '../components/ConfirmActionButton'
 import { useToastContext } from '../contexts/ToastContext'
 import clsx from 'clsx'
+
+// Safely pull a job_id off a WebSocket event payload without asserting a shape
+// the compiler never verified (payloads arrive as `unknown`).
+function trainingEventJobId(event: WSEvent): string | undefined {
+  const { data } = event
+  if (data && typeof data === 'object' && 'job_id' in data) {
+    const jobId = data.job_id
+    return typeof jobId === 'string' ? jobId : undefined
+  }
+  return undefined
+}
 
 // Training status badge component
 function TrainingStatusBadge({ status }: { status?: TrainingStatusType }) {
@@ -174,6 +185,43 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
       })
       .catch(err => console.error('Failed to fetch adapters:', err))
   }, [profile.profile_id])
+
+  // Keep the selected job in sync with the training lifecycle. The live monitor
+  // mounts while the job is pending or running; when the run reaches a terminal
+  // state we refetch the job so the monitor unmounts and the final loss curve
+  // renders. training_error is handled here because LiveTrainingMonitor does
+  // not react to it internally.
+  useEffect(() => {
+    const jobId = selectedJob?.job_id
+    const status = selectedJob?.status
+    if (!jobId || (status !== 'pending' && status !== 'running')) {
+      return
+    }
+    wsManager.connect()
+    let cancelled = false
+    const syncTerminalState = (event: WSEvent) => {
+      if (trainingEventJobId(event) !== jobId) {
+        return
+      }
+      apiService
+        .getTrainingJob(jobId)
+        .then((job) => {
+          if (!cancelled) {
+            setSelectedJob(job)
+          }
+        })
+        .catch((error) => console.error('Failed to refresh training job:', error))
+    }
+    const unsubscribers = [
+      wsManager.subscribe('training_complete', syncTerminalState),
+      wsManager.subscribe('training_error', syncTerminalState),
+      wsManager.subscribe('training_cancelled', syncTerminalState),
+    ]
+    return () => {
+      cancelled = true
+      unsubscribers.forEach((unsubscribe) => unsubscribe())
+    }
+  }, [selectedJob?.job_id, selectedJob?.status])
 
   // Fetch assigned diarization segments when segments tab is active
   useEffect(() => {
@@ -758,8 +806,8 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
 
       {activeTab === 'jobs' && (
         <div className="space-y-4">
-          {/* Live Training Monitor - shown when a job is running */}
-          {selectedJob?.status === 'running' && (
+          {/* Live training output — visible while the job is queued or running. */}
+          {selectedJob && (selectedJob.status === 'pending' || selectedJob.status === 'running') && (
             <LiveTrainingMonitor
               jobId={selectedJob.job_id}
               profileId={profile.profile_id}
@@ -775,7 +823,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
               profileId={profile.profile_id}
               onJobSelect={setSelectedJob}
             />
-            {selectedJob && selectedJob.status !== 'running' && (
+            {selectedJob && selectedJob.status !== 'running' && selectedJob.status !== 'pending' && (
               <LossCurveChart job={selectedJob} />
             )}
           </div>
