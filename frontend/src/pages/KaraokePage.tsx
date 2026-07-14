@@ -22,6 +22,7 @@ import {
   startSeparation,
   getSeparationStatus,
   listDevices,
+  getDeviceConfig,
   setDeviceConfig,
   listVoiceModels,
   extractVoiceModel,
@@ -79,6 +80,7 @@ export function KaraokePage() {
   const [voiceModels, setVoiceModels] = useState<VoiceModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractStatus, setExtractStatus] = useState<'extracting' | null>(null);
 
   // Voice profile state (for training sample collection)
   const [voiceProfiles, setVoiceProfiles] = useState<VoiceProfile[]>([]);
@@ -246,9 +248,20 @@ export function KaraokePage() {
       if (event === 'audio_received') {
         const d = data as { latencyMs: number };
         setStreamingStats((s) => ({ ...s, latencyMs: d.latencyMs }));
-        setOutputLevel(Math.random() * 0.6 + 0.2); // Simulate output level
       } else if (event === 'audio_sent') {
-        setInputLevel(Math.random() * 0.5 + 0.3); // Simulate input level
+        // Input level is reported by the real input_level event from
+        // audioStreaming.ts (mic RMS); nothing to fake here.
+      } else if (event === 'input_level') {
+        const d = data as { level: number };
+        setInputLevel(Math.max(0, Math.min(1, d.level)));
+      } else if (event === 'output_level') {
+        const d = data as { level: number };
+        setOutputLevel(Math.max(0, Math.min(1, d.level)));
+      } else if (event === 'pipeline_warning') {
+        const d = data as { message?: string };
+        if (d?.message) {
+          setSessionError(d.message);
+        }
       } else if (event === 'connected') {
         setStreamingStats((s) => ({ ...s, isConnected: true }));
       } else if (event === 'disconnected') {
@@ -306,46 +319,48 @@ export function KaraokePage() {
     };
   }, [applySessionStarted, recoverPerformance]);
 
-  // Poll separation status
-  useEffect(() => {
-    if (stage === 'separating' && separationJob) {
-      pollingRef.current = window.setInterval(async () => {
-        try {
-          const status = await getSeparationStatus(separationJob.job_id);
-          setSeparationJob(status);
-
-          if (status.status === 'completed') {
-            clearInterval(pollingRef.current!);
-            setStage('ready');
-          } else if (status.status === 'failed') {
-            clearInterval(pollingRef.current!);
-            setUploadError(status.error || 'Separation failed');
-            setStage('upload');
-          }
-        } catch (error) {
-          console.error('Error polling separation status:', error);
-        }
-      }, 1000);
-
-      return () => {
-        if (pollingRef.current) {
-          clearInterval(pollingRef.current);
-        }
-      };
-    }
-  }, [stage, separationJob]);
-
   const loadDevices = async () => {
     try {
       const result = await listDevices();
       setDevices(result.devices);
-      // Set defaults
-      const defaultDevice = result.devices.find((d) => d.type === 'output' && d.is_default)
-        ?? result.devices.find((d) => d.type !== 'input' && d.is_default);
-      if (defaultDevice) {
-        setSpeakerDevice(defaultDevice.index);
-        setHeadphoneDevice(defaultDevice.index);
+
+      // 1) Prefer a previously-saved karaoke device config if the backend has one.
+      let speaker: number | null = null;
+      let headphone: number | null = null;
+      try {
+        const cfg = await getDeviceConfig();
+        if (cfg.speaker_device != null) {
+          speaker = cfg.speaker_device;
+        }
+        if (cfg.headphone_device != null) {
+          headphone = cfg.headphone_device;
+        }
+      } catch (error) {
+        console.error('Failed to load saved device config:', error);
       }
+
+      // 2) Fall back to the system default output device when no saved config.
+      if (speaker == null || headphone == null) {
+        const defaultDevice = result.devices.find((d) => d.type === 'output' && d.is_default)
+          ?? result.devices.find((d) => d.type !== 'input' && d.is_default);
+        if (defaultDevice) {
+          if (speaker == null) speaker = defaultDevice.index;
+          if (headphone == null) headphone = defaultDevice.index;
+        }
+      }
+
+      // 3) Final fallback: the first output device so the selects show a real
+      // device instead of empty (none of the reported devices has is_default).
+      if (speaker == null || headphone == null) {
+        const firstOutput = result.devices.find((d) => d.type !== 'input');
+        if (firstOutput) {
+          if (speaker == null) speaker = firstOutput.index;
+          if (headphone == null) headphone = firstOutput.index;
+        }
+      }
+
+      if (speaker != null) setSpeakerDevice(speaker);
+      if (headphone != null) setHeadphoneDevice(headphone);
     } catch (error) {
       console.error('Failed to load devices:', error);
     }
@@ -362,6 +377,66 @@ export function KaraokePage() {
       console.error('Failed to load voice models:', error);
     }
   };
+
+  // Auto-extract a voice model from the just-separated vocals so performing is
+  // immediately usable. Only fires when no voice models exist yet; otherwise
+  // selects the first available model. Surfaces failures via sessionError.
+  const ensureVoiceModel = useCallback(async () => {
+    try {
+      const existing = await listVoiceModels();
+      if (existing.models.length > 0) {
+        setVoiceModels(existing.models);
+        setSelectedModel(existing.models[0].id);
+        return;
+      }
+      if (!uploadedSong) {
+        return;
+      }
+      setExtractStatus('extracting');
+      const r = await extractVoiceModel(
+        uploadedSong.song_id,
+        `Voice from ${uploadedSong.song_id.slice(0, 8)}`
+      );
+      await loadVoiceModels();
+      setSelectedModel(r.model_id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to extract voice model';
+      console.error('Auto voice model extraction failed:', error);
+      setSessionError(message);
+    } finally {
+      setExtractStatus(null);
+    }
+  }, [uploadedSong]);
+
+  // Poll separation status
+  useEffect(() => {
+    if (stage === 'separating' && separationJob) {
+      pollingRef.current = window.setInterval(async () => {
+        try {
+          const status = await getSeparationStatus(separationJob.job_id);
+          setSeparationJob(status);
+
+          if (status.status === 'completed') {
+            clearInterval(pollingRef.current!);
+            setStage('ready');
+            // Auto-extract a voice model from the just-separated vocals so
+            // the "Start Performing" button is immediately usable.
+            void ensureVoiceModel();
+          } else if (status.status === 'failed') {
+            clearInterval(pollingRef.current!);
+            setUploadError(status.error || 'Separation failed');
+            setStage('upload');
+          }
+        } catch (error) {
+          console.error('Error polling separation status:', error);
+        }
+      }, 1000);
+
+      return () => {
+        clearInterval(pollingRef.current ?? undefined);
+      };
+    }
+  }, [stage, separationJob, ensureVoiceModel]);
 
   const loadVoiceProfiles = async () => {
     try {
@@ -1060,6 +1135,15 @@ export function KaraokePage() {
               title="Voice switched"
               message="The conversion voice was updated mid-session."
               testId="karaoke-voice-switched"
+            />
+          )}
+
+          {extractStatus === 'extracting' && (
+            <StatusBanner
+              tone="info"
+              title="Extracting voice model"
+              message="Extracting a voice model from the separated vocals so you can start performing…"
+              testId="karaoke-extracting-model"
             />
           )}
 

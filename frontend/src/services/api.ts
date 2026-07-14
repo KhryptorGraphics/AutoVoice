@@ -1771,6 +1771,31 @@ class ApiService {
     return response.blob()
   }
 
+  async mixSingAlongDuet(
+    sourceAssetId: string,
+    profileId: string,
+    sampleId: string,
+    alignmentOffsetMs: number,
+    options?: { backing_gain?: number; vocal_gain?: number },
+  ): Promise<Blob> {
+    const response = await apiFetch(`${API_BASE}/singalong/mix`, {
+      method: 'POST',
+      body: JSON.stringify({
+        source_asset_id: sourceAssetId,
+        profile_id: profileId,
+        sample_id: sampleId,
+        alignment_offset_ms: alignmentOffsetMs,
+        backing_gain: options?.backing_gain,
+        vocal_gain: options?.vocal_gain,
+      }),
+    })
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: response.statusText }))
+      throw new ApiError(error.error || 'Failed to mix sing-along duet', response.status)
+    }
+    return response.blob()
+  }
+
   // User Presets
   async listPresets(): Promise<UserPreset[]> {
     return this.request('/presets')

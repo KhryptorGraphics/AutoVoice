@@ -61,6 +61,7 @@ def register_profile_sample_routes(api_bp: Blueprint, **deps: Any) -> None:
     api_bp.add_url_rule('/separation/status/<job_id>', view_func=get_separation_status, methods=['GET'])
     api_bp.add_url_rule('/singalong/sources', view_func=list_singalong_sources, methods=['GET'])
     api_bp.add_url_rule('/singalong/sources/<asset_id>/audio', view_func=get_singalong_source_audio, methods=['GET'])
+    api_bp.add_url_rule('/singalong/mix', view_func=mix_singalong_duet, methods=['POST'])
     api_bp.add_url_rule('/profiles/<profile_id>/samples/<sample_id>', view_func=get_sample, methods=['GET'])
     api_bp.add_url_rule('/profiles/<profile_id>/samples/<sample_id>', view_func=delete_sample, methods=['DELETE'])
 
@@ -1762,6 +1763,138 @@ def get_singalong_source_audio(asset_id: str):
         download_name=secure_filename(source.get('filename') or path.name),
         conditional=True,
         max_age=0,
+    )
+
+
+def _read_audio_mono(path: str):
+    """Read an audio file as mono float32 at its native sample rate.
+
+    Tries soundfile first; falls back to librosa (which decodes more formats,
+    e.g. MP3/MP4 via ffmpeg). Returns (samples_float32_mono, sample_rate_int).
+    """
+    import numpy as np
+    audio = None
+    sr = None
+    if _dep('soundfile_available'):
+        sf = _dep('soundfile')
+        try:
+            audio, sr = sf.read(path, dtype='float32', always_2d=False)
+        except Exception:
+            audio = None
+    if audio is None:
+        import librosa
+        audio, sr = librosa.load(path, sr=None, mono=True)
+        audio = np.asarray(audio, dtype=np.float32)
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim > 1:
+        # Flatten to mono along the channel axis.
+        audio = np.mean(audio, axis=1 if audio.shape[0] > audio.shape[1] else 0)
+    return np.asarray(audio, dtype=np.float32).squeeze(), int(sr)
+
+
+def mix_singalong_duet():
+    """Mix a sing-along backing track with a captured vocal take into a duet.
+
+    Request (JSON):
+        source_asset_id (str): Sing-along source asset id (required)
+        profile_id (str): Training profile id (required)
+        sample_id (str): Attached training sample id (required)
+        alignment_offset_ms (number): Where the vocal begins within the backing
+        backing_gain (number, default 0.8): Gain applied to the backing track
+        vocal_gain (number, default 1.0): Gain applied to the vocal take
+
+    Returns:
+        audio/wav attachment (stereo FLOAT), or a JSON error.
+    """
+    logger = _dep('logger')
+    data = request.get_json(silent=True) or {}
+    source_asset_id = data.get('source_asset_id')
+    profile_id = data.get('profile_id')
+    sample_id = data.get('sample_id')
+
+    if not source_asset_id or not profile_id or not sample_id:
+        return _dep('validation_error_response')(
+            'source_asset_id, profile_id, and sample_id are required'
+        )
+
+    try:
+        alignment_offset_ms = float(data.get('alignment_offset_ms') or 0)
+    except (TypeError, ValueError):
+        alignment_offset_ms = 0.0
+    try:
+        backing_gain = float(data.get('backing_gain') or 0.8)
+    except (TypeError, ValueError):
+        backing_gain = 0.8
+    try:
+        vocal_gain = float(data.get('vocal_gain') or 1.0)
+    except (TypeError, ValueError):
+        vocal_gain = 1.0
+
+    store = _state_store()
+    if store is None:
+        return _dep('not_found_response')('Asset store unavailable')
+    asset = store.get_asset(source_asset_id)
+    if not asset or asset.get('kind') not in SINGALONG_SOURCE_KINDS:
+        return _dep('not_found_response')('Sing-along source not found')
+    backing_path = str(asset['path'])
+    if not backing_path or not os.path.exists(backing_path):
+        return _dep('not_found_response')('Sing-along source audio file is missing')
+
+    sample = _find_training_sample(profile_id, sample_id)
+    if sample is None:
+        return _dep('not_found_response')('Training sample not found')
+    vocal_path = getattr(sample, 'vocals_path', None) or getattr(sample, 'file_path', None)
+    if not vocal_path or not os.path.exists(vocal_path):
+        return _dep('validation_error_response')('Sample vocal audio file is missing')
+
+    import io
+    import numpy as np
+
+    try:
+        backing, sr = _read_audio_mono(backing_path)
+        vocal, sr_vocal = _read_audio_mono(vocal_path)
+    except Exception as exc:
+        logger.error(f"Failed to read duet audio: {exc}", exc_info=True)
+        return _dep('error_response')(f'Failed to read audio: {exc}')
+
+    # Resample the vocal to the backing sample rate if they differ.
+    if sr_vocal != sr:
+        try:
+            import librosa
+            vocal = librosa.resample(np.asarray(vocal, dtype=np.float32), orig_sr=sr_vocal, target_sr=sr)
+            vocal = np.asarray(vocal, dtype=np.float32)
+        except Exception as exc:
+            logger.error(f"Failed to resample vocal: {exc}", exc_info=True)
+            return _dep('error_response')(f'Failed to resample vocal: {exc}')
+
+    offset_samples = max(0, int(alignment_offset_ms / 1000.0 * sr))
+    total_len = max(int(backing.size), offset_samples + int(vocal.size))
+
+    backing_padded = np.zeros(total_len, dtype=np.float32)
+    backing_padded[: int(backing.size)] = backing
+    vocal_padded = np.zeros(total_len, dtype=np.float32)
+    if vocal.size:
+        vocal_padded[offset_samples: offset_samples + int(vocal.size)] = vocal
+
+    mix_mono = backing_gain * backing_padded + vocal_gain * vocal_padded
+    mix_mono = np.clip(mix_mono, -1.0, 1.0)
+    # Render stereo by duplicating the mono mix to L/R.
+    mix_stereo = np.stack([mix_mono, mix_mono], axis=1)
+
+    buf = io.BytesIO()
+    try:
+        sf = _dep('soundfile')
+        sf.write(buf, mix_stereo, sr, subtype='FLOAT', format='WAV')
+    except Exception as exc:
+        logger.error(f"Failed to encode duet mix: {exc}", exc_info=True)
+        return _dep('error_response')(f'Failed to encode mix: {exc}')
+    buf.seek(0)
+
+    return send_file(
+        buf,
+        mimetype='audio/wav',
+        as_attachment=True,
+        download_name='singalong_duet.wav',
     )
 
 

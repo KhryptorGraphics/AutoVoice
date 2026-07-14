@@ -142,6 +142,7 @@ class KaraokeNamespace(Namespace):
         self._client_sessions: Dict[str, str] = {}  # client_id -> session_id
         self._client_connect_time: Dict[str, float] = {}  # client_id -> connect timestamp
         self._sample_collectors: Dict[str, Any] = {}  # session_id -> SampleCollector
+        self._bypass_warned: set = set()  # session_ids that already emitted a passthrough warning
 
     def _audit_socket_event(
         self,
@@ -527,6 +528,7 @@ class KaraokeNamespace(Namespace):
             # Stop sample collection if active (Task 3.7)
             samples_collected = 0
             collector = self._sample_collectors.pop(session_id, None)
+            self._bypass_warned.discard(session_id)
             if collector:
                 try:
                     captured_samples = collector.stop_recording()
@@ -603,6 +605,17 @@ class KaraokeNamespace(Namespace):
             # Process through conversion pipeline
             converted = session.process_chunk(audio_tensor)
             latency_ms = session.get_latency_ms()
+
+            # Surface passthrough: if the session is converting in passthrough
+            # (no voice model applied), warn the client once per session so
+            # the user knows to separate the song first instead of hearing a
+            # silently-"live" session emitting unconverted audio.
+            if getattr(session, '_last_chunk_bypassed', False) and session_id not in self._bypass_warned:
+                self._bypass_warned.add(session_id)
+                emit('pipeline_warning', {
+                    'session_id': session_id,
+                    'message': 'Converting in passthrough — separate the song first so a voice model is applied',
+                })
 
             # Record analytics (Task 8.4)
             # Assume 24kHz sample rate, calculate seconds from samples

@@ -141,6 +141,18 @@ export class AudioStreamingClient {
       this.socket.on('converted_audio', (data: { audio: string; latency_ms: number }) => {
         this.latencyMs = data.latency_ms;
         this.chunksProcessed++;
+        // Real output-level metering: decode the returned PCM and compute RMS.
+        try {
+          const out = this.decodeBase64ToFloat32(data.audio);
+          let sumSq = 0;
+          for (let i = 0; i < out.length; i++) {
+            sumSq += out[i] * out[i];
+          }
+          const rms = out.length > 0 ? Math.sqrt(sumSq / out.length) : 0;
+          this.emitEvent('output_level', { level: rms });
+        } catch (err) {
+          console.error('Error computing output level:', err);
+        }
         this.playAudio(data.audio);
         this.emitEvent('audio_received', { latencyMs: data.latency_ms });
       });
@@ -368,7 +380,10 @@ export class AudioStreamingClient {
       this.isStreaming = true;
       this.emitEvent('streaming_started', null);
       this.emitEvent('audio_sent', { samples: this.chunkSize });
-      this.emitEvent('audio_received', { latencyMs: 48 });
+      // NOTE: a real `audio_received` (with output_level) is emitted by the
+      // `converted_audio` handler when the server returns converted PCM.
+      // The previous fake `audio_received` with a hardcoded 48ms latency made
+      // the output meter fire with bogus data, so it was removed.
       return;
     }
 
@@ -411,6 +426,14 @@ export class AudioStreamingClient {
 
       const inputData = event.inputBuffer.getChannelData(0);
       const audioBuffer = new Float32Array(inputData);
+
+      // Real input-level metering: RMS of the captured mic samples.
+      let sumSq = 0;
+      for (let i = 0; i < audioBuffer.length; i++) {
+        sumSq += audioBuffer[i] * audioBuffer[i];
+      }
+      const rms = Math.sqrt(sumSq / audioBuffer.length);
+      this.emitEvent('input_level', { level: rms });
 
       // Send audio to server
       this.socket!.emit('audio_chunk', {

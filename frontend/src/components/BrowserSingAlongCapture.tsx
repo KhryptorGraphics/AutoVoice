@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle, Headphones, Loader2, Mic, Play, RotateCcw, Save, Square, Trash2, Volume2 } from 'lucide-react'
+import { CheckCircle, Download, Headphones, Loader2, Mic, Play, RotateCcw, Save, Square, Trash2, Volume2 } from 'lucide-react'
 import clsx from 'clsx'
 
 import { apiService, type VoiceProfile } from '../services/api'
@@ -24,6 +24,7 @@ interface BrowserSingAlongCaptureProps {
   song?: UploadedSong
   sourceAudioUrl?: string
   sourceId?: string
+  sourceAssetId?: string
   sourceLabel?: string
   profiles: VoiceProfile[]
   disabled?: boolean
@@ -100,6 +101,7 @@ export function BrowserSingAlongCapture({
   song,
   sourceAudioUrl,
   sourceId,
+  sourceAssetId,
   sourceLabel,
   profiles,
   disabled = false,
@@ -140,6 +142,8 @@ export function BrowserSingAlongCapture({
   const [error, setError] = useState<string | null>(null)
   const [sinkStatus, setSinkStatus] = useState<'idle' | 'selected' | 'default' | 'unsupported' | 'error'>('idle')
   const [attaching, setAttaching] = useState(false)
+  const [attachedSampleId, setAttachedSampleId] = useState<string | null>(null)
+  const [mixingDuet, setMixingDuet] = useState(false)
 
   const targetProfiles = useMemo(
     () => profiles.filter((profile) => profile.profile_role !== 'source_artist'),
@@ -412,18 +416,132 @@ export function BrowserSingAlongCapture({
 
   const runLatencyCalibration = async () => {
     setError(null)
-    const started = performance.now()
-    await playTestTone()
-    const estimatedLatency = Math.round(Math.max(0, performance.now() - started + 60))
-    setLatencyCalibrationMs(estimatedLatency)
-    setCalibrationStatus(estimatedLatency <= 180 ? 'pass' : 'warn')
+    setStatus('Running loopback latency calibration…')
+
+    const AudioContextCtor = window.AudioContext
+      ?? (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!AudioContextCtor) {
+      setError('AudioContext is not available in this browser.')
+      setCalibrationStatus('warn')
+      return
+    }
+
+    let stream: MediaStream
+    try {
+      stream = await requestBrowserMicrophone(selectedInputId || undefined)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Microphone access failed')
+      setCalibrationStatus('warn')
+      setStatus('Could not access the microphone for calibration; using last calibration.')
+      return
+    }
+
+    const ctx = new AudioContextCtor()
+    const sampleRate = ctx.sampleRate
+    const source = ctx.createMediaStreamSource(stream)
+    const processor = ctx.createScriptProcessor(4096, 1, 1)
+    const recorded: number[] = []
+    let recStartPerf = 0
+    processor.onaudioprocess = (event) => {
+      if (recStartPerf === 0) {
+        recStartPerf = performance.now()
+      }
+      const input = event.inputBuffer.getChannelData(0)
+      for (let i = 0; i < input.length; i += 1) {
+        recorded.push(input[i])
+      }
+    }
+    // Drive the processor without producing audible mic passthrough (avoids
+    // feedback); the click below is the only thing that should be audible.
+    const silentGain = ctx.createGain()
+    silentGain.gain.value = 0
+    source.connect(processor)
+    processor.connect(silentGain)
+    silentGain.connect(ctx.destination)
+
+    // Schedule a short 880Hz click ~50ms from now and capture the scheduled
+    // start time (in performance.now() terms) so we can measure round-trip.
+    const scheduleDelaySec = 0.05
+    const t0 = ctx.currentTime + scheduleDelaySec
+    const oscillator = ctx.createOscillator()
+    const gain = ctx.createGain()
+    oscillator.frequency.value = 880
+    gain.gain.setValueAtTime(0, t0)
+    gain.gain.linearRampToValueAtTime(0.15, t0 + 0.005)
+    gain.gain.setValueAtTime(0.15, t0 + 0.04)
+    gain.gain.linearRampToValueAtTime(0, t0 + 0.05)
+    oscillator.connect(gain)
+    gain.connect(ctx.destination)
+    oscillator.start(t0)
+    oscillator.stop(t0 + 0.06)
+    const clickScheduledPerf = performance.now() + scheduleDelaySec * 1000
+
+    // Record for ~700ms, then tear down the capture graph.
+    await new Promise<void>((resolve) => window.setTimeout(() => resolve(), 700))
+    try { oscillator.disconnect() } catch { /* noop */ }
+    try { processor.disconnect() } catch { /* noop */ }
+    try { source.disconnect() } catch { /* noop */ }
+    try { silentGain.disconnect() } catch { /* noop */ }
+    stopStream(stream)
+    await ctx.close().catch(() => undefined)
+
+    if (recorded.length === 0 || recStartPerf === 0) {
+      setCalibrationStatus('warn')
+      setStatus('Could not capture microphone audio for calibration; using last calibration.')
+      return
+    }
+
+    // Onset detection: short-frame RMS envelope, find the first frame after a
+    // minimum delay whose RMS clearly exceeds the noise floor.
+    const samples = new Float32Array(recorded)
+    const frameSize = 256
+    const hop = 128
+    const rmsFrames: number[] = []
+    for (let i = 0; i + frameSize <= samples.length; i += hop) {
+      let sumSq = 0
+      for (let j = 0; j < frameSize; j += 1) {
+        const v = samples[i + j]
+        sumSq += v * v
+      }
+      rmsFrames.push(Math.sqrt(sumSq / frameSize))
+    }
+    if (rmsFrames.length === 0) {
+      setCalibrationStatus('warn')
+      setStatus('Recorded audio was too short to analyze; using last calibration.')
+      return
+    }
+    const noiseFrameCount = Math.max(1, Math.floor((30 * sampleRate / 1000) / hop))
+    const noiseFloor = rmsFrames.slice(0, noiseFrameCount).reduce((a, b) => Math.max(a, b), 0)
+    const peakRms = rmsFrames.reduce((a, b) => Math.max(a, b), 0)
+    const minOnsetFrame = Math.max(1, Math.floor((20 * sampleRate / 1000) / hop))
+    const threshold = Math.max(noiseFloor * 3, peakRms * 0.5)
+    let onsetFrame = -1
+    for (let i = minOnsetFrame; i < rmsFrames.length; i += 1) {
+      if (rmsFrames[i] >= threshold) {
+        onsetFrame = i
+        break
+      }
+    }
+
+    // No detectable onset above the noise floor (e.g. closed headphones isolate
+    // the click from the mic): keep the prior calibration and warn the user.
+    if (onsetFrame < 0 || peakRms < noiseFloor * 2 + 1e-6) {
+      setCalibrationStatus('warn')
+      setStatus('Could not detect the test tone on the mic — check that the speaker/room lets the mic hear it; using last calibration.')
+      return
+    }
+
+    const onsetPerfMs = (onsetFrame * hop / sampleRate) * 1000
+    const roundTripMs = Math.max(0, Math.round(onsetPerfMs - (clickScheduledPerf - recStartPerf)))
+    setLatencyCalibrationMs(roundTripMs)
+    setCalibrationStatus(roundTripMs <= 180 ? 'pass' : 'warn')
     window.localStorage.setItem(calibrationStorageKey, JSON.stringify({
-      latency_ms: estimatedLatency,
+      latency_ms: roundTripMs,
       input_device_label: inputDeviceLabel,
       output_device_label: outputDeviceLabel,
       calibrated_at: new Date().toISOString(),
     }))
-    setStatus(`Latency calibration saved at ${estimatedLatency} ms.`)
+    setStatus(`Loopback latency calibrated at ${roundTripMs} ms.`)
   }
 
   const startRecording = async () => {
@@ -577,7 +695,7 @@ export function BrowserSingAlongCapture({
       const file = new File([uploadBlob], `browser-singalong-${audioSourceId}.${extension}`, {
         type: uploadBlob.type || takeBlob.type || 'audio/webm',
       })
-      await apiService.uploadSample(selectedProfileId, file, {
+      const sample = await apiService.uploadSample(selectedProfileId, file, {
         source: 'browser_singalong_capture',
         provenance: 'browser-client sing-along recording',
         source_file: audioSourceLabel,
@@ -596,6 +714,9 @@ export function BrowserSingAlongCapture({
           browser_capture: takeQuality,
         },
       })
+      if (sample?.id) {
+        setAttachedSampleId(sample.id)
+      }
       releaseTake()
       setStatus('Recorded take attached to the selected profile.')
       await onSampleAttached?.()
@@ -603,6 +724,41 @@ export function BrowserSingAlongCapture({
       setError(err instanceof Error ? err.message : 'Failed to attach recorded take')
     } finally {
       setAttaching(false)
+    }
+  }
+
+  const mixDuetDownload = async () => {
+    // The duet mix requires a saved sing-along source (a real asset_id) and an
+    // attached vocal take. Local-file sources have no asset_id, so the button is
+    // disabled in the UI for them; guard here too.
+    const assetId = sourceAssetId ?? sourceId
+    if (!assetId || !selectedProfileId || !attachedSampleId) {
+      setError('Select a saved original song and attach a recorded take before mixing a duet.')
+      return
+    }
+    setMixingDuet(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const blob = await apiService.mixSingAlongDuet(
+        assetId,
+        selectedProfileId,
+        attachedSampleId,
+        Math.round(latencyCalibrationMs),
+      )
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'singalong_duet.wav'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setStatus('Duet mix downloaded.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to mix duet')
+    } finally {
+      setMixingDuet(false)
     }
   }
 
@@ -858,6 +1014,23 @@ export function BrowserSingAlongCapture({
               </button>
             </>
           )}
+
+          <button
+            onClick={mixDuetDownload}
+            disabled={mixingDuet || !sourceAssetId || !attachedSampleId || !selectedProfileId}
+            title={
+              !sourceAssetId
+                ? 'Select a saved original song to mix a duet.'
+                : !attachedSampleId
+                  ? 'Attach a recorded take to mix a duet.'
+                  : 'Download a duet mix of the backing track and your vocal'
+            }
+            data-testid="browser-capture-download-duet"
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 font-medium hover:bg-indigo-700 disabled:bg-gray-700"
+          >
+            {mixingDuet ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+            Download duet mix
+          </button>
 
           <button
             onClick={() => void refreshBrowserDevices()}

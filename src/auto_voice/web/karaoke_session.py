@@ -224,6 +224,7 @@ class KaraokeSession:
 
         # Chunk counter for statistics
         self._chunks_processed = 0
+        self._last_chunk_bypassed = False
         self._started_at: Optional[float] = None
 
         # Audio mixer for combining voice + instrumental
@@ -433,8 +434,8 @@ class KaraokeSession:
 
         self.is_active = True
         self._started_at = time.time()
-        self._chunks_processed = 0
         self._latency_history.clear()
+        self._last_chunk_bypassed = False
 
         # Pre-warm the pipeline
         try:
@@ -507,6 +508,7 @@ class KaraokeSession:
 
         if self._should_bypass_pipeline():
             output = audio_chunk
+            self._last_chunk_bypassed = True
 
         else:
             # Process through streaming pipeline
@@ -524,9 +526,13 @@ class KaraokeSession:
                     )
                 else:
                     output = pipeline.process_chunk(audio_chunk, self._speaker_embedding.squeeze(0))
+                # Normal path: a real model was applied, so this chunk was not bypassed.
+                self._last_chunk_bypassed = False
             except RuntimeError:
-                # Fallback for testing: return input unchanged
+                # Fallback for testing: return input unchanged. Mark as
+                # bypassed so the frontend can warn about passthrough audio.
                 output = audio_chunk
+                self._last_chunk_bypassed = True
 
         # Track latency
         latency_ms = (time.time() - start_time) * 1000

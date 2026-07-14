@@ -11,6 +11,10 @@ type BrowserAudioSource = {
   id: string
   label: string
   detail: string
+  // Present only when the source is a preserved sing-along asset (a real
+  // asset_id from /singalong/sources). Local-file sources leave this unset,
+  // which disables duet mixing (the mix endpoint needs a saved backing asset).
+  asset_id?: string | null
 }
 
 const ACCEPTED_AUDIO_TYPES = '.wav,.mp3,.m4a,.flac,.ogg,.webm,audio/*'
@@ -121,6 +125,7 @@ export function SingAlongPage() {
         id: savedSource.asset_id,
         label: savedSource.label || savedSource.filename,
         detail: `${savedSource.source || savedSource.kind} · ${savedSource.filename}`,
+        asset_id: savedSource.asset_id,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load saved original'
@@ -276,6 +281,7 @@ export function SingAlongPage() {
         <BrowserSingAlongCapture
           sourceAudioUrl={source.url}
           sourceId={source.id}
+          sourceAssetId={source.asset_id ?? undefined}
           sourceLabel={source.label}
           profiles={profiles}
           disabled={profilesLoading}

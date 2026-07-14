@@ -703,7 +703,12 @@ def start_separation():
             _separation_jobs[job_id]['status'] = 'failed'
             _separation_jobs[job_id]['error'] = str(e)
     else:
-        logger.info(f"KaraokeManager not available, job {job_id} queued only")
+        # KaraokeManager is not available: mark the job failed instead of
+        # leaving it queued forever, so the frontend poll surfaces the error
+        # instead of hanging on a "queued" status that never resolves.
+        logger.error(f"KaraokeManager not available, job {job_id} cannot run")
+        _separation_jobs[job_id]['status'] = 'failed'
+        _separation_jobs[job_id]['error'] = 'Karaoke separation service is not available'
 
     logger.info(f"Separation job created: {job_id} for song {song_id}")
 
