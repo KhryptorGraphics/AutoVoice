@@ -678,10 +678,17 @@ export interface QualityOverrides {
   enable_loudness_transfer?: boolean
   enable_f0_postprocess?: boolean
   f0_method?: 'rmvpe' | 'pyin'
+  // svc_fork (trained voice) only — omit either key to use the fork model's
+  // own defaults. 0..1, lower = steadier / less jitter (inference noise_scale).
+  fork_noise_scale?: number
+  fork_f0_method?: 'crepe' | 'crepe-tiny' | 'dio' | 'harvest' | 'parselmouth'
 }
 
 export const DEFAULT_QUALITY_OVERRIDES: QualityOverrides = {
   enable_nsf_harmonic_enhancement: false,
+  // De-muffle stages default OFF: the best-sounding runs came from the plain
+  // fork output — pupu refinement + f0 postprocess caused the muffled/unstable
+  // regression on trained-voice (fork) conversions. Both remain opt-in below.
   enable_pupu_vocoder_refinement: false,
   enable_hq_super_resolution: false,
   enable_dereverb: false,
@@ -689,7 +696,7 @@ export const DEFAULT_QUALITY_OVERRIDES: QualityOverrides = {
   enable_consonant_passthrough: false,
   consonant_passthrough_mix: 0.6,
   enable_loudness_transfer: false,
-  enable_f0_postprocess: true,
+  enable_f0_postprocess: false,
   f0_method: 'rmvpe',
 }
 
@@ -718,15 +725,20 @@ export interface ConversionConfig {
 export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
   pipeline_type: 'quality_seedvc',
   vocal_volume: 1.0,
-  instrumental_volume: 0.9,
+  // 1.0 = untouched backing track (the server mixes the bit-exact complement
+  // of the original; any other value re-levels it)
+  instrumental_volume: 1.0,
   pitch_shift: 0.0,
   preset: 'balanced',
   return_stems: false,
   preserve_techniques: true,
   encoder_backend: 'hubert',
   vocoder_type: 'hifigan',
-  enable_multi_speaker: null,
-  convert_backing: null,
+  // Background-singer split + backing conversion default-on: reproduces the
+  // best-known methodology (fork engine + karaoke split, backing converted).
+  // Gates fall back to single-stem when a song has no separable backing.
+  enable_multi_speaker: true,
+  convert_backing: true,
   preserve_speakers: '',
   quality_overrides: { ...DEFAULT_QUALITY_OVERRIDES },
 }
@@ -2335,7 +2347,7 @@ class ApiService {
     return this.request('/quality/all-profiles')
   }
 
-  async getProfileQualityHistory(profileId: string, days = 30): Promise<QualityHistoryEntry[]> {
+  async getProfileQualityHistory(profileId: string, days = 30): Promise<QualityHistoryResponse> {
     return this.request(`/profiles/${profileId}/quality-history?days=${days}`)
   }
 
@@ -2522,6 +2534,15 @@ export interface AllProfilesQuality {
 export interface QualityHistoryEntry {
   timestamp?: string
   [key: string]: unknown
+}
+
+export interface QualityHistoryResponse {
+  profile_id: string
+  period_days: number
+  total_metrics: number
+  statistics: Record<string, unknown>
+  metrics: QualityHistoryEntry[]
+  recent_alerts: unknown[]
 }
 
 export interface ProfileQualitySummary {
