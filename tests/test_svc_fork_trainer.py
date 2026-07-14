@@ -58,7 +58,7 @@ def test_train_svc_fork_happy_path(tmp_path, monkeypatch):
     res = fork.train_svc_fork(
         str(train_dir), "prof-1", "spk_prof", 100, str(data_dir),
         workspace_root=str(tmp_path / "ws"),
-        progress_cb=lambda p, s: seen.append((p, s)),
+        progress_cb=lambda p, s, m=None: seen.append((p, s)),
     )
 
     # pipeline invoked in order
@@ -167,3 +167,44 @@ def test_run_fork_training_cancel_marks_cancelled(monkeypatch, tmp_path):
     job.cancel.assert_called_once()
     mgr._emit_cancelled_event.assert_called_once()
     job.fail.assert_not_called()
+
+# ── train-output metric parsing ──────────────────────────────────────────────
+def test_parse_train_metrics_epoch_loss_lr():
+    m = fork._parse_train_metrics("Epoch 5: loss_gen_all=1.234 lr=0.0001", 100)
+    assert m is not None
+    assert m["epoch"] == 5
+    assert m["total_epochs"] == 100
+    assert m["pct"] == 50 + int(5 / 100 * 45)
+    assert m["loss"] == 1.234
+    assert m["lr"] == 0.0001
+
+
+def test_parse_train_metrics_epoch_only():
+    m = fork._parse_train_metrics("Epoch 40", 100)
+    assert m["epoch"] == 40
+    assert "loss" not in m and "lr" not in m
+
+
+def test_parse_train_metrics_no_epoch_returns_none():
+    assert fork._parse_train_metrics("some unrelated line", 100) is None
+
+
+def test_parse_train_metrics_last_epoch_wins():
+    # tqdm rewrites the same line with '\r'; findall over the chunk, last wins
+    m = fork._parse_train_metrics("Epoch 1\rEpoch 2\rEpoch 3", 100)
+    assert m["epoch"] == 3
+
+def test_parse_train_metrics_fork_loss_g_total():
+    # so-vits-svc-fork (Rich) format: label then value a few chars later.
+    chunk = "Epoch 250/250  0:00:17 loss/g/total:    44.786 loss/g/fm: 13.762"
+    m = fork._parse_train_metrics(chunk, 250)
+    assert m["epoch"] == 250
+    assert m["loss"] == 44.786
+
+
+def test_parse_train_metrics_loss_value_split_from_label():
+    # value wrapped onto a later line (bounded lookahead still binds it)
+    chunk = "epoch 12 ... loss/g/total:\n                 3.14 loss/g/fm:"
+    m = fork._parse_train_metrics(chunk, 100)
+    assert m["epoch"] == 12
+    assert m["loss"] == 3.14

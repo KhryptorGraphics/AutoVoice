@@ -94,6 +94,7 @@ export interface TrainingProgressEvent {
     speaker_similarity_proxy?: number
   }
   checkpoint_path?: string | null
+  loss_history?: number[]
   is_paused?: boolean
 }
 
@@ -508,6 +509,7 @@ export interface TrainingTelemetryResponse {
     gpu_metrics?: TrainingProgressEvent['gpu_metrics']
     quality_metrics?: TrainingProgressEvent['quality_metrics']
     checkpoint_path?: string | null
+    loss_history?: number[]
   }
   preview_available: boolean
   preview_sample_id?: string | null

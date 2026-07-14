@@ -366,10 +366,25 @@ class TrainingJobManager:
             try:
                 with open(jobs_file, "r") as f:
                     data = json.load(f)
+                    reconciled = 0
                     for job_data in data.get("jobs", []):
                         job = TrainingJob.from_dict(job_data)
+                        # Orphan reconciliation: a persisted RUNNING job means a
+                        # worker thread was executing when the process last
+                        # stopped (restart/OOM); that thread is gone, so the job
+                        # is dead. Mark it failed so the UI stops binding the
+                        # live monitor to a phantom "running" job forever.
+                        if job.status == JobStatus.RUNNING.value:
+                            job.fail("Training interrupted (server restart or "
+                                     "out-of-memory). Relaunch to continue.")
+                            reconciled += 1
                         self._jobs[job.job_id] = job
                 logger.debug(f"Loaded {len(self._jobs)} jobs from {jobs_file}")
+                if reconciled:
+                    logger.warning(
+                        f"Reconciled {reconciled} orphaned running job(s) "
+                        f"to failed on startup")
+                    self._save_jobs()
             except Exception as e:
                 logger.warning(f"Failed to load jobs from {jobs_file}: {e}")
 
@@ -901,6 +916,60 @@ class TrainingJobManager:
             'speaker_similarity_proxy': round(max(0.0, min(0.995, 1.0 - bounded_loss * 0.25)), 4),
         }
 
+    def _gpu_util_percent(self) -> Optional[float]:
+        """Best-effort real GPU compute utilization (%), cached ~12s.
+
+        On Tegra/Thor ``tegrastats`` exposes no GR3D counter and the GPU devfreq
+        clock is pinned. Both ``nvidia-smi --query-gpu=utilization.gpu`` and
+        ``nvidia-smi dmon -s u`` (SM%) report real load here; dmon is used because
+        its ``-c`` flag lets us max over a short multi-sample window to catch
+        bursts (query-gpu rejects the loop flags). The cache exceeds the fork's
+        ~6s progress-emit cadence so this dmon call is reused across emits instead
+        of blocking the loss/epoch hot path. Returns None when unavailable so the
+        monitor honestly shows n/a.
+        """
+        import time as _time
+        now = _time.monotonic()
+        cached = getattr(self, "_gpu_util_cache", None)
+        if cached is not None and now - cached[0] < 12.0:
+            return cached[1]
+        val: Optional[float] = None
+        try:
+            import os as _os
+            import shutil as _sh
+            import subprocess as _sp
+            # nvidia-smi lives in /usr/sbin here, which the systemd service's
+            # PATH omits (conda env PATH is /usr/bin:/bin), so a bare name would
+            # raise FileNotFoundError -> None. Resolve an absolute path and spawn
+            # with a clean env (a conda LD_LIBRARY_PATH can break libnvidia-ml).
+            smi = _sh.which("nvidia-smi") or next(
+                (p for p in ("/usr/sbin/nvidia-smi", "/usr/bin/nvidia-smi",
+                             "/usr/local/bin/nvidia-smi") if _os.path.exists(p)),
+                None,
+            )
+            if not smi:
+                self._gpu_util_cache = (now, None)
+                return None
+            out = _sp.run(
+                [smi, "dmon", "-s", "u", "-c", "2"],
+                capture_output=True, text=True, timeout=8,
+                env={"PATH": "/usr/sbin:/usr/bin:/bin"},
+            )
+            if out.returncode == 0:
+                sms = []
+                for ln in out.stdout.splitlines():
+                    parts = ln.split()
+                    # data rows look like: "<gpuIdx> <sm%> <mem%> <enc%> ..."
+                    if (len(parts) >= 2 and parts[0].isdigit()
+                            and parts[1].lstrip("-").isdigit()):
+                        sms.append(int(parts[1]))
+                if sms:
+                    val = float(max(sms))
+        except Exception:
+            val = None
+        self._gpu_util_cache = (now, val)
+        return val
+
     def emit_training_progress(
         self,
         job_id: str,
@@ -934,6 +1003,17 @@ class TrainingJobManager:
         epoch_progress = step / total_steps if total_steps > 0 else 0
         overall_progress = ((epoch - 1) + epoch_progress) / total_epochs * 100
 
+        # Server-authoritative live loss curve: append only when the loss value
+        # changes (dedup) and cap the ring. Held in _job_runtime_metrics so the
+        # monitor's curve is rebuilt from /telemetry on a browser reload instead
+        # of restarting empty each mount (frontend no longer accumulates points).
+        _prev_rt = self._job_runtime_metrics.get(job_id) or {}
+        loss_history = list(_prev_rt.get('loss_history') or [])
+        _lv = float(loss)
+        if _lv > 0 and (not loss_history or loss_history[-1] != _lv):
+            loss_history.append(_lv)
+            loss_history = loss_history[-500:]
+
         runtime_metrics = {
             'epoch': epoch,
             'total_epochs': total_epochs,
@@ -945,6 +1025,7 @@ class TrainingJobManager:
             'gpu_metrics': gpu_metrics or {},
             'quality_metrics': quality_metrics or {},
             'checkpoint_path': checkpoint_path,
+            'loss_history': loss_history,
         }
         self._job_runtime_metrics[job_id] = runtime_metrics
 
@@ -1363,11 +1444,58 @@ class TrainingJobManager:
         speaker = "spk_" + str(job.profile_id).replace("-", "")[:8]
         epochs = job.config.epochs if (job.config and job.config.epochs) else 100
 
-        def _progress(pct, stage):
+        default_lr = (float(job.config.learning_rate)
+                      if (job.config and getattr(job.config, 'learning_rate', None))
+                      else 1e-4)
+
+        def _fork_gpu_metrics():
+            # Device-level memory (mem_get_info): torch.cuda.memory_allocated is
+            # per-process and would miss the fork subprocess, whereas the device
+            # view reflects the fork's unified-memory usage.
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    free, total = torch.cuda.mem_get_info(0)
+                    m = {
+                        'available': True,
+                        'memory_used_gb': round((total - free) / (1024 ** 3), 2),
+                        'memory_total_gb': round(total / (1024 ** 3), 2),
+                    }
+                    util = self._gpu_util_percent()
+                    if util is not None:
+                        m['utilization_percent'] = util
+                    return m
+            except Exception:
+                pass
+            return {}
+
+        def _progress(pct, stage, metrics=None):
             job.update_progress(int(pct))
             job.results = job.results or {}
             job.results.update({'stage': stage, 'engine': 'svc_fork',
                                 'job_type': 'full_model'})
+            # When the fork trainer reports a per-epoch update, surface it as
+            # runtime telemetry so the live monitor (which polls /telemetry)
+            # shows epoch/loss/lr/GPU instead of staying blank for svc_fork jobs.
+            if metrics and metrics.get('epoch') is not None:
+                try:
+                    loss = float(metrics.get('loss') or 0.0)
+                    self.emit_training_progress(
+                        job_id=job_id,
+                        epoch=int(metrics['epoch']),
+                        total_epochs=int(metrics.get('total_epochs') or epochs),
+                        step=1,
+                        total_steps=1,
+                        loss=loss,
+                        learning_rate=float(metrics.get('lr') or default_lr),
+                        gpu_metrics=_fork_gpu_metrics(),
+                        quality_metrics=(self._estimate_quality_metrics(loss)
+                                         if loss > 0 else None),
+                    )
+                    job.update_progress(int(pct))  # keep coarse 50-95 in jobs list
+                except Exception:
+                    logger.warning("fork emit_training_progress failed",
+                                   exc_info=True)
             self._save_jobs()
 
         try:
@@ -1379,6 +1507,9 @@ class TrainingJobManager:
                 data_dir=str(self._data_dir),
                 progress_cb=_progress,
                 cancel_event=cancel_event,
+                precision=(job.config.precision
+                           if job.config and getattr(job.config, 'precision', None)
+                           else 'fp16'),
             )
             # artifact_type='full_model' so the profile is marked trained/ready;
             # adapter_path carries the model path (legacy key -> profile.model_path).

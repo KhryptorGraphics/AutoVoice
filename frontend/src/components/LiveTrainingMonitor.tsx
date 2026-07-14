@@ -62,7 +62,7 @@ function applyProgressEvent(prev: LiveStats, progress: TrainingProgressEvent): L
     totalSteps: progress.total_steps,
     loss: progress.loss,
     learningRate: progress.learning_rate,
-    lossHistory: [...prev.lossHistory, progress.loss].slice(-500),
+    lossHistory: progress.loss_history ?? prev.lossHistory,
     startTime: prev.startTime,
     lastUpdateTime: Date.now(),
     gpuMemoryGb: progress.gpu_metrics?.memory_used_gb,
@@ -133,6 +133,8 @@ export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTraini
             telemetry.runtime_metrics.checkpoint_path ??
             telemetry.job.results?.latest_checkpoint ??
             null,
+          lossHistory:
+            telemetry.runtime_metrics.loss_history ?? prev.lossHistory,
           lastUpdateTime: Date.now(),
         }))
       } catch (error) {
@@ -141,6 +143,13 @@ export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTraini
     }
 
     void loadTelemetry()
+    // Poll telemetry as the reliable live source: the backend snapshot
+    // (epoch/loss/lr/GPU + server-owned loss_history) advances every update,
+    // and WS delivery is best-effort — without this the monitor froze on the
+    // single mount snapshot (epoch 0/60, curve stuck "waiting for data").
+    const pollId = window.setInterval(() => {
+      void loadTelemetry()
+    }, 2000)
 
     const unsubProgress = wsManager.onTrainingProgress(jobId, (progress: TrainingProgressEvent) => {
       setIsPaused(Boolean(progress.is_paused))
@@ -173,6 +182,7 @@ export function LiveTrainingMonitor({ jobId, profileId, onComplete }: LiveTraini
 
     return () => {
       cancelled = true
+      window.clearInterval(pollId)
       unsubProgress()
       unsubComplete()
       unsubPaused()

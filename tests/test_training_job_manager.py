@@ -575,8 +575,13 @@ class TestJobPersistence:
         assert loaded_job.profile_id == mock_profile.profile_id
         assert loaded_job.sample_ids == ["s1", "s2"]
 
-    def test_job_status_updates_persist(self, temp_job_storage, mock_profile):
-        """Job status updates are persisted."""
+    def test_orphaned_running_job_reconciled_on_reload(
+        self, temp_job_storage, mock_profile
+    ):
+        """A RUNNING job whose worker thread died (backend restart / OOM) is
+        reconciled to FAILED on reload, so the UI stops binding the live
+        monitor to a phantom 'running' job forever; progress is preserved and
+        an explanatory error is recorded."""
         from auto_voice.training.job_manager import TrainingJobManager
 
         manager1 = TrainingJobManager(
@@ -591,15 +596,17 @@ class TestJobPersistence:
         manager1.update_job_status(job.job_id, "running")
         manager1.update_job_progress(job.job_id, 50)
 
-        # Reload
+        # Reload simulates a backend restart: the worker thread is gone, so the
+        # persisted "running" job is now orphaned and must not stay "running".
         manager2 = TrainingJobManager(
             storage_path=temp_job_storage,
             require_gpu=False,
         )
 
         loaded_job = manager2.get_job(job.job_id)
-        assert loaded_job.status == "running"
+        assert loaded_job.status == "failed"
         assert loaded_job.progress == 50
+        assert loaded_job.error and "interrupted" in loaded_job.error.lower()
 
 
 # ============================================================================
