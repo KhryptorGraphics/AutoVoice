@@ -162,8 +162,13 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
     }
   }
 
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleString()
+  const formatDate = (dateStr: string | number) => {
+    // created_at is epoch-seconds (Python time.time()); new Date(number) reads
+    // it as ms and renders 1970-01-21. Coerce seconds -> ms when too small.
+    const v = typeof dateStr === 'number' && dateStr > 0 && dateStr < 1e12
+      ? dateStr * 1000
+      : dateStr
+    return new Date(v).toLocaleString()
   }
 
   const formatDuration = (seconds?: number) => {

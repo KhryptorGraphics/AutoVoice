@@ -8,7 +8,7 @@ import os
 import json
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import numpy as np
 import torch
@@ -59,6 +59,13 @@ class VoiceDataset(Dataset):
         # ContentVec) and sliced per window here, so the GPU never waits on
         # per-batch content extraction (the jumpy-utilisation bottleneck).
         self._content_cache: Dict[Path, np.ndarray] = {}
+        # Full-file log-mel cache: librosa.feature.melspectrogram is FFT work
+        # recomputed from scratch on every __getitem__ call otherwise -- with
+        # content/F0 already cached above, this becomes the dominant per-item
+        # cost and starves the GPU exactly like the F0 case did. Same
+        # once-per-file, sliced-per-window pattern as _full_file_f0 (valid
+        # only without augmentation, which changes the audio).
+        self._mel_cache: Dict[Path, np.ndarray] = {}
         self.audio_files = self._scan_files()
         logger.info(f"VoiceDataset: {len(self.audio_files)} files from {data_dir}"
                     f"{' (augment=True)' if augment else ''}")
@@ -176,7 +183,81 @@ class VoiceDataset(Dataset):
             voiced = np.pad(voiced, (0, expected - len(voiced)))
         return f0.copy(), voiced.copy()
 
+    # Mel contract fixed across this class: 80 mels, n_fft=1024, hop=256,
+    # win_length=1024, fmin=0, fmax=8000, power=1.0 -- matches the vocoder
+    # (see __getitem__ below and sota_pipeline._load_universal_vocoder).
+    _MEL_HOP = 256
+    _MEL_N_MELS = 80
+
+    def _full_file_mel(self, audio_path: Path, raw_audio: np.ndarray) -> np.ndarray:
+        """Full-file log-mel, cached in memory and on disk (mirrors _full_file_f0)."""
+        import librosa
+
+        cached = self._mel_cache.get(audio_path)
+        if cached is not None:
+            return cached
+
+        sidecar = audio_path.with_suffix('.mel.npy')
+        if sidecar.exists():
+            try:
+                mel_full = np.load(sidecar)
+                if mel_full.shape[0] == self._MEL_N_MELS:
+                    self._mel_cache[audio_path] = mel_full
+                    return mel_full
+            except Exception:
+                pass  # corrupt/old sidecar -- recompute below
+
+        mel_full = librosa.feature.melspectrogram(
+            y=raw_audio, sr=self.sample_rate, n_fft=1024, hop_length=self._MEL_HOP,
+            win_length=1024, n_mels=self._MEL_N_MELS, fmin=0, fmax=8000, power=1.0,
+        ).astype(np.float32)
+        try:
+            np.save(sidecar, mel_full)
+        except Exception:
+            pass  # cache is an optimization; never fail training on it
+        self._mel_cache[audio_path] = mel_full
+        return mel_full
+
+    def _window_mel(self, audio_path: Path, raw_audio: np.ndarray,
+                     start: int, window_len: int) -> np.ndarray:
+        """Slice a window's mel from the cached full-file log-mel (mirrors _window_f0)."""
+        mel_full = self._full_file_mel(audio_path, raw_audio)
+        expected = 1 + window_len // self._MEL_HOP
+        frame_start = start // self._MEL_HOP
+        mel = mel_full[:, frame_start:frame_start + expected]
+        if mel.shape[1] < expected:
+            mel = np.pad(mel, ((0, 0), (0, expected - mel.shape[1])))
+        return mel.copy()
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        # A specific file can fail every quality-gate retry below (e.g. it's
+        # an all-pause/all-breath clip) without the speaker's corpus itself
+        # being bad -- with hundreds of files per speaker over a multi-hour,
+        # multi-thousand-epoch run, that WILL happen eventually. Substitute a
+        # different file from this same dataset instead of raising, so one
+        # bad recording can't crash an otherwise-healthy run. Bounded to the
+        # file count so a genuinely all-bad dataset still fails loudly rather
+        # than recursing forever.
+        tried: set = set()
+        while True:
+            item = self._try_load_item(idx)
+            if item is not None:
+                return item
+            tried.add(idx)
+            logger.warning(
+                "VoiceDataset: %s failed every quality-gate retry, "
+                "substituting a different file", self.audio_files[idx],
+            )
+            remaining = [i for i in range(len(self.audio_files)) if i not in tried]
+            if not remaining:
+                raise ValueError(
+                    f"VoiceDataset: no file in {self.data_dir} passed quality "
+                    f"gates (tried all {len(self.audio_files)})"
+                )
+            idx = int(np.random.choice(remaining))
+
+    def _try_load_item(self, idx: int) -> Optional[Dict[str, torch.Tensor]]:
+        """Load one training item, or None if every quality-gate retry failed."""
         import librosa
         audio_path = self.audio_files[idx]
         raw_audio = self._audio_cache.get(audio_path)
@@ -221,16 +302,22 @@ class VoiceDataset(Dataset):
                 if len(raw_audio) <= self.segment_length:
                     break  # only one possible window; redrawing cannot help
         if last_gate_error is not None:
-            raise last_gate_error
+            return None
 
         # Mel MUST match the vocoder's expected format or the decoder learns a
         # representation no vocoder can render (the cause of the whine).
         # Verified by copy-synthesis (pitch corr 0.988): the universal HiFiGAN
         # wants magnitude log-mel at n_fft=1024, hop=256, fmin=0, fmax=8000.
-        mel = librosa.feature.melspectrogram(
-            y=audio, sr=self.sample_rate, n_fft=1024, hop_length=256,
-            win_length=1024, n_mels=80, fmin=0, fmax=8000, power=1.0,
-        )
+        # Cached full-file (see _window_mel) when there's no augmentation to
+        # invalidate it -- recomputing this FFT on every __getitem__ call is
+        # the dominant per-item cost once content/F0 are already cached.
+        if self._augmentation is None:
+            mel = self._window_mel(audio_path, raw_audio, start, len(audio))
+        else:
+            mel = librosa.feature.melspectrogram(
+                y=audio, sr=self.sample_rate, n_fft=1024, hop_length=256,
+                win_length=1024, n_mels=80, fmin=0, fmax=8000, power=1.0,
+            )
         log_mel = np.log(np.clip(mel, 1e-5, None)).astype(np.float32)
         # Normalize to [0,1] so the decoder can actually fit it at lr 1e-4;
         # serving denormalizes back to log-mel for the vocoder.
@@ -279,6 +366,94 @@ def resolve_precision(precision: str, capability: Optional[tuple]) -> str:
     if precision == 'bf16' and capability is not None and capability[0] < 8:
         return 'fp16'
     return precision
+class MultiSpeakerVoiceDataset(Dataset):
+    """Compose per-speaker ``VoiceDataset``s and tag every item with that
+    speaker's embedding, so one training run learns a universal, speaker-
+    conditioned decoder.
+
+    Each speaker's embedding is computed with the SAME method used at serving
+    (``VoiceCloner.create_speaker_embedding`` = mel-statistics), so the
+    conditioning the decoder learns matches what the profile store hands the
+    pipeline at inference. Items keep ``VoiceDataset``'s fixed shapes, so they
+    still collate into batches; the added ``speaker`` is a fixed 256-dim vector.
+    """
+
+    def __init__(self, speaker_dirs: Dict[str, str], sample_rate: int = 22050,
+                 segment_length: int = 32768, device: str = 'cpu',
+                 augment: bool = False):
+        from ..inference.voice_cloner import VoiceCloner
+        self.datasets: List[VoiceDataset] = []
+        self.embeddings: List[torch.Tensor] = []
+        self.speaker_names: List[str] = []
+        self._index: List[Tuple[int, int]] = []  # (dataset_idx, local_idx)
+        excluded: List[str] = []
+        cloner = VoiceCloner(device=device)
+        for name, audio_dir in sorted(speaker_dirs.items()):
+            ds = VoiceDataset(audio_dir, sample_rate=sample_rate,
+                              segment_length=segment_length, augment=augment)
+            if len(ds) == 0:
+                logger.warning("MultiSpeakerVoiceDataset: no audio for speaker "
+                               "'%s' in %s (skipped)", name, audio_dir)
+                excluded.append(name)
+                continue
+            # create_speaker_embedding requires every file to clear a 3s floor;
+            # raw corpora routinely have short tail clips (e.g. the last chunk
+            # of a fixed-length split) that VoiceDataset itself pads and trains
+            # on fine, so filter here rather than let one short file abort the
+            # whole speaker.
+            import soundfile as sf
+            files = []
+            for p in ds.audio_files:
+                try:
+                    info = sf.info(str(p))
+                    if info.frames / info.samplerate >= 3.0:
+                        files.append(str(p))
+                except Exception:
+                    continue
+            if not files:
+                logger.warning("MultiSpeakerVoiceDataset: speaker '%s' has no "
+                               "file >=3s for embedding (skipped)", name)
+                excluded.append(name)
+                continue
+            # A file can pass the sf.info duration check yet still fail inside
+            # create_speaker_embedding (its own re-measurement can disagree by
+            # a few ms at the boundary) -- don't let one speaker's embedding
+            # failure abort every other speaker's dataset build.
+            try:
+                emb = torch.from_numpy(cloner.create_speaker_embedding(files)).float()
+            except Exception as exc:
+                logger.warning("MultiSpeakerVoiceDataset: embedding failed for "
+                               "speaker '%s' (skipped): %s", name, exc)
+                excluded.append(name)
+                continue
+            di = len(self.datasets)
+            self.datasets.append(ds)
+            self.embeddings.append(emb)
+            self.speaker_names.append(name)
+            self._index.extend((di, li) for li in range(len(ds)))
+            logger.info("MultiSpeakerVoiceDataset: speaker '%s' -> %d windows",
+                        name, len(ds))
+        if not self._index:
+            raise RuntimeError("MultiSpeakerVoiceDataset: no training data found "
+                               "across any speaker")
+        if excluded:
+            logger.warning(
+                "MultiSpeakerVoiceDataset: %d of %d requested speakers EXCLUDED "
+                "entirely (no usable audio): %s -- the universal decoder will "
+                "train WITHOUT these voices. Included: %s",
+                len(excluded), len(speaker_dirs), excluded, self.speaker_names,
+            )
+        logger.info("MultiSpeakerVoiceDataset: %d speakers, %d total windows",
+                    len(self.datasets), len(self._index))
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        di, li = self._index[idx]
+        item = self.datasets[di][li]
+        item['speaker'] = self.embeddings[di]  # [256], same for this speaker
+        return item
 
 
 class Trainer:
@@ -315,6 +490,9 @@ class Trainer:
         self.monitored_metric = 'train'
         self.warmup_steps = int(self.config.get('warmup_steps', 0) or 0)
         self.precision = str(self.config.get('precision', 'fp32')).lower()
+        # Set when bf16 is downgraded to fp16 on pre-Ampere GPUs so the job
+        # manager can surface the coercion to the user (live log + results).
+        self.precision_coerced_from: Optional[str] = None
         use_cuda = str(self.device) != 'cpu' and torch.cuda.is_available()
         # bf16 needs Ampere (sm80+). On pre-Ampere CUDA GPUs (e.g. V100 sm70)
         # autocast bf16 is unsupported/unstable, so downgrade to fp16.
@@ -331,6 +509,7 @@ class Trainer:
                     "bf16 precision requested but device capability %s < (8,0); "
                     "using %s instead.", cap, resolved,
                 )
+                self.precision_coerced_from = self.precision
                 self.precision = resolved
         self._autocast_dtype = {
             'fp16': torch.float16,
@@ -395,8 +574,18 @@ class Trainer:
 
     def _precompute_content_cache(self, dataset) -> None:
         """Extract full-file ContentVec features to .content.npy sidecars once
-        (GPU, main process). Chunked to bound memory; workers load + slice them."""
-        files = getattr(dataset, 'audio_files', None)
+        (GPU, main process). Chunked to bound memory; workers load + slice them.
+
+        Handles both a plain ``VoiceDataset`` (has ``audio_files``) and a
+        ``MultiSpeakerVoiceDataset`` (has ``datasets``, one ``VoiceDataset`` per
+        speaker) -- callers that pass the latter get real precompute instead of
+        a silent no-op just because the top-level object has no ``audio_files``.
+        """
+        sub_datasets = getattr(dataset, 'datasets', None)
+        if sub_datasets:
+            files = [p for ds in sub_datasets for p in getattr(ds, 'audio_files', [])]
+        else:
+            files = getattr(dataset, 'audio_files', None)
         if not files:
             return
         import librosa
@@ -429,15 +618,27 @@ class Trainer:
             logger.info("Precomputed %d ContentVec sidecars", made)
 
     def train(self, train_dir: str, val_dir: Optional[str] = None,
-              resume_from: Optional[str] = None):
-        """Run training loop."""
+              resume_from: Optional[str] = None,
+              train_dataset: Optional[Dataset] = None,
+              precompute_content: bool = True):
+        """Run training loop.
+
+        ``train_dataset`` may be supplied pre-built (e.g. a
+        ``MultiSpeakerVoiceDataset`` for universal-decoder training); when given,
+        ``train_dir`` is ignored for dataset construction. ``precompute_content``
+        can be turned off when the ``.content.npy`` sidecars were already
+        extracted out-of-band (keeps the main process from touching the GPU
+        before the dataloader forks its workers).
+        """
         if resume_from:
             self.load_checkpoint(resume_from)
 
-        train_dataset = VoiceDataset(train_dir, segment_length=32768)
+        if train_dataset is None:
+            train_dataset = VoiceDataset(train_dir, segment_length=32768)
         # Precompute full-file ContentVec sidecars once (GPU, main process) so
         # the dataloader workers never wait on content extraction.
-        self._precompute_content_cache(train_dataset)
+        if precompute_content:
+            self._precompute_content_cache(train_dataset)
         val_dataset = None
         if not val_dir and 0.0 < self.validation_split < 1.0 and len(train_dataset) > 1:
             val_size = max(1, int(round(len(train_dataset) * self.validation_split)))
@@ -454,35 +655,39 @@ class Trainer:
         # across epochs; without it the cache is rebuilt every epoch.
         # Per-item cost is dominated by single-threaded librosa.pyin, so
         # feed the GPU with more parallel workers and deeper prefetch.
-        # 16 spawn workers by default (operator directive): the single long
-        # sample is sliced into many windows whose per-item cost is
-        # single-threaded librosa.pyin, so parallel workers cut first-epoch
-        # wall-time. Override via config['num_workers'].
-        loader_workers = int(self.config.get('num_workers', 16))
-        # CUDA-fork safety: the GPU ContentVec precompute above initializes a
-        # CUDA context in this process. Forked DataLoader workers inherit it and
-        # deadlock in futex_wait the moment torch touches CUDA. Spawn gives each
-        # worker a fresh CUDA-free interpreter. Passed only when workers>0:
-        # DataLoader rejects a context with num_workers==0.
-        mp_ctx = torch.multiprocessing.get_context('spawn')
-        train_loader = DataLoader(
-            train_dataset, batch_size=actual_batch_size,
-            shuffle=True, num_workers=loader_workers, pin_memory=True,
+        loader_workers = min(int(self.config.get('num_workers', 12)), os.cpu_count() or 4)
+        train_loader_kwargs = dict(
+            batch_size=actual_batch_size, shuffle=True,
+            num_workers=loader_workers, pin_memory=True,
             drop_last=(len(train_dataset) >= self.batch_size),
-            persistent_workers=(loader_workers > 0),
-            prefetch_factor=(4 if loader_workers > 0 else None),
-            multiprocessing_context=(mp_ctx if loader_workers > 0 else None),
         )
+        # persistent_workers/prefetch_factor are only valid with num_workers>0.
+        # multiprocessing_context='spawn' is required whenever num_workers>0:
+        # by the time this runs the caller has already put the model on CUDA,
+        # and Linux's default 'fork' start method forking a process with an
+        # active CUDA context deadlocks/crashes worker startup. spawn re-execs
+        # cleanly instead (slower per-worker startup, but persistent_workers
+        # amortizes that across the whole run).
+        if loader_workers > 0:
+            train_loader_kwargs.update(
+                persistent_workers=True, prefetch_factor=4,
+                multiprocessing_context='spawn',
+            )
+        train_loader = DataLoader(train_dataset, **train_loader_kwargs)
 
         val_loader = None
         if val_dir and Path(val_dir).exists():
             val_dataset = VoiceDataset(val_dir, segment_length=32768)
 
         if val_dataset is not None:
-            val_loader = DataLoader(val_dataset, batch_size=self.batch_size,
-                                    shuffle=False, num_workers=2,
-                                    persistent_workers=True,
-                                    multiprocessing_context=mp_ctx)
+            val_workers = min(2, loader_workers)
+            val_loader_kwargs = dict(batch_size=self.batch_size, shuffle=False,
+                                     num_workers=val_workers)
+            if val_workers > 0:
+                val_loader_kwargs.update(
+                    persistent_workers=True, multiprocessing_context='spawn',
+                )
+            val_loader = DataLoader(val_dataset, **val_loader_kwargs)
             self.monitored_metric = 'val'
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -605,10 +810,19 @@ class Trainer:
             # Content is now 768-dim natively for best quality
             # [B, N, 768] from ContentVec, [B, N, 768] from PitchEncoder
 
-            # Speaker embedding (same for all batches of this speaker)
-            if self.speaker_embedding is None:
-                raise RuntimeError("Speaker embedding not set. Call set_speaker_embedding() first.")
-            speaker = self.speaker_embedding.unsqueeze(0).expand(audio.shape[0], -1)
+            # Speaker embedding: per-item from the batch when the dataset
+            # provides it (multi-speaker / universal-decoder training), else the
+            # single fixed embedding broadcast to the batch (single-speaker).
+            batch_speaker = batch.get('speaker')
+            if batch_speaker is not None and batch_speaker.numel() > 0:
+                speaker = batch_speaker.to(self.device)
+            elif self.speaker_embedding is not None:
+                speaker = self.speaker_embedding.unsqueeze(0).expand(audio.shape[0], -1)
+            else:
+                raise RuntimeError(
+                    "Speaker embedding not set. Call set_speaker_embedding() or "
+                    "provide per-item embeddings via a multi-speaker dataset."
+                )
             self._validate_model_feature_shapes(content, pitch, speaker)
 
             # Compute spectrogram for posterior encoder
@@ -767,9 +981,13 @@ class Trainer:
 
                 # Content is 768-dim natively for best quality
 
-                if self.speaker_embedding is None:
+                batch_speaker = batch.get('speaker')
+                if batch_speaker is not None and batch_speaker.numel() > 0:
+                    speaker = batch_speaker.to(self.device)
+                elif self.speaker_embedding is not None:
+                    speaker = self.speaker_embedding.unsqueeze(0).expand(audio.shape[0], -1)
+                else:
                     raise RuntimeError("Speaker embedding not set.")
-                speaker = self.speaker_embedding.unsqueeze(0).expand(audio.shape[0], -1)
                 self._validate_model_feature_shapes(content, pitch, speaker)
                 spec = self._compute_spec(audio, n_mel_frames)
 

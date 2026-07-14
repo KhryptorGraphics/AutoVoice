@@ -34,7 +34,14 @@ function coerceDate(...values: unknown[]): Date {
       return value
     }
     if (typeof value === 'string' || typeof value === 'number') {
-      const date = new Date(value)
+      // Backend stores epoch-seconds (Python time.time()); JS new Date(number)
+      // interprets a number as milliseconds, so a seconds value renders as
+      // 1970-01-21. Coerce seconds -> ms when the value is too small to be ms.
+      let v: string | number = value
+      if (typeof v === 'number' && v > 0 && v < 1e12) {
+        v = v * 1000
+      }
+      const date = new Date(v)
       if (Number.isFinite(date.getTime())) {
         return date
       }

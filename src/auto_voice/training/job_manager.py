@@ -1358,6 +1358,13 @@ class TrainingJobManager:
                         device,
                         training_mode,
                     )
+                    coerced = getattr(trainer, 'precision_coerced_from', None)
+                    if coerced:
+                        self.append_job_log(
+                            job_id,
+                            f"NOTE: '{coerced}' requested but this GPU is "
+ f"pre-Ampere (bf16 needs sm80+); training as fp16 instead.",
+                        )
 
                     last_logged_epoch = {'epoch': 0}
 
