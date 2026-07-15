@@ -169,9 +169,9 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
     if (currentIndex === -1) return
 
     let nextIndex: number | null = null
-    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+    if (event.key === 'ArrowRight') {
       nextIndex = (currentIndex + 1) % tabItems.length
-    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+    } else if (event.key === 'ArrowLeft') {
       nextIndex = (currentIndex - 1 + tabItems.length) % tabItems.length
     } else if (event.key === 'Home') {
       nextIndex = 0
