@@ -1830,6 +1830,21 @@ def mix_singalong_duet():
     except (TypeError, ValueError):
         vocal_gain = 1.0
 
+    # Validate numeric parameters to prevent OOM (huge offset → massive
+    # zero-padded array) and phase inversion (negative gain).
+    if alignment_offset_ms < 0:
+        return _dep('validation_error_response')(
+            'alignment_offset_ms must be non-negative'
+        )
+    if not (0.0 <= backing_gain <= 2.0):
+        return _dep('validation_error_response')(
+            'backing_gain must be between 0.0 and 2.0'
+        )
+    if not (0.0 <= vocal_gain <= 2.0):
+        return _dep('validation_error_response')(
+            'vocal_gain must be between 0.0 and 2.0'
+        )
+
     store = _state_store()
     if store is None:
         return _dep('not_found_response')('Asset store unavailable')
@@ -1839,6 +1854,11 @@ def mix_singalong_duet():
     backing_path = str(asset['path'])
     if not backing_path or not os.path.exists(backing_path):
         return _dep('not_found_response')('Sing-along source audio file is missing')
+
+    # Clamp alignment offset to backing duration to avoid huge zero-padded arrays.
+    backing_duration_ms = _soundfile_info_duration(backing_path) * 1000.0
+    if backing_duration_ms > 0:
+        alignment_offset_ms = min(alignment_offset_ms, backing_duration_ms)
 
     sample = _find_training_sample(profile_id, sample_id)
     if sample is None:
