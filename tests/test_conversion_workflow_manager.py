@@ -487,6 +487,101 @@ def test_restart_clears_completed_training_job_and_enables_conversion(workflow_a
     assert hydrated["conversion_readiness"]["reason"] == "ready"
 
 
+def test_create_conversion_job_registers_durable_artist_asset(workflow_app, tmp_path):
+    manager = ConversionWorkflowManager(workflow_app)
+    store = manager._profile_store()
+    profile_id = store.save(
+        {
+            "name": "Target User",
+            "created_from": "manual",
+            "profile_role": PROFILE_ROLE_TARGET_USER,
+            "has_trained_model": True,
+            "has_adapter_model": True,
+            "active_model_type": "adapter",
+        }
+    )
+    artist_path = _write_wav(tmp_path / "workflow-conversion" / "artist.wav")
+    workflow_id = "wf-quality-source"
+    workflow_app.state_store.save_conversion_workflow(
+        _workflow_payload(
+            workflow_id,
+            artist_song_path=artist_path,
+            status="ready_for_conversion",
+            stage="ready_for_conversion",
+            resolved_target_profile_id=profile_id,
+            user_analysis={"status": "resolved", "resolved_target_profile_id": profile_id},
+            artist_analysis={"status": "resolved"},
+        )
+    )
+    captured = {}
+
+    class FakeJobManager:
+        def create_job(self, file_path, target_profile_id, settings):
+            captured["file_path"] = file_path
+            captured["target_profile_id"] = target_profile_id
+            captured["settings"] = settings
+            Path(file_path).unlink()
+            return "workflow-conversion-job"
+
+    workflow_app.job_manager = FakeJobManager()
+
+    result = manager.create_conversion_job(workflow_id, {"pipeline_type": "quality_seedvc"})
+
+    assert result["job_id"] == "workflow-conversion-job"
+    assert captured["target_profile_id"] == profile_id
+    assert captured["file_path"] != artist_path
+    assert not Path(captured["file_path"]).exists()
+    assert Path(artist_path).exists()
+    asset_id = captured["settings"]["original_audio_asset_id"]
+    assert captured["settings"]["original_audio_url"] == f"/api/v1/singalong/sources/{asset_id}/audio"
+    asset = workflow_app.state_store.get_asset(asset_id)
+    assert asset["path"] == artist_path
+    assert asset["metadata"]["job_id"] == "workflow-conversion-job"
+    assert asset["metadata"]["workflow_id"] == workflow_id
+
+
+def test_create_conversion_job_cleans_temp_copy_when_queue_fails(workflow_app, tmp_path):
+    manager = ConversionWorkflowManager(workflow_app)
+    store = manager._profile_store()
+    profile_id = store.save(
+        {
+            "name": "Target User",
+            "created_from": "manual",
+            "profile_role": PROFILE_ROLE_TARGET_USER,
+            "has_trained_model": True,
+            "has_adapter_model": True,
+            "active_model_type": "adapter",
+        }
+    )
+    artist_path = _write_wav(tmp_path / "workflow-fail" / "artist.wav")
+    workflow_id = "wf-queue-fails"
+    workflow_app.state_store.save_conversion_workflow(
+        _workflow_payload(
+            workflow_id,
+            artist_song_path=artist_path,
+            status="ready_for_conversion",
+            stage="ready_for_conversion",
+            resolved_target_profile_id=profile_id,
+            user_analysis={"status": "resolved", "resolved_target_profile_id": profile_id},
+            artist_analysis={"status": "resolved"},
+        )
+    )
+    captured = {}
+
+    class BrokenJobManager:
+        def create_job(self, file_path, target_profile_id, settings):
+            captured["file_path"] = file_path
+            raise RuntimeError("queue down")
+
+    workflow_app.job_manager = BrokenJobManager()
+
+    with pytest.raises(RuntimeError, match="queue down"):
+        manager.create_conversion_job(workflow_id, {"pipeline_type": "quality_seedvc"})
+
+    assert captured["file_path"] != artist_path
+    assert not Path(captured["file_path"]).exists()
+    assert Path(artist_path).exists()
+
 def test_restart_recovers_processing_workflows_without_disturbing_parallel_training_workflows(
     workflow_app,
     monkeypatch,

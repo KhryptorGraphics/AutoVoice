@@ -822,12 +822,25 @@ class TestSampleAndDiarizationEndpoints:
         _materialize_trained_artifact(app_remaining, profile_id, "adapter")
 
         captured = {}
+        output_path = Path(app_remaining.config["DATA_DIR"]) / "conversions" / "conversion-job-1" / "mix.wav"
 
         class FakeJobManager:
             def create_job(self, file_path, target_profile_id, settings):
                 captured["file_path"] = file_path
                 captured["profile_id"] = target_profile_id
                 captured["settings"] = settings
+                Path(file_path).unlink()
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_wav(output_path)
+                app_remaining.state_store.save_conversion_record({
+                    "id": "conversion-job-1",
+                    "status": "completed",
+                    "input_file": settings["original_filename"],
+                    "profile_id": target_profile_id,
+                    "result_path": str(output_path),
+                    "original_audio_asset_id": settings["original_audio_asset_id"],
+                    "original_audio_url": settings["original_audio_url"],
+                })
                 return "conversion-job-1"
 
         app_remaining.job_manager = FakeJobManager()
@@ -849,16 +862,20 @@ class TestSampleAndDiarizationEndpoints:
         assert payload["original_audio_url"] == f"/api/v1/singalong/sources/{original_asset_id}/audio"
         assert captured["profile_id"] == profile_id
         assert captured["settings"]["original_audio_asset_id"] == original_asset_id
-        assert Path(captured["file_path"]).exists()
-        assert Path(captured["file_path"]).name.endswith("_lead.wav")
-        assert str(Path(app_remaining.config["DATA_DIR"]) / "conversions" / "originals") in captured["file_path"]
-
+        assert not Path(captured["file_path"]).exists()
         asset = app_remaining.state_store.get_asset(original_asset_id)
+        assert Path(asset["path"]).exists()
+        assert Path(asset["path"]).name.endswith("_lead.wav")
+        assert str(Path(app_remaining.config["DATA_DIR"]) / "conversions" / "originals") in asset["path"]
+
         assert asset["metadata"]["job_id"] == "conversion-job-1"
         assert asset["metadata"]["profile_id"] == profile_id
 
         sources = client_remaining.get(f"/api/v1/singalong/sources?profile_id={profile_id}").get_json()["sources"]
         assert any(source["asset_id"] == original_asset_id for source in sources)
+
+        quality_options = client_remaining.get("/api/v1/quality/conversion-options").get_json()
+        assert [item["id"] for item in quality_options["conversions"]] == ["conversion-job-1"]
 
     def test_upload_sample_requires_media_consent_when_enabled(
         self, client_remaining, app_remaining, monkeypatch
@@ -1315,6 +1332,130 @@ class TestLifecycleAndAnalysisErrorBranches:
 
         assert response.status_code == 500
         assert "comparison failed" in response.get_json()["error"]
+
+    def test_quality_conversion_options_hide_server_paths(self, client_remaining, app_remaining, tmp_path):
+        from auto_voice.web.persistence import AppStateStore
+
+        app_remaining.state_store = AppStateStore(str(tmp_path / "state"))
+        source_path = tmp_path / "source.wav"
+        output_path = tmp_path / "output.wav"
+        _write_wav(source_path)
+        _write_wav(output_path)
+
+        app_remaining.state_store.save_conversion_record(
+            {
+                "id": "quality-record-1",
+                "status": "completed",
+                "input_file": str(source_path),
+                "result_path": str(output_path),
+                "profile_id": "profile-1",
+                "pipeline_type": "quality_seedvc",
+                "active_model_type": "adapter",
+                "adapter_type": "hq",
+                "created_at": "2026-07-01T00:00:00Z",
+                "quality_score": 0.0,
+                "speaker_similarity": 0.0,
+                "quality_metrics": {"quality_score": 0.91, "speaker_similarity": 0.9},
+            }
+        )
+
+        response = client_remaining.get("/api/v1/quality/conversion-options")
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["conversions"][0]["id"] == "quality-record-1"
+        assert payload["conversions"][0]["source_label"] == "source.wav"
+        assert payload["conversions"][0]["quality_score"] == 0.0
+        assert payload["conversions"][0]["speaker_similarity"] == 0.0
+        assert str(source_path) not in json.dumps(payload)
+        assert str(output_path) not in json.dumps(payload)
+
+    def test_quality_conversion_analysis_and_comparison_resolve_record_ids(
+        self, client_remaining, app_remaining, tmp_path, monkeypatch
+    ):
+        from auto_voice.web.persistence import AppStateStore
+
+        app_remaining.state_store = AppStateStore(str(tmp_path / "state"))
+        source_path = tmp_path / "source.wav"
+        output_one = tmp_path / "output-one.wav"
+        output_two = tmp_path / "output-two.wav"
+        for path in (source_path, output_one, output_two):
+            _write_wav(path)
+
+        for record_id, output_path, pipeline, score in (
+            ("quality-record-1", output_one, "quality_seedvc", 0.91),
+            ("quality-record-2", output_two, "realtime", 0.84),
+        ):
+            app_remaining.state_store.save_conversion_record(
+                {
+                    "id": record_id,
+                    "status": "completed",
+                    "input_file": str(source_path),
+                    "result_path": str(output_path),
+                    "profile_id": "profile-1",
+                    "pipeline_type": pipeline,
+                    "active_model_type": "adapter",
+                    "created_at": "2026-07-01T00:00:00Z",
+                    "quality_metrics": {"quality_score": score, "speaker_similarity": score},
+                }
+            )
+
+        calls: dict[str, dict] = {}
+        analysis_module = types.ModuleType("auto_voice.evaluation.conversion_quality_analyzer")
+
+        class FakeMetrics:
+            quality_score = 0.93
+
+            def to_dict(self):
+                return {"speaker_similarity": 0.93}
+
+        class FakeAnalyzer:
+            def analyze(self, **kwargs):
+                calls["analyze"] = kwargs
+                return SimpleNamespace(
+                    methodology=kwargs["methodology"],
+                    metrics=FakeMetrics(),
+                    passes_thresholds=True,
+                    threshold_failures=[],
+                    recommendations=[],
+                    timestamp="2026-07-01T00:00:00Z",
+                )
+
+            def compare_methodologies(self, **kwargs):
+                calls["compare"] = kwargs
+                analysis = SimpleNamespace(
+                    metrics=FakeMetrics(),
+                    passes_thresholds=True,
+                    threshold_failures=[],
+                )
+                return SimpleNamespace(
+                    best_methodology=kwargs["methodologies"][0],
+                    rankings=[(kwargs["methodologies"][0], 0.93), (kwargs["methodologies"][1], 0.84)],
+                    summary={"compared": 2},
+                    analyses={methodology: analysis for methodology in kwargs["methodologies"]},
+                )
+
+        analysis_module.ConversionQualityAnalyzer = FakeAnalyzer
+        monkeypatch.setitem(sys.modules, "auto_voice.evaluation.conversion_quality_analyzer", analysis_module)
+
+        analysis_response = client_remaining.post(
+            "/api/v1/quality/conversion-analysis",
+            json={"conversion_id": "quality-record-1"},
+        )
+        options_response = client_remaining.get("/api/v1/quality/conversion-options")
+        source_id = options_response.get_json()["conversions"][0]["source_id"]
+        comparison_response = client_remaining.post(
+            "/api/v1/quality/conversion-comparison",
+            json={"source_id": source_id, "conversion_ids": ["quality-record-1", "quality-record-2"]},
+        )
+
+        assert analysis_response.status_code == 200
+        assert analysis_response.get_json()["conversion"]["id"] == "quality-record-1"
+        assert calls["analyze"]["source_audio"] == str(source_path)
+        assert calls["analyze"]["converted_audio"] == str(output_one)
+        assert comparison_response.status_code == 200
+        assert calls["compare"]["source_audio"] == str(source_path)
+        assert set(calls["compare"]["converted_outputs"].values()) == {str(output_one), str(output_two)}
 
     def test_retrain_lora_failure_returns_error(self, client_remaining, monkeypatch):
         monkeypatch.setattr(

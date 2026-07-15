@@ -333,6 +333,25 @@ class ConversionWorkflowManager:
         settings_dict["workflow_id"] = workflow_id
         settings_dict["auto_resolved_source_profiles"] = workflow.get("resolved_source_profiles", [])
         settings_dict["active_model_type"] = profile.get("active_model_type")
+        original_filename = workflow.get("artist_song", {}).get("filename") or Path(artist_song_path).name
+        original_asset = self.state_store.register_asset(
+            artist_song_path,
+            kind="conversion_original",
+            owner_id=profile_id,
+            metadata={
+                "source": "conversion_workflow",
+                "workflow_id": workflow_id,
+                "profile_id": profile_id,
+                "filename": original_filename,
+                "title": Path(original_filename).stem,
+            },
+        )
+        original_asset_id = original_asset.get("asset_id")
+        settings_dict["original_filename"] = original_filename
+        settings_dict["original_audio_asset_id"] = original_asset_id
+        settings_dict["original_audio_url"] = (
+            f"/api/v1/singalong/sources/{original_asset_id}/audio" if original_asset_id else None
+        )
 
         temp_copy = tempfile.NamedTemporaryFile(
             suffix=Path(artist_song_path).suffix or ".wav",
@@ -341,7 +360,24 @@ class ConversionWorkflowManager:
         temp_copy.close()
         shutil.copy2(artist_song_path, temp_copy.name)
 
-        job_id = job_manager.create_job(temp_copy.name, profile_id, settings_dict)
+        try:
+            job_id = job_manager.create_job(temp_copy.name, profile_id, settings_dict)
+        except Exception:
+            try:
+                os.unlink(temp_copy.name)
+            except OSError:
+                pass
+            raise
+        if original_asset_id:
+            self.state_store.register_asset(
+                artist_song_path,
+                kind="conversion_original",
+                owner_id=profile_id,
+                metadata={
+                    **dict(original_asset.get("metadata") or {}),
+                    "job_id": job_id,
+                },
+            )
         workflow["updated_at"] = _utcnow_iso()
         self.state_store.save_conversion_workflow(workflow)
         return {
