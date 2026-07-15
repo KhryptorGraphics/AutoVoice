@@ -69,4 +69,23 @@ test.describe('Quality page smoke', () => {
     await page.getByRole('button', { name: 'Check degradation' }).click()
     await expect.poll(() => mockedApi.getDegradationChecks()).toBe(1)
   })
+
+  test('shows API-unavailable state instead of empty conversions when quality options fail', async ({ page }) => {
+    await mockCommonApi(page, { qualityConversionOptionsStatus: 503 })
+    await page.goto('/quality')
+
+    await expect(page.getByTestId('quality-conversion-options-error')).toContainText('Quality options API unavailable')
+    await expect(page.getByTestId('quality-conversion-selector')).toContainText('Quality options unavailable')
+    await expect(page.getByTestId('quality-conversion-selector')).not.toContainText('No completed conversions available')
+    await expect(page.getByTestId('quality-compare-source-selector')).toContainText('Quality options unavailable')
+  })
+
+  test('labels empty quality options as no quality-ready artifacts', async ({ page }) => {
+    await mockCommonApi(page, { qualityConversionRecords: [] })
+    await page.goto('/quality')
+
+    await expect(page.getByTestId('quality-conversion-selector')).toContainText('No quality-ready conversion artifacts')
+    await expect(page.getByTestId('quality-conversion-selector')).not.toContainText('No completed conversions available')
+    await expect(page.getByTestId('quality-compare-source-selector')).toContainText('Need two quality-ready artifacts for one source')
+  })
 })

@@ -300,7 +300,30 @@ function AnalysisToolsCard() {
   const comparisonSources = (conversionOptionsQuery.data?.sources ?? []).filter(
     (source) => source.conversions.length >= 2
   )
-
+  const conversionOptionsState: 'loading' | 'error' | 'ready-empty' | 'ready-with-options' =
+    conversionOptionsQuery.isLoading
+      ? 'loading'
+      : conversionOptionsQuery.error
+        ? 'error'
+        : allConversions.length === 0
+          ? 'ready-empty'
+          : 'ready-with-options'
+  const analyzeOptionLabel =
+    conversionOptionsState === 'loading'
+      ? 'Loading quality-ready artifacts...'
+      : conversionOptionsState === 'error'
+        ? 'Quality options unavailable'
+        : conversionOptionsState === 'ready-empty'
+          ? 'No quality-ready conversion artifacts'
+          : 'Choose a quality-ready conversion'
+  const compareSourceLabel =
+    conversionOptionsState === 'loading'
+      ? 'Loading quality-ready sources...'
+      : conversionOptionsState === 'error'
+        ? 'Quality options unavailable'
+        : comparisonSources.length === 0
+          ? 'Need two quality-ready artifacts for one source'
+          : 'Choose a source'
   const [analyzeConversionId, setAnalyzeConversionId] = useState('')
   const [analyzeProfileId, setAnalyzeProfileId] = useState('')
   const [analyzeResult, setAnalyzeResult] = useState<ConversionAnalysis | null>(null)
@@ -456,7 +479,7 @@ function AnalysisToolsCard() {
         <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-4" data-testid="quality-model-summary">
           <h3 className="text-sm font-semibold text-white">Model outputs</h3>
           <div className="mt-3 space-y-2 text-sm">
-            {modelSummaries.length === 0 && <div className="text-gray-500">No completed conversion outputs yet.</div>}
+            {modelSummaries.length === 0 && <div className="text-gray-500">{conversionOptionsState === 'error' ? 'Quality options unavailable.' : 'No quality-ready conversion artifacts yet.'}</div>}
             {modelSummaries.map((summary) => (
               <div key={summary.label} className="flex items-center justify-between gap-4 rounded-lg bg-gray-900 px-3 py-2">
                 <span className="text-gray-200">{summary.label}</span>
@@ -473,7 +496,7 @@ function AnalysisToolsCard() {
         <div className="rounded-lg border border-gray-800 bg-gray-950/50 p-4" data-testid="quality-profile-summary">
           <h3 className="text-sm font-semibold text-white">Profile outputs</h3>
           <div className="mt-3 space-y-2 text-sm">
-            {profileSummaries.length === 0 && <div className="text-gray-500">No profile-linked outputs yet.</div>}
+            {profileSummaries.length === 0 && <div className="text-gray-500">{conversionOptionsState === 'error' ? 'Quality options unavailable.' : 'No profile-linked quality artifacts yet.'}</div>}
             {profileSummaries.map((summary) => (
               <div key={summary.label} className="flex items-center justify-between gap-4 rounded-lg bg-gray-900 px-3 py-2">
                 <span className="text-gray-200">{summary.label}</span>
@@ -490,7 +513,7 @@ function AnalysisToolsCard() {
       {conversionOptionsQuery.error && (
         <StatusBanner
           tone="danger"
-          title="Failed to load conversion records"
+          title="Quality options API unavailable"
           message={(conversionOptionsQuery.error as Error).message}
           testId="quality-conversion-options-error"
         />
@@ -509,10 +532,10 @@ function AnalysisToolsCard() {
                 setAnalyzeConversionId(event.target.value)
                 setAnalyzeResult(null)
               }}
-              disabled={conversionOptionsQuery.isLoading || allConversions.length === 0}
+              disabled={conversionOptionsState !== 'ready-with-options'}
               className={inputClass}
             >
-              <option value="">{allConversions.length === 0 ? 'No completed conversions available' : 'Choose a completed conversion'}</option>
+              <option value="">{analyzeOptionLabel}</option>
               {allConversions.map((conversion) => (
                 <option key={conversion.id} value={conversion.id}>
                   {conversion.label}
@@ -613,10 +636,10 @@ function AnalysisToolsCard() {
                 setSelectedCompareIds([])
                 setCompareResult(null)
               }}
-              disabled={conversionOptionsQuery.isLoading || comparisonSources.length === 0}
+              disabled={conversionOptionsState !== 'ready-with-options' || comparisonSources.length === 0}
               className={inputClass}
             >
-              <option value="">{comparisonSources.length === 0 ? 'Need two completed conversions for one source' : 'Choose a source'}</option>
+              <option value="">{compareSourceLabel}</option>
               {comparisonSources.map((source) => (
                 <option key={source.id} value={source.id}>
                   {source.label} ({source.conversions.length} outputs)
@@ -644,7 +667,7 @@ function AnalysisToolsCard() {
             <span className="block text-sm text-gray-400">Completed outputs</span>
             {!selectedCompareSource && (
               <div className="rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-sm text-gray-500">
-                No source has enough completed outputs to compare yet.
+                {compareSourceLabel}.
               </div>
             )}
             {selectedCompareSource?.conversions.map((conversion) => {

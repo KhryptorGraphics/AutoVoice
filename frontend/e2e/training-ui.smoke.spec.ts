@@ -55,6 +55,23 @@ test.describe('Training UI smoke', () => {
     expect(config.architecture).toBe('como')
   })
 
+
+  test('profile detail tabs expose ARIA roles and keyboard navigation', async ({ page }) => {
+    await mockCommonApi(page)
+
+    await page.goto('/profiles')
+    await page.getByTestId('profile-card').first().click()
+
+    await expect(page.getByRole('tablist', { name: 'Profile sections' })).toBeVisible()
+    await expect(page.getByRole('tab', { name: /Samples/ })).toHaveAttribute('aria-selected', 'true')
+
+    await page.getByRole('tab', { name: /Samples/ }).press('End')
+    await expect(page.getByRole('tab', { name: 'Training Jobs' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tabpanel', { name: 'Training Jobs' })).toBeVisible()
+
+    await page.getByRole('tab', { name: 'Training Jobs' }).press('Home')
+    await expect(page.getByRole('tab', { name: /Samples/ })).toHaveAttribute('aria-selected', 'true')
+  })
   test('workflow full training sends force when clean-vocal threshold is unmet', async ({ page }) => {
     const mockedApi = await mockCommonApi(page, {
       profileOverrides: {

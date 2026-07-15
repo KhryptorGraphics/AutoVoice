@@ -35,7 +35,9 @@ type MockCommonApiOptions = {
   voiceCloneError?: string
   apiToken?: string
   conversionRecords?: MockConversionRecord[]
+  qualityConversionRecords?: MockConversionRecord[]
   webhooks?: Array<Record<string, unknown>>
+  qualityConversionOptionsStatus?: number
   profileOverrides?: Partial<Record<string, unknown>>
 }
 
@@ -402,6 +404,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       quality_metrics: { quality_score: 0.91, speaker_similarity: 0.9 },
     },
   ]
+  const qualityConversionRecords = options.qualityConversionRecords ?? conversionRecords
   const checkpoints = [
     {
       id: 'checkpoint-active',
@@ -1892,7 +1895,11 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   }
 
   await page.route('**/api/v1/quality/conversion-options', async (route) => {
-    const conversions = conversionRecords.map(serializeQualityConversion)
+    if (options.qualityConversionOptionsStatus && options.qualityConversionOptionsStatus >= 400) {
+      return jsonResponse(route, { error: 'quality options unavailable' }, options.qualityConversionOptionsStatus)
+    }
+
+    const conversions = qualityConversionRecords.map(serializeQualityConversion)
     const sourcesById: Record<string, { id: string; label: string; conversions: unknown[] }> = {}
 
     for (const conversion of conversions) {
@@ -1913,7 +1920,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   await page.route('**/api/v1/quality/conversion-analysis', async (route) => {
     analyzeRequests += 1
     const body = route.request().postDataJSON() as { conversion_id?: string }
-    const conversion = conversionRecords.map(serializeQualityConversion).find((item) => item.id === body.conversion_id)
+    const conversion = qualityConversionRecords.map(serializeQualityConversion).find((item) => item.id === body.conversion_id)
     if (!conversion) {
       return jsonResponse(route, { error: 'conversion not found' }, 404)
     }
@@ -1932,7 +1939,7 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
   await page.route('**/api/v1/quality/conversion-comparison', async (route) => {
     compareRequests += 1
     const body = route.request().postDataJSON() as { conversion_ids?: string[]; source_id?: string }
-    const selected = conversionRecords
+    const selected = qualityConversionRecords
       .map(serializeQualityConversion)
       .filter((conversion) => (body.conversion_ids ?? []).includes(conversion.id))
     const rankings = selected.map((conversion) => [conversion.methodology, conversion.quality_score ?? 0.8])
