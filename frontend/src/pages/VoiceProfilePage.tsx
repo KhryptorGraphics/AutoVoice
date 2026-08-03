@@ -76,7 +76,9 @@ function sampleQualityStatus(sample: TrainingSample): string {
 }
 
 function isTrainableSample(sample: TrainingSample): boolean {
-  return ['pass', 'warn'].includes(sampleQualityStatus(sample))
+  // The API permits pending QA samples with an explicit warning. Only a
+  // sample that actively failed QA is blocked from training.
+  return sampleQualityStatus(sample) !== 'fail'
 }
 
 function sampleQualityLabel(sample: TrainingSample): string {
@@ -531,7 +533,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                       {selectedSampleIds.size} of {samples.filter(isTrainableSample).length} trainable samples selected
                     </div>
                     <div className="text-xs text-gray-500">
-                      Only explicit QA pass/warn samples can be selected for training; pending and failed samples stay visible for review.
+                      Samples that failed QA stay blocked; pending samples can be submitted with a quality warning.
                     </div>
                     <button
                       type="button"

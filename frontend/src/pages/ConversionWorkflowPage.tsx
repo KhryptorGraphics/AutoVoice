@@ -35,11 +35,19 @@ function sampleQualityStatus(sample: TrainingSample): string {
     ...(sample.quality_metadata ?? {}),
   }
   const status = metadata.qa_status ?? metadata.quality_status ?? metadata.status
-  return typeof status === 'string' ? status : 'pass'
+  return typeof status === 'string' ? status : 'unknown'
 }
 
 function isTrainableSample(sample: TrainingSample): boolean {
   return sampleQualityStatus(sample) !== 'fail'
+}
+
+function sampleQualityLabel(sample: TrainingSample): string {
+  const status = sampleQualityStatus(sample)
+  if (status === 'fail') return 'QA failed'
+  if (status === 'warn') return 'QA warning'
+  if (status === 'pass') return 'QA passed'
+  return 'QA pending'
 }
 
 const WORKFLOW_STEPS = [
@@ -533,16 +541,18 @@ export function ConversionWorkflowPage() {
 
   // Load the finished mix into an object URL for inline playback (same
   // authenticated fetch as the Download Mix button); revoke on cleanup.
+  const conversionId = conversionStatus?.id
+  const conversionState = conversionStatus?.status
   useEffect(() => {
-    const isComplete = conversionStatus?.status === 'complete' || conversionStatus?.status === 'completed'
-    if (!conversionStatus || !isComplete) {
+    const isComplete = conversionState === 'complete' || conversionState === 'completed'
+    if (!conversionId || !isComplete) {
       setMixAudioUrl(null)
       return
     }
     let cancelled = false
     let objectUrl: string | null = null
     apiService
-      .downloadResult(conversionStatus.id)
+      .downloadResult(conversionId)
       .then((blob) => {
         if (cancelled) return
         objectUrl = URL.createObjectURL(blob)
@@ -553,7 +563,7 @@ export function ConversionWorkflowPage() {
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [conversionStatus?.id, conversionStatus?.status])
+  }, [conversionId, conversionState])
 
   const triggerDownload = useCallback((blob: Blob, downloadName: string) => {
     const url = URL.createObjectURL(blob)
@@ -1021,7 +1031,7 @@ export function ConversionWorkflowPage() {
                     <span>{sample.audio_path.split('/').pop()}</span>
                   </span>
                   <span className="text-xs text-gray-500">
-                    {sample.duration_seconds?.toFixed(1) ?? '?'}s · {isTrainableSample(sample) ? 'QA pass' : 'QA failed'}
+                    {sample.duration_seconds?.toFixed(1) ?? '?'}s · {sampleQualityLabel(sample)}
                   </span>
                 </label>
               ))}

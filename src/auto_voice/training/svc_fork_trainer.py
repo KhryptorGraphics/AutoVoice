@@ -27,6 +27,8 @@ DEFAULT_WORKSPACE_ROOT = os.environ.get(
     "/home/kp/thordrive/autofusion/svcfork_ws/profiles")
 _AUDIO_EXTS = (".wav", ".flac", ".mp3", ".ogg")
 _EPOCH_RE = re.compile(r"epoch[^0-9]*([0-9]+)", re.IGNORECASE)
+# A tqdm bar redraw, e.g. " 21%|##########    | 195/911 [02:44<10:23, 4.3it/s]"
+_TQDM_BAR = re.compile(r"^\s*\d{1,3}%\|.*\|\s*\d+/\d+")
 
 ProgressCB = Optional[Callable[[int, str], None]]
 
@@ -57,6 +59,28 @@ def _terminate(proc) -> None:
         proc.kill()
 
 
+def _meaningful_tail(raw: str, limit: int = 800) -> str:
+    """Extract the useful tail of a failed fork subprocess log.
+
+    tqdm redraws its progress bar in place with ``\\r`` many times a second,
+    so a naive ``raw[-600:]`` is almost always bar spam with the real cause
+    scrolled out of view - which is how a genuine failure ends up recorded as
+    ``pre-hubert failed: 21%|##  | 195/911 [02:44<10:23,`` and the operator
+    has no idea what actually went wrong. Strip the bar redraws, and when a
+    traceback is present prefer it over whatever happened to come last.
+    """
+    lines = [ln.strip() for ln in raw.replace("\r", "\n").splitlines()]
+    lines = [ln for ln in lines if ln and not _TQDM_BAR.match(ln)]
+    if not lines:
+        # Nothing but progress bars - fall back to the raw tail so we at
+        # least return *something* rather than an empty error.
+        return raw[-limit:].strip()
+    for i, line in enumerate(lines):
+        if line.startswith("Traceback (most recent call last)"):
+            return "\n".join(lines[i:])[-limit:]
+    return "\n".join(lines)[-limit:]
+
+
 def _supervise(proc, label: str, cancel_event, timeout: Optional[int],
                logf, on_new_output=None) -> None:
     """Poll a running fork subprocess: terminate promptly when ``cancel_event``
@@ -81,7 +105,7 @@ def _supervise(proc, label: str, cancel_event, timeout: Optional[int],
     if proc.returncode != 0:
         logf.seek(0)
         raise ForkTrainingError(f"{label} failed (rc={proc.returncode}): "
-                                f"{logf.read()[-600:]}")
+                                f"{_meaningful_tail(logf.read())}")
 
 
 def _run_step(cmd: List[str], cwd: Optional[str] = None, cancel_event=None,
@@ -135,6 +159,8 @@ def train_svc_fork(
     max_split_seconds: float = 10.0,
     progress_cb: ProgressCB = None,
     cancel_event=None,
+    batch_size: Optional[int] = None,
+    precision: str = "fp32",
 ) -> Dict[str, object]:
     """Fine-tune a so-vits-svc-fork model on the WAVs in ``train_dir`` and
     register it for ``profile_id``.
@@ -170,7 +196,8 @@ def train_svc_fork(
     # 2-3. resample + config (cwd-relative dirs)
     _run_step([svc_bin, "pre-resample"], cwd=ws_s, cancel_event=cancel_event)
     _run_step([svc_bin, "pre-config"], cwd=ws_s, cancel_event=cancel_event)
-    _set_config(ws / "configs" / "44k" / "config.json", epochs)
+    _set_config(ws / "configs" / "44k" / "config.json", epochs,
+                batch_size=batch_size, precision=precision)
     _check_cancel(); _report(progress_cb, 30, "extracting features")
     # 4. ContentVec + F0 (single-process avoids the CUDA-fork deadlock)
     _run_step([svc_bin, "pre-hubert", "-n", "1", "-fm", f0_method], cwd=ws_s,
@@ -206,10 +233,33 @@ def train_svc_fork(
             "registry_path": str(registry)}
 
 
-def _set_config(config_path: Path, epochs: int) -> None:
-    """Bound the epoch count and keep a few checkpoints in the fork config."""
+def _set_config(
+    config_path: Path,
+    epochs: int,
+    *,
+    batch_size: Optional[int] = None,
+    precision: str = "fp32",
+) -> None:
+    """Bound the epoch count and tighten memory-sensitive defaults for the
+    so-vits-svc-fork trainer on Jetson / constrained GPUs.
+
+    The upstream config template ships with batch_size=16, which OOMs at
+    training time on Thor-class hardware once the scheduler holds activations
+    across the discriminator + generator at long segment_size. Cap at 4 unless
+    the caller explicitly asks for more. ``keep_ckpts`` stays at 5 so the
+    existing retention policy is unchanged.
+
+    Precision defaults to fp32 deliberately. ``fp16_run=True`` on torch 2.13
+    hits an experimental ComplexHalf STFT path that stalls the GPU to ~0-5%
+    utilisation - training looks alive but makes no progress - so fp16 is
+    opt-in per run rather than the default. svc-fork has no bf16 path at all,
+    so 'bf16' behaves as fp32 rather than silently degrading to fp16.
+    """
     cfg = json.loads(config_path.read_text())
     cfg.setdefault("train", {})
     cfg["train"]["epochs"] = int(epochs)
     cfg["train"]["keep_ckpts"] = 5
+    cfg["train"]["batch_size"] = int(batch_size) if batch_size else 4
+    cfg["train"]["fp16_run"] = (precision == "fp16")
+    cfg["train"]["bf16_run"] = False
     config_path.write_text(json.dumps(cfg, indent=2))

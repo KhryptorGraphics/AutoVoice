@@ -287,8 +287,8 @@ class TestCreateTrainingJob:
         assert data['config']['checkpoint_every_steps'] == 250
         assert data['config']['validation_split'] == 0.2
 
-    def test_create_job_rejects_unknown_quality_samples(self, client, app_with_training, monkeypatch):
-        """Training starts require explicit pass/warn QA, not missing legacy metadata."""
+    def test_create_job_allows_unknown_quality_samples_with_warning(self, client, app_with_training, monkeypatch):
+        """Pending QA samples are accepted with an explicit quality warning."""
         from auto_voice.storage.paths import resolve_profiles_dir, resolve_samples_dir
         from auto_voice.storage.voice_profiles import VoiceProfileStore
         from auto_voice.training.job_manager import TrainingJobManager
@@ -316,9 +316,10 @@ class TestCreateTrainingJob:
             content_type='application/json',
         )
 
-        assert response.status_code == 400
+        assert response.status_code == 201
         data = json.loads(response.data)
-        assert 'quality gates' in data['error']
+        assert data['quality_gate_bypassed'] is True
+        assert any('qa_status=unknown' in warning for warning in data['warnings'])
 
     def test_create_job_rejects_invalid_granular_config(self, client, app_with_training):
         profile_id = _create_profile_with_sample(

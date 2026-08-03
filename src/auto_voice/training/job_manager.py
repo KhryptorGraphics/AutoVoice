@@ -12,6 +12,7 @@ Task 4.2: Implement TrainingJobManager with job queue (GPU-only execution)
 
 import json
 import logging
+import re
 import threading
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -20,7 +21,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import os
+
 import torch
+
 
 from auto_voice.runtime_contract import build_packaged_artifact_manifest
 from auto_voice.storage.paths import (
@@ -43,6 +47,49 @@ logger = logging.getLogger(__name__)
 
 class _FallbackTrainingCancelledError(RuntimeError):
     """Local fallback when a patched trainer module omits the cancel exception."""
+
+
+
+
+# Subprocess stderr from svc-fork that signals a CUDA OOM. Recognised so the
+# failure path can append a remediation hint instead of just echoing the
+# generic trainer exception message.
+_FORK_OOM_SIGNAL = re.compile(
+    r"cuda out of memory|outofmemoryerror|RuntimeError:\s*CUDA.*memory|"
+    r"DefaultCPUAllocator|CUDA error: out of memory",
+    re.IGNORECASE,
+)
+
+# Escape hatch for the fp32 pin below.
+_FORK_ALLOW_FP16_ENV = 'AUTOVOICE_SVCFORK_ALLOW_FP16'
+
+
+def _resolve_fork_precision(configured: Optional[str], job_id: str) -> str:
+    """Pick the precision the svc-fork trainer should run at.
+
+    svc-fork only distinguishes fp16 from fp32 (it has no bf16 path), so every
+    non-fp16 value collapses to fp32.
+
+    fp16 is additionally pinned off by default: ``fp16_run=True`` on torch 2.13
+    hits an experimental ComplexHalf STFT path that stalls the GPU to ~0-5%
+    utilisation, which presents as a training run that looks alive for hours
+    while making no progress. Several built-in presets ship
+    ``precision='fp16'``, so honouring the config verbatim would silently
+    re-introduce that stall for anyone picking those presets. Operators who
+    have verified fp16 is healthy on their hardware can set
+    ``AUTOVOICE_SVCFORK_ALLOW_FP16=1``.
+    """
+    if configured != 'fp16':
+        return 'fp32'
+    if os.environ.get(_FORK_ALLOW_FP16_ENV) == '1':
+        return 'fp16'
+    logger.warning(
+        "Job %s requested precision=fp16; svc_fork is pinning fp32 because "
+        "fp16_run stalls the GPU to ~0-5%% util on torch 2.13 (ComplexHalf "
+        "STFT). Set %s=1 to override.",
+        job_id, _FORK_ALLOW_FP16_ENV,
+    )
+    return 'fp32'
 
 
 # ============================================================================
@@ -204,7 +251,13 @@ class TrainingJob:
         self.is_paused = False
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize to dict for persistence."""
+        """Serialize to dict for persistence + API response."""
+        results = self.results or {}
+        # Surface the per-stage progress label at the top level so the
+        # frontend's live-monitor view can render it without diving into
+        # results.stage. ``stage`` is set by both fork (``_progress``) and
+        # in-repo trainers (``on_batch_end``) and falls back to None when
+        # no stage has been reported yet.
         return {
             "job_id": self.job_id,
             "profile_id": self.profile_id,
@@ -215,7 +268,14 @@ class TrainingJob:
             "progress": self.progress,
             "sample_ids": self.sample_ids,
             "config": self.config.to_dict() if self.config else None,
-            "results": self.results,
+            "results": results,
+            "stage": results.get("stage"),
+            "engine": results.get("engine"),
+            "job_type": results.get("job_type"),
+            "current_loss": results.get("current_loss"),
+            "current_epoch": results.get("current_epoch"),
+            "current_step": results.get("current_step"),
+            "latest_checkpoint": results.get("latest_checkpoint"),
             "error": self.error,
             "gpu_device": self.gpu_device,
             "is_paused": self.is_paused,
@@ -324,6 +384,12 @@ class TrainingJobManager:
         # Create storage directory
         self.storage_path.mkdir(parents=True, exist_ok=True)
 
+        # _save_jobs truncates and rewrites the whole jobs file. The svc-fork
+        # metrics poller calls it from a daemon thread while the training
+        # thread is also saving, so without this two interleaved writers can
+        # leave truncated JSON on disk.
+        self._save_lock = threading.Lock()
+
         # Load existing jobs
         self._load_jobs()
         self._is_initialized = True
@@ -374,15 +440,25 @@ class TrainingJobManager:
                 logger.warning(f"Failed to load jobs from {jobs_file}: {e}")
 
     def _save_jobs(self) -> None:
-        """Save jobs to persistence file."""
+        """Save jobs to persistence file.
+
+        Serialised: the svc-fork metrics poller saves from a daemon thread
+        concurrently with the training thread, and this rewrites the file
+        from scratch.
+        """
         jobs_file = self._jobs_file_path()
+        # Tolerate managers restored via __new__/pickle in older tests.
+        lock = getattr(self, '_save_lock', None)
+        if lock is None:
+            lock = self._save_lock = threading.Lock()
         try:
-            data = {
-                "jobs": [job.to_dict() for job in self._jobs.values()],
-                "updated_at": datetime.now().isoformat(),
-            }
-            with open(jobs_file, "w") as f:
-                json.dump(data, f, indent=2)
+            with lock:
+                data = {
+                    "jobs": [job.to_dict() for job in self._jobs.values()],
+                    "updated_at": datetime.now().isoformat(),
+                }
+                with open(jobs_file, "w") as f:
+                    json.dump(data, f, indent=2)
             logger.debug(f"Saved {len(self._jobs)} jobs to {jobs_file}")
         except Exception as e:
             logger.error(f"Failed to save jobs to {jobs_file}: {e}")
@@ -647,6 +723,7 @@ class TrainingJobManager:
             # without creating runtime coordination events.
             logger.warning("Cancelling running job %s without runtime events", job_id)
             job.cancel("Cancellation requested")
+            self._mark_profile_training_cancelled(job.profile_id, job_id)
             self._save_jobs()
             self._emit_cancelled_event(job)
             return True
@@ -658,6 +735,7 @@ class TrainingJobManager:
             return False
 
         job.cancel()
+        self._mark_profile_training_cancelled(job.profile_id, job_id)
         self._save_jobs()
         self._emit_cancelled_event(job)
 
@@ -1083,6 +1161,20 @@ class TrainingJobManager:
         self._job_cancel_events[job_id] = cancel_event
         self._save_jobs()
         self._emit_started_event(job)
+        # Flip the profile's training_status to "training" so the GUI shows
+        # an in-progress badge the moment the job starts, not just the
+        # per-job monitor view. Persisted to the same profile store the
+        # status endpoint reads.
+        self._mark_profile_training_started(
+            job.profile_id,
+            job_id,
+            architecture=(
+                getattr(job.config, 'architecture', None) if job.config else None
+            ),
+            training_mode=(
+                getattr(job.config, 'training_mode', None) if job.config else None
+            ),
+        )
         logger.info(f"Starting training job {job_id}")
         self.append_job_log(
             job_id,
@@ -1415,6 +1507,7 @@ class TrainingJobManager:
                     logger.info("Training job %s cancelled: %s", job_id, e)
                     self.append_job_log(job_id, f"Training cancelled: {e}")
                     job.cancel(str(e))
+                    self._mark_profile_training_cancelled(job.profile_id, job_id)
                     self._save_jobs()
                     self._emit_cancelled_event(job)
                 except Exception as e:
@@ -1457,6 +1550,7 @@ class TrainingJobManager:
         model serves via svc_fork_bridge's registry, not profile.model_path.
         """
         from auto_voice.training.svc_fork_trainer import (
+            DEFAULT_WORKSPACE_ROOT,
             ForkTrainingError,
             train_svc_fork,
         )
@@ -1470,18 +1564,54 @@ class TrainingJobManager:
                                 'job_type': 'full_model'})
             self._save_jobs()
 
+        # The fork subprocess routes loss / lr / GPU stats only to a
+        # TensorBoard events file (svc-fork's Lightning logger does not print
+        # them to stdout). The GUI live-monitor wants current_loss /
+        # current_step / current_epoch / learning_rate at top level so the
+        # training card can render real values; without this poller the GUI
+        # sits on 0/0 step counters forever. Tail the events file from a
+        # daemon thread until training finishes.
+        from .svc_fork_metrics import start_fork_metrics_poller
+        _metrics_stop = threading.Event()
+        metrics_thread = start_fork_metrics_poller(
+            profile_id=job.profile_id,
+            # Same constant the trainer uses to *create* the workspace, so the
+            # poller's glob can never drift from where the events file lands.
+            # (Duplicating the literal here is how that drift starts.)
+            workspace_root=DEFAULT_WORKSPACE_ROOT,
+            on_metrics=lambda m: self._apply_fork_metrics(job, m),
+            stop_event=_metrics_stop,
+        )
         try:
-            result = train_svc_fork(
-                train_dir=str(train_dir),
-                profile_id=job.profile_id,
-                speaker=speaker,
-                epochs=int(epochs),
-                data_dir=str(self._data_dir),
-                progress_cb=_progress,
-                cancel_event=cancel_event,
-            )
+            # The poller shutdown sits in an inner ``finally`` so it stops as
+            # soon as training returns (it must not keep mutating job.results
+            # while the results dict below is assembled), while the handlers
+            # further down still cover the train_svc_fork call itself.
+            # ForkTrainingError is a plain RuntimeError - it is NOT caught by
+            # run_training's ``except training_cancelled_error``, so if it
+            # escapes this block a fork cancel gets reported as a failure.
+            try:
+                result = train_svc_fork(
+                    train_dir=str(train_dir),
+                    profile_id=job.profile_id,
+                    speaker=speaker,
+                    epochs=int(epochs),
+                    data_dir=str(self._data_dir),
+                    progress_cb=_progress,
+                    cancel_event=cancel_event,
+                    batch_size=(
+                        job.config.batch_size
+                        if job.config and job.config.batch_size else None
+                    ),
+                    precision=_resolve_fork_precision(
+                        job.config.precision if job.config else None, job_id
+                    ),
+                )
+            finally:
+                _metrics_stop.set()
+                if metrics_thread is not None:
+                    metrics_thread.join(timeout=2.0)
             # artifact_type='full_model' so the profile is marked trained/ready;
-            # adapter_path carries the model path (legacy key -> profile.model_path).
             results = {
                 'engine': 'svc_fork',
                 'job_type': 'full_model',
@@ -1512,12 +1642,24 @@ class TrainingJobManager:
             if 'cancel' in str(e).lower():
                 logger.info("Fork training job %s cancelled", job_id)
                 job.cancel(str(e))
+                self._mark_profile_training_cancelled(job.profile_id, job_id)
                 self._save_jobs()
                 self._emit_cancelled_event(job)
             else:
-                logger.error("Fork training job %s failed: %s", job_id, e)
-                job.fail(str(e))
-                self._mark_profile_training_failed(job.profile_id, str(e))
+                msg = str(e)
+                # Surface OOM / memory symptoms so operators don't have to
+                # reverse-engineer the fork subprocess stderr by hand. The
+                # upstream trainer prints "CUDA out of memory" / "OutOfMemoryError"
+                # when activations blow the budget; we keep the original
+                # message and append a concrete remediation pointer.
+                if _FORK_OOM_SIGNAL.search(msg):
+                    msg = msg + (
+                        " | svc_fork OOM: reduce batch_size, lower segment_size, "
+                        "or stop other GPU jobs. fp16_run is already enabled."
+                    )
+                logger.error("Fork training job %s failed: %s", job_id, msg)
+                job.fail(msg)
+                self._mark_profile_training_failed(job.profile_id, msg)
                 self._save_jobs()
                 self._emit_failed_event(job)
         except Exception as e:  # noqa: BLE001 - lifecycle must record any failure
@@ -1770,6 +1912,9 @@ class TrainingJobManager:
         profile['training_status'] = 'ready'
         profile['has_trained_model'] = True
         profile['last_trained_at'] = datetime.now().isoformat()
+        profile['current_job_id'] = None
+        profile.pop('current_architecture', None)
+        profile.pop('current_training_mode', None)
         profile['model_version'] = profile.get('model_version') or '1.0'
         profile['model_path'] = results.get('serving_model_path') or results.get('adapter_model') or results.get('adapter_path')
         profile['runtime_artifact_manifest_path'] = results.get('manifest_path')
@@ -1841,6 +1986,96 @@ class TrainingJobManager:
             if not entry.get('is_active'):
                 state_store.delete_checkpoint(profile_id, entry.get('id'))
 
+    def _mark_profile_training_started(
+        self,
+        profile_id: str,
+        job_id: str,
+        architecture: Optional[str] = None,
+        training_mode: Optional[str] = None,
+    ) -> None:
+        """Flip the profile into the ``training`` state at job start so the GUI
+        can show an in-progress badge while training runs. Clears any prior
+        ``last_training_error`` so a new run starts clean and records the
+        active ``current_job_id`` so the profile detail view can deep-link
+        to the live training job.
+        """
+        try:
+            store = self._get_profile_store()
+            profile = store.load(profile_id)
+            profile['training_status'] = 'training'
+            profile['current_job_id'] = job_id
+            profile['current_architecture'] = architecture
+            profile['current_training_mode'] = training_mode
+            profile['last_training_started_at'] = datetime.now().isoformat()
+            profile.pop('last_training_error', None)
+            profile.pop('embedding', None)
+            store.save(profile)
+        except Exception as exc:
+            logger.warning(
+                f"Failed to mark profile {profile_id} as training: {exc}"
+            )
+
+    def _apply_fork_metrics(self, job: TrainingJob, metrics: Dict[str, Any]) -> None:
+        """Write a metrics dict from the fork subprocess poller into
+        ``job.results``, persist it, and push it to SocketIO subscribers so
+        live consoles do not have to poll. ``TrainingJob.to_dict`` promotes
+        these to the top level for the GUI's live-monitor card.
+
+        Called from the poller's daemon thread, so ``job.results`` is
+        *rebound* rather than mutated in place: a reader serialising the dict
+        in ``to_dict``/``_save_jobs`` then sees either the old snapshot or the
+        new one, never one changing size mid-iteration.
+
+        Deliberately does not route through ``emit_training_progress`` - that
+        helper recomputes overall progress from epoch/step totals and writes
+        it back via ``job.update_progress``, which would clobber the
+        stage-based progress the fork lane's ``_progress`` callback sets.
+        """
+        try:
+            job.results = {**(job.results or {}), **metrics}
+            self._save_jobs()
+            self._emit_event('training.progress', {
+                'job_id': job.job_id,
+                'profile_id': job.profile_id,
+                'engine': 'svc_fork',
+                'progress_percent': job.progress,
+                **metrics,
+            })
+        except Exception as exc:
+            logger.debug(f"Could not persist fork metrics for {job.job_id}: {exc}")
+
+    def _mark_profile_training_cancelled(self, profile_id: str, job_id: str) -> None:
+        """Clear the in-flight marks ``_mark_profile_training_started`` set.
+
+        A cancel is not a failure, so there is no error to record - but the
+        profile must not stay on ``training_status='training'`` with a live
+        ``current_job_id``, or the GUI shows a job running forever for one
+        that is already cancelled.
+
+        Only clears marks this job actually owns. Cancelling a PENDING job
+        never flipped the profile to 'training' at all, and cancelling a
+        stale job for a profile another run has since claimed must not touch
+        it - in both cases overwriting ``training_status`` would erase real
+        state (e.g. a 'failed' plus the ``last_training_error`` behind it).
+        """
+        try:
+            store = self._get_profile_store()
+            profile = store.load(profile_id)
+            if profile.get('current_job_id') != job_id:
+                return
+            profile['training_status'] = (
+                'ready' if profile.get('has_trained_model') else 'pending'
+            )
+            profile['current_job_id'] = None
+            profile.pop('current_architecture', None)
+            profile.pop('current_training_mode', None)
+            profile.pop('embedding', None)
+            store.save(profile)
+        except Exception as exc:
+            logger.warning(
+                f"Failed to clear training state for {profile_id}: {exc}"
+            )
+
     def _mark_profile_training_failed(self, profile_id: str, error: str) -> None:
         """Persist failed training state without deleting prior artifacts."""
         try:
@@ -1848,6 +2083,7 @@ class TrainingJobManager:
             profile = store.load(profile_id)
             profile['training_status'] = 'failed'
             profile['last_training_error'] = error
+            profile['current_job_id'] = None
             profile.pop('embedding', None)
             store.save(profile)
         except Exception as exc:

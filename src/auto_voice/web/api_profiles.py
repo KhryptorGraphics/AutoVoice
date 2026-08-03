@@ -1140,7 +1140,18 @@ def get_adapter_metrics(profile_id):
 
 
 def get_profile_training_status(profile_id):
-    """Get training status for a voice profile."""
+    """Get training status for a voice profile.
+
+    Returns:
+      ``training_status`` — one of ``pending`` / ``training`` / ``ready`` /
+        ``failed`` / ``untrained``. ``training`` means a job is actively
+        running for this profile right now; ``current_job_id`` carries the
+        active job id so the GUI can deep-link into the live monitor.
+      ``current_job_id`` — id of the in-flight job, or ``None``.
+      ``current_job_stage`` — last reported ``stage`` from the trainer
+        (``staging`` / ``preprocessing`` / ``extracting features`` /
+        ``training`` / ``completed``), or ``None``.
+    """
     logger = _dep('logger')
     store = _dep('get_profile_store')()
 
@@ -1153,16 +1164,41 @@ def get_profile_training_status(profile_id):
 
         has_trained = store.has_trained_model(profile_id)
         profile = store.load(profile_id)
-        training_status = profile.get('training_status', 'pending' if not has_trained else 'ready')
+        raw_status = profile.get('training_status')
+        if raw_status in ('pending', 'training', 'ready', 'failed'):
+            training_status = raw_status
+        else:
+            training_status = 'pending' if not has_trained else 'ready'
+
+        current_job_id = profile.get('current_job_id')
+        current_job_stage = None
+        current_job_progress = None
+        if current_job_id:
+            try:
+                mgr = _dep('get_training_job_manager')()
+                job = mgr.get_job(current_job_id)
+                if job is not None:
+                    results = job.results or {}
+                    current_job_stage = results.get('stage')
+                    current_job_progress = job.progress
+            except Exception as exc:
+                logger.debug(
+                    f"Could not enrich training status with current job "
+                    f"{current_job_id}: {exc}"
+                )
 
         return jsonify({
             'profile_id': profile_id,
             'has_trained_model': has_trained,
-            'training_status': training_status if not has_trained else 'ready',
+            'training_status': training_status,
+            'current_job_id': current_job_id,
+            'current_job_stage': current_job_stage,
+            'current_job_progress': current_job_progress,
             'model_version': profile.get('model_version'),
             'profile_role': profile.get('profile_role', 'target_user'),
             'clean_vocal_seconds': profile.get('clean_vocal_seconds', 0.0),
             'full_model_eligible': profile.get('full_model_eligible', False),
+            'last_training_error': profile.get('last_training_error'),
         })
     except _dep('ProfileNotFoundError'):
         return jsonify({
