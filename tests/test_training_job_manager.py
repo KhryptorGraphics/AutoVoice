@@ -576,7 +576,7 @@ class TestJobPersistence:
         assert loaded_job.sample_ids == ["s1", "s2"]
 
     def test_job_status_updates_persist(self, temp_job_storage, mock_profile):
-        """Job status updates are persisted."""
+        """Job status and progress updates are written to disk and read back."""
         from auto_voice.training.job_manager import TrainingJobManager
 
         manager1 = TrainingJobManager(
@@ -590,6 +590,7 @@ class TestJobPersistence:
         )
         manager1.update_job_status(job.job_id, "running")
         manager1.update_job_progress(job.job_id, 50)
+        manager1.update_job_status(job.job_id, "completed")
 
         # Reload
         manager2 = TrainingJobManager(
@@ -598,8 +599,38 @@ class TestJobPersistence:
         )
 
         loaded_job = manager2.get_job(job.job_id)
-        assert loaded_job.status == "running"
+        assert loaded_job.status == "completed"
         assert loaded_job.progress == 50
+
+    def test_running_job_is_reconciled_on_reload(self, temp_job_storage, mock_profile):
+        """A job left RUNNING belonged to a process that is now gone.
+
+        Constructing a second manager is what a service restart looks like.
+        The job is deliberately NOT restored as running - see
+        tests/test_job_reconciliation.py for why (a stuck running job
+        permanently blocks auto-training for that profile).
+        """
+        from auto_voice.training.job_manager import TrainingJobManager
+
+        manager1 = TrainingJobManager(
+            storage_path=temp_job_storage,
+            require_gpu=False,
+        )
+        job = manager1.create_job(
+            profile_id=mock_profile.profile_id,
+            sample_ids=["s1"],
+        )
+        manager1.update_job_status(job.job_id, "running")
+        manager1.update_job_progress(job.job_id, 50)
+
+        manager2 = TrainingJobManager(
+            storage_path=temp_job_storage,
+            require_gpu=False,
+        )
+        loaded_job = manager2.get_job(job.job_id)
+        assert loaded_job.status == "failed"
+        assert "did not survive a restart" in loaded_job.error
+        assert loaded_job.progress == 50  # the persisted update still round-tripped
 
 
 # ============================================================================

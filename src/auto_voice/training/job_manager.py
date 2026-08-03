@@ -438,6 +438,58 @@ class TrainingJobManager:
                 logger.debug(f"Loaded {len(self._jobs)} jobs from {jobs_file}")
             except Exception as e:
                 logger.warning(f"Failed to load jobs from {jobs_file}: {e}")
+        self._reconcile_orphaned_jobs()
+
+    def _reconcile_orphaned_jobs(self) -> None:
+        """Fail jobs left mid-flight by a process that is no longer running.
+
+        Nothing survives a restart mid-training: the training thread and its
+        svc-fork subprocess are gone, but the persisted job still reads
+        ``running``. Left alone it stays that way forever - two jobs in this
+        deployment had been ``running`` since 2026-07-12, through every
+        restart since.
+
+        That is not merely cosmetic. Both auto-triggers skip a profile that
+        has a pending-or-running job (``check_and_trigger_training`` and the
+        full-model promotion check), so one orphan silently disables
+        retraining for that profile permanently. A ``running`` orphan also
+        strands the profile on ``training_status='training'`` with a live
+        ``current_job_id``, because the marks are only cleared by the
+        complete/fail/cancel handlers that never got to run.
+
+        ``pending`` is reconciled too: nothing re-queues work at startup
+        (``execute_job`` is only ever called by the API immediately after
+        ``create_job``), so a pending job read from disk will never run.
+
+        Safe by construction - ``_load_jobs`` is called once from
+        ``__init__``, so every job seen here predates this process.
+        """
+        orphaned = [
+            job for job in self._jobs.values()
+            if job.status in (JobStatus.RUNNING.value, JobStatus.PENDING.value)
+        ]
+        if not orphaned:
+            return
+
+        for job in orphaned:
+            was_running = job.status == JobStatus.RUNNING.value
+            job.fail(
+                "Training did not survive a restart of the service - the "
+                "process running this job is gone. Start a new training job."
+                if was_running else
+                "Job was still queued when the service restarted and was "
+                "never started. Start a new training job."
+            )
+            # Only clears marks this job owns; a profile since claimed by a
+            # newer run is left alone.
+            self._mark_profile_training_cancelled(job.profile_id, job.job_id)
+            logger.warning(
+                "Reconciled orphaned %s training job %s (profile %s) to failed",
+                "running" if was_running else "pending",
+                job.job_id,
+                job.profile_id,
+            )
+        self._save_jobs()
 
     def _save_jobs(self) -> None:
         """Save jobs to persistence file.
