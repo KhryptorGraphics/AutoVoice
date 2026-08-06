@@ -439,6 +439,7 @@ class TrainingJobManager:
             except Exception as e:
                 logger.warning(f"Failed to load jobs from {jobs_file}: {e}")
         self._reconcile_orphaned_jobs()
+        self._prune_job_history()
 
     def _reconcile_orphaned_jobs(self) -> None:
         """Fail jobs left mid-flight by a process that is no longer running.
@@ -490,6 +491,32 @@ class TrainingJobManager:
                 job.profile_id,
             )
         self._save_jobs()
+
+    def _prune_job_history(self) -> None:
+        """Bound the growth of the persisted job history.
+
+        ``cleanup_completed_jobs`` existed but was never called from anywhere
+        in ``src/``, so ``training_jobs.json`` grew without limit for the life
+        of the deployment. Pruning once per start keeps it bounded without
+        deleting anything mid-run.
+
+        Only COMPLETED jobs are pruned, and the retention is deliberately
+        generous: failed and cancelled jobs are what you go back to read when
+        diagnosing, and this deployment's job history is user-visible.
+        """
+        keep = os.environ.get('AUTOVOICE_KEEP_COMPLETED_JOBS')
+        try:
+            keep_count = int(keep) if keep else 50
+        except ValueError:
+            keep_count = 50
+        if keep_count < 0:
+            return
+        removed = self.cleanup_completed_jobs(keep_count=keep_count)
+        if removed:
+            logger.info(
+                "Pruned %d completed training jobs on startup (keeping %d)",
+                len(removed), keep_count,
+            )
 
     def _save_jobs(self) -> None:
         """Save jobs to persistence file.

@@ -154,6 +154,53 @@ class TestProfileMarkClearing:
         assert saved == {}, "reconciliation clobbered another job's profile"
 
 
+class TestJobHistoryPruning:
+    """cleanup_completed_jobs existed but was never called from src/, so
+    training_jobs.json grew without limit for the life of the deployment."""
+
+    def _completed(self, n):
+        return [
+            _job(f"job-{i:03d}", "completed", completed_at=f"2026-07-{i%28+1:02d}T00:00:00")
+            for i in range(n)
+        ]
+
+    def test_history_is_bounded_on_startup(self, storage, monkeypatch):
+        monkeypatch.setenv("AUTOVOICE_KEEP_COMPLETED_JOBS", "10")
+        _write_jobs(storage, self._completed(40))
+        mgr = TrainingJobManager(storage_path=storage)
+        assert len(mgr._jobs) == 10
+
+    def test_failed_and_cancelled_are_kept(self, storage, monkeypatch):
+        """Terminal-but-not-completed jobs are what you read when diagnosing."""
+        monkeypatch.setenv("AUTOVOICE_KEEP_COMPLETED_JOBS", "1")
+        _write_jobs(storage, self._completed(5) + [
+            _job("job-bad", "failed"),
+            _job("job-stopped", "cancelled"),
+        ])
+        mgr = TrainingJobManager(storage_path=storage)
+        assert "job-bad" in mgr._jobs
+        assert "job-stopped" in mgr._jobs
+
+    def test_reconciled_orphan_is_not_immediately_pruned(self, storage, monkeypatch):
+        """An orphan becomes FAILED, so pruning completed jobs must not eat it."""
+        monkeypatch.setenv("AUTOVOICE_KEEP_COMPLETED_JOBS", "0")
+        _write_jobs(storage, [_job("job-dead", "running")])
+        mgr = TrainingJobManager(storage_path=storage)
+        assert mgr._jobs["job-dead"].status == JobStatus.FAILED.value
+
+    def test_default_retention_keeps_a_realistic_history(self, storage, monkeypatch):
+        monkeypatch.delenv("AUTOVOICE_KEEP_COMPLETED_JOBS", raising=False)
+        _write_jobs(storage, self._completed(41))
+        mgr = TrainingJobManager(storage_path=storage)
+        assert len(mgr._jobs) == 41  # 41 <= default 50, nothing dropped
+
+    def test_bad_env_value_falls_back_to_default(self, storage, monkeypatch):
+        monkeypatch.setenv("AUTOVOICE_KEEP_COMPLETED_JOBS", "not-a-number")
+        _write_jobs(storage, self._completed(60))
+        mgr = TrainingJobManager(storage_path=storage)
+        assert len(mgr._jobs) == 50
+
+
 class TestUnblocksAutoTraining:
     def test_orphan_no_longer_blocks_auto_training(self, storage):
         """The whole point: a stuck job gates both auto-triggers via a

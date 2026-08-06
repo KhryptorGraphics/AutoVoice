@@ -505,26 +505,40 @@ class VoiceProfileStore:
         return torch.load(weights_path, map_location="cpu")
 
     def has_trained_model(self, profile_id: str) -> bool:
-        """Check if a profile has trained LoRA weights.
+        """Check whether a profile has a trained model of any engine.
 
         Args:
             profile_id: ID of the voice profile
 
         Returns:
-            True if weights file exists, False otherwise
+            True if a trained artifact exists, False otherwise
         """
         if not self.exists(profile_id):
             return False
         if os.path.exists(self._artifact_manifest_path(profile_id)):
             return True
-        return any(
+        if any(
             os.path.exists(path)
             for path in (
                 self._lora_weights_path(profile_id),
                 self._legacy_lora_weights_path(profile_id),
                 self._full_model_path(profile_id),
             )
-        )
+        ):
+            return True
+        # Engines that keep their artifacts outside the profile directory
+        # record where the manifest actually lives. so-vits-svc-fork registers
+        # into data/fork_models/<id>.json and writes nothing under
+        # trained_models_dir, so checking only the derived paths above
+        # reported has_trained_model=False for a fully trained, serving voice
+        # while the same profile's training_status read 'ready'.
+        try:
+            recorded = (self.load(profile_id) or {}).get(
+                "runtime_artifact_manifest_path"
+            )
+        except Exception:
+            return False
+        return bool(recorded) and os.path.exists(recorded)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Progressive Training Sample Management
