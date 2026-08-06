@@ -299,7 +299,26 @@ class TestSubprocessErrorTail:
     def test_progress_bars_stripped(self):
         tail = _meaningful_tail("real error here\n" + self._bars())
         assert "real error here" in tail
-        assert "it/s]" not in tail
+        # the hundreds of redraws are gone; only the single kept marker remains
+        assert tail.count("it/s]") <= 1
+
+    def test_furthest_progress_is_kept(self):
+        """How far it got is half the diagnosis: these steps run per file over
+        hundreds of clips, so 'died at 195/911' says the failure is
+        data-dependent and points at which file to inspect."""
+        raw = self._bars(n=200) + "\nValueError: something broke\n"
+        tail = _meaningful_tail(raw)
+        assert tail.startswith("[progress: ")
+        assert "199/200" in tail.splitlines()[0]
+        assert "ValueError: something broke" in tail
+
+    def test_no_progress_marker_when_none_logged(self):
+        tail = _meaningful_tail("Traceback (most recent call last):\nboom\n")
+        assert "[progress:" not in tail
+
+    def test_progress_prefix_respects_limit(self):
+        raw = self._bars(n=50) + "\n" + ("x" * 5000)
+        assert len(_meaningful_tail(raw, limit=300)) <= 300
 
     def test_bars_only_log_still_returns_something(self):
         assert _meaningful_tail(self._bars()).strip() != ""

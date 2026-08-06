@@ -68,17 +68,28 @@ def _meaningful_tail(raw: str, limit: int = 800) -> str:
     ``pre-hubert failed: 21%|##  | 195/911 [02:44<10:23,`` and the operator
     has no idea what actually went wrong. Strip the bar redraws, and when a
     traceback is present prefer it over whatever happened to come last.
+
+    The furthest progress marker is kept as a one-line prefix, because *how
+    far it got* is the other half of the diagnosis: these steps run per file
+    over hundreds of clips, so "died at 195/911" is what tells you the
+    failure is data-dependent rather than a bad setup, and which file to go
+    look at. It is the count that is useful, not the hundreds of redraws.
     """
-    lines = [ln.strip() for ln in raw.replace("\r", "\n").splitlines()]
-    lines = [ln for ln in lines if ln and not _TQDM_BAR.match(ln)]
+    all_lines = [ln.strip() for ln in raw.replace("\r", "\n").splitlines()]
+    progress = [ln for ln in all_lines if _TQDM_BAR.match(ln)]
+    lines = [ln for ln in all_lines if ln and not _TQDM_BAR.match(ln)]
+
+    furthest = f"[progress: {progress[-1]}]\n" if progress else ""
+    budget = limit - len(furthest)
+
     if not lines:
         # Nothing but progress bars - fall back to the raw tail so we at
         # least return *something* rather than an empty error.
-        return raw[-limit:].strip()
+        return (furthest + raw[-budget:].strip()).strip()
     for i, line in enumerate(lines):
         if line.startswith("Traceback (most recent call last)"):
-            return "\n".join(lines[i:])[-limit:]
-    return "\n".join(lines)[-limit:]
+            return furthest + "\n".join(lines[i:])[-budget:]
+    return furthest + "\n".join(lines)[-budget:]
 
 
 def _supervise(proc, label: str, cancel_event, timeout: Optional[int],
