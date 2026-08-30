@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ChangeEvent } from 'react'
 import {
   Settings, Download, Upload, Loader2, ChevronDown, ChevronUp
 } from 'lucide-react'
@@ -53,7 +53,9 @@ const DEFAULT_UI_CONFIG: UIConfig = {
 
 export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['ui']))
-  const [hasChanges, setHasChanges] = useState(false)
+  // ponytail: range inputs used to fire one PATCH (and one success toast) per
+  // step of a drag — hold the dragged value locally and commit once on release.
+  const [sliderDraft, setSliderDraft] = useState<Record<string, number>>({})
   const [importError, setImportError] = useState<string | null>(null)
   const queryClient = useQueryClient()
   const toast = useToastContext()
@@ -138,6 +140,14 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
   const isLoading = loadingSeparation || loadingPitch || loadingRouter
   const isSaving = updateSeparationMutation.isPending || updatePitchMutation.isPending || updateAudioRouterMutation.isPending
 
+  const dragValue = (key: string, serverValue: number) => sliderDraft[key] ?? serverValue
+  const onDrag = (key: string) => (event: ChangeEvent<HTMLInputElement>) =>
+    setSliderDraft(prev => ({ ...prev, [key]: parseFloat(event.target.value) }))
+  const onCommit = (key: string, apply: (value: number) => void) => () => {
+    const value = sliderDraft[key]
+    if (value !== undefined) apply(value)
+  }
+
   const toggleSection = (section: string) => {
     setExpandedSections(prev => {
       const next = new Set(prev)
@@ -154,7 +164,6 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
   const saveUIConfig = (updates: Partial<UIConfig>) => {
     const newConfig = { ...uiConfig, ...updates }
     setUIConfig(newConfig)
-    setHasChanges(true)
     onConfigChange?.()
   }
 
@@ -206,7 +215,7 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
           saveUIConfig(imported.ui)
         }
 
-        setHasChanges(false)
+        setSliderDraft({})
         toast.success('System configuration imported')
       } catch (err) {
         const message = (err as Error).message || 'Failed to import configuration'
@@ -226,7 +235,7 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
         updateAudioRouterMutation.mutateAsync(DEFAULT_AUDIO_ROUTER_CONFIG),
       ])
       saveUIConfig(DEFAULT_UI_CONFIG)
-      setHasChanges(false)
+      setSliderDraft({})
       toast.success('System configuration reset to defaults')
     } catch (err) {
       console.error('Failed to reset config:', err)
@@ -253,9 +262,7 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
             <Settings size={18} className="text-blue-400" />
             <h3 className="font-semibold">System Configuration</h3>
           </div>
-          {hasChanges && (
-            <span className="text-xs text-yellow-400">Unsaved changes</span>
-          )}
+          <span className="text-xs text-gray-500">Changes save as you make them</span>
         </div>
 
         {/* Action Buttons */}
@@ -313,9 +320,15 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
               <SectionHeader id="ui" title="UI Settings" />
               {expandedSections.has('ui') && (
                 <div className="mt-2 p-3 bg-gray-750 rounded-lg space-y-4">
+                  <p className="text-xs text-amber-300/80" data-testid="ui-config-scope-note">
+                    Stored in this browser and included in Export, but no screen reads these yet —
+                    changing them will not alter the app until they are wired up.
+                  </p>
                   <div className="flex items-center justify-between">
                     <label className="text-sm">Compact Mode</label>
                     <button
+                      aria-label="Compact Mode"
+                      aria-pressed={uiConfig.compactMode}
                       onClick={() => saveUIConfig({ compactMode: !uiConfig.compactMode })}
                       className={clsx(
                         'w-10 h-5 rounded-full transition-colors relative',
@@ -334,6 +347,8 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                   <div className="flex items-center justify-between">
                     <label className="text-sm">Show Advanced Controls</label>
                     <button
+                      aria-label="Show Advanced Controls"
+                      aria-pressed={uiConfig.showAdvancedControls}
                       onClick={() => saveUIConfig({ showAdvancedControls: !uiConfig.showAdvancedControls })}
                       className={clsx(
                         'w-10 h-5 rounded-full transition-colors relative',
@@ -406,13 +421,15 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       type="range"
                       min={0}
                       max={5}
-                      value={separationConfig.shifts}
-                      onChange={e => updateSeparationMutation.mutate({ shifts: parseInt(e.target.value) })}
+                      value={dragValue('shifts', separationConfig.shifts)}
+                      onChange={onDrag('shifts')}
+                      onPointerUp={onCommit('shifts', v => updateSeparationMutation.mutate({ shifts: Math.round(v) }))}
+                      onKeyUp={onCommit('shifts', v => updateSeparationMutation.mutate({ shifts: Math.round(v) }))}
                       className="mt-1 w-full"
                     />
                     <div className="flex justify-between text-xs text-gray-500">
                       <span>Fast (0)</span>
-                      <span>{separationConfig.shifts}</span>
+                      <span>{dragValue('shifts', separationConfig.shifts)}</span>
                       <span>Quality (5)</span>
                     </div>
                   </div>
@@ -424,12 +441,14 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       min={0}
                       max={0.9}
                       step={0.05}
-                      value={separationConfig.overlap}
-                      onChange={e => updateSeparationMutation.mutate({ overlap: parseFloat(e.target.value) })}
+                      value={dragValue('overlap', separationConfig.overlap)}
+                      onChange={onDrag('overlap')}
+                      onPointerUp={onCommit('overlap', v => updateSeparationMutation.mutate({ overlap: v }))}
+                      onKeyUp={onCommit('overlap', v => updateSeparationMutation.mutate({ overlap: v }))}
                       className="mt-1 w-full"
                     />
                     <div className="text-xs text-gray-500 text-right">
-                      {(separationConfig.overlap * 100).toFixed(0)}%
+                      {(dragValue('overlap', separationConfig.overlap) * 100).toFixed(0)}%
                     </div>
                   </div>
                 </div>
@@ -467,19 +486,44 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       min={0.5}
                       max={2}
                       step={0.05}
-                      value={appSettings.multi_speaker_backing_gain ?? 1.0}
-                      onChange={e => updateAppSettingsMutation.mutate({
-                        multi_speaker_backing_gain: parseFloat(e.target.value),
-                      })}
+                      value={dragValue('backingGain', appSettings.multi_speaker_backing_gain ?? 1.0)}
+                      onChange={onDrag('backingGain')}
+                      onPointerUp={onCommit('backingGain', v => updateAppSettingsMutation.mutate({ multi_speaker_backing_gain: v }))}
+                      onKeyUp={onCommit('backingGain', v => updateAppSettingsMutation.mutate({ multi_speaker_backing_gain: v }))}
                       className="mt-1 w-full"
                     />
                     <div className="flex justify-between text-xs text-gray-500">
                       <span>Quieter (0.5×)</span>
-                      <span>{(appSettings.multi_speaker_backing_gain ?? 1.0).toFixed(2)}×</span>
+                      <span>{dragValue('backingGain', appSettings.multi_speaker_backing_gain ?? 1.0).toFixed(2)}×</span>
                       <span>Louder (2×)</span>
                     </div>
                     <p className="mt-1 text-xs text-gray-500">
                       1.0× matches the original backing stem&apos;s loudness.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Unconverted-backing loudness</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={dragValue('keptBackingGain', appSettings.multi_speaker_kept_backing_gain ?? 1.0)}
+                      onChange={onDrag('keptBackingGain')}
+                      onPointerUp={onCommit('keptBackingGain', v => updateAppSettingsMutation.mutate({ multi_speaker_kept_backing_gain: v }))}
+                      onKeyUp={onCommit('keptBackingGain', v => updateAppSettingsMutation.mutate({ multi_speaker_kept_backing_gain: v }))}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Silent (0)</span>
+                      <span>{dragValue('keptBackingGain', appSettings.multi_speaker_kept_backing_gain ?? 1.0).toFixed(2)}×</span>
+                      <span>Original level (1.0)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      When a harmony line fails to convert, its unmatched separation residue is mixed in at
+                      this fraction of its original level. 1.0 matches today&apos;s behaviour; lower it if
+                      untouched backing reads as buzzy or too loud next to the converted lead.
                     </p>
                   </div>
 
@@ -490,15 +534,15 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       min={0.3}
                       max={0.95}
                       step={0.05}
-                      value={appSettings.multi_speaker_backing_voiced_min ?? 0.65}
-                      onChange={e => updateAppSettingsMutation.mutate({
-                        multi_speaker_backing_voiced_min: parseFloat(e.target.value),
-                      })}
+                      value={dragValue('backingVoicedMin', appSettings.multi_speaker_backing_voiced_min ?? 0.65)}
+                      onChange={onDrag('backingVoicedMin')}
+                      onPointerUp={onCommit('backingVoicedMin', v => updateAppSettingsMutation.mutate({ multi_speaker_backing_voiced_min: v }))}
+                      onKeyUp={onCommit('backingVoicedMin', v => updateAppSettingsMutation.mutate({ multi_speaker_backing_voiced_min: v }))}
                       className="mt-1 w-full"
                     />
                     <div className="flex justify-between text-xs text-gray-500">
                       <span>Convert more (0.3)</span>
-                      <span>{(appSettings.multi_speaker_backing_voiced_min ?? 0.65).toFixed(2)}</span>
+                      <span>{dragValue('backingVoicedMin', appSettings.multi_speaker_backing_voiced_min ?? 0.65).toFixed(2)}</span>
                       <span>Convert less (0.95)</span>
                     </div>
                     <p className="mt-1 text-xs text-gray-500">
@@ -514,15 +558,15 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       min={0.3}
                       max={0.95}
                       step={0.05}
-                      value={appSettings.multi_speaker_karaoke_leak_voiced_min ?? 0.65}
-                      onChange={e => updateAppSettingsMutation.mutate({
-                        multi_speaker_karaoke_leak_voiced_min: parseFloat(e.target.value),
-                      })}
+                      value={dragValue('karaokeLeakMin', appSettings.multi_speaker_karaoke_leak_voiced_min ?? 0.65)}
+                      onChange={onDrag('karaokeLeakMin')}
+                      onPointerUp={onCommit('karaokeLeakMin', v => updateAppSettingsMutation.mutate({ multi_speaker_karaoke_leak_voiced_min: v }))}
+                      onKeyUp={onCommit('karaokeLeakMin', v => updateAppSettingsMutation.mutate({ multi_speaker_karaoke_leak_voiced_min: v }))}
                       className="mt-1 w-full"
                     />
                     <div className="flex justify-between text-xs text-gray-500">
                       <span>Cautious (0.3)</span>
-                      <span>{(appSettings.multi_speaker_karaoke_leak_voiced_min ?? 0.65).toFixed(2)}</span>
+                      <span>{dragValue('karaokeLeakMin', appSettings.multi_speaker_karaoke_leak_voiced_min ?? 0.65).toFixed(2)}</span>
                       <span>Trusting (0.95)</span>
                     </div>
                     <p className="mt-1 text-xs text-gray-500">
@@ -530,6 +574,173 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       as a leak and diarization is used instead. Solo covers with strong self-harmony doubles
                       can trip the guard — raise toward 0.85 to accept the split on such tracks.
                     </p>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center gap-2 text-sm text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={appSettings.multi_speaker_convert_backing ?? false}
+                        onChange={e => updateAppSettingsMutation.mutate({ multi_speaker_convert_backing: e.target.checked })}
+                        data-testid="convert-backing-checkbox"
+                      />
+                      Convert backing vocals
+                    </label>
+                    <p className="mt-1 text-xs text-gray-500">Off by default. When off, harmony and backing lines stay in the original singer&apos;s voice.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Treat backing stack as one doubled voice</label>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={0.99}
+                      step={0.01}
+                      value={dragValue('backingWholeMin', appSettings.multi_speaker_backing_whole_voiced_min ?? 0.7)}
+                      onChange={onDrag('backingWholeMin')}
+                      onPointerUp={onCommit('backingWholeMin', v => updateAppSettingsMutation.mutate({ multi_speaker_backing_whole_voiced_min: v }))}
+                      onKeyUp={onCommit('backingWholeMin', v => updateAppSettingsMutation.mutate({ multi_speaker_backing_whole_voiced_min: v }))}
+                      className="mt-1 w-full"
+                      data-testid="backingWholeMin-slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Decompose (0.3)</span>
+                      <span data-testid="backingWholeMin-value">{dragValue('backingWholeMin', appSettings.multi_speaker_backing_whole_voiced_min ?? 0.7).toFixed(2)}</span>
+                      <span>Convert whole (0.99)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">Above this voiced fraction the backing stack is converted in one pass — faster and seamless, but a mono-F0 engine flattens genuine harmony. Raise it to force per-line decomposition.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Lead vs backing threshold</label>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={0.95}
+                      step={0.05}
+                      value={dragValue('mergeVoicedMin', appSettings.multi_speaker_merge_voiced_min ?? 0.65)}
+                      onChange={onDrag('mergeVoicedMin')}
+                      onPointerUp={onCommit('mergeVoicedMin', v => updateAppSettingsMutation.mutate({ multi_speaker_merge_voiced_min: v }))}
+                      onKeyUp={onCommit('mergeVoicedMin', v => updateAppSettingsMutation.mutate({ multi_speaker_merge_voiced_min: v }))}
+                      className="mt-1 w-full"
+                      data-testid="mergeVoicedMin-slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>More leads (0.3)</span>
+                      <span data-testid="mergeVoicedMin-value">{dragValue('mergeVoicedMin', appSettings.multi_speaker_merge_voiced_min ?? 0.65).toFixed(2)}</span>
+                      <span>More backing (0.95)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">Decides whether each non-primary singer is treated as a lead or as backing.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Minimum line coverage</label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1.0}
+                      step={0.05}
+                      value={dragValue('minCoverage', appSettings.multi_speaker_min_coverage ?? 0.9)}
+                      onChange={onDrag('minCoverage')}
+                      onPointerUp={onCommit('minCoverage', v => updateAppSettingsMutation.mutate({ multi_speaker_min_coverage: v }))}
+                      onKeyUp={onCommit('minCoverage', v => updateAppSettingsMutation.mutate({ multi_speaker_min_coverage: v }))}
+                      className="mt-1 w-full"
+                      data-testid="minCoverage-slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Lenient (0.1)</span>
+                      <span data-testid="minCoverage-value">{dragValue('minCoverage', appSettings.multi_speaker_min_coverage ?? 0.9).toFixed(2)}</span>
+                      <span>Strict (1.0)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">How much of a detected line must be covered before it is accepted.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Minimum segment length</label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={30.0}
+                      step={0.1}
+                      value={dragValue('minSegmentS', appSettings.multi_speaker_min_segment_s ?? 2.0)}
+                      onChange={onDrag('minSegmentS')}
+                      onPointerUp={onCommit('minSegmentS', v => updateAppSettingsMutation.mutate({ multi_speaker_min_segment_s: v }))}
+                      onKeyUp={onCommit('minSegmentS', v => updateAppSettingsMutation.mutate({ multi_speaker_min_segment_s: v }))}
+                      className="mt-1 w-full"
+                      data-testid="minSegmentS-slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>0.1 s</span>
+                      <span data-testid="minSegmentS-value">{dragValue('minSegmentS', appSettings.multi_speaker_min_segment_s ?? 2.0).toFixed(1)}</span>
+                      <span>30 s</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">Shorter detected segments than this are discarded.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Minimum backing ratio</label>
+                    <input
+                      type="range"
+                      min={0.0}
+                      max={1.0}
+                      step={0.01}
+                      value={dragValue('minBackingRatio', appSettings.multi_speaker_min_backing_ratio ?? 0.01)}
+                      onChange={onDrag('minBackingRatio')}
+                      onPointerUp={onCommit('minBackingRatio', v => updateAppSettingsMutation.mutate({ multi_speaker_min_backing_ratio: v }))}
+                      onKeyUp={onCommit('minBackingRatio', v => updateAppSettingsMutation.mutate({ multi_speaker_min_backing_ratio: v }))}
+                      className="mt-1 w-full"
+                      data-testid="minBackingRatio-slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>0.0</span>
+                      <span data-testid="minBackingRatio-value">{dragValue('minBackingRatio', appSettings.multi_speaker_min_backing_ratio ?? 0.01).toFixed(2)}</span>
+                      <span>1.0</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">Backing stems quieter than this fraction of the lead are ignored.</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Fork HQ vocal lane */}
+            <div>
+              <SectionHeader id="forkhq" title="Fork HQ Vocal Lane" />
+              {expandedSections.has('forkhq') && appSettings && (
+                <div className="mt-2 p-3 bg-gray-750 rounded-lg space-y-4">
+
+                  <div>
+                    <label className="flex items-center gap-2 text-sm text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={appSettings.fork_hq_match_source_bandwidth ?? true}
+                        onChange={e => updateAppSettingsMutation.mutate({ fork_hq_match_source_bandwidth: e.target.checked })}
+                        data-testid="match-source-bandwidth-checkbox"
+                      />
+                      Match source bandwidth
+                    </label>
+                    <p className="mt-1 text-xs text-gray-500">The decoder is full-band; a separated stem off a lossy encode usually is not. Measured on a reference song the render carried +25 dB more 16–22 kHz energy than the source had. On by default; a no-op on a genuinely full-band source.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Converted vocal stereo width</label>
+                    <input
+                      type="range"
+                      min={0.0}
+                      max={1.0}
+                      step={0.01}
+                      value={dragValue('forkHqStereoWidth', appSettings.fork_hq_stereo_width ?? 0.0)}
+                      onChange={onDrag('forkHqStereoWidth')}
+                      onPointerUp={onCommit('forkHqStereoWidth', v => updateAppSettingsMutation.mutate({ fork_hq_stereo_width: v }))}
+                      onKeyUp={onCommit('forkHqStereoWidth', v => updateAppSettingsMutation.mutate({ fork_hq_stereo_width: v }))}
+                      className="mt-1 w-full"
+                      data-testid="forkHqStereoWidth-slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Centred (0.0)</span>
+                      <span data-testid="forkHqStereoWidth-value">{dragValue('forkHqStereoWidth', appSettings.fork_hq_stereo_width ?? 0.0).toFixed(2)}</span>
+                      <span>Wide (1.0)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">0.0 keeps the historical hard-centred vocal. Costs two extra conversion passes. Above ~0.5 the side channel reads as a second, phasey take rather than width.</p>
                   </div>
                 </div>
               )}
@@ -578,6 +789,8 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                   <div className="flex items-center justify-between">
                     <label className="text-sm">Use GPU</label>
                     <button
+                      aria-label="Use GPU for pitch extraction"
+                      aria-pressed={pitchConfig.use_gpu}
                       onClick={() => updatePitchMutation.mutate({ use_gpu: !pitchConfig.use_gpu })}
                       className={clsx(
                         'w-10 h-5 rounded-full transition-colors relative',
@@ -623,12 +836,14 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       min={0}
                       max={2}
                       step={0.1}
-                      value={audioRouterConfig.voice_gain}
-                      onChange={e => updateAudioRouterMutation.mutate({ voice_gain: parseFloat(e.target.value) })}
+                      value={dragValue('voiceGain', audioRouterConfig.voice_gain)}
+                      onChange={onDrag('voiceGain')}
+                      onPointerUp={onCommit('voiceGain', v => updateAudioRouterMutation.mutate({ voice_gain: v }))}
+                      onKeyUp={onCommit('voiceGain', v => updateAudioRouterMutation.mutate({ voice_gain: v }))}
                       className="mt-1 w-full"
                     />
                     <div className="text-xs text-gray-500 text-right">
-                      {(audioRouterConfig.voice_gain * 100).toFixed(0)}%
+                      {(dragValue('voiceGain', audioRouterConfig.voice_gain) * 100).toFixed(0)}%
                     </div>
                   </div>
 
@@ -639,12 +854,14 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       min={0}
                       max={2}
                       step={0.1}
-                      value={audioRouterConfig.instrumental_gain}
-                      onChange={e => updateAudioRouterMutation.mutate({ instrumental_gain: parseFloat(e.target.value) })}
+                      value={dragValue('instrumentalGain', audioRouterConfig.instrumental_gain)}
+                      onChange={onDrag('instrumentalGain')}
+                      onPointerUp={onCommit('instrumentalGain', v => updateAudioRouterMutation.mutate({ instrumental_gain: v }))}
+                      onKeyUp={onCommit('instrumentalGain', v => updateAudioRouterMutation.mutate({ instrumental_gain: v }))}
                       className="mt-1 w-full"
                     />
                     <div className="text-xs text-gray-500 text-right">
-                      {(audioRouterConfig.instrumental_gain * 100).toFixed(0)}%
+                      {(dragValue('instrumentalGain', audioRouterConfig.instrumental_gain) * 100).toFixed(0)}%
                     </div>
                   </div>
                 </div>

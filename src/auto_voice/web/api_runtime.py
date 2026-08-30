@@ -341,6 +341,8 @@ def get_app_settings():
                            cfg.get('multi_speaker_separator', 'diarization'))
         payload.setdefault('multi_speaker_backing_gain',
                            float(cfg.get('multi_speaker_backing_gain', 1.0)))
+        payload.setdefault('multi_speaker_kept_backing_gain',
+                           float(cfg.get('multi_speaker_kept_backing_gain', 1.0)))
         payload.setdefault(
             'multi_speaker_backing_voiced_min',
             float(cfg.get('multi_speaker_backing_voiced_min',
@@ -403,8 +405,32 @@ def update_app_settings():
 
         for key, lo, hi in (
             ('multi_speaker_backing_gain', 0.1, 3.0),
+            # Attenuates ONLY backing that gates declined to convert (raw
+            # separation residue, no level-matching) - never the successfully
+            # converted or deliberately-preserved portions. Default 1.0
+            # reproduces today's behaviour exactly; lower per-song by ear.
+            ('multi_speaker_kept_backing_gain', 0.0, 1.0),
             ('multi_speaker_backing_voiced_min', 0.3, 0.95),
             ('multi_speaker_karaoke_leak_voiced_min', 0.3, 0.95),
+            # Above this voiced fraction the backing stack is treated as a
+            # single doubled voice and converted whole. That is faster and
+            # leaves no residual, but a mono-F0 engine flattens genuine
+            # harmony - so operators need to raise it per song to force the
+            # per-line comb decomposition instead.
+            ('multi_speaker_backing_whole_voiced_min', 0.3, 0.99),
+            # Decides lead vs backing for each non-primary singer. Calibrated
+            # margin per the pipeline docstring: leads 0.76-0.87, keep-cases
+            # 0.14-0.51. Allow the full span so an operator can move a singer
+            # either way on a song the calibration did not anticipate.
+            ('multi_speaker_merge_voiced_min', 0.3, 0.95),
+            ('multi_speaker_min_coverage', 0.1, 1.0),
+            ('multi_speaker_min_segment_s', 0.1, 30.0),
+            ('multi_speaker_min_backing_ratio', 0.0, 1.0),
+            # Stereo width of the converted vocal. 0.0 = the historical hard
+            # centre; ~0.24 matched this song's source vocal. Above ~0.5 the
+            # side channel stops reading as width and starts reading as a
+            # second, phasey take.
+            ('fork_hq_stereo_width', 0.0, 1.0),
         ):
             if key in data:
                 try:
@@ -417,6 +443,23 @@ def update_app_settings():
                     )
                 updates[key] = value
 
+        for bool_key in ('multi_speaker_convert_backing',
+                         'fork_hq_match_source_bandwidth'):
+            if bool_key in data and not isinstance(data[bool_key], bool):
+                return root.validation_error_response(
+                    f'{bool_key} must be true or false'
+                )
+            if bool_key in data:
+                updates[bool_key] = data[bool_key]
+
+        if 'multi_speaker_convert_backing' in data:
+            value = data['multi_speaker_convert_backing']
+            if not isinstance(value, bool):
+                return root.validation_error_response(
+                    'multi_speaker_convert_backing must be true or false'
+                )
+            updates['multi_speaker_convert_backing'] = value
+
         if not updates:
             return root.validation_error_response('No supported app settings were provided')
 
@@ -428,9 +471,8 @@ def update_app_settings():
         # without a restart (create_app reapplies persisted values on boot).
         pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
         if pipeline is not None and isinstance(getattr(pipeline, 'config', None), dict):
-            for key in ('multi_speaker_separator', 'multi_speaker_backing_gain',
-                        'multi_speaker_backing_voiced_min',
-                        'multi_speaker_karaoke_leak_voiced_min'):
+            from ..runtime_contract import PIPELINE_SETTING_KEYS
+            for key in PIPELINE_SETTING_KEYS:
                 if key in updates:
                     pipeline.config[key] = updates[key]
 

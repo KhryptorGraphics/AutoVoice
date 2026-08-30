@@ -146,6 +146,7 @@ def test_app_settings_multi_speaker_knobs(training_ui_client):
             "multi_speaker_separator": "karaoke_model",
             "multi_speaker_backing_gain": 1.4,
             "multi_speaker_backing_voiced_min": 0.55,
+            "multi_speaker_kept_backing_gain": 0.5,
         },
     )
     assert update.status_code == 200
@@ -153,11 +154,13 @@ def test_app_settings_multi_speaker_knobs(training_ui_client):
     assert payload["multi_speaker_separator"] == "karaoke_model"
     assert payload["multi_speaker_backing_gain"] == 1.4
     assert payload["multi_speaker_backing_voiced_min"] == 0.55
+    assert payload["multi_speaker_kept_backing_gain"] == 0.5
 
     # Persisted: GET returns the stored values, not config defaults.
     fetched = training_ui_client.get("/api/v1/settings/app").get_json()
     assert fetched["multi_speaker_separator"] == "karaoke_model"
     assert fetched["multi_speaker_backing_gain"] == 1.4
+    assert fetched["multi_speaker_kept_backing_gain"] == 0.5
 
     bad_separator = training_ui_client.patch(
         "/api/v1/settings/app",
@@ -170,6 +173,19 @@ def test_app_settings_multi_speaker_knobs(training_ui_client):
         json={"multi_speaker_backing_gain": 99},
     )
     assert bad_gain.status_code == 400
+
+    bad_kept_gain = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"multi_speaker_kept_backing_gain": 1.5},
+    )
+    assert bad_kept_gain.status_code == 400
+
+
+def test_app_settings_kept_backing_gain_default(training_ui_client):
+    """Unset must reproduce today's behaviour exactly - no hidden default
+    change alters every multi-speaker conversion on one song's evidence."""
+    fetched = training_ui_client.get("/api/v1/settings/app").get_json()
+    assert fetched["multi_speaker_kept_backing_gain"] == 1.0
 
 
 def test_training_pause_resume_and_telemetry_routes(training_ui_app, training_ui_client):

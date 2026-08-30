@@ -162,6 +162,69 @@ PRESETS = {
 }
 
 
+def _detect_bandwidth_hz(audio: np.ndarray, sr: int, floor_db: float = 40.0) -> float:
+    """Highest frequency in ``audio`` that still carries real content.
+
+    Separated stems are routinely sourced from lossy encodes and brick-wall
+    well below Nyquist. The fork decoder is trained on full-band vocals and
+    happily synthesises an octave above that wall: measured on this song the
+    render carried +25 dB more 16-22 kHz energy than the source, which has
+    essentially nothing up there. That is invented content no input evidence
+    supports, and the checkpoint the operator rated best carried the least of
+    it.
+
+    Returns Nyquist for a genuinely full-band input, so matching against this
+    is a no-op on sources that were never band-limited.
+    """
+    import librosa
+
+    audio = np.asarray(audio, dtype=np.float32).ravel()
+    n_fft = 4096
+    nyquist = sr * 0.5
+    if audio.size < n_fft * 2:
+        return nyquist
+    spec = np.abs(librosa.stft(audio, n_fft=n_fft, hop_length=n_fft // 2))
+    psd_db = 10.0 * np.log10(np.square(spec, dtype=np.float64).mean(axis=1) + 1e-20)
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    # Reference against the band where a voice always has energy rather than
+    # the peak bin, so one resonance cannot drag the threshold around.
+    ref_band = (freqs >= 300.0) & (freqs <= 4000.0)
+    if not ref_band.any():
+        return nyquist
+    threshold = float(np.median(psd_db[ref_band])) - float(floor_db)
+    # Band the spectrum before thresholding. Testing raw bins finds the last
+    # bin above the floor, and a single stray bin next to Nyquist then reports
+    # a full-band signal for audio that visibly walls 6 kHz lower.
+    band_hz = 500.0
+    edges = np.arange(0.0, nyquist, band_hz)
+    cutoff = 0.0
+    for lo in edges:
+        in_band = (freqs >= lo) & (freqs < lo + band_hz)
+        if in_band.any() and float(np.median(psd_db[in_band])) > threshold:
+            cutoff = min(lo + band_hz, nyquist)
+    return float(cutoff) if cutoff > 0.0 else nyquist
+
+
+def _lowpass_to(audio: np.ndarray, sr: int, cutoff_hz: float) -> np.ndarray:
+    """Zero-phase lowpass at ``cutoff_hz``. Returns the input unchanged if the
+    cutoff is at or above Nyquist, or if the filter cannot be built."""
+    from scipy.signal import butter, sosfiltfilt
+
+    audio = np.asarray(audio, dtype=np.float32)
+    nyquist = sr * 0.5
+    if not (0.0 < cutoff_hz < nyquist):
+        return audio
+    # sosfiltfilt needs more samples than the filter's padding length.
+    if audio.shape[-1] < 64:
+        return audio
+    # Order 20: at order 10 the transition band still sat above the detector's
+    # own floor, so a signal filtered at C re-measured as C+1000 Hz and 3 dB
+    # more of the invented octave survived. Order 20 halves that to the 500 Hz
+    # banding resolution and is numerically stable in SOS form.
+    sos = butter(20, cutoff_hz / nyquist, btype="low", output="sos")
+    return sosfiltfilt(sos, audio.astype(np.float64), axis=-1).astype(np.float32)
+
+
 class SingingConversionPipeline:
     """Main voice conversion pipeline for singing audio."""
 
@@ -619,8 +682,24 @@ class SingingConversionPipeline:
                 dtype=np.float32,
             )
             n = min(len(converted), len(new_backing))
-            conv_rms = float(np.sqrt(np.mean(np.square(converted[:n], dtype=np.float64))) + 1e-12)
-            gain = line_rms / conv_rms
+            # Level-match over the line's OWN note spans, not the whole track.
+            # extract is silent between notes but the converted signal is not
+            # (the engine emits low-level output there), so a full-track
+            # conv_rms is inflated by however much silence that line happens to
+            # contain - and by a different amount per line. That made lines
+            # with sparser notes come back quieter than dense ones, which is
+            # audible as background singers at uneven volumes. Comparing both
+            # sides over the same active spans removes the silence term.
+            conv_active = _active_audio(converted[:n], sr, spans)
+            if len(conv_active) and len(extract_active):
+                ref_rms = float(np.sqrt(np.mean(np.square(extract_active, dtype=np.float64))))
+                conv_rms = float(np.sqrt(np.mean(np.square(conv_active, dtype=np.float64))) + 1e-12)
+            else:
+                # ponytail: fall back to the old whole-track ratio when a line
+                # has no measurable active audio; better a rough level than none.
+                ref_rms = line_rms
+                conv_rms = float(np.sqrt(np.mean(np.square(converted[:n], dtype=np.float64))) + 1e-12)
+            gain = ref_rms / conv_rms
             # Swap the line: remove the original extract, add the converted one.
             new_backing[:n] = new_backing[:n] - extract[:n] + converted[:n] * gain
             converted_count += 1
@@ -735,6 +814,18 @@ class SingingConversionPipeline:
                     "(VAD missed vocal content), using single-stem", coverage, min_cov)
                 return None
 
+            # Transpose backing/simul_backing before any conversion attempt,
+            # matching primary_track's later shift-then-convert treatment
+            # (below) - shifting after conversion would smear already-
+            # synthesized audio through a second phase-vocoder pass, and
+            # leaving kept backing unshifted would mismatch a transposed lead.
+            if pitch_shift:
+                backing = librosa.effects.pitch_shift(
+                    backing, sr=sr, n_steps=float(pitch_shift))
+                if simul_backing is not None:
+                    simul_backing = librosa.effects.pitch_shift(
+                        simul_backing, sr=sr, n_steps=float(pitch_shift))
+
             # Experimental: convert the backing stack to the target voice too
             # (per-line decomposition; falls back to keeping it original).
             do_convert_backing = (bool(convert_backing) if convert_backing is not None
@@ -750,6 +841,12 @@ class SingingConversionPipeline:
                 # doubles are safe to convert. Do it before the merge.
                 simul_backing, harmony = self._convert_backing_stack(
                     simul_backing, sr, target_profile_id, mm)
+                if harmony.get('mode') == 'kept':
+                    # Gates declined every line: raw separation residue with
+                    # no level-matching (unlike 'partial', which already went
+                    # through _finish_backing's RMS-restore).
+                    simul_backing = simul_backing * float(
+                        self.config.get('multi_speaker_kept_backing_gain', 1.0))
 
             if simul_backing is not None:
                 n2 = min(len(backing), len(simul_backing))
@@ -765,6 +862,9 @@ class SingingConversionPipeline:
                     and float(np.abs(backing).max()) > 1e-4):
                 backing, harmony = self._convert_backing_stack(
                     backing, sr, target_profile_id, mm)
+                if harmony.get('mode') == 'kept':
+                    backing = backing * float(
+                        self.config.get('multi_speaker_kept_backing_gain', 1.0))
             if harmony is not None:
                 info['backing_mode'] = harmony['mode']
                 info['harmony_lines'] = {
@@ -875,7 +975,102 @@ class SingingConversionPipeline:
             raise ConversionError("Fork conversion produced empty audio")
         conv = converted[:n] * float(vocal_volume)
         inst = inst_st[:, :n] * float(instrumental_volume)
-        mixed = np.stack([inst[0] + conv, inst[1] + conv], axis=-1)  # (n, 2) stereo
+
+        # Stereo image of the converted vocal.
+        #
+        # The fork returns mono, and adding it identically to both channels put
+        # the lead - the most prominent element in the mix - at a hard centre
+        # with zero width, while the instrumental kept its own. Measured on this
+        # song the source vocal is WIDER than the instrumental (0.245 vs 0.183),
+        # so that is a large part of the image thrown away, and listeners
+        # describe the result as "mono sounding".
+        #
+        # Two obvious repairs were measured and rejected. Re-panning the mono
+        # vocal by the original's per-frame L/R ratio recovers +1.8% - the width
+        # is decorrelation (doubles, stereo reverb), not panning. Converting L
+        # and R as independent streams overshoots to 4x the original width at
+        # correlation -0.04, i.e. two different-sounding takes.
+        #
+        # What works: keep the mono conversion as the mid, and take the side
+        # from the difference between an L-converted and R-converted pass of the
+        # same voice, scaled so the result matches the source vocal's measured
+        # width. The side carries only the target voice's own channel
+        # divergence, so nothing of the original singer leaks back in, and
+        # ``L + R == 2 * mid`` exactly, so mono playback is bit-identical to the
+        # centred behaviour at any width.
+        #
+        # Defaults to 0.0 (unchanged behaviour): this costs two extra fork
+        # passes, and no default should change for every conversion on one
+        # song's evidence.
+        stereo_width = float(self.config.get('fork_hq_stereo_width', 0.0) or 0.0)
+        side = None
+        if stereo_width > 0.0 and voc_st.shape[0] >= 2:
+            try:
+                pair = []
+                for ch in (0, 1):
+                    src_ch = np.ascontiguousarray(voc_st[ch])
+                    if pitch_shift:
+                        src_ch = librosa.effects.pitch_shift(
+                            src_ch, sr=sr, n_steps=float(pitch_shift))
+                    pair.append(np.asarray(
+                        mm.infer(src_ch, target_profile_id,
+                                 np.zeros(256, dtype=np.float32), sr),
+                        dtype=np.float32,
+                    ))
+                m = min(len(pair[0]), len(pair[1]), n)
+                raw_side = (pair[0][:m] - pair[1][:m]) * 0.5
+                side_rms = float(np.sqrt(np.mean(np.square(raw_side, dtype=np.float64))))
+                mid_rms = float(np.sqrt(np.mean(np.square(conv[:m], dtype=np.float64))))
+                if side_rms > 1e-9 and mid_rms > 1e-9:
+                    side = np.zeros(n, dtype=np.float32)
+                    side[:m] = raw_side * (stereo_width * mid_rms / side_rms)
+                else:
+                    side = None
+            except Exception as exc:
+                # A stereo treatment must never cost the conversion itself.
+                logger.warning("Fork HQ stereo widening failed, keeping centred vocal: %s", exc)
+                side = None
+
+        # Do not invent bandwidth the source never had. The decoder is
+        # full-band; a separated stem off a lossy encode usually is not, and
+        # the octave the model extrapolates above the source's wall is where
+        # the "electronic" character was measured. Filtering mid and side
+        # separately is equivalent to filtering L and R, and preserves
+        # ``L + R == 2 * mid`` exactly.
+        match_bandwidth = bool(self.config.get('fork_hq_match_source_bandwidth', True))
+        source_bandwidth_hz = None
+        applied_bandwidth_hz = None
+        if match_bandwidth:
+            try:
+                # Measure the ORIGINAL mix, not the separated stem. The
+                # separator emits its own energy above the source's wall, so a
+                # stem off a 16 kHz-limited song reads as full-band and the
+                # match silently no-ops. Caught end-to-end: "One Last Time"
+                # walls at 16 kHz, its vocal stem measured 22050, and the
+                # render kept +40 dB of invented top octave. `audio` is the
+                # original at `sr` here (resampled at most upward, which cannot
+                # add content above the source Nyquist).
+                source_bandwidth_hz = _detect_bandwidth_hz(
+                    audio.mean(axis=0) if audio.ndim > 1 else audio, sr)
+                if source_bandwidth_hz < sr * 0.5 * 0.95:
+                    conv = _lowpass_to(conv, sr, source_bandwidth_hz)
+                    if side is not None:
+                        side = _lowpass_to(side, sr, source_bandwidth_hz)
+                    applied_bandwidth_hz = source_bandwidth_hz
+                    logger.info(
+                        "Fork HQ: matched converted vocal to source bandwidth "
+                        "%.0f Hz", source_bandwidth_hz
+                    )
+            except Exception as exc:
+                # Band matching must never cost the conversion itself.
+                logger.warning(
+                    "Fork HQ bandwidth match failed, keeping full-band vocal: %s", exc)
+                applied_bandwidth_hz = None
+
+        if side is not None:
+            mixed = np.stack([inst[0] + conv + side, inst[1] + conv - side], axis=-1)
+        else:
+            mixed = np.stack([inst[0] + conv, inst[1] + conv], axis=-1)  # (n, 2) stereo
         peak = float(np.abs(mixed).max())
         if peak > 0.95:
             mixed = mixed * (0.95 / peak)
@@ -896,7 +1091,18 @@ class SingingConversionPipeline:
                 'target_profile_id': target_profile_id,
                 'active_model_type': 'svc_fork',
                 'speaker_id': target_profile_id,
-                'quality_post_processing': ['svc_fork_hq_stereo'],
+                # Report what actually ran. This key previously always read
+                # 'svc_fork_hq_stereo' while no such processing existed
+                # anywhere in the codebase.
+                'quality_post_processing': (
+                    (['svc_fork_hq_stereo'] if side is not None
+                     else ['svc_fork_hq_mono_vocal'])
+                    + (['svc_fork_hq_bandwidth_matched']
+                       if applied_bandwidth_hz else [])
+                ),
+                'vocal_stereo_width': stereo_width if side is not None else 0.0,
+                'source_bandwidth_hz': source_bandwidth_hz,
+                'vocal_bandwidth_hz': applied_bandwidth_hz or (sr * 0.5),
                 'stereo': True,
                 'multi_speaker': multi_speaker,
             },

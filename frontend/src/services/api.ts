@@ -155,9 +155,11 @@ export interface ConversionRecord {
   id: string
   status: 'queued' | 'processing' | 'in_progress' | 'complete' | 'completed' | 'error' | 'failed' | 'cancelled'
   progress?: number
-  created_at: string
-  started_at?: string
-  completed_at?: string
+  // Conversion jobs stamp epoch seconds (time.time()), unlike the ISO strings
+  // every other endpoint returns — parse via a coercion helper, not new Date().
+  created_at: string | number
+  started_at?: string | number
+  completed_at?: string | number
   input_file: string
   profile_id: string
   preset: string
@@ -182,7 +184,8 @@ export interface ConversionRecord {
   // Pipeline result metadata (stereo HQ, multi-speaker info, actual engine)
   conversion_metadata?: ConversionMetadata
   // Additional fields used by ConversionHistoryPage
-  timestamp?: Date
+  // Server sends epoch seconds here too; only normalized client-side.
+  timestamp?: Date | string | number
   isFavorite?: boolean
   targetVoice?: string
   quality?: string
@@ -400,8 +403,21 @@ export interface AppSettings {
   // Multi-speaker conversion knobs — applied to the live pipeline on PATCH
   multi_speaker_separator?: 'diarization' | 'karaoke_model'
   multi_speaker_backing_gain?: number
+  multi_speaker_kept_backing_gain?: number
   multi_speaker_backing_voiced_min?: number
   multi_speaker_karaoke_leak_voiced_min?: number
+  // Previously declared nowhere on the client, so the GUI could not reach them
+  // even though the backend accepted them. Keep in step with
+  // PIPELINE_SETTING_KEYS in runtime_contract.py.
+  multi_speaker_backing_whole_voiced_min?: number
+  multi_speaker_convert_backing?: boolean
+  multi_speaker_merge_voiced_min?: number
+  multi_speaker_min_coverage?: number
+  multi_speaker_min_segment_s?: number
+  multi_speaker_min_backing_ratio?: number
+  // Fork HQ vocal lane (not multi-speaker).
+  fork_hq_stereo_width?: number
+  fork_hq_match_source_bandwidth?: boolean
   last_updated?: string | null
 }
 
@@ -647,8 +663,10 @@ export interface DeviceConfig {
 export interface GPUDevice {
   index: number
   name: string
-  memory_used: number
-  memory_total: number
+  // /gpu/metrics only reports the _gb variants; the raw byte fields are absent
+  // on this backend, so callers must handle undefined.
+  memory_used?: number
+  memory_total?: number
   memory_free?: number
   memory_used_gb?: number
   memory_total_gb?: number
@@ -1250,7 +1268,9 @@ class ApiService {
   }
 
   async getSystemInfo(): Promise<SystemInfo> {
-    return this.request('/system/info')
+    // /system/info answers a nested {system, torch, dependencies} shape, not the
+    // flat SystemInfo this returns — reuse the transform instead of lying.
+    return this.getSystemStatus()
   }
 
   // Aliases for SystemStatusPage compatibility
@@ -2825,10 +2845,27 @@ export const apiService = new ApiService()
 // Alias for convenience
 export const api = apiService
 
+// This backend has no Socket.IO connection state recovery, so every reconnect
+// leaves a real hole in the pushed event stream. Anything holding cached state
+// has to resync over HTTP rather than present the gap as continuity.
+const reconnectHandlers = new Set<() => void>()
+
+export function onSocketReconnect(handler: () => void): () => void {
+  reconnectHandlers.add(handler)
+  return () => {
+    reconnectHandlers.delete(handler)
+  }
+}
+
+export function notifySocketReconnect(): void {
+  reconnectHandlers.forEach((handler) => handler())
+}
+
 // WebSocket Manager for real-time updates
 class WebSocketManager {
   private socket: Socket | null = null
   private handlers: Map<WSEventType, Set<WSEventHandler>> = new Map()
+  private hasConnected = false
 
   connect(): void {
     if (this.socket?.connected) return
@@ -2846,6 +2883,8 @@ class WebSocketManager {
 
     this.socket.on('connect', () => {
       console.log('WebSocket connected')
+      if (this.hasConnected) notifySocketReconnect()
+      this.hasConnected = true
     })
 
     this.socket.on('disconnect', () => {

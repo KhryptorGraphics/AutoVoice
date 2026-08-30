@@ -29,6 +29,42 @@ class PipelineDefinition:
     canonical_default: bool = False
 
 
+# Operator-tunable multi-speaker knobs. These are read in three places -
+# the PATCH /settings/app validation whitelist, the live-pipeline push in the
+# same handler, and the boot-time reapply in create_app. They were three
+# separate literal tuples and drifted: multi_speaker_backing_whole_voiced_min
+# was added to validation but not to the push, so PATCHing it wrote the store
+# and silently never reached the running pipeline. Keep them here, once.
+PIPELINE_SETTING_KEYS: Tuple[str, ...] = (
+    "multi_speaker_separator",
+    "multi_speaker_backing_gain",
+    "multi_speaker_kept_backing_gain",
+    "multi_speaker_backing_voiced_min",
+    "multi_speaker_karaoke_leak_voiced_min",
+    "multi_speaker_backing_whole_voiced_min",
+    # Previously unreachable: read from pipeline config with a hard-coded
+    # default and settable nowhere. Every one of them silently changes what a
+    # conversion does - merge_voiced_min decides whether a singer is treated as
+    # lead or backing, convert_backing decides whether harmonies are converted
+    # at all. Tuning them required editing source.
+    "multi_speaker_convert_backing",
+    "multi_speaker_merge_voiced_min",
+    "multi_speaker_min_coverage",
+    "multi_speaker_min_segment_s",
+    "multi_speaker_min_backing_ratio",
+    # Not multi-speaker: stereo width of the converted vocal in the fork HQ
+    # lane. 0.0 keeps the historical hard-centred vocal. This list is the single
+    # place a runtime pipeline knob is declared - the codebase already carries a
+    # scar from three drifting copies of it.
+    "fork_hq_stereo_width",
+    # Band-limit the converted vocal to the source stem's own measured
+    # bandwidth. Defaults on: the decoder is full-band and extrapolates an
+    # octave above a lossy stem's wall, which is invented content no input
+    # evidence supports. A no-op on a genuinely full-band source.
+    "fork_hq_match_source_bandwidth",
+)
+
+
 PIPELINE_DEFINITIONS: dict[str, PipelineDefinition] = {
     "realtime": PipelineDefinition(
         pipeline_type="realtime",
@@ -64,9 +100,32 @@ PIPELINE_DEFINITIONS: dict[str, PipelineDefinition] = {
         stability="experimental",
         sample_rate=24000,
         latency_target_ms=3000,
-        description="Experimental CoMoSVC offline quality path",
+        # This lane is NOT a fixed CoMoSVC path. It routes to
+        # SingingConversionPipeline, which loads whatever artifact the target
+        # profile actually has - ModelManager detects the family from the state
+        # dict (CoMoSVCDecoder *or* SoVitsSvc/fork keys). A profile with a full
+        # model therefore runs its own fine-tuned weights under the
+        # ``pytorch_full_model`` backend, not CoMoSVC.
+        #
+        # Saying "Experimental CoMoSVC offline quality path" here made every
+        # job record reading ``resolved_pipeline: quality`` look like it had run
+        # the experimental decoder, when in fact this is where full-model
+        # conversions land: requests for quality_seedvc/quality_shortcut are
+        # deliberately resolved to this lane when the profile has a full model
+        # (see JobManager._convert_with_resolved_pipeline).
+        description=(
+            "Offline singing-conversion lane; engine depends on the target "
+            "profile's active artifact (full model runs the profile's own "
+            "fine-tuned weights, else the CoMoSVC decoder)"
+        ),
         runtime_backend="pytorch",
-        model_family="comosvc",
+        model_family="profile_artifact",
+        features=(
+            "Loads the target profile's own trained artifact",
+            "Artifact family detected from the state dict (CoMoSVC or SoVitsSvc/fork)",
+            "Full-model profiles run under the pytorch_full_model backend",
+            "Destination for quality_seedvc/quality_shortcut when a full model exists",
+        ),
     ),
     "quality_shortcut": PipelineDefinition(
         pipeline_type="quality_shortcut",
