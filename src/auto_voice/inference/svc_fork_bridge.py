@@ -80,12 +80,24 @@ def is_available(profile_id: str, data_dir: str = "data") -> bool:
     return get_fork_model(profile_id, data_dir) is not None
 
 
-def _clean_env() -> Dict[str, str]:
+def _clean_env(entry: Optional[dict] = None) -> Dict[str, str]:
     """Env for the fork subprocess: drop the serving env's PYTHONPATH so the
-    fork imports only its own packages, and pin PYTHONNOUSERSITE."""
+    fork imports only its own packages, and pin PYTHONNOUSERSITE.
+
+    ``requires_uv_contract`` opts a single registry entry into the
+    SVCFORK_UV_CONTRACT patch (site-packages, see
+    patches/svcfork_uv_contract.patch) that masks the decoder's f0 input by
+    the real voiced/unvoiced flag. Per-model, not global: a checkpoint
+    trained without the fix (unmasked f0 throughout) would face a fresh
+    train/serve mismatch if served WITH it on, and a checkpoint trained WITH
+    it needs it on to match. Unset/false reproduces the patch's own default
+    (a no-op) exactly.
+    """
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["PYTHONNOUSERSITE"] = "1"
+    if entry and entry.get("requires_uv_contract"):
+        env["SVCFORK_UV_CONTRACT"] = "1"
     return env
 
 
@@ -124,9 +136,42 @@ def convert(audio: np.ndarray, sr: int, profile_id: str,
             "-n", str(float(entry.get("noise_scale", 0.4))),  # lower = steadier voice
             "-o", out_wav,
         ]
+
+        # Chunking controls the audible seams. The fork splits input on silence
+        # (``db_thresh``) then caps each piece at ``chunk_seconds``, converting
+        # every piece independently - at the fork's 0.5s default that is a seam
+        # roughly twice a second, which reads as a "jumpy" voice on sustained
+        # notes. ``pad_seconds`` gives each piece context that is trimmed after.
+        #
+        # Left unset these keys reproduce the fork's own defaults exactly, so
+        # the realtime path (which reaches this same bridge via
+        # ModelManager.infer) keeps its low-latency behaviour. Offline profiles
+        # opt in per-model by setting them in the fork registry entry.
+        for flag, key, cast in (
+            ("-ch", "chunk_seconds", float),
+            ("-mc", "max_chunk_seconds", float),
+            ("-p", "pad_seconds", float),
+            ("-db", "db_thresh", int),
+        ):
+            value = entry.get(key)
+            if value is not None:
+                cmd += [flag, str(cast(value))]
+        if entry.get("absolute_thresh") is not None:
+            cmd.append("-ab" if entry["absolute_thresh"] else "-nab")
+
+        # Cluster model pulls out-of-distribution content vectors toward the
+        # training speaker's distribution before the flow inverts them - a
+        # treatment for the VITS prior/posterior gap (the flow only ever saw
+        # this speaker's own content at training time, so it generalizes
+        # poorly to a different singer's content vectors). Unset reproduces
+        # the fork's own default (no cluster blending) exactly.
+        cluster_path = entry.get("cluster_model_path")
+        if cluster_path is not None:
+            cmd += ["-k", str(cluster_path),
+                    "-r", str(float(entry.get("cluster_infer_ratio", 0.0)))]
         proc = subprocess.run(
             cmd, capture_output=True, text=True,
-            timeout=_INFER_TIMEOUT_S, env=_clean_env(),
+            timeout=_INFER_TIMEOUT_S, env=_clean_env(entry),
         )
         if not os.path.exists(out_wav):
             # some fork versions append a suffix; take newest wav in the dir
