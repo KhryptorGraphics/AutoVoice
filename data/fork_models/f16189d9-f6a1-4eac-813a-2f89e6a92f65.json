@@ -2,11 +2,15 @@
   "profile_id": "f16189d9-f6a1-4eac-813a-2f89e6a92f65",
   "engine": "so-vits-svc-fork",
   "speaker": "connor",
-  "model_path": "/home/kp/thordrive/autofusion/autovoice/checkpoints/svcfork/G_100.pth",
-  "config_path": "/home/kp/thordrive/autofusion/autovoice/checkpoints/svcfork/config.json",
+  "model_path": "/home/kp/thordrive/autofusion/autovoice/checkpoints/svcfork_conor_fullband_20260828/G_166.pth",
+  "config_path": "/home/kp/thordrive/autofusion/autovoice/checkpoints/svcfork_conor_fullband_20260828/config.json",
   "svc_bin": "/home/kp/anaconda3/envs/svcfork/bin/svc",
   "f0_method": "crepe",
   "transpose": 0,
-  "trained_epochs": 100,
-  "noise_scale": 0.3
+  "trained_epochs": 166,
+  "noise_scale": 0.2,
+  "chunk_seconds": 30.0,
+  "max_chunk_seconds": 40.0,
+  "pad_seconds": 1.0,
+  "db_thresh": -40
 }
