@@ -125,6 +125,15 @@ def _group_notes_into_lines(notes, max_lines: int = 3):
 # concentration gate. 0.95 keeps ~100% while still softening the edge.
 _BAND_FLAT_FRAC = 0.95
 
+# Bounds on the per-line level match (+/- 12 dB). A converted harmony line is
+# placed at the level of the extract it replaced; that ratio should sit near
+# 1.0, so a wild value means the measurement is untrustworthy rather than that
+# the line needs that much gain. Left unbounded it amplified a quietly-rendered
+# line's artifacts into distortion, and the resulting stem-RMS inflation made
+# _finish_backing duck every other line - heard as uneven background singers.
+_LINE_GAIN_MIN = 0.25
+_LINE_GAIN_MAX = 4.0
+
 
 def _extract_line_audios(stack: np.ndarray, sample_rate: int, lines,
                          n_harmonics: int = 24, width_cents: float = 50.0,
@@ -870,18 +879,38 @@ class SingingConversionPipeline:
                     diffs.append(abs(float(np.median(seg)) - float(note['pitch_midi'])))
             if not diffs:
                 continue
-            frac = float(np.mean(np.asarray(diffs) <= max_semitones))
-            if frac >= min_frac:
+            d = np.asarray(diffs)
+            frac = float(np.mean(d <= max_semitones))
+            median = float(np.median(d))
+            # Two independent signals must agree, and the decision is
+            # deliberately biased AGAINST folding.
+            #
+            # The errors are not symmetric. Folding a genuine harmony merges a
+            # distinct voice into the lead and destroys it - audible damage.
+            # Failing to fold a real double just converts it separately, which
+            # is the behaviour that existed before any of this, so the cost is
+            # only that the artifact remains. Ambiguity should therefore resolve
+            # to "harmony".
+            #
+            # Requiring both also fixes a real fragility: on one song the SAME
+            # content measured 49%, 51% and 53% across three runs against a 50%
+            # cutoff, folding on some runs and not others. A note-fraction near
+            # its threshold is a coin flip; a median pitch distance is a
+            # different statistic, so both landing on "unison" is far steadier
+            # than either alone.
+            is_unison = frac >= min_frac and median <= max_semitones
+            if is_unison:
                 unison_idx.append(i)
                 logger.info(
                     "Backing line %d sings in unison with the lead (%.0f%% of "
-                    "notes within %.2f semitones); folding it into the lead so "
-                    "the pair converts once instead of twice",
-                    i, 100.0 * frac, max_semitones)
+                    "notes within %.2f semitones, median %.2f); folding it into "
+                    "the lead so the pair converts once instead of twice",
+                    i, 100.0 * frac, max_semitones, median)
             else:
-                logger.info("Backing line %d is a genuine harmony (%.0f%% of "
-                            "notes within %.2f semitones of the lead)",
-                            i, 100.0 * frac, max_semitones)
+                logger.info(
+                    "Backing line %d is a genuine harmony (%.0f%% of notes "
+                    "within %.2f semitones of the lead, median %.2f)",
+                    i, 100.0 * frac, max_semitones, median)
 
         info['harmony_lines'] = len(lines) - len(unison_idx)
         info['unison_lines'] = len(unison_idx)
@@ -1057,8 +1086,26 @@ class SingingConversionPipeline:
                 ref_rms = line_rms
                 conv_rms = float(np.sqrt(np.mean(np.square(converted[:n], dtype=np.float64))) + 1e-12)
             gain = ref_rms / conv_rms
+            # Bound the correction. This is a level MATCH, not an amplifier: the
+            # engine's output level should already be in the right region, and a
+            # ratio far from 1.0 means the measurement was unreliable, not that
+            # the line genuinely needs 20 dB. Unbounded it did real damage in
+            # both directions - a line the engine rendered quietly got its
+            # artifacts amplified into audible distortion, and because that one
+            # loud line inflated the whole stem's RMS, _finish_backing's
+            # restore then scaled every OTHER line down, which is heard as
+            # background singers at inconsistent volumes.
+            clamped = float(np.clip(gain, _LINE_GAIN_MIN, _LINE_GAIN_MAX))
+            if abs(clamped - gain) > 1e-9:
+                logger.info(
+                    "Backing line %d: level match wanted %.1fx (%.1f dB), "
+                    "clamped to %.1fx - the extract and the converted line "
+                    "disagree too much to trust", i, gain,
+                    20.0 * np.log10(max(gain, 1e-9)), clamped)
+            else:
+                logger.info("Backing line %d: level match %.2fx", i, clamped)
             # Swap the line: remove the original extract, add the converted one.
-            new_backing[:n] = new_backing[:n] - extract[:n] + converted[:n] * gain
+            new_backing[:n] = new_backing[:n] - extract[:n] + converted[:n] * clamped
             converted_count += 1
             logger.info("Backing line %d: converted (voiced %.2f, rms %.4f)", i, vf, line_rms)
 

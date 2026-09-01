@@ -161,6 +161,7 @@ class JobManager:
                     f'/api/v1/convert/reassemble/{job_id}'
                 )
             self._emit_conversion_history(job_id)
+            self._record_quality_metrics(job_id, job.get('profile_id'), metrics, result)
 
             self._emit_socket_events('job_completed', 'conversion_complete', completion_payload, room=job_id)
             self._dispatch_webhook('conversion_complete', completion_payload)
@@ -671,6 +672,69 @@ class JobManager:
                 'stem_paths': job.get('stem_paths') or {},
             },
         })
+
+    def _record_quality_metrics(self, job_id, profile_id, metrics, result) -> None:
+        """Record one quality datapoint per completed conversion.
+
+        Nothing recorded a metric automatically before this: ``record_metric``
+        was reachable only from an API endpoint nobody calls, so
+        ``data/quality_history/`` stayed empty and the Quality page's rolling
+        averages had no source. Every quality judgement had to be made by ear,
+        which is why "is this checkpoint better?" kept coming down to opinion.
+
+        Deliberately records only ``f0_correlation`` and ``rtf``:
+
+        * f0_correlation vs the source is legitimate for singing - the melody
+          must be preserved, so correlation with the source is real signal.
+        * rtf is measured, not inferred.
+
+        Not speaker_similarity: this project has a written calibration showing
+        speaker-verification embeddings cannot do identity on sung audio
+        (different-person sims 0.855/0.900 exceeded most same-person pairs), so
+        recording it would build the feedback loop on a metric already known to
+        be wrong here. Not mcd either - the implementation has no DTW alignment
+        and is meaningless on singing. Better one honest number than four that
+        invite false confidence.
+
+        Never raises: a metrics failure must not fail a conversion the user is
+        waiting on.
+        """
+        if not profile_id:
+            return
+        try:
+            from ..monitoring.quality_monitor import get_quality_monitor
+            monitor = get_quality_monitor()
+            if monitor is None:
+                return
+            corr = ((metrics or {}).get('pitch_accuracy') or {}).get('correlation')
+            job = self._jobs.get(job_id) or {}
+            rtf = None
+            # Only the realtime lanes may report rtf. The monitor's threshold is
+            # rtf_max_realtime = 0.30 - a live-latency target - so an offline
+            # studio render at rtf ~1.5 is healthy but trips it on EVERY
+            # conversion, which would bury any real alert in permanent noise.
+            # The number is not lost: the conversion history record carries rtf
+            # and processing_time_seconds regardless.
+            lane = str((job.get('settings') or {}).get('resolved_pipeline')
+                       or (job.get('settings') or {}).get('pipeline_type') or '')
+            if lane.startswith('realtime'):
+                duration = (result or {}).get('duration') or job.get('duration')
+                if job.get('started_at') and duration and float(duration) > 0:
+                    elapsed = (job.get('completed_at') or time.time()) - job['started_at']
+                    rtf = float(elapsed) / float(duration)
+            if corr is None and rtf is None:
+                return
+            monitor.record_metric(
+                profile_id=str(profile_id),
+                f0_correlation=float(corr) if corr is not None else None,
+                rtf=rtf,
+                conversion_id=str(job_id),
+            )
+            logger.info(
+                "Recorded quality metrics for %s: f0_correlation=%s rtf=%s",
+                job_id, corr, None if rtf is None else round(rtf, 3))
+        except Exception as exc:
+            logger.warning("Could not record quality metrics for %s: %s", job_id, exc)
 
     def _emit_conversion_history(self, job_id: str) -> None:
         if not self.state_store:

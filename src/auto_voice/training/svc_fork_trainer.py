@@ -37,12 +37,26 @@ class ForkTrainingError(RuntimeError):
     """A so-vits-svc-fork subprocess step failed."""
 
 
+# Allocator config handed to every fork subprocess. `expandable_segments:True`
+# never returns the segments it grows: measured on Thor over 162 steps, live
+# tensors stayed flat at 2,401.8 MiB while the reserve climbed from 4 GB to
+# 91 GB. GPU memory IS system RAM on Jetson, so the run degraded from ~1 s/step
+# to 180 s/step and the box drifted toward OOM. Pinned here rather than left to
+# the environment, because otherwise a training run's memory behaviour depends
+# on whichever shell happened to launch gunicorn.
+_ALLOC_CONF = "max_split_size_mb:512"
+
+
 def _clean_env() -> Dict[str, str]:
     """Env for fork subprocesses: drop the serving PYTHONPATH so the fork imports
-    only its own packages; pin PYTHONNOUSERSITE."""
+    only its own packages; pin PYTHONNOUSERSITE and the CUDA allocator."""
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["PYTHONNOUSERSITE"] = "1"
+    # Override rather than setdefault: the serving environment has been seen
+    # exporting expandable_segments:True, and inheriting it is the regression
+    # this guards against.
+    env["PYTORCH_CUDA_ALLOC_CONF"] = _ALLOC_CONF
     return env
 
 

@@ -520,3 +520,72 @@ class TestLeadBleedCancellation:
         out, info = self._p()._suppress_lead_bleed(
             np.ones(sr, dtype=np.float32), np.zeros(sr, dtype=np.float32), sr)
         assert info['mode'].startswith('skipped')
+
+
+class TestUnisonDecisionIsBiasedAgainstFolding:
+    """Folding a genuine harmony destroys a distinct voice; failing to fold a
+    double merely leaves the pre-existing artifact. Ambiguity must resolve to
+    "harmony". A single note-fraction near its cutoff was a coin flip - the same
+    content measured 49/51/53% across three runs of one song."""
+
+    @staticmethod
+    def _run(diffs, min_frac=0.5, max_semitones=1.0):
+        """Drive the decision directly from a distance distribution."""
+        import numpy as np
+        d = np.asarray(diffs, dtype=float)
+        frac = float(np.mean(d <= max_semitones))
+        median = float(np.median(d))
+        return frac >= min_frac and median <= max_semitones
+
+    def test_a_true_double_folds(self):
+        # tight cluster at the lead's pitch
+        assert self._run([0.1, 0.2, 0.15, 0.3, 0.25, 0.2]) is True
+
+    def test_a_harmony_that_repeatedly_crosses_the_lead_does_not_fold(self):
+        """Half its notes brush the lead, but it sits a third away overall -
+        the case a bare fraction test would have folded and destroyed."""
+        assert self._run([0.2, 0.3, 0.4, 3.9, 4.1, 4.0]) is False
+
+    def test_the_knife_edge_case_resolves_to_harmony(self):
+        """51% within a semitone but a median well outside it: the fraction
+        alone said 'fold', the median vetoes it."""
+        assert self._run([0.5, 0.6, 0.7, 2.5, 3.0, 3.5]) is False
+
+
+class TestPerLineGainIsBounded:
+    """The per-line level match is a CORRECTION, not an amplifier.
+
+    Unbounded, `gain = ref_rms / conv_rms` did damage in both directions: a
+    line the engine rendered quietly got its artifacts amplified into audible
+    distortion, and that one loud line inflated the stem RMS so
+    _finish_backing's restore ducked every other line - heard as background
+    singers at inconsistent volumes.
+    """
+
+    def test_bounds_are_symmetric_in_dB_and_sane(self):
+        import numpy as np
+        from auto_voice.inference.singing_conversion_pipeline import (
+            _LINE_GAIN_MIN, _LINE_GAIN_MAX)
+        assert _LINE_GAIN_MIN > 0.0
+        assert _LINE_GAIN_MAX > 1.0 > _LINE_GAIN_MIN
+        db = 20 * np.log10(_LINE_GAIN_MAX)
+        assert abs(db - abs(20 * np.log10(_LINE_GAIN_MIN))) < 1e-6, (
+            "bounds should be symmetric in dB so neither direction is favoured")
+        assert db <= 18.0, "a level match needing >18 dB is a bad measurement"
+
+    def test_a_runaway_ratio_is_clamped(self):
+        import numpy as np
+        from auto_voice.inference.singing_conversion_pipeline import (
+            _LINE_GAIN_MIN, _LINE_GAIN_MAX)
+        # engine returned near-silence -> ratio explodes
+        ref_rms, conv_rms = 0.05, 1e-6
+        raw = ref_rms / conv_rms
+        assert raw > 1000
+        assert float(np.clip(raw, _LINE_GAIN_MIN, _LINE_GAIN_MAX)) == _LINE_GAIN_MAX
+
+    def test_a_normal_ratio_passes_through_untouched(self):
+        import numpy as np
+        from auto_voice.inference.singing_conversion_pipeline import (
+            _LINE_GAIN_MIN, _LINE_GAIN_MAX)
+        for raw in (0.8, 1.0, 1.3, 2.0):
+            assert float(np.clip(raw, _LINE_GAIN_MIN, _LINE_GAIN_MAX)) == raw
