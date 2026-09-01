@@ -404,6 +404,14 @@ export interface AppSettings {
   multi_speaker_separator?: 'diarization' | 'karaoke_model'
   multi_speaker_backing_gain?: number
   multi_speaker_kept_backing_gain?: number
+  multi_speaker_line_harmonics?: number
+  multi_speaker_line_onset_ms?: number
+  multi_speaker_line_concentration_min?: number
+  multi_speaker_unison_semitones?: number
+  multi_speaker_unison_note_frac?: number
+  multi_speaker_bleed_suppression?: 'off' | 'ls'
+  multi_speaker_bleed_max_db?: number
+  multi_speaker_bleed_h_max?: number
   multi_speaker_backing_voiced_min?: number
   multi_speaker_karaoke_leak_voiced_min?: number
   // Previously declared nowhere on the client, so the GUI could not reach them

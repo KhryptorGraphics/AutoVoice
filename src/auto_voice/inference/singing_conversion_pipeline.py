@@ -116,40 +116,127 @@ def _group_notes_into_lines(notes, max_lines: int = 3):
     return grouped
 
 
-def _extract_line_audio(stack: np.ndarray, sample_rate: int, line_notes,
-                        n_harmonics: int = 10, width_cents: float = 40.0) -> np.ndarray:
-    """Isolate one harmony line from a stack via an STFT harmonic comb mask.
+# Fraction of each harmonic band held at full weight before the taper starts.
+# 1.0 is a binary mask (hard edges ring); 0.0 a pure raised cosine. Measured on
+# a vibrato-carrying harmonic series, the cosine kept only 25% of the energy a
+# binary mask does and 0.5 only 39% - sung notes drift off the nominal harmonic,
+# so a centre-weighted window throws away exactly the energy that matters, which
+# both starved the converted harmony and pushed real lines under the
+# concentration gate. 0.95 keeps ~100% while still softening the edge.
+_BAND_FLAT_FRAC = 0.95
 
-    For each note, passes ±``width_cents`` bands around the first
-    ``n_harmonics`` multiples of the note's F0 during the note's time span.
-    Binary mask + ISTFT; good enough for stacked harmonies whose lines sit at
-    different pitches most of the time.
+
+def _extract_line_audios(stack: np.ndarray, sample_rate: int, lines,
+                         n_harmonics: int = 24, width_cents: float = 50.0,
+                         onset_s: float = 0.03, onset_weight: float = 0.5,
+                         onset_max_hz: float = 8000.0):
+    """Isolate every harmony line from a stack at once, sharing one STFT.
+
+    Replaces a per-line 10-harmonic ±40-cent BINARY comb. That comb produced
+    both symptoms operators reported on converted harmonies — they landed too
+    quiet, and their individual notes did not articulate:
+
+    * **Bandwidth.** 10 harmonics discards everything above ~10·f0 — about
+      2.2 kHz for a 220 Hz line — so the presence and air that make a voice
+      audible in a mix were dropped, and (because the caller levels the
+      converted line against this extract's RMS) the harmony was then placed
+      at the level of that thin slice rather than the singer's true level.
+    * **Attacks.** Note onsets are transient and broadband; a harmonic comb
+      structurally cannot pass them. Without attacks a converted line reads as
+      one legato smear instead of separate notes. A short full-band window at
+      each onset restores them, weighted below 1.0 so a chord's shared attack
+      is not counted at full strength in every line.
+    * **Overlap.** The caller subtracts each extract from the stack in turn.
+      Narrow combs rarely collided, but wider masks routinely claim the same
+      bin in two lines, which would subtract that energy once per line and
+      punch holes in the residual. The masks are scaled down wherever they
+      overlap so they form a partition (``sum(masks) <= 1`` per bin), which
+      keeps ``sum(extracts) <= stack``.
+
+    Band edges are raised-cosine rather than binary; a hard mask edge rings.
+
+    Returns ``[(mix_extract, gate_extract), ...]``, one pair per entry in
+    ``lines`` (same order):
+
+    * ``mix_extract`` uses the partitioned mask. This is what the caller
+      subtracts from the stack and level-matches against, so shared energy
+      leaves the stack exactly once.
+    * ``gate_extract`` uses the line's own unpartitioned mask - its full claim.
+      The caller's gates ask "is this a real harmonic line?", which is a
+      property of the line itself, not of how many neighbours happen to
+      contest its bins. Gating on the partitioned share instead makes a line's
+      admissibility depend on its neighbours: measured on a real stack, two of
+      three lines that previously converted fell to concentration 0.13 against
+      a 0.15 threshold purely because partitioning had split their shared
+      upper harmonics.
     """
     import librosa
+
+    if not lines:
+        return []
 
     n_fft, hop = 2048, 512
     S = librosa.stft(np.asarray(stack, dtype=np.float32), n_fft=n_fft, hop_length=hop)
     freqs = librosa.fft_frequencies(sr=sample_rate, n_fft=n_fft)
     times = librosa.frames_to_time(np.arange(S.shape[1]), sr=sample_rate, hop_length=hop)
-    mask = np.zeros(S.shape, dtype=np.float32)
-    lo_ratio = 2.0 ** (-width_cents / 1200.0)
-    hi_ratio = 2.0 ** (width_cents / 1200.0)
+    onset_band = freqs <= onset_max_hz
 
-    for note in line_notes:
-        f0 = 440.0 * 2.0 ** ((float(note['pitch_midi']) - 69.0) / 12.0)
-        fsel = (times >= note['start']) & (times <= note['end'])
-        if not fsel.any():
-            continue
-        for k in range(1, n_harmonics + 1):
-            fk = k * f0
-            if fk >= sample_rate / 2:
-                break
-            bsel = (freqs >= fk * lo_ratio) & (freqs <= fk * hi_ratio)
-            if bsel.any():
-                mask[np.ix_(bsel, fsel)] = 1.0
+    masks = []
+    for line_notes in lines:
+        mask = np.zeros(S.shape, dtype=np.float32)
+        for note in line_notes:
+            f0 = 440.0 * 2.0 ** ((float(note['pitch_midi']) - 69.0) / 12.0)
+            fsel = (times >= note['start']) & (times <= note['end'])
+            if fsel.any():
+                weights = np.zeros(freqs.shape, dtype=np.float32)
+                for k in range(1, n_harmonics + 1):
+                    fk = k * f0
+                    if fk >= sample_rate / 2:
+                        break
+                    half = fk * (2.0 ** (width_cents / 1200.0) - 1.0)
+                    if half <= 0.0:
+                        continue
+                    bsel = (freqs >= fk - half) & (freqs <= fk + half)
+                    if not bsel.any():
+                        continue
+                    # Flat-top (Tukey), not a pure raised cosine: hold 1.0
+                    # across the inner half of the band and taper only the
+                    # outer half. A pure cosine peaks at the nominal harmonic
+                    # and falls away either side, but sung notes carry vibrato
+                    # and drift, so their energy sits OFF centre and was being
+                    # attenuated - measured as lower captured energy than the
+                    # binary mask this replaced, which pushed real harmony
+                    # lines under the concentration gate. The taper still
+                    # avoids the ringing a hard edge causes.
+                    offset = np.abs(np.clip((freqs[bsel] - fk) / half, -1.0, 1.0))
+                    taper = np.where(
+                        offset <= _BAND_FLAT_FRAC,
+                        1.0,
+                        0.5 * (1.0 + np.cos(np.pi * np.clip(
+                            (offset - _BAND_FLAT_FRAC)
+                            / max(1.0 - _BAND_FLAT_FRAC, 1e-6),
+                            0.0, 1.0))),
+                    ).astype(np.float32)
+                    weights[bsel] = np.maximum(weights[bsel], taper)
+                mask[:, fsel] = np.maximum(mask[:, fsel], weights[:, None])
+            if onset_weight > 0.0 and onset_s > 0.0:
+                osel = (times >= note['start']) & (times < note['start'] + onset_s)
+                if osel.any():
+                    block = mask[np.ix_(onset_band, osel)]
+                    mask[np.ix_(onset_band, osel)] = np.maximum(block, onset_weight)
+        masks.append(mask)
 
-    line = librosa.istft(S * mask, hop_length=hop, length=len(stack))
-    return np.asarray(line, dtype=np.float32)
+    # Partition: where several lines claim a bin, share it rather than letting
+    # each take the full magnitude (see "Overlap" above).
+    overlap = np.sum(masks, axis=0)
+    share = 1.0 / np.maximum(overlap, 1.0)
+
+    def _istft(mask):
+        return np.asarray(
+            librosa.istft(S * mask, hop_length=hop, length=len(stack)),
+            dtype=np.float32)
+
+    return [(_istft(mask * share), _istft(mask)) for mask in masks]
 
 
 # Preset configurations
@@ -578,6 +665,228 @@ class SingingConversionPipeline:
         }
         return lead, backing, info
 
+    def _suppress_lead_bleed(self, backing, lead, sr):
+        """Cancel lead leakage from a karaoke backing stem, using coherence.
+
+        The separator estimates only the lead; the backing stem the bridge
+        reads is computed as ``orig_mix - lead`` (an exact arithmetic residual
+        inside the separator). So every dB of lead the model under-estimates
+        lands in the backing at 1:1, on the same sample grid and *phase
+        coherent* with the lead stem we already hold.
+
+        That is what makes this tractable. Lead and harmony sing consonant
+        intervals, so their harmonic series genuinely collide and no
+        frequency-domain rule can separate them - masking by pitch would gut
+        the harmony along with the bleed. Coherence is a different axis: a real
+        backing singer, even in exact unison, has independent vibrato, phase
+        and micro-timing, so its cross-spectrum with the lead averages toward
+        zero. Leakage is the same waveform, so its coherence approaches one.
+        Discriminating on coherence rather than frequency makes consonant
+        collisions harmless.
+
+        Per bin: fit a complex least-squares leakage coefficient ``h`` from
+        lead to backing, then subtract ``gamma^2 * h * L``. The fit uses only
+        "calibration" frames - lead loud, backing quietest relative to it -
+        because fitting over all frames would let least squares partially fit
+        the *harmony* (at a consonant interval the colliding partials' phase
+        difference rotates at the detuning beat rate, which does not average
+        out over a few seconds). The coherence factor is the second defence: in
+        bands where the backing is mostly an independent voice, gamma^2 is
+        small and almost nothing is subtracted.
+
+        Returns ``(cleaned_backing, info)``. Never raises - on any failure the
+        input is returned unchanged with the reason in ``info``.
+        """
+        import librosa
+
+        info = {'mode': 'off', 'cancelled_db': 0.0, 'preserved_db': 0.0,
+                'mean_coherence': 0.0, 'cal_frames': 0}
+        mode = str(self.config.get('multi_speaker_bleed_suppression', 'off')).lower()
+        info['mode'] = mode
+        if mode in ('off', 'none', 'false') or lead is None or not len(backing):
+            return backing, info
+
+        max_db = float(self.config.get('multi_speaker_bleed_max_db', 12.0))
+        h_max = float(self.config.get('multi_speaker_bleed_h_max', 0.7))
+        cal_pct = float(self.config.get('multi_speaker_bleed_cal_pct', 40.0))
+
+        try:
+            n_fft, hop = 2048, 512
+            n = min(len(backing), len(lead))
+            X = librosa.stft(np.asarray(backing[:n], dtype=np.float32),
+                             n_fft=n_fft, hop_length=hop)
+            L = librosa.stft(np.asarray(lead[:n], dtype=np.float32),
+                             n_fft=n_fft, hop_length=hop)
+            t = min(X.shape[1], L.shape[1])
+            X, L = X[:, :t], L[:, :t]
+
+            lead_pow = np.sum(np.abs(L) ** 2, axis=0)
+            back_pow = np.sum(np.abs(X) ** 2, axis=0)
+            if not np.any(lead_pow > 0):
+                info['mode'] = 'skipped:silent_lead'
+                return backing, info
+            # Lead genuinely present, not just noise floor.
+            active = lead_pow > 1e-4 * np.median(
+                lead_pow[lead_pow >= np.percentile(lead_pow, 90)])
+            if active.sum() < 8:
+                info['mode'] = 'skipped:too_short'
+                return backing, info
+            ratio = back_pow[active] / (lead_pow[active] + 1e-20)
+            thresh = np.percentile(ratio, cal_pct)
+            cal = np.zeros(t, dtype=bool)
+            cal[active] = ratio <= thresh
+            if cal.sum() < 4:
+                info['mode'] = 'skipped:no_calibration_frames'
+                return backing, info
+            info['cal_frames'] = int(cal.sum())
+
+            Lc, Xc = L[:, cal], X[:, cal]
+            Sxx = np.sum(np.abs(Lc) ** 2, axis=1)
+            Syy = np.sum(np.abs(Xc) ** 2, axis=1)
+            Sxy = np.sum(Xc * np.conj(Lc), axis=1)
+            h = Sxy / (Sxx + 1e-20)
+            coh = (np.abs(Sxy) ** 2) / (Sxx * Syy + 1e-20)
+            coh = np.clip(coh, 0.0, 1.0)
+            info['mean_coherence'] = float(np.mean(coh))
+
+            mag = np.abs(h)
+            h = np.where(mag > h_max, h * (h_max / (mag + 1e-20)), h)
+            d = (coh * h)[:, None] * L
+            # Never remove more than max_db from any single bin.
+            cap = 1.0 - 10.0 ** (-max_db / 20.0)
+            dmag = np.abs(d)
+            scale = np.minimum(1.0, cap * np.abs(X) / (dmag + 1e-20))
+            d = d * scale
+            X_clean = X - d
+
+            lead_silent = ~active
+            def _e(spec, sel):
+                return float(np.sum(np.abs(spec[:, sel]) ** 2)) if sel.any() else 0.0
+            e_before, e_after = _e(X, active), _e(X_clean, active)
+            info['cancelled_db'] = round(
+                10.0 * np.log10((e_before + 1e-20) / (e_after + 1e-20)), 2)
+            pb, pa = _e(X, lead_silent), _e(X_clean, lead_silent)
+            info['preserved_db'] = round(
+                10.0 * np.log10((pb + 1e-20) / (pa + 1e-20)), 2)
+
+            cleaned = librosa.istft(X_clean, hop_length=hop, length=len(backing))
+            logger.info(
+                "Lead-bleed cancel: %.2f dB removed while the lead is active, "
+                "%.2f dB touched while it is silent (want ~0), mean coherence "
+                "%.2f over %d calibration frames",
+                info['cancelled_db'], info['preserved_db'],
+                info['mean_coherence'], info['cal_frames'])
+            return np.asarray(cleaned, dtype=np.float32), info
+        except Exception as e:
+            logger.warning("Lead-bleed cancel failed (%s); backing unchanged", e)
+            info['mode'] = f'failed:{type(e).__name__}'
+            return backing, info
+
+    def _split_lead_unison(self, backing, sr, lead):
+        """Move voices singing in UNISON with the lead out of the backing stack.
+
+        A karaoke separator's job is to pull simultaneous voices apart, and it
+        does that faithfully — including for a lead that was double-tracked.
+        The double is a real, energetic voice (measured at 27.5% of the backing
+        stem on the reference song) sitting within a quarter-tone of the lead,
+        so every downstream gate accepts it as a harmony line and converts it
+        as its own singer.
+
+        That is the bug behind "the lead and the background singers bleed into
+        each other": the same phrase gets converted TWICE, independently, and
+        the two results are summed. Conversion is stochastic and phase-blind,
+        so the copies do not line up — the pair reads as a smeared, chorused
+        lead rather than as one voice plus a harmony.
+
+        Nothing here was ever wrong about the audio; the pipeline simply never
+        compared the detected lines against the lead's own pitch, despite the
+        lead being available in the same call. This routes unison lines back to
+        the lead so they convert together, as one coherent signal.
+
+        Returns ``(backing_without_unison, unison_audio, info)``. ``info`` is
+        always populated so the decision is visible in conversion metadata
+        rather than only in the log.
+        """
+        from . import separation_bridge
+
+        info = {'unison_lines': 0, 'harmony_lines': 0}
+        empty = np.zeros_like(backing)
+        if lead is None or not len(backing):
+            return backing, empty, info
+
+        max_semitones = float(self.config.get(
+            'multi_speaker_unison_semitones', 1.0))
+        min_frac = float(self.config.get('multi_speaker_unison_note_frac', 0.5))
+        if max_semitones <= 0.0:
+            return backing, empty, info
+
+        try:
+            notes = separation_bridge.polyphonic_notes(backing, sr)
+        except Exception as e:
+            logger.warning("Unison split: basic-pitch unavailable (%s); "
+                           "leaving the backing stack intact", e)
+            return backing, empty, info
+
+        lines = _group_notes_into_lines(notes)
+        if not lines:
+            return backing, empty, info
+
+        lead_f0 = self._extract_pitch(lead, sr)
+        if lead_f0 is None or not len(lead_f0):
+            return backing, empty, info
+        lead_t = np.arange(len(lead_f0)) * (len(lead) / sr) / max(len(lead_f0), 1)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            lead_midi = np.where(np.asarray(lead_f0) > 0,
+                                 69.0 + 12.0 * np.log2(np.maximum(lead_f0, 1e-6) / 440.0),
+                                 np.nan)
+
+        unison_idx = []
+        for i, line_notes in enumerate(lines):
+            diffs = []
+            for note in line_notes:
+                sel = (lead_t >= note['start']) & (lead_t <= note['end'])
+                seg = lead_midi[sel]
+                seg = seg[np.isfinite(seg)]
+                if len(seg):
+                    diffs.append(abs(float(np.median(seg)) - float(note['pitch_midi'])))
+            if not diffs:
+                continue
+            frac = float(np.mean(np.asarray(diffs) <= max_semitones))
+            if frac >= min_frac:
+                unison_idx.append(i)
+                logger.info(
+                    "Backing line %d sings in unison with the lead (%.0f%% of "
+                    "notes within %.2f semitones); folding it into the lead so "
+                    "the pair converts once instead of twice",
+                    i, 100.0 * frac, max_semitones)
+            else:
+                logger.info("Backing line %d is a genuine harmony (%.0f%% of "
+                            "notes within %.2f semitones of the lead)",
+                            i, 100.0 * frac, max_semitones)
+
+        info['harmony_lines'] = len(lines) - len(unison_idx)
+        info['unison_lines'] = len(unison_idx)
+        if not unison_idx:
+            return backing, empty, info
+
+        # Extract every line together so the masks share contested bins, then
+        # take only the unison ones: what leaves the backing is exactly what
+        # joins the lead, so no energy is duplicated or lost.
+        extracts = _extract_line_audios(
+            backing, sr, lines,
+            n_harmonics=int(self.config.get('multi_speaker_line_harmonics', 24)),
+            onset_s=float(self.config.get('multi_speaker_line_onset_ms', 30.0)) / 1000.0,
+        )
+        unison = np.zeros_like(backing)
+        for i in unison_idx:
+            mix = extracts[i][0]
+            n = min(len(mix), len(unison))
+            unison[:n] += mix[:n]
+        reduced = backing.astype(np.float32).copy()
+        n = min(len(unison), len(reduced))
+        reduced[:n] -= unison[:n]
+        return reduced, unison, info
+
     def _convert_backing_stack(self, backing, sr, target_profile_id, mm):
         """Convert a polyphonic backing stack to the target voice, per line.
 
@@ -648,9 +957,26 @@ class SingingConversionPipeline:
         stack_rms = float(np.sqrt(np.mean(np.square(backing, dtype=np.float64))) + 1e-12)
         new_backing = backing.astype(np.float32).copy()
         converted_count = 0
+        # Share of the stack's in-span energy a line must claim to count as a
+        # real harmony rather than comb-filtered noise. Exposed because it is
+        # sensitive to how the masks are built: it silently rejected genuine
+        # lines twice while the extractor was being changed underneath it.
+        concentration_min = float(self.config.get(
+            'multi_speaker_line_concentration_min', 0.15))
+        # Extracted for every line in one pass: the masks have to see each
+        # other to share the bins they both claim (see _extract_line_audios).
+        extracts = _extract_line_audios(
+            backing, sr, lines,
+            n_harmonics=int(self.config.get('multi_speaker_line_harmonics', 24)),
+            onset_s=float(self.config.get('multi_speaker_line_onset_ms', 30.0)) / 1000.0,
+        )
         for i, line_notes in enumerate(lines):
-            extract = _extract_line_audio(backing, sr, line_notes)
-            line_rms = float(np.sqrt(np.mean(np.square(extract, dtype=np.float64))))
+            # mix_extract is this line's partitioned share (what actually
+            # leaves the stack); gate_extract is its full unpartitioned claim,
+            # which is what the gates below must judge - see
+            # _extract_line_audios for why the two must not be conflated.
+            extract, gate_extract = extracts[i]
+            line_rms = float(np.sqrt(np.mean(np.square(gate_extract, dtype=np.float64))))
             if line_rms < 0.05 * stack_rms:
                 logger.info("Backing line %d: negligible energy, skipped", i)
                 continue
@@ -660,25 +986,30 @@ class SingingConversionPipeline:
             # mask MANUFACTURES pitch, so the voiced gate alone is blind here).
             spans = [(n['start'], n['end']) for n in line_notes]
             stack_active = _active_audio(backing, sr, spans)
+            gate_active = _active_audio(gate_extract, sr, spans)
             extract_active = _active_audio(extract, sr, spans)
             stack_e = float(np.sum(np.square(stack_active, dtype=np.float64))) + 1e-12
             concentration = float(
-                np.sum(np.square(extract_active, dtype=np.float64)) / stack_e)
-            if concentration < 0.15:
-                logger.info("Backing line %d: energy concentration %.2f < 0.15 "
-                            "(not a real harmonic line), kept original", i, concentration)
+                np.sum(np.square(gate_active, dtype=np.float64)) / stack_e)
+            if concentration < concentration_min:
+                logger.info("Backing line %d: energy concentration %.2f < %.2f "
+                            "(not a real harmonic line), kept original",
+                            i, concentration, concentration_min)
                 continue
             # Measure voicing on the span-active audio (calibration convention);
             # the full-length extract is mostly silence, which starves pyin's
             # 20s measurement window and would zero the gate for any song
             # whose backing starts late.
-            vf = (_voiced_fraction(extract_active, sr)
-                  if len(extract_active) >= int(1.5 * sr) else 0.0)
+            vf = (_voiced_fraction(gate_active, sr)
+                  if len(gate_active) >= int(1.5 * sr) else 0.0)
             if vf < merge_voiced:
                 logger.info("Backing line %d: voiced %.2f < %.2f, kept original", i, vf, merge_voiced)
                 continue
+            # Convert the full claim, not the partitioned share: the engine
+            # sings better from a complete line than from one with its shared
+            # harmonics scooped out. Only the SUBTRACTION has to be partitioned.
             converted = np.asarray(
-                mm.infer(extract, target_profile_id, np.zeros(256, dtype=np.float32), sr),
+                mm.infer(gate_extract, target_profile_id, np.zeros(256, dtype=np.float32), sr),
                 dtype=np.float32,
             )
             n = min(len(converted), len(new_backing))
@@ -717,7 +1048,16 @@ class SingingConversionPipeline:
         Per-line RMS matching targets the comb-mask extract, which captures
         only part of each line's true level — converted harmonies landed
         audibly weak. Restore the stem's active loudness, then apply the
-        operator taste knob and a peak guard.
+        operator taste knob.
+
+        The peak guard runs BEFORE the gain, not after. Applied afterwards it
+        silently cancelled the knob outright: normalising to a fixed ceiling
+        makes ``X·g·(0.99/max|X·g|)`` collapse to ``X·(0.99/max|X|)``, with the
+        gain dividing out exactly, so every value above the point where the
+        stem hit the ceiling produced byte-identical audio (measured: 1.6, 2.2
+        and 3.0 were indistinguishable). Guarding first keeps the runaway
+        protection and lets the gain mean what it says; the caller's own mix
+        guard is what ultimately prevents clipping.
         """
         if len(intervals):
             orig_act = np.concatenate([backing[s:e] for s, e in intervals])
@@ -726,11 +1066,18 @@ class SingingConversionPipeline:
             new_rms = float(np.sqrt(np.mean(np.square(new_act, dtype=np.float64))) + 1e-12)
             if orig_rms > 0.0:
                 new_backing = new_backing * (orig_rms / new_rms)
-        new_backing = new_backing * float(
-            self.config.get('multi_speaker_backing_gain', 1.0))
         peak = float(np.abs(new_backing).max())
         if peak > 0.99:
             new_backing = new_backing * (0.99 / peak)
+        gain = float(self.config.get('multi_speaker_backing_gain', 1.0))
+        new_backing = new_backing * gain
+        boosted = float(np.abs(new_backing).max())
+        if boosted > 1.0:
+            # Not silently swallowed: say so, since the mix guard downstream
+            # will pull the whole mix down to accommodate this.
+            logger.info(
+                "Backing gain %.2f puts the backing stem at peak %.2f; the mix "
+                "peak guard will scale the final mix to fit", gain, boosted)
 
         mode = 'converted' if lines_converted == lines_detected else 'partial'
         return new_backing, {'mode': mode, 'lines_detected': lines_detected,
@@ -777,6 +1124,18 @@ class SingingConversionPipeline:
                 split = self._split_lead_backing_karaoke(voc_mono, sr)
                 if split is not None:
                     voc_for_spans, simul_backing, karaoke_info = split
+                    # Cancel lead leakage here, before anything else touches
+                    # the stem. This placement is load-bearing: the pitch
+                    # shift below rewrites phase (destroying the coherence the
+                    # cancellation depends on), basic-pitch would otherwise
+                    # detect the leaked lead as its own harmony line, the
+                    # whole-stem voiced gate reads HIGH on a bleedy stem
+                    # (leakage is clean monophonic melody) and would convert
+                    # the stack as one voice, and _finish_backing's RMS
+                    # restore would re-inflate whatever bleed survived.
+                    simul_backing, bleed_info = self._suppress_lead_bleed(
+                        simul_backing, voc_for_spans, sr)
+                    karaoke_info['bleed'] = bleed_info
 
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 tmp = f.name
@@ -833,6 +1192,30 @@ class SingingConversionPipeline:
             preserved_active = bool(info.get('preserved_speakers'))
             info['backing_mode'] = 'kept'
             harmony = None
+
+            # Fold any unison double back into the lead BEFORE either is
+            # converted. Left in the backing it would be converted as its own
+            # singer and summed against the separately-converted lead, and two
+            # stochastic conversions of the same phrase do not line up - which
+            # is what makes the lead and the backing singers smear into each
+            # other. Skipped when a preserved speaker is present: that backing
+            # is kept verbatim by explicit operator choice, so nothing may be
+            # moved out of it.
+            if do_convert_backing and not preserved_active:
+                target = simul_backing if simul_backing is not None else backing
+                if target is not None and float(np.abs(target).max()) > 1e-4:
+                    reduced, unison, unison_info = self._split_lead_unison(
+                        target, sr, primary_track)
+                    info['unison_folded_into_lead'] = unison_info['unison_lines']
+                    info['harmony_lines_detected'] = unison_info['harmony_lines']
+                    if unison_info['unison_lines']:
+                        nu = min(len(unison), len(primary_track))
+                        primary_track = primary_track.astype(np.float32).copy()
+                        primary_track[:nu] += unison[:nu]
+                        if simul_backing is not None:
+                            simul_backing = reduced
+                        else:
+                            backing = reduced
 
             if (do_convert_backing and preserved_active and simul_backing is not None
                     and float(np.abs(simul_backing).max()) > 1e-4):

@@ -528,6 +528,205 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                   </div>
 
                   <div>
+                    <label className="text-sm text-gray-400">Harmony fullness (harmonics kept)</label>
+                    <input
+                      type="range"
+                      min={4}
+                      max={64}
+                      step={2}
+                      value={dragValue('lineHarmonics', appSettings.multi_speaker_line_harmonics ?? 24)}
+                      onChange={onDrag('lineHarmonics')}
+                      onPointerUp={onCommit('lineHarmonics', v => updateAppSettingsMutation.mutate({ multi_speaker_line_harmonics: v }))}
+                      onKeyUp={onCommit('lineHarmonics', v => updateAppSettingsMutation.mutate({ multi_speaker_line_harmonics: v }))}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Isolated (4)</span>
+                      <span>{Math.round(dragValue('lineHarmonics', appSettings.multi_speaker_line_harmonics ?? 24))}</span>
+                      <span>Full (64)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      How much of each harmony line is captured before it is re-sung. Low keeps lines
+                      cleanly separated but thin and quiet; high gives fuller, louder harmonies but
+                      lines start sharing upper harmonics and bleeding into each other.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Lead-bleed cancellation</label>
+                    <select
+                      value={appSettings.multi_speaker_bleed_suppression ?? 'off'}
+                      onChange={e => updateAppSettingsMutation.mutate({
+                        multi_speaker_bleed_suppression: e.target.value as 'off' | 'ls',
+                      })}
+                      className="mt-1 w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"
+                      data-testid="bleed-suppression-select"
+                    >
+                      <option value="off">Off (original behaviour)</option>
+                      <option value="ls">On — coherence-throttled cancellation</option>
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      The separator builds the backing stem by subtracting its lead estimate from the
+                      mix, so whatever lead it misses stays in the backing phase-aligned with the lead.
+                      A real backing singer is never phase-aligned, so cancelling only the coherent
+                      part removes the leaked lead while leaving harmonies intact — even harmonies
+                      that share partials with the lead.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Bleed cancellation ceiling (dB)</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={24}
+                      step={1}
+                      value={dragValue('bleedMaxDb', appSettings.multi_speaker_bleed_max_db ?? 12)}
+                      onChange={onDrag('bleedMaxDb')}
+                      onPointerUp={onCommit('bleedMaxDb', v => updateAppSettingsMutation.mutate({ multi_speaker_bleed_max_db: v }))}
+                      onKeyUp={onCommit('bleedMaxDb', v => updateAppSettingsMutation.mutate({ multi_speaker_bleed_max_db: v }))}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Gentle (0)</span>
+                      <span>{Math.round(dragValue('bleedMaxDb', appSettings.multi_speaker_bleed_max_db ?? 12))} dB</span>
+                      <span>Aggressive (24)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Most any single frequency may be attenuated. This is the guard against carving
+                      into a harmony that shares partials with the lead; raise it only if audible
+                      lead survives in the backing.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Bleed estimate ceiling</label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1}
+                      step={0.05}
+                      value={dragValue('bleedHMax', appSettings.multi_speaker_bleed_h_max ?? 0.7)}
+                      onChange={onDrag('bleedHMax')}
+                      onPointerUp={onCommit('bleedHMax', v => updateAppSettingsMutation.mutate({ multi_speaker_bleed_h_max: v }))}
+                      onKeyUp={onCommit('bleedHMax', v => updateAppSettingsMutation.mutate({ multi_speaker_bleed_h_max: v }))}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Conservative (0.1)</span>
+                      <span>{dragValue('bleedHMax', appSettings.multi_speaker_bleed_h_max ?? 0.7).toFixed(2)}</span>
+                      <span>Trusting (1.0)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Caps how much leakage the estimator is allowed to believe it found. If a harmony
+                      sings under the lead almost continuously the estimate can read high; this stops
+                      that turning into a large subtraction.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Fold unison doubles into the lead (semitones)</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={4}
+                      step={0.25}
+                      value={dragValue('unisonSemi', appSettings.multi_speaker_unison_semitones ?? 1.0)}
+                      onChange={onDrag('unisonSemi')}
+                      onPointerUp={onCommit('unisonSemi', v => updateAppSettingsMutation.mutate({ multi_speaker_unison_semitones: v }))}
+                      onKeyUp={onCommit('unisonSemi', v => updateAppSettingsMutation.mutate({ multi_speaker_unison_semitones: v }))}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Off (0)</span>
+                      <span>{dragValue('unisonSemi', appSettings.multi_speaker_unison_semitones ?? 1.0).toFixed(2)}</span>
+                      <span>Wide (4)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      A double-tracked lead lands in the backing stem and would otherwise be converted
+                      as its own singer, then summed against the separately-converted lead — two takes
+                      of the same phrase that do not line up, which is what makes the lead and the
+                      background singers smear together. Lines this close to the lead&apos;s pitch are
+                      folded back into it and converted once. 0 disables.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Unison decision threshold (share of notes)</label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1}
+                      step={0.05}
+                      value={dragValue('unisonFrac', appSettings.multi_speaker_unison_note_frac ?? 0.5)}
+                      onChange={onDrag('unisonFrac')}
+                      onPointerUp={onCommit('unisonFrac', v => updateAppSettingsMutation.mutate({ multi_speaker_unison_note_frac: v }))}
+                      onKeyUp={onCommit('unisonFrac', v => updateAppSettingsMutation.mutate({ multi_speaker_unison_note_frac: v }))}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Fold readily (0.1)</span>
+                      <span>{dragValue('unisonFrac', appSettings.multi_speaker_unison_note_frac ?? 0.5).toFixed(2)}</span>
+                      <span>Only exact doubles (1.0)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      What share of a line&apos;s notes must sit at the lead&apos;s pitch before it counts
+                      as a double rather than a harmony. Too low and a real harmony that crosses the
+                      lead gets absorbed into it.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Harmony-line detection strictness</label>
+                    <input
+                      type="range"
+                      min={0.02}
+                      max={0.6}
+                      step={0.01}
+                      value={dragValue('lineConcMin', appSettings.multi_speaker_line_concentration_min ?? 0.15)}
+                      onChange={onDrag('lineConcMin')}
+                      onPointerUp={onCommit('lineConcMin', v => updateAppSettingsMutation.mutate({ multi_speaker_line_concentration_min: v }))}
+                      onKeyUp={onCommit('lineConcMin', v => updateAppSettingsMutation.mutate({ multi_speaker_line_concentration_min: v }))}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Convert more (0.02)</span>
+                      <span>{dragValue('lineConcMin', appSettings.multi_speaker_line_concentration_min ?? 0.15).toFixed(2)}</span>
+                      <span>Stricter (0.6)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      How much of the backing a line must account for before it counts as a real
+                      harmony rather than filtered noise. Lower converts more lines, including
+                      marginal ones; too low and texture gets re-sung as a phantom voice.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Harmony note attack (ms)</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={120}
+                      step={5}
+                      value={dragValue('lineOnsetMs', appSettings.multi_speaker_line_onset_ms ?? 30)}
+                      onChange={onDrag('lineOnsetMs')}
+                      onPointerUp={onCommit('lineOnsetMs', v => updateAppSettingsMutation.mutate({ multi_speaker_line_onset_ms: v }))}
+                      onKeyUp={onCommit('lineOnsetMs', v => updateAppSettingsMutation.mutate({ multi_speaker_line_onset_ms: v }))}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Off (0)</span>
+                      <span>{Math.round(dragValue('lineOnsetMs', appSettings.multi_speaker_line_onset_ms ?? 30))} ms</span>
+                      <span>120 ms</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Note attacks are broadband, so a purely harmonic filter cannot pass them and
+                      harmonies smear into one legato line. This passes the first few milliseconds of
+                      each note whole. 0 restores the old attack-less behaviour.
+                    </p>
+                  </div>
+
+                  <div>
                     <label className="text-sm text-gray-400">Harmony-line conversion strictness</label>
                     <input
                       type="range"

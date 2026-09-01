@@ -343,6 +343,22 @@ def get_app_settings():
                            float(cfg.get('multi_speaker_backing_gain', 1.0)))
         payload.setdefault('multi_speaker_kept_backing_gain',
                            float(cfg.get('multi_speaker_kept_backing_gain', 1.0)))
+        payload.setdefault('multi_speaker_line_harmonics',
+                           float(cfg.get('multi_speaker_line_harmonics', 24)))
+        payload.setdefault('multi_speaker_line_onset_ms',
+                           float(cfg.get('multi_speaker_line_onset_ms', 30.0)))
+        payload.setdefault('multi_speaker_line_concentration_min',
+                           float(cfg.get('multi_speaker_line_concentration_min', 0.15)))
+        payload.setdefault('multi_speaker_unison_semitones',
+                           float(cfg.get('multi_speaker_unison_semitones', 1.0)))
+        payload.setdefault('multi_speaker_unison_note_frac',
+                           float(cfg.get('multi_speaker_unison_note_frac', 0.5)))
+        payload.setdefault('multi_speaker_bleed_suppression',
+                           str(cfg.get('multi_speaker_bleed_suppression', 'off')))
+        payload.setdefault('multi_speaker_bleed_max_db',
+                           float(cfg.get('multi_speaker_bleed_max_db', 12.0)))
+        payload.setdefault('multi_speaker_bleed_h_max',
+                           float(cfg.get('multi_speaker_bleed_h_max', 0.7)))
         payload.setdefault(
             'multi_speaker_backing_voiced_min',
             float(cfg.get('multi_speaker_backing_voiced_min',
@@ -395,6 +411,13 @@ def update_app_settings():
                 )
             updates['preferred_live_pipeline'] = preferred_live_pipeline
 
+        if 'multi_speaker_bleed_suppression' in data:
+            bleed = str(data['multi_speaker_bleed_suppression']).strip().lower()
+            if bleed not in ('off', 'ls'):
+                return root.validation_error_response(
+                    'multi_speaker_bleed_suppression must be one of: off, ls')
+            updates['multi_speaker_bleed_suppression'] = bleed
+
         if 'multi_speaker_separator' in data:
             separator = str(data['multi_speaker_separator']).strip().lower()
             if separator not in ('diarization', 'karaoke_model'):
@@ -411,6 +434,25 @@ def update_app_settings():
             # reproduces today's behaviour exactly; lower per-song by ear.
             ('multi_speaker_kept_backing_gain', 0.0, 1.0),
             ('multi_speaker_backing_voiced_min', 0.3, 0.95),
+            # Harmonics kept per line: 10 was the old hard-coded value and
+            # discarded everything above ~10*f0. Higher = fuller/louder
+            # harmonies, but lines start sharing upper harmonics and bleed.
+            ('multi_speaker_line_harmonics', 4, 64),
+            # Broadband window at each note onset, milliseconds. 0 disables
+            # (pure harmonic comb, the old behaviour).
+            ('multi_speaker_line_onset_ms', 0.0, 120.0),
+            # How much of the stack a line must claim to count as real.
+            # Lower converts more (incl. marginal lines); higher is stricter.
+            ('multi_speaker_line_concentration_min', 0.02, 0.6),
+            # How close to the lead's pitch counts as unison. 0 disables the
+            # fold entirely (every line converts as its own singer).
+            ('multi_speaker_unison_semitones', 0.0, 4.0),
+            ('multi_speaker_unison_note_frac', 0.1, 1.0),
+            # Ceiling on how much any one bin may be attenuated, and on the
+            # fitted leakage coefficient - both bound over-subtraction into
+            # bins the harmony shares with the lead.
+            ('multi_speaker_bleed_max_db', 0.0, 24.0),
+            ('multi_speaker_bleed_h_max', 0.1, 1.0),
             ('multi_speaker_karaoke_leak_voiced_min', 0.3, 0.95),
             # Above this voiced fraction the backing stack is treated as a
             # single doubled voice and converted whole. That is faster and

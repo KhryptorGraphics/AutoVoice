@@ -40,6 +40,28 @@ PIPELINE_SETTING_KEYS: Tuple[str, ...] = (
     "multi_speaker_backing_gain",
     "multi_speaker_kept_backing_gain",
     "multi_speaker_backing_voiced_min",
+    # Harmony-line isolation quality. A narrow comb mask made converted
+    # harmonies quiet (levelled against a thin extract) and unarticulated
+    # (a harmonic comb cannot pass broadband note attacks). Harmonics trades
+    # fullness against bleed between lines; onset_ms restores note attacks.
+    "multi_speaker_line_harmonics",
+    "multi_speaker_line_onset_ms",
+    "multi_speaker_line_concentration_min",
+    # A karaoke separator faithfully splits out a double-tracked lead, and
+    # every downstream gate then accepts it as a harmony line - so the same
+    # phrase gets converted twice, independently, and the two stochastic
+    # results smear against each other. These decide what counts as "unison
+    # with the lead" and therefore gets folded back into it.
+    "multi_speaker_unison_semitones",
+    "multi_speaker_unison_note_frac",
+    # Lead-leakage cancellation. The karaoke backing stem is an exact
+    # arithmetic residual (orig - lead), so leaked lead is phase-coherent with
+    # the lead stem while a real backing singer is not - which is what lets
+    # this remove leakage without gutting harmonies that collide with the lead
+    # in frequency. Ships off; flip after an A/B.
+    "multi_speaker_bleed_suppression",
+    "multi_speaker_bleed_max_db",
+    "multi_speaker_bleed_h_max",
     "multi_speaker_karaoke_leak_voiced_min",
     "multi_speaker_backing_whole_voiced_min",
     # Previously unreachable: read from pipeline config with a hard-coded
