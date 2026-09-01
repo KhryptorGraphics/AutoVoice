@@ -43,6 +43,50 @@ class JobManager:
         self._cleanup_thread: Optional[threading.Thread] = None
         self._running = False
         self._cleanup_stop_event = threading.Event()
+        self._reconcile_orphaned_jobs()
+
+    def _reconcile_orphaned_jobs(self) -> None:
+        """Fail conversion jobs left mid-flight by a process that is gone.
+
+        A conversion does not survive a restart: the worker thread and its
+        fork subprocess die with the process, but the persisted record still
+        reads ``in_progress`` and nothing ever corrects it. Observed in this
+        deployment: three such records, two of them stuck since mid-July,
+        surviving every restart since.
+
+        This is the same defect already fixed for TRAINING jobs
+        (``training/job_manager._reconcile_orphaned_jobs``); the conversion
+        manager never got the equivalent. It is not only cosmetic - the status
+        and history endpoints report these as live work, so a caller polling
+        for completion waits forever, and anything gating on "is a job
+        running" sees phantom activity.
+
+        Note ``cancel_job`` cannot clean these up: it only accepts jobs in
+        ``queued``, so an in-flight job is uncancellable by design and a
+        killed one has no path back to a terminal state.
+
+        Safe by construction: this manager starts with an empty ``_jobs`` and
+        only ever runs jobs it created itself, so every persisted non-terminal
+        record predates this process and cannot still be running.
+        """
+        if not self.state_store:
+            return
+        try:
+            stale = [j for j in self.state_store.list_training_jobs()
+                     if j.get('status') in ('queued', 'in_progress', 'running')]
+            for job in stale:
+                job['status'] = 'failed'
+                job['completed_at'] = job.get('completed_at') or time.time()
+                job['error'] = ('Conversion did not survive a restart of the '
+                                'service - the process running it is gone. '
+                                'Start a new conversion.')
+                self.state_store.save_training_job(job)
+                logger.warning(
+                    "Reconciled orphaned conversion job %s (profile %s) to failed",
+                    job.get('job_id'), job.get('profile_id'))
+        except Exception as exc:
+            # Never block startup over bookkeeping.
+            logger.warning("Could not reconcile orphaned conversion jobs: %s", exc)
 
     def create_job(self, file_path: str, profile_id: str, settings: Dict[str, Any]) -> str:
         """Create and queue a conversion job. Returns job_id."""
