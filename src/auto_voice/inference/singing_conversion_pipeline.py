@@ -1005,6 +1005,11 @@ class SingingConversionPipeline:
         stack_rms = float(np.sqrt(np.mean(np.square(backing, dtype=np.float64))) + 1e-12)
         new_backing = backing.astype(np.float32).copy()
         converted_count = 0
+        # Per-line ledger. Every one of these decisions silently changes what a
+        # listener hears - a rejected line stays in the source singer's voice -
+        # and until now they existed only in the server log, so the only way to
+        # learn why a harmony had not converted was to have someone tail it.
+        decisions = []
         # Share of the stack's in-span energy a line must claim to count as a
         # real harmony rather than comb-filtered noise. Exposed because it is
         # sensitive to how the masks are built: it silently rejected genuine
@@ -1031,6 +1036,8 @@ class SingingConversionPipeline:
             line_rms = float(np.sqrt(np.mean(np.square(gate_extract, dtype=np.float64))))
             if line_rms < 0.05 * stack_rms:
                 logger.info("Backing line %d: negligible energy, skipped", i)
+                decisions.append({'line': i, 'outcome': 'skipped',
+                                  'reason': 'negligible energy'})
                 continue
             # Concentration gate: a real harmonic line captures a large share
             # of the stack's energy inside its note spans; comb-filtering
@@ -1050,6 +1057,11 @@ class SingingConversionPipeline:
                 logger.info("Backing line %d: harmonic enrichment %.2f < %.2f "
                             "(no better concentrated than noise), kept original",
                             i, concentration, concentration_min)
+                decisions.append({
+                    'line': i, 'outcome': 'kept',
+                    'reason': 'no better concentrated than noise',
+                    'enrichment': round(concentration, 2),
+                    'threshold': round(concentration_min, 2)})
                 continue
             # Measure voicing on the span-active audio (calibration convention);
             # the full-length extract is mostly silence, which starves pyin's
@@ -1059,6 +1071,10 @@ class SingingConversionPipeline:
                   if len(gate_active) >= int(1.5 * sr) else 0.0)
             if vf < merge_voiced:
                 logger.info("Backing line %d: voiced %.2f < %.2f, kept original", i, vf, merge_voiced)
+                decisions.append({'line': i, 'outcome': 'kept',
+                                  'reason': 'not voiced enough to be a sung line',
+                                  'voiced': round(float(vf), 2),
+                                  'threshold': round(merge_voiced, 2)})
                 continue
             # Convert the full claim, not the partitioned share: the engine
             # sings better from a complete line than from one with its shared
@@ -1108,11 +1124,19 @@ class SingingConversionPipeline:
             new_backing[:n] = new_backing[:n] - extract[:n] + converted[:n] * clamped
             converted_count += 1
             logger.info("Backing line %d: converted (voiced %.2f, rms %.4f)", i, vf, line_rms)
+            decisions.append({
+                'line': i, 'outcome': 'converted',
+                'voiced': round(float(vf), 2),
+                'gain': round(clamped, 2),
+                'gain_clamped': bool(abs(clamped - gain) > 1e-9)})
 
         if converted_count == 0:
+            kept['lines'] = decisions
             return backing, kept
-        return self._finish_backing(backing, new_backing, intervals,
-                                    len(lines), converted_count, 'lines')
+        stem, info = self._finish_backing(backing, new_backing, intervals,
+                                          len(lines), converted_count, 'lines')
+        info['lines'] = decisions
+        return stem, info
 
     def _finish_backing(self, backing, new_backing, intervals,
                         lines_detected, lines_converted, method):
@@ -1327,6 +1351,16 @@ class SingingConversionPipeline:
                     'detected': harmony['lines_detected'],
                     'converted': harmony['lines_converted'],
                 }
+                # Carry the per-line ledger out to the caller. Each entry is a
+                # decision that changes what a listener hears - a line left
+                # unconverted stays in the SOURCE singer's voice - so it
+                # belongs in the result, not only in a log file nobody reads.
+                if harmony.get('lines'):
+                    info['harmony_line_decisions'] = harmony['lines']
+            # Same for the karaoke stage's own report, which was computed and
+            # then dropped on the floor.
+            if karaoke_info.get('bleed'):
+                info['bleed'] = karaoke_info['bleed']
 
             if pitch_shift:
                 primary_track = librosa.effects.pitch_shift(

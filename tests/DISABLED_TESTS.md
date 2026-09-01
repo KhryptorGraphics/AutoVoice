@@ -10,12 +10,20 @@ the content is the clearest specification of what that feature should do.
 
 | file | missing symbol | what it wanted |
 |---|---|---|
-| `test_fork_registry_preserves_tuning.py.disabled` | `svc_fork_trainer._PRESERVED_INFERENCE_KEYS` | a retrain promotion must carry `f0_method`/`noise_scale`/chunking forward, so tuning is not wiped by training |
 | `test_fork_metrics_gpu_and_steps.py.disabled` | `svc_fork_metrics._GPU_ALLOC_TAGS` | GPU allocation accounting during training |
 | `test_shortcut_flow_matching.py.disabled` | top-level `modules` package | the Seed-VC shortcut flow lane |
 
 To revive one: implement the symbol it imports (the test body is the spec),
 then drop the `.disabled` suffix and run it.
+
+`test_fork_registry_preserves_tuning.py` was revived this way and is now
+enabled: `_PRESERVED_INFERENCE_KEYS` is implemented, so a retrain no longer
+silently reverts serving-side tuning. Worth noting how it was written — the
+tests reimplement the promotion block locally rather than calling
+`train_svc_fork`, which is fast but cannot catch a fault in the shipped code.
+It didn't: a `logger.info` was added to the real function while the module had
+no logger, and every test still passed. `TestTheRealFunctionNotACopy` closes
+that gap.
 
 `test_svc_fork_env_contract.py` was a fourth case of this kind and is now
 **resolved**: the feature it specified was implemented rather than disabled,

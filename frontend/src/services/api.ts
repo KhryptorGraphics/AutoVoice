@@ -130,6 +130,31 @@ export interface MultiSpeakerInfo {
   // Backing-vocal handling: kept original, fully converted, or partial
   backing_mode?: 'kept' | 'converted' | 'partial'
   harmony_lines?: { detected: number; converted: number }
+  // Per-line outcome and the reason for it. A line left unconverted stays in
+  // the SOURCE singer's voice, so "why did this harmony not convert?" is a
+  // question the result should answer without reading the server log.
+  harmony_line_decisions?: Array<{
+    line: number
+    outcome: 'converted' | 'kept' | 'skipped'
+    reason?: string
+    voiced?: number
+    enrichment?: number
+    threshold?: number
+    gain?: number
+    gain_clamped?: boolean
+  }>
+  // A backing line singing in unison with the lead is folded INTO the lead so
+  // the pair converts once; converting it separately made the lead smear.
+  unison_folded_into_lead?: number
+  harmony_lines_detected?: number
+  // Lead-leakage cancellation report (only when enabled).
+  bleed?: {
+    mode?: string
+    cancelled_db?: number
+    preserved_db?: number
+    mean_coherence?: number
+    cal_frames?: number
+  }
   // Clusters kept original because their voice is already the target
   preserved_speakers?: string[]
   preserved_s?: number

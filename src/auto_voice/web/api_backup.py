@@ -56,6 +56,40 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+# How many export bundles to keep on disk. Each is a full copy of profiles,
+# samples and trained models - measured at ~3.6 GB here - and nothing pruned
+# them, so 11 bundles had accumulated to 30 GB, three of them byte-identical
+# duplicates from repeated clicks. Unbounded growth of a backup directory is
+# itself a failure mode: it fills the disk the service needs to run.
+_BACKUP_RETENTION = int(os.environ.get("AUTOVOICE_BACKUP_RETENTION", "5"))
+
+
+def _prune_old_backups(backup_dir: Path, keep: int, protect: Path) -> list[dict[str, Any]]:
+    """Delete all but the ``keep`` newest bundles. Returns what was removed.
+
+    Never touches ``protect`` (the bundle just written), and never deletes when
+    ``keep`` is 0 or negative - that is read as "retention disabled", not as
+    "delete everything", because the destructive reading of a misconfigured
+    value is not one to guess at.
+    """
+    removed: list[dict[str, Any]] = []
+    if keep <= 0:
+        return removed
+    try:
+        bundles = sorted(
+            (p for p in backup_dir.glob("autovoice-backup-*.zip") if p != protect),
+            key=lambda p: p.stat().st_mtime, reverse=True)
+        # `protect` occupies one retention slot.
+        for stale in bundles[max(keep - 1, 0):]:
+            size = stale.stat().st_size
+            stale.unlink()
+            removed.append({"path": stale.name, "bytes": size})
+    except OSError:
+        # A pruning failure must never fail the export the user asked for.
+        pass
+    return removed
+
+
 def _backup_sources() -> list[tuple[str, Path]]:
     data_dir = _data_dir()
     return [
@@ -112,10 +146,24 @@ def export_local_backup():
             }
             bundle.writestr('manifest.json', json.dumps(manifest, indent=2))
 
+        pruned = _prune_old_backups(backup_dir, _BACKUP_RETENTION, bundle_path)
+        if pruned:
+            freed = sum(item['bytes'] for item in pruned)
+            root.logger.info(
+                "Backup retention: removed %d old bundle(s), freed %.1f GB "
+                "(keeping the %d newest)",
+                len(pruned), freed / 1e9, _BACKUP_RETENTION)
+
         payload = {
             'status': 'success',
             'backup_path': str(bundle_path),
             'manifest': manifest,
+            # Surfaced, not silent: this deleted the operator's files.
+            'retention': {
+                'keep': _BACKUP_RETENTION,
+                'removed': pruned,
+                'freed_bytes': sum(item['bytes'] for item in pruned),
+            },
         }
         if request.method == 'GET' and request.args.get('download') == '1':
             return send_file(bundle_path, as_attachment=True, download_name=bundle_path.name)

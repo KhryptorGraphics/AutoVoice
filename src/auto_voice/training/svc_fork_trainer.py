@@ -11,6 +11,7 @@ Runs in a separate conda env from the trainer/server, so all interaction is via
 subprocess. Import-light so the job manager can call it without pulling torch.
 """
 import json
+import logging
 import os
 import re
 import shutil
@@ -30,6 +31,8 @@ _EPOCH_RE = re.compile(r"epoch[^0-9]*([0-9]+)", re.IGNORECASE)
 # A tqdm bar redraw, e.g. " 21%|##########    | 195/911 [02:44<10:23, 4.3it/s]"
 _TQDM_BAR = re.compile(r"^\s*\d{1,3}%\|.*\|\s*\d+/\d+")
 
+logger = logging.getLogger(__name__)
+
 ProgressCB = Optional[Callable[[int, str], None]]
 
 
@@ -45,6 +48,24 @@ class ForkTrainingError(RuntimeError):
 # the environment, because otherwise a training run's memory behaviour depends
 # on whichever shell happened to launch gunicorn.
 _ALLOC_CONF = "max_split_size_mb:512"
+
+# Registry keys that belong to SERVING, not to training, and must survive a
+# retrain. A retrain rebuilds the registry entry from scratch; without this, a
+# 400-epoch run reverted f0_method to the training-time default and dropped the
+# chunking values that had removed roughly 260 audible seams from a conversion.
+# That is the worst shape of bug this app has - the model improves and the
+# output quality regresses in the same instant, with nothing on screen saying
+# so. Keep in step with what svc_fork_bridge actually reads at inference.
+_PRESERVED_INFERENCE_KEYS = (
+    "f0_method",
+    "noise_scale",
+    "transpose",
+    "chunk_seconds",
+    "max_chunk_seconds",
+    "pad_seconds",
+    "db_thresh",
+    "absolute_thresh",
+)
 
 
 def _clean_env() -> Dict[str, str]:
@@ -242,12 +263,29 @@ def train_svc_fork(
     shutil.copy2(final, dest / "G.pth")
     shutil.copy2(ws / "configs" / "44k" / "config.json", dest / "config.json")
     registry = Path(data_dir) / "fork_models" / f"{profile_id}.json"
+    # Read the outgoing entry BEFORE overwriting it: its serving-side tuning was
+    # arrived at by ear and exists nowhere else (data/ is not in the repo).
+    previous = {}
+    if registry.is_file():
+        try:
+            loaded = json.loads(registry.read_text())
+            if isinstance(loaded, dict):
+                previous = loaded
+        except (OSError, ValueError):
+            previous = {}
     entry = {
         "profile_id": profile_id, "engine": "so-vits-svc-fork", "speaker": speaker,
         "model_path": str(dest / "G.pth"), "config_path": str(dest / "config.json"),
         "svc_bin": svc_bin, "f0_method": f0_method, "transpose": 0,
         "trained_epochs": trained_ep,
     }
+    for key in _PRESERVED_INFERENCE_KEYS:
+        if previous.get(key) is not None:
+            if previous[key] != entry.get(key):
+                logger.info("Preserving tuned %s=%r across the retrain "
+                            "(training would have written %r)",
+                            key, previous[key], entry.get(key))
+            entry[key] = previous[key]
     registry.write_text(json.dumps(entry, indent=2))
     _report(progress_cb, 100, "completed")
 

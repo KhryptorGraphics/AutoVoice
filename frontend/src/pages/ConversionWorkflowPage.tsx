@@ -11,6 +11,7 @@ import { StatusBanner } from '../components/StatusBanner'
 import { TrainingConfigPanel } from '../components/TrainingConfigPanel'
 import { PipelineBadge, PipelineSelector, getPreferredPipeline, isOfflinePipeline, type PipelineType } from '../components/PipelineSelector'
 import { useToastContext } from '../contexts/ToastContext'
+import { ConfirmActionButton } from '../components/ConfirmActionButton'
 import {
   apiService,
   type AdapterType,
@@ -1196,6 +1197,38 @@ export function ConversionWorkflowPage() {
                       {multiSpeakerInfo.coverage != null ? ` · ${Math.round(multiSpeakerInfo.coverage * 100)}% coverage` : ''}
                     </span>
                   )}
+                  {multiSpeakerInfo?.unison_folded_into_lead ? (
+                    <span
+                      title="A backing line singing the same notes as the lead is the lead double-tracked. Converting it separately produced two takes of one phrase that do not line up, which smears the lead, so it is folded in and converted once."
+                      className="rounded-full bg-purple-500/20 px-2 py-1 text-xs text-purple-100"
+                    >
+                      {multiSpeakerInfo.unison_folded_into_lead} lead double
+                      {multiSpeakerInfo.unison_folded_into_lead === 1 ? '' : 's'} merged into lead
+                    </span>
+                  ) : null}
+                  {multiSpeakerInfo?.harmony_line_decisions?.length ? (
+                    <details className="mt-2 w-full text-xs text-gray-400">
+                      <summary className="cursor-pointer text-gray-300">
+                        Per-line decisions ({multiSpeakerInfo.harmony_line_decisions.length})
+                      </summary>
+                      <ul className="mt-1 space-y-1 pl-4">
+                        {multiSpeakerInfo.harmony_line_decisions.map(d => (
+                          <li key={d.line} className="list-disc">
+                            <span className={d.outcome === 'converted' ? 'text-green-300' : 'text-amber-300'}>
+                              Line {d.line}: {d.outcome}
+                            </span>
+                            {d.reason ? ` — ${d.reason}` : ''}
+                            {d.voiced != null ? ` · voiced ${d.voiced}` : ''}
+                            {d.enrichment != null ? ` · enrichment ${d.enrichment} (needs ${d.threshold})` : ''}
+                            {d.gain != null ? ` · level ${d.gain}x${d.gain_clamped ? ' (clamped)' : ''}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                      <p className="mt-1 text-gray-500">
+                        A line that was not converted is still present — in the original singer&apos;s voice.
+                      </p>
+                    </details>
+                  ) : null}
                   {multiSpeakerInfo?.preserved_speakers?.length ? (
                     <span
                       title="These singers' original voices were kept (already the target artist)"
@@ -1261,9 +1294,16 @@ export function ConversionWorkflowPage() {
       <div className="bg-gray-800 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Conversion History</h2>
-          <button
-            type="button"
-            onClick={() => {
+          {/* Confirmed, not immediate: this discards the uploaded song, the
+              uploaded vocals and every selection made so far, with no undo -
+              and it sat next to ordinary controls as a one-click button. */}
+          <ConfirmActionButton
+            label={<span className="inline-flex items-center gap-2"><RefreshCw size={14} />Reset Workflow</span>}
+            confirmLabel="Discard everything"
+            confirmMessage="Discard the uploaded song, your uploaded vocals and all selections? This cannot be undone."
+            variant="danger"
+            testId="reset-workflow"
+            onConfirm={() => {
               setArtistSong(null)
               setUserVocalFiles([])
               setWorkflow(null)
@@ -1272,11 +1312,8 @@ export function ConversionWorkflowPage() {
               setDominantSourceProfileOverride('')
               setConversionStatus(null)
             }}
-            className="inline-flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm"
-          >
-            <RefreshCw size={14} />
-            Reset Workflow
-          </button>
+            className="inline-flex items-center gap-2 px-3 py-2 rounded text-sm"
+          />
         </div>
         <ConversionHistoryTable onSelect={handleHistorySelect} />
       </div>
