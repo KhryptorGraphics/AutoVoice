@@ -1,0 +1,19 @@
+--- /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/cluster/__init__.py.orig	2026-08-29 04:02:46.836319175 -0500
++++ /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/cluster/__init__.py	2026-08-29 04:02:46.864319322 -0500
+@@ -9,7 +9,15 @@
+ 
+ def get_cluster_model(ckpt_path: Path | str):
+     with Path(ckpt_path).open("rb") as f:
+-        checkpoint = torch.load(f, map_location="cpu")  # Danger of arbitrary code execution
++        # torch >=2.6 defaults weights_only=True, which refuses the plain
++        # numpy-array dict this checkpoint format is (n_features_in_,
++        # _n_threads, cluster_centers_) - this is upstream's own file format
++        # (see cluster/train_cluster.py), not specific to any one producer of
++        # it, so a real `svc train-cluster` run hits this identically on a
++        # torch this new. Explicit and load-local, not a global torch.load
++        # override; the checkpoint is produced locally by train-cluster.py
++        # or this session's equivalent, never fetched from the network.
++        checkpoint = torch.load(f, map_location="cpu", weights_only=False)  # noqa: S301
+     kmeans_dict = {}
+     for spk, ckpt in checkpoint.items():
+         km = KMeans(ckpt["n_features_in_"])

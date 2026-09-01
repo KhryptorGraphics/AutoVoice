@@ -96,3 +96,11 @@ frontend/playwright-report-live/
 .claude/settings.local.json
 # Local debug launchers (contain the flask secret inline)
 test_server*.py
+
+# Generated analysis/verification artifacts (regenerated on demand, not source)
+graphify-out/
+.memdb/
+.claude/memory.db-shm
+.claude/memory.db-wal
+verify-*.png
+history-dark.png

@@ -1,0 +1,48 @@
+--- /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/modules/synthesizers.py.orig	2026-08-29 02:50:07.827826202 -0500
++++ /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/modules/synthesizers.py	2026-08-29 02:50:07.867826401 -0500
+@@ -22,6 +22,28 @@
+ LOG = getLogger(__name__)
+ 
+ 
++import os as _os
++
++
++def _uv_masked_f0(f0, uv):
++    """Restore the f0==0 contract SineGen documents for unvoiced steps.
++
++    interpolate_f0() fills every unvoiced frame, so SineGen._f02uv
++    (voiced_threshold=0) returns uv==1 everywhere and
++    noise_amp = uv*0.003 + (1-uv)*sine_amp/3 is pinned at 0.003 - a ~20.9 dB
++    cut to the aperiodic excitation, on every frame. Masking f0 by the real uv
++    lets the unvoiced branch fire again.
++
++    OFF by default: the model was trained against the violated contract, so
++    enabling this at inference alone is a train/test mismatch. Set
++    SVCFORK_UV_CONTRACT=1 to enable (intended for retrains that also mask
++    during training).
++    """
++    if _os.environ.get("SVCFORK_UV_CONTRACT", "") != "1":
++        return f0
++    return f0 * uv
++
++
+ class SynthesizerTrn(nn.Module):
+     """
+     Synthesizer for Training
+@@ -179,7 +201,8 @@
+ 
+         # flow
+         z_p = self.flow(z, spec_mask, g=g)
+-        z_slice, pitch_slice, ids_slice = commons.rand_slice_segments_with_pitch(z, f0, spec_lengths, self.segment_size)
++        z_slice, pitch_slice, ids_slice = commons.rand_slice_segments_with_pitch(
++            z, _uv_masked_f0(f0, uv), spec_lengths, self.segment_size)
+ 
+         # MB-iSTFT-VITS
+         if self.mb:
+@@ -218,5 +241,5 @@
+         if self.mb:
+             o, o_mb = self.dec(z * c_mask, g=g)
+         else:
+-            o = self.dec(z * c_mask, g=g, f0=f0)
++            o = self.dec(z * c_mask, g=g, f0=_uv_masked_f0(f0, uv))
+         return o
