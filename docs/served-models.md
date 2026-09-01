@@ -6,9 +6,14 @@ this repository.** They live only on the serving box:
 
 | what | where | tracked? |
 |---|---|---|
-| checkpoint + f0 method per profile | `data/fork_models/<profile_id>.json` | no |
+| checkpoint + f0 method per profile | `data/fork_models/<profile_id>.json` | **yes** — predates the ignore rule, so commit changes to it |
 | live pipeline settings | `data/app_state/app_settings.json` (via `PATCH /api/v1/settings/app`) | no |
 | the checkpoints themselves | `/home/kp/thordrive/autofusion/autovoice/checkpoints/…` | no (multi-GB) |
+
+Note the asymmetry: the registry entry *is* version-controlled (it was committed
+before `data/` was ignored, and gitignore does not apply to already-tracked
+files), but the settings that reach the pipeline are not. `git add` will refuse
+the path as ignored; `git commit -- <path>` works.
 
 This file is the tracked record of that state. **Update it whenever a model is
 promoted or a serving default is changed by ear.** The cost of not doing so is
