@@ -162,8 +162,15 @@ export function ConversionHistoryTable({ profileId, onSelect, onCompare }: Conve
     }
   }
 
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleString()
+  const formatDate = (value: string | number) => {
+    // Records carry created_at in two shapes: an ISO string from the job
+    // manager, or a float epoch-seconds timestamp from records written
+    // directly into the history store. `new Date(1788104011.5)` would read
+    // that as milliseconds and render 1970, so scale seconds up first.
+    const date = typeof value === 'number'
+      ? new Date(value < 1e11 ? value * 1000 : value)
+      : new Date(value)
+    return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString()
   }
 
   const formatDuration = (seconds?: number) => {
