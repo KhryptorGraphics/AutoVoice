@@ -124,7 +124,9 @@ class TestReadMetrics:
         assert m["current_loss_tag"] == "loss/g/mel"
 
     def test_gpu_memory_converted_from_bytes_to_mib(self, tmp_path):
-        tag = "DeviceStatsMonitor.on_train_batch_end/active.all.current"
+        # reserved_bytes, not active.all.current: the latter is a COUNT of
+        # allocation blocks and rendered 0.0 GB on every real run.
+        tag = "DeviceStatsMonitor.on_train_batch_end/reserved_bytes.all.current"
         _write_events(
             tmp_path, PROFILE_ID,
             **{tag.replace("/", "__"): [(1, 512 * 1024 * 1024)]},
@@ -134,13 +136,29 @@ class TestReadMetrics:
 
     def test_small_allocation_not_mislabelled_as_mib(self, tmp_path):
         """A size-dependent heuristic used to report small byte counts as MiB."""
-        tag = "DeviceStatsMonitor.on_train_batch_end/active.all.current"
+        tag = "DeviceStatsMonitor.on_train_batch_end/reserved_bytes.all.current"
         _write_events(
             tmp_path, PROFILE_ID,
             **{tag.replace("/", "__"): [(1, 500_000)]},
         )
         m = _read_metrics(_find_events_file(str(tmp_path), PROFILE_ID))
         assert m["gpu_memory_mb"] < 1.0
+
+    def test_reserved_and_allocated_are_reported_separately(self, tmp_path):
+        """The GAP is the diagnostic: reserve high while allocated is flat means
+        the allocator is hoarding segments, not that the model leaks. This box
+        hit exactly that - reserve 4 GB -> 91 GB with live tensors flat."""
+        reserved = "DeviceStatsMonitor.on_train_batch_end/reserved_bytes.all.current"
+        allocated = "DeviceStatsMonitor.on_train_batch_end/allocated_bytes.all.current"
+        _write_events(
+            tmp_path, PROFILE_ID,
+            **{reserved.replace("/", "__"): [(1, 4096 * 1024 * 1024)],
+               allocated.replace("/", "__"): [(1, 1024 * 1024 * 1024)]},
+        )
+        m = _read_metrics(_find_events_file(str(tmp_path), PROFILE_ID))
+        assert m["gpu_memory_mb"] == pytest.approx(4096.0, abs=1.0)
+        assert m["gpu_allocated_mb"] == pytest.approx(1024.0, abs=1.0)
+        assert m["gpu_reserved_overhead_mb"] == pytest.approx(3072.0, abs=1.0)
 
     def test_mos_proxy_derived_from_loss(self, tmp_path):
         _write_events(tmp_path, PROFILE_ID, **{"loss__g__total": [(1, 1.0)]})

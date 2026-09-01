@@ -15,6 +15,9 @@ by ``TrainingJob.to_dict``.
 """
 from __future__ import annotations
 
+import json
+import math
+from pathlib import Path
 import glob
 import os
 import threading
@@ -27,10 +30,61 @@ _LOSS_TAGS = (
     "loss/g/mel",
     "loss/g/kl",
 )
+# Byte-valued tags only. These were `active.all.current`, which is the COUNT of
+# active allocation blocks (~2,800 on a real run), not a size - and _read_metrics
+# divides by 1 MiB unconditionally, so it rendered 0.0 GB on the live training
+# card for every run that has ever trained here. A count tag fails silently
+# rather than loudly, which is why it survived.
+#
+# Reserved and allocated are kept apart because the PAIR is the diagnostic:
+# reserve climbing while allocated stays flat means the allocator is holding
+# segments it will not return, not that the model is leaking. That is exactly
+# the failure this deployment hit - reserve 4 GB -> 91 GB with live tensors flat
+# at 2,401.8 MiB - and this telemetry is what would have shown it.
 _GPU_MEM_TAGS = (
-    "DeviceStatsMonitor.on_train_batch_end/active.all.current",
-    "DeviceStatsMonitor.on_train_batch_start/active.all.current",
+    "DeviceStatsMonitor.on_train_batch_end/reserved_bytes.all.current",
+    "DeviceStatsMonitor.on_train_batch_start/reserved_bytes.all.current",
 )
+_GPU_ALLOC_TAGS = (
+    "DeviceStatsMonitor.on_train_batch_end/allocated_bytes.all.current",
+    "DeviceStatsMonitor.on_train_batch_start/allocated_bytes.all.current",
+)
+
+
+def _total_steps(events_path: str) -> Optional[int]:
+    """Total optimizer steps a run will take, or None if it cannot be known.
+
+    svc-fork logs a step COUNTER but never a total, so a multi-hour run had no
+    denominator and the UI could not offer a remaining-time estimate. The total
+    is derivable from the workspace the events file sits in:
+
+        epochs * ceil(clips / batch_size)
+
+    Rounds UP: a trailing partial batch is still a step, and flooring
+    under-reports the total, which makes a run appear to overshoot 100%.
+
+    Returns None - never 0 - on anything unknown or degenerate. The caller
+    hides the estimate on None, whereas 0 would sail through as a real total
+    and render a nonsense ETA. A missing number is better than a wrong one.
+    """
+    try:
+        # <ws>/logs/44k/lightning_logs/version_0/events.out.tfevents.N
+        ws = Path(events_path).resolve().parents[4]
+        config_path = ws / "configs" / "44k" / "config.json"
+        filelist = ws / "filelists" / "44k" / "train.txt"
+        if not config_path.is_file() or not filelist.is_file():
+            return None
+        cfg = json.loads(config_path.read_text())
+        train_cfg = cfg.get("train") or {}
+        epochs = int(train_cfg.get("epochs") or 0)
+        batch_size = int(train_cfg.get("batch_size") or 0)
+        clips = sum(1 for line in filelist.read_text().splitlines() if line.strip())
+        if epochs <= 0 or batch_size <= 0 or clips <= 0:
+            return None
+        return epochs * math.ceil(clips / batch_size)
+    except (OSError, ValueError, TypeError, IndexError, KeyError):
+        # Telemetry must never take down the thing it is reporting on.
+        return None
 # Slack on the "ignore files older than this run" cutoff, to absorb
 # filesystem mtime granularity and thread-scheduling jitter. A previous
 # training run is minutes-to-days older, so this never readmits one.
@@ -141,9 +195,9 @@ def _read_metrics(events_file: str) -> Dict[str, Any]:
         if events:
             out["learning_rate"] = float(events[-1].value)
 
-    # GPU memory. Lightning's DeviceStatsMonitor reports this tag in bytes,
-    # so convert unconditionally - a size-dependent heuristic would report a
-    # genuinely small allocation as if it were already in MiB.
+    # GPU memory. These tags are byte-valued (see _GPU_MEM_TAGS), so convert
+    # unconditionally - a size-dependent heuristic would report a genuinely
+    # small allocation as if it were already in MiB.
     for tag in _GPU_MEM_TAGS:
         if tag in scalars:
             events = ea.Scalars(tag)
@@ -151,6 +205,19 @@ def _read_metrics(events_file: str) -> Dict[str, Any]:
                 val = float(events[-1].value) / (1024 * 1024)
                 out["gpu_memory_mb"] = round(val, 1)
                 break
+
+    # Reported alongside, never merged: the gap between reserved and allocated
+    # is what distinguishes an allocator holding segments from a model leaking.
+    for tag in _GPU_ALLOC_TAGS:
+        if tag in scalars:
+            events = ea.Scalars(tag)
+            if events:
+                val = float(events[-1].value) / (1024 * 1024)
+                out["gpu_allocated_mb"] = round(val, 1)
+                break
+    if "gpu_memory_mb" in out and "gpu_allocated_mb" in out:
+        held = out["gpu_memory_mb"] - out["gpu_allocated_mb"]
+        out["gpu_reserved_overhead_mb"] = round(max(held, 0.0), 1)
 
     for tag in _GPU_UTIL_TAGS:
         if tag in scalars:

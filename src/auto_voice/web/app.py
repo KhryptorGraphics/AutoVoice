@@ -66,6 +66,17 @@ def register_default_socket_handlers(socketio: SocketIO) -> None:
         emit('left_job', {'job_id': job_id})
 
 
+# Socket.IO heartbeat. The engineio defaults (25s ping interval + 20s timeout)
+# gave a client only ~45s of silence before being dropped, and with eventlet
+# running un-monkey-patched the hub lost that race often enough that healthy
+# browsers reconnected on a ~45s cycle - each reconnect invalidating the query
+# cache, so a long training run's UI reset itself every minute. Widened to
+# tolerate a GIL-bound stall, but still bounded so a genuinely dead client is
+# reaped rather than leaking its room.
+SOCKETIO_PING_INTERVAL = 25
+SOCKETIO_PING_TIMEOUT = 60
+
+
 def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] = None) -> Tuple[Flask, SocketIO]:
     """Create and configure the Flask application.
 
@@ -206,7 +217,13 @@ def create_app(config: Optional[Dict[str, Any]] = None, testing: Optional[bool] 
     # Use threading mode in testing to avoid eventlet dependency
     # Check both testing parameter and config TESTING flag for SocketIO mode
     async_mode = 'threading' if (testing is True or app.config.get('TESTING', False)) else 'eventlet'
-    socketio = SocketIO(app, cors_allowed_origins=socketio_cors_allowed_origins(app), async_mode=async_mode)
+    socketio = SocketIO(
+        app,
+        cors_allowed_origins=socketio_cors_allowed_origins(app),
+        async_mode=async_mode,
+        ping_interval=SOCKETIO_PING_INTERVAL,
+        ping_timeout=SOCKETIO_PING_TIMEOUT,
+    )
     app.socketio = socketio
 
     # Register API blueprints

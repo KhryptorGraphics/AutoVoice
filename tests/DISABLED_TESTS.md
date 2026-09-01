@@ -10,11 +10,21 @@ the content is the clearest specification of what that feature should do.
 
 | file | missing symbol | what it wanted |
 |---|---|---|
-| `test_fork_metrics_gpu_and_steps.py.disabled` | `svc_fork_metrics._GPU_ALLOC_TAGS` | GPU allocation accounting during training |
 | `test_shortcut_flow_matching.py.disabled` | top-level `modules` package | the Seed-VC shortcut flow lane |
 
 To revive one: implement the symbol it imports (the test body is the spec),
 then drop the `.disabled` suffix and run it.
+
+`test_fork_metrics_gpu_and_steps.py` was also revived. It covered three
+telemetry defects that each showed a user a blank or absurd number: the GPU
+memory tag read `active.all.current`, a COUNT of allocation blocks (~2,800),
+which divided by 1 MiB rendered 0.0 GB for every run ever trained here;
+svc-fork logs no step total so a multi-hour run had no ETA denominator; and the
+Socket.IO heartbeat left only ~45s of slack, so healthy browsers reconnected on
+a ~45s cycle and reset the UI's cache each time. Reserved and allocated bytes
+are now reported separately, since the GAP between them is what distinguishes
+an allocator hoarding segments from a model leaking — the exact failure this
+box hit at 4 GB → 91 GB.
 
 `test_fork_registry_preserves_tuning.py` was revived this way and is now
 enabled: `_PRESERVED_INFERENCE_KEYS` is implemented, so a retrain no longer
