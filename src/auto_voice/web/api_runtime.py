@@ -348,7 +348,7 @@ def get_app_settings():
         payload.setdefault('multi_speaker_line_onset_ms',
                            float(cfg.get('multi_speaker_line_onset_ms', 30.0)))
         payload.setdefault('multi_speaker_line_concentration_min',
-                           float(cfg.get('multi_speaker_line_concentration_min', 0.15)))
+                           float(cfg.get('multi_speaker_line_concentration_min', 1.2)))
         payload.setdefault('multi_speaker_unison_semitones',
                            float(cfg.get('multi_speaker_unison_semitones', 1.0)))
         payload.setdefault('multi_speaker_unison_note_frac',
@@ -443,7 +443,7 @@ def update_app_settings():
             ('multi_speaker_line_onset_ms', 0.0, 120.0),
             # How much of the stack a line must claim to count as real.
             # Lower converts more (incl. marginal lines); higher is stricter.
-            ('multi_speaker_line_concentration_min', 0.02, 0.6),
+            ('multi_speaker_line_concentration_min', 0.5, 10.0),
             # How close to the lead's pitch counts as unison. 0 disables the
             # fold entirely (every line converts as its own singer).
             ('multi_speaker_unison_semitones', 0.0, 4.0),

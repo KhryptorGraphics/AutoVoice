@@ -1,10 +1,49 @@
 """Shared web utilities for AutoVoice API."""
+from datetime import datetime, timezone
 from typing import Optional, Tuple, Any
 from flask import jsonify, current_app, has_app_context
 
 ALLOWED_AUDIO_EXTENSIONS = {
     'wav', 'mp3', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'wma', 'aiff', 'webm'
 }
+
+
+def timestamp_sort_key(value: Any) -> float:
+    """Sortable epoch-seconds float for any ``created_at`` shape on disk.
+
+    The state-store files hold epoch floats today, but nothing enforces that:
+    a single ISO string written into one of them makes a raw sort raise
+    ``TypeError: '<' not supported between instances of 'str' and 'float'``,
+    which takes ``/convert/history`` (and the training-job and preset readers)
+    down with a 500 for every user until the file is migrated by hand. The
+    plain missing-key case is the same hazard with ``""`` against a float.
+
+    Unparseable, missing and null values collapse to ``-inf`` so they sort last
+    under ``reverse=True`` rather than pushing themselves to the top.
+    """
+    if value is None:
+        return float('-inf')
+    if isinstance(value, bool):          # bool is an int; never a timestamp
+        return float('-inf')
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return float('-inf')
+        try:
+            return float(text)           # epoch persisted as a string
+        except ValueError:
+            pass
+        try:
+            # fromisoformat rejects the trailing 'Z' before 3.11.
+            parsed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+        except ValueError:
+            return float('-inf')
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    return float('-inf')
 
 
 def allowed_file(filename: str) -> bool:

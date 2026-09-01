@@ -680,24 +680,25 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                     <label className="text-sm text-gray-400">Harmony-line detection strictness</label>
                     <input
                       type="range"
-                      min={0.02}
-                      max={0.6}
-                      step={0.01}
-                      value={dragValue('lineConcMin', appSettings.multi_speaker_line_concentration_min ?? 0.15)}
+                      min={0.5}
+                      max={10}
+                      step={0.1}
+                      value={dragValue('lineConcMin', appSettings.multi_speaker_line_concentration_min ?? 1.2)}
                       onChange={onDrag('lineConcMin')}
                       onPointerUp={onCommit('lineConcMin', v => updateAppSettingsMutation.mutate({ multi_speaker_line_concentration_min: v }))}
                       onKeyUp={onCommit('lineConcMin', v => updateAppSettingsMutation.mutate({ multi_speaker_line_concentration_min: v }))}
                       className="mt-1 w-full"
                     />
                     <div className="flex justify-between text-xs text-gray-500">
-                      <span>Convert more (0.02)</span>
-                      <span>{dragValue('lineConcMin', appSettings.multi_speaker_line_concentration_min ?? 0.15).toFixed(2)}</span>
-                      <span>Stricter (0.6)</span>
+                      <span>Convert more (0.5)</span>
+                      <span>{dragValue('lineConcMin', appSettings.multi_speaker_line_concentration_min ?? 1.2).toFixed(1)}x</span>
+                      <span>Stricter (10)</span>
                     </div>
                     <p className="mt-1 text-xs text-gray-500">
-                      How much of the backing a line must account for before it counts as a real
-                      harmony rather than filtered noise. Lower converts more lines, including
-                      marginal ones; too low and texture gets re-sung as a phantom voice.
+                      How much more concentrated a line's energy must be than pure noise before it
+                      counts as a real harmony. 1.0 means "no better than noise", so anything at or
+                      below that is texture the filter merely made sound tonal. Lower converts more
+                      marginal lines; too low and noise gets re-sung as a phantom voice.
                     </p>
                   </div>
 

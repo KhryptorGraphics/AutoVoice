@@ -116,19 +116,28 @@ is safe and is the shipped default.
   **53%** on another against a 50% cutoff — it fired on one and not the other.
   **Treat this as unreliable across songs**; a better discriminator is still
   wanted.
-- `multi_speaker_line_concentration_min` (`0.15`) silently rejected genuine
-  harmony lines twice while the extractor was being changed. If harmonies go
-  missing after any change to mask construction, check this first.
+- `multi_speaker_line_concentration_min` (`1.2`) is now an ENRICHMENT ratio over
+  chance, not a raw captured fraction — `1.0` means "no better concentrated than
+  noise". It was a raw fraction until it silently rejected genuine harmony lines
+  twice and then admitted pure noise once, all because the raw value scales with
+  how wide the comb mask is. Enrichment is width-invariant, so changing
+  `line_harmonics` no longer re-tunes this gate by accident. Margins are real but
+  not generous: measured noise `0.99`, real lines `1.39`.
 
 ---
 
 ## Conventions
 
 - Promote a checkpoint by **editing the registry JSON directly**, not through the
-  training UI, unless the trainer produced it. `_PRESERVED_INFERENCE_KEYS` in
-  `svc_fork_trainer.py` carries `f0_method`/`noise_scale`/chunking forward from
-  whatever is on disk at promotion time, so a retrain promoted while the registry
-  holds a wrong value will inherit it.
+  training UI, unless the trainer produced it. `svc_fork_trainer.train_svc_fork`
+  rebuilds the entry on promotion, so tuning that lives only in the registry can
+  be overwritten by a retrain — check the entry after any training run.
+
+  (An earlier version of this file claimed a `_PRESERVED_INFERENCE_KEYS`
+  constant carries that tuning forward. It does not exist in this checkout, in
+  the sibling one, or in any commit — the claim came from a stale context, and
+  the tests referencing it fail to import. Treat promotion as destructive to
+  registry tuning until something actually preserves it.)
 - Always leave a `.pre_<change>_backup` beside the entry.
 - Verify via `GET /api/v1/profiles/<id>/adapters` after restarting — it reads the
   same cache the conversion path uses.

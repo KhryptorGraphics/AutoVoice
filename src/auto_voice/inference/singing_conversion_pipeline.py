@@ -236,7 +236,26 @@ def _extract_line_audios(stack: np.ndarray, sample_rate: int, lines,
             librosa.istft(S * mask, hop_length=hop, length=len(stack)),
             dtype=np.float32)
 
-    return [(_istft(mask * share), _istft(mask)) for mask in masks]
+    def _occupancy(mask):
+        """Fraction of the spectrogram this mask passes, weighted by its own
+        gain — i.e. the share of a FLAT-spectrum input it would capture.
+
+        The caller's "is this a real harmonic line?" test compares captured
+        energy against the stack's. That raw fraction scales with how wide the
+        comb is, so it says as much about the mask as about the audio: widening
+        the comb from 10 to 24 harmonics raised what pure noise scores from
+        0.168 to 0.512 against a 0.15 threshold, admitting noise as a harmony.
+        Dividing by this makes the test an ENRICHMENT over chance, which is
+        invariant to mask width: noise scores ~1 whatever the comb, a real line
+        scores far higher because its energy sits exactly where the comb looks.
+        """
+        active = mask.sum(axis=0) > 0
+        if not active.any():
+            return 0.0
+        return float(np.mean(mask[:, active] ** 2))
+
+    return [(_istft(mask * share), _istft(mask), _occupancy(mask))
+            for mask in masks]
 
 
 # Preset configurations
@@ -961,8 +980,12 @@ class SingingConversionPipeline:
         # real harmony rather than comb-filtered noise. Exposed because it is
         # sensitive to how the masks are built: it silently rejected genuine
         # lines twice while the extractor was being changed underneath it.
+        # Enrichment over chance (see _extract_line_audios._occupancy), not a
+        # raw fraction: 1.0 is "no better than noise", so the default demands a
+        # line be meaningfully more concentrated than that. Width-invariant, so
+        # changing the comb no longer silently re-tunes this gate.
         concentration_min = float(self.config.get(
-            'multi_speaker_line_concentration_min', 0.15))
+            'multi_speaker_line_concentration_min', 1.2))
         # Extracted for every line in one pass: the masks have to see each
         # other to share the bins they both claim (see _extract_line_audios).
         extracts = _extract_line_audios(
@@ -975,7 +998,7 @@ class SingingConversionPipeline:
             # leaves the stack); gate_extract is its full unpartitioned claim,
             # which is what the gates below must judge - see
             # _extract_line_audios for why the two must not be conflated.
-            extract, gate_extract = extracts[i]
+            extract, gate_extract, occupancy = extracts[i]
             line_rms = float(np.sqrt(np.mean(np.square(gate_extract, dtype=np.float64))))
             if line_rms < 0.05 * stack_rms:
                 logger.info("Backing line %d: negligible energy, skipped", i)
@@ -989,11 +1012,14 @@ class SingingConversionPipeline:
             gate_active = _active_audio(gate_extract, sr, spans)
             extract_active = _active_audio(extract, sr, spans)
             stack_e = float(np.sum(np.square(stack_active, dtype=np.float64))) + 1e-12
-            concentration = float(
-                np.sum(np.square(gate_active, dtype=np.float64)) / stack_e)
+            captured = float(np.sum(np.square(gate_active, dtype=np.float64)) / stack_e)
+            # Enrichment over chance, not raw captured fraction: see
+            # _extract_line_audios._occupancy. Noise lands near 1.0 regardless
+            # of how wide the comb is; a real line sits well above it.
+            concentration = captured / max(occupancy, 1e-6)
             if concentration < concentration_min:
-                logger.info("Backing line %d: energy concentration %.2f < %.2f "
-                            "(not a real harmonic line), kept original",
+                logger.info("Backing line %d: harmonic enrichment %.2f < %.2f "
+                            "(no better concentrated than noise), kept original",
                             i, concentration, concentration_min)
                 continue
             # Measure voicing on the span-active audio (calibration convention);

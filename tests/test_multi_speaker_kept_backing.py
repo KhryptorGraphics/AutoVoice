@@ -289,7 +289,7 @@ class TestLineExtractionPartition:
         stack = (0.3 * np.sin(2 * np.pi * 220.0 * t)
                  + 0.3 * np.sin(2 * np.pi * 261.6 * t)).astype(np.float32)
         lines = [self._notes(57), self._notes(60)]
-        ex = [mix for mix, _gate in _extract_line_audios(stack, sr, lines)]
+        ex = [mix for mix, _gate, _occ in _extract_line_audios(stack, sr, lines)]
         assert len(ex) == 2
         total = np.sum(np.square(np.sum(ex, axis=0), dtype=np.float64))
         assert total <= np.sum(np.square(stack, dtype=np.float64)) * 1.05

@@ -312,7 +312,7 @@ def test_get_diarizer_is_cached():
 # ---------------------------------------------------------------------------
 
 from auto_voice.inference.singing_conversion_pipeline import (  # noqa: E402
-    _extract_line_audio,
+    _extract_line_audios,
     _group_notes_into_lines,
 )
 
@@ -479,8 +479,12 @@ class TestLineExtraction:
                              for k in range(1, 5)) / 2.0
         low, high = voice(220.0, 0.5), voice(330.0, 0.5)
         stack = (low + high).astype(np.float32)
-        ext_low = _extract_line_audio(stack, sr, [_note(0, 4, 57)])
-        ext_high = _extract_line_audio(stack, sr, [_note(0, 4, 64)])
+        # _extract_line_audios isolates every line in one pass so the masks can
+        # share contested bins; extracted separately here so each line still
+        # sees the whole stack, matching what this test is asserting about
+        # selectivity. [0] is the mix extract, [1] the unpartitioned claim.
+        ext_low = _extract_line_audios(stack, sr, [[_note(0, 4, 57)]])[0][0]
+        ext_high = _extract_line_audios(stack, sr, [[_note(0, 4, 64)]])[0][0]
         # each extract correlates with its voice, not the other
         def corr(a, b):
             return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
@@ -492,7 +496,7 @@ class TestLineExtraction:
         sr = 8000
         t = np.arange(4 * sr) / sr
         stack = (0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
-        ext = _extract_line_audio(stack, sr, [_note(0, 1.0, 57)])
+        ext = _extract_line_audios(stack, sr, [[_note(0, 1.0, 57)]], onset_s=0.0)[0][0]
         assert np.abs(ext[2 * sr:]).max() < 0.05
 
 

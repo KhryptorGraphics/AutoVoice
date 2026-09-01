@@ -8,6 +8,8 @@ import threading
 import time
 import uuid
 from copy import deepcopy
+
+from .utils import timestamp_sort_key
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -335,7 +337,7 @@ class AppStateStore:
         jobs = [job for job in self._read("training_jobs", {}).values() if isinstance(job, dict)]
         if profile_id:
             jobs = [job for job in jobs if job.get("profile_id") == profile_id]
-        jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        jobs.sort(key=lambda item: timestamp_sort_key(item.get("created_at")), reverse=True)
         return jobs
 
     def get_training_job(self, job_id: str) -> Optional[Dict[str, Any]]:
@@ -351,7 +353,7 @@ class AppStateStore:
         jobs = list(self._read("background_jobs", {}).values())
         if job_type:
             jobs = [job for job in jobs if job.get("job_type") == job_type]
-        jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        jobs.sort(key=lambda item: timestamp_sort_key(item.get("created_at")), reverse=True)
         return jobs
 
     def get_background_job(self, job_id: str) -> Optional[Dict[str, Any]]:
@@ -365,7 +367,7 @@ class AppStateStore:
 
     def list_presets(self) -> List[Dict[str, Any]]:
         presets = list(self._read("presets", {}).values())
-        presets.sort(key=lambda item: item.get("updated_at") or item.get("created_at", ""), reverse=True)
+        presets.sort(key=lambda item: timestamp_sort_key(item.get("updated_at") or item.get("created_at")), reverse=True)
         return presets
 
     def get_preset(self, preset_id: str) -> Optional[Dict[str, Any]]:
@@ -389,7 +391,7 @@ class AppStateStore:
         records = list(self._read("conversion_history", {}).values())
         if profile_id:
             records = [record for record in records if record.get("profile_id") == profile_id]
-        records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        records.sort(key=lambda item: timestamp_sort_key(item.get("created_at")), reverse=True)
         return records
 
     def get_conversion_record(self, record_id: str) -> Optional[Dict[str, Any]]:
@@ -416,7 +418,7 @@ class AppStateStore:
         workflows = list(self._read("conversion_workflows", {}).values())
         if status:
             workflows = [workflow for workflow in workflows if workflow.get("status") == status]
-        workflows.sort(key=lambda item: item.get("updated_at") or item.get("created_at", ""), reverse=True)
+        workflows.sort(key=lambda item: timestamp_sort_key(item.get("updated_at") or item.get("created_at")), reverse=True)
         return workflows
 
     def get_conversion_workflow(self, workflow_id: str) -> Optional[Dict[str, Any]]:
@@ -438,7 +440,7 @@ class AppStateStore:
 
     def list_diarization_results(self) -> List[Dict[str, Any]]:
         results = list(self._read("diarization_results", {}).values())
-        results.sort(key=lambda item: item.get("created_at", 0), reverse=True)
+        results.sort(key=lambda item: timestamp_sort_key(item.get("created_at")), reverse=True)
         return results
 
     def get_diarization_result(self, diarization_id: str) -> Optional[Dict[str, Any]]:
@@ -486,7 +488,7 @@ class AppStateStore:
     def list_checkpoints(self, profile_id: str) -> List[Dict[str, Any]]:
         checkpoints = self._read("profile_checkpoints", {})
         profile_checkpoints = list(checkpoints.get(profile_id, {}).values())
-        profile_checkpoints.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        profile_checkpoints.sort(key=lambda item: timestamp_sort_key(item.get("created_at")), reverse=True)
         return profile_checkpoints
 
     def get_checkpoint(self, profile_id: str, checkpoint_id: str) -> Optional[Dict[str, Any]]:
@@ -513,7 +515,7 @@ class AppStateStore:
 
     def list_webhooks(self) -> List[Dict[str, Any]]:
         webhooks = list(self._read("notification_webhooks", {}).values())
-        webhooks.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        webhooks.sort(key=lambda item: timestamp_sort_key(item.get("created_at")), reverse=True)
         return webhooks
 
     def get_webhook(self, webhook_id: str) -> Optional[Dict[str, Any]]:
@@ -535,7 +537,7 @@ class AppStateStore:
 
     def list_youtube_history(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         items = self._read("youtube_history", [])
-        items.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+        items.sort(key=lambda item: timestamp_sort_key(item.get("timestamp")), reverse=True)
         if limit is not None:
             return items[:limit]
         return items
@@ -656,7 +658,7 @@ class AppStateStore:
         assets = list(self._read("asset_registry", {}).values())
         if owner_id:
             assets = [asset for asset in assets if asset.get("owner_id") == owner_id]
-        assets.sort(key=lambda item: item.get("updated_at", 0), reverse=True)
+        assets.sort(key=lambda item: timestamp_sort_key(item.get("updated_at")), reverse=True)
         return deepcopy(assets)
 
     def delete_asset(self, asset_id: str) -> bool:
