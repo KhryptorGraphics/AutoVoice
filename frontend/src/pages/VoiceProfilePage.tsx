@@ -95,6 +95,13 @@ interface ProfileDetailProps {
   onDelete: () => void
 }
 
+type ProfileTab = 'samples' | 'adapters' | 'checkpoints' | 'config' | 'jobs' | 'segments'
+
+type ProfileTabItem = {
+  id: ProfileTab
+  label: string
+}
+
 function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const toast = useToastContext()
   const [detailProfile, setDetailProfile] = useState<VoiceProfile>(profile)
@@ -106,7 +113,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
   const [selectedSampleIds, setSelectedSampleIds] = useState<Set<string>>(new Set())
   const [selectedJob, setSelectedJob] = useState<TrainingJob | null>(null)
   const [startingTraining, setStartingTraining] = useState(false)
-  const [activeTab, setActiveTab] = useState<'samples' | 'adapters' | 'checkpoints' | 'config' | 'jobs' | 'segments'>('samples')
+  const [activeTab, setActiveTab] = useState<ProfileTab>('samples')
   const [showAdvancedUpload, setShowAdvancedUpload] = useState(false)
   const [assignedSegments, setAssignedSegments] = useState<Array<{ type: string; segment_key: string; audio_path: string }>>([])
   const [loadingSegments, setLoadingSegments] = useState(false)
@@ -135,6 +142,49 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
         ? 'Continue training will reuse the latest LoRA checkpoint or active adapter artifact.'
         : 'Continue training becomes available after this target profile has a trained LoRA adapter.'
     )
+
+  const tabItems: ProfileTabItem[] = isSourceProfile
+    ? [
+        { id: 'samples', label: `Samples (${samples.length})` },
+        { id: 'segments', label: 'Diarized Segments' },
+      ]
+    : [
+        { id: 'samples', label: `Samples (${samples.length})` },
+        { id: 'adapters', label: `Adapters (${adapters?.count ?? 0})` },
+        { id: 'checkpoints', label: 'Checkpoints' },
+        { id: 'segments', label: 'Diarized Segments' },
+        { id: 'config', label: 'Train' },
+        { id: 'jobs', label: 'Training Jobs' },
+      ]
+
+  const selectTab = (tab: ProfileTab, moveFocus = false) => {
+    setActiveTab(tab)
+    if (moveFocus) {
+      window.requestAnimationFrame(() => {
+        document.getElementById(`profile-tab-${tab}`)?.focus()
+      })
+    }
+  }
+
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, tab: ProfileTab) => {
+    const currentIndex = tabItems.findIndex((item) => item.id === tab)
+    if (currentIndex === -1) return
+
+    let nextIndex: number | null = null
+    if (event.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % tabItems.length
+    } else if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + tabItems.length) % tabItems.length
+    } else if (event.key === 'Home') {
+      nextIndex = 0
+    } else if (event.key === 'End') {
+      nextIndex = tabItems.length - 1
+    }
+
+    if (nextIndex === null) return
+    event.preventDefault()
+    selectTab(tabItems[nextIndex].id, true)
+  }
 
   const refreshProfile = useCallback(async () => {
     try {
@@ -280,7 +330,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
         toast.warning(`${job.rejected_sample_ids.length} selected sample(s) were excluded by QA.`)
       }
       toast.success('Training job started with QA-approved samples')
-      setActiveTab('jobs')
+      selectTab('jobs')
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Failed to start training'
       toast.error(errorMsg)
@@ -420,39 +470,44 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
               training_mode: 'full',
               initialization_mode: detailProfile.has_full_model ? 'continue' : 'scratch',
             }))
-            setActiveTab('config')
+            selectTab('config')
           }}
         />
       )}
 
       {/* Tab navigation */}
-      <div className="flex gap-1 p-1 bg-gray-800 rounded-lg">
-        {(
-          isSourceProfile
-            ? (['samples', 'segments'] as const)
-            : (['samples', 'adapters', 'checkpoints', 'segments', 'config', 'jobs'] as const)
-        ).map(tab => (
+      <div className="flex gap-1 p-1 bg-gray-800 rounded-lg" role="tablist" aria-label="Profile sections">
+        {tabItems.map((tab) => (
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            data-testid={`profile-tab-${tab}`}
+            key={tab.id}
+            id={`profile-tab-${tab.id}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls="profile-tabpanel"
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            onClick={() => selectTab(tab.id)}
+            onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
+            data-testid={`profile-tab-${tab.id}`}
             className={clsx(
               'flex-1 px-4 py-2 text-sm font-medium rounded transition-colors capitalize',
-              activeTab === tab
+              activeTab === tab.id
                 ? 'bg-gray-700 text-white'
                 : 'text-gray-400 hover:text-white'
             )}
           >
-            {tab === 'samples' ? `Samples (${samples.length})` :
-             tab === 'adapters' ? `Adapters (${adapters?.count ?? 0})` :
-             tab === 'checkpoints' ? 'Checkpoints' :
-             tab === 'segments' ? 'Diarized Segments' :
-             tab === 'jobs' ? 'Training Jobs' : 'Train'}
+            {tab.label}
           </button>
         ))}
       </div>
 
       {/* Tab content */}
+      <div
+        role="tabpanel"
+        id="profile-tabpanel"
+        aria-labelledby={`profile-tab-${activeTab}`}
+        tabIndex={0}
+      >
       {activeTab === 'samples' && (
         <div className="bg-gray-800 rounded-lg p-6 space-y-4">
           <div className="flex items-center justify-between">
@@ -537,7 +592,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setActiveTab('config')}
+                      onClick={() => selectTab('config')}
                       data-testid="go-to-training-button"
                       className="mt-2 inline-flex items-center gap-2 rounded bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
                     >
@@ -826,6 +881,7 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
           )}
         </div>
       )}
+      </div>
 
       {/* Lifecycle actions */}
       <div className="flex justify-end gap-2 pt-4 border-t border-gray-700">

@@ -2378,6 +2378,28 @@ class ApiService {
     return this.request(`/loras/audit${params}`)
   }
 
+  async listQualityConversionOptions(): Promise<QualityConversionOptions> {
+    return this.request('/quality/conversion-options')
+  }
+
+  async analyzeConversionRecord(payload: {
+    conversion_id: string
+    target_profile_id?: string
+    methodology?: string
+  }): Promise<ConversionAnalysis> {
+    return this.request('/quality/conversion-analysis', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
+  async compareConversionRecords(payload: QualityRecordComparisonRequest): Promise<MethodologyComparison> {
+    return this.request('/quality/conversion-comparison', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
   async analyzeConversion(payload: {
     source_audio: string
     converted_audio: string
@@ -2575,7 +2597,61 @@ export interface LoraAuditResult {
   profiles?: Array<Record<string, unknown>>
 }
 
+export interface QualityConversionRecord {
+  id: string
+  source_id: string
+  source_label: string
+  label: string
+  methodology: string
+  profile_id?: string | null
+  profile_name?: string | null
+  status?: string
+  completed_at?: string | number
+  duration?: number | null
+  rtf?: number | null
+  active_model_type?: string | null
+  adapter_type?: string | null
+  pipeline_type?: string | null
+  resolved_pipeline?: string | null
+  runtime_backend?: string | null
+  quality_score?: number | null
+  speaker_similarity?: number | null
+  preset?: string | null
+}
+
+export interface QualityConversionSource {
+  id: string
+  label: string
+  conversions: QualityConversionRecord[]
+}
+
+export interface QualityConversionOptions {
+  sources: QualityConversionSource[]
+  conversions: QualityConversionRecord[]
+}
+
+export interface QualityModelSummary {
+  label: string
+  count: number
+  avg_quality_score?: number
+  avg_rtf?: number
+}
+
+export interface QualityProfileSummary {
+  profile_id: string
+  profile_name?: string | null
+  count: number
+  avg_quality_score?: number
+}
+
+export interface QualityRecordComparisonRequest {
+  source_id?: string
+  conversion_ids: string[]
+  target_profile_id?: string
+}
+
 export interface ConversionAnalysis {
+  conversion?: QualityConversionRecord
   methodology: string
   metrics: Record<string, number>
   quality_score: number
@@ -2586,6 +2662,9 @@ export interface ConversionAnalysis {
 }
 
 export interface MethodologyComparison {
+  source_id?: string
+  records?: QualityConversionRecord[]
+  methodology_to_record?: Record<string, string>
   best_methodology: string
   rankings: Array<[string, number]> | Record<string, number>
   summary: Record<string, unknown>

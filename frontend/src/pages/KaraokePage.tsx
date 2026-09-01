@@ -418,10 +418,12 @@ export function KaraokePage() {
 
           if (status.status === 'completed') {
             clearInterval(pollingRef.current!);
-            setStage('ready');
             // Auto-extract a voice model from the just-separated vocals so
-            // the "Start Performing" button is immediately usable.
-            void ensureVoiceModel();
+            // the "Start Performing" button is immediately usable. Await
+            // extraction before flipping to 'ready' so the enabled button
+            // never renders while extraction is still in flight.
+            await ensureVoiceModel();
+            setStage('ready');
           } else if (status.status === 'failed') {
             clearInterval(pollingRef.current!);
             setUploadError(status.error || 'Separation failed');

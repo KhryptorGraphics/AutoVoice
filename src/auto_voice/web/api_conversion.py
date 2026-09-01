@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import io
 import json
+import shutil
+import tempfile
 import os
 import uuid
 from typing import Any, Dict
@@ -503,6 +505,7 @@ def convert_song():
     )
 
     source_path = None
+    processing_source_path = None
     job_manager = getattr(current_app, 'job_manager', None)
     singing_pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
 
@@ -547,7 +550,16 @@ def convert_song():
                 'original_audio_asset_id': original_asset_id,
                 'original_audio_url': original_audio_url,
             }
-            job_id = job_manager.create_job(source_path, profile_id, settings_dict)
+            processing_file = tempfile.NamedTemporaryFile(
+                suffix=os.path.splitext(secure_name)[1] or '.wav',
+                delete=False,
+            )
+            processing_file.close()
+            processing_source_path = processing_file.name
+            shutil.copy2(source_path, processing_source_path)
+            job_id = job_manager.create_job(processing_source_path, profile_id, settings_dict)
+            # JobManager now owns the temporary processing copy and will unlink it.
+            processing_source_path = None
             if original_asset:
                 _register_conversion_original_asset(
                     source_path,
@@ -881,7 +893,11 @@ def convert_song():
             message=str(exc),
         )
     finally:
-        pass
+        if processing_source_path and os.path.exists(processing_source_path):
+            try:
+                os.unlink(processing_source_path)
+            except OSError:
+                pass
 
 
 def get_conversion_status(job_id):

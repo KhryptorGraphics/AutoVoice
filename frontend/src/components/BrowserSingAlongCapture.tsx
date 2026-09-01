@@ -459,89 +459,148 @@ export function BrowserSingAlongCapture({
     processor.connect(silentGain)
     silentGain.connect(ctx.destination)
 
-    // Schedule a short 880Hz click ~50ms from now and capture the scheduled
-    // start time (in performance.now() terms) so we can measure round-trip.
+    // Generate the 50ms 880Hz calibration click as an AudioBuffer and route it
+    // through the user-selected output device via a MediaStreamAudioDestination
+    // node feeding a hidden <audio> element (same setSinkId pattern as song
+    // playback). ctx.destination is connected in parallel as a fallback so the
+    // click is still audible when setSinkId is unsupported or the device unset.
+    const clickDurationSec = 0.05 // 50ms click
+    const clickFrequency = 880
+    const clickGain = 0.15
     const scheduleDelaySec = 0.05
-    const t0 = ctx.currentTime + scheduleDelaySec
-    const oscillator = ctx.createOscillator()
-    const gain = ctx.createGain()
-    oscillator.frequency.value = 880
-    gain.gain.setValueAtTime(0, t0)
-    gain.gain.linearRampToValueAtTime(0.15, t0 + 0.005)
-    gain.gain.setValueAtTime(0.15, t0 + 0.04)
-    gain.gain.linearRampToValueAtTime(0, t0 + 0.05)
-    oscillator.connect(gain)
-    gain.connect(ctx.destination)
-    oscillator.start(t0)
-    oscillator.stop(t0 + 0.06)
-    const clickScheduledPerf = performance.now() + scheduleDelaySec * 1000
 
-    // Record for ~700ms, then tear down the capture graph.
-    await new Promise<void>((resolve) => window.setTimeout(() => resolve(), 700))
-    try { oscillator.disconnect() } catch { /* noop */ }
-    try { processor.disconnect() } catch { /* noop */ }
-    try { source.disconnect() } catch { /* noop */ }
-    try { silentGain.disconnect() } catch { /* noop */ }
-    stopStream(stream)
-    await ctx.close().catch(() => undefined)
-
-    if (recorded.length === 0 || recStartPerf === 0) {
-      setCalibrationStatus('warn')
-      setStatus('Could not capture microphone audio for calibration; using last calibration.')
-      return
+    const clickFrameCount = Math.ceil(clickDurationSec * sampleRate)
+    const clickBuffer = ctx.createBuffer(1, clickFrameCount, sampleRate)
+    const clickData = clickBuffer.getChannelData(0)
+    for (let i = 0; i < clickFrameCount; i += 1) {
+      const t = i / sampleRate
+      // Envelope: quick attack, sustain, quick decay
+      let env = 1
+      if (t < 0.005) env = t / 0.005
+      else if (t > clickDurationSec - 0.01) env = (clickDurationSec - t) / 0.01
+      clickData[i] = Math.sin(2 * Math.PI * clickFrequency * t) * clickGain * env
     }
 
-    // Onset detection: short-frame RMS envelope, find the first frame after a
-    // minimum delay whose RMS clearly exceeds the noise floor.
-    const samples = new Float32Array(recorded)
-    const frameSize = 256
-    const hop = 128
-    const rmsFrames: number[] = []
-    for (let i = 0; i + frameSize <= samples.length; i += hop) {
-      let sumSq = 0
-      for (let j = 0; j < frameSize; j += 1) {
-        const v = samples[i + j]
-        sumSq += v * v
-      }
-      rmsFrames.push(Math.sqrt(sumSq / frameSize))
-    }
-    if (rmsFrames.length === 0) {
-      setCalibrationStatus('warn')
-      setStatus('Recorded audio was too short to analyze; using last calibration.')
-      return
-    }
-    const noiseFrameCount = Math.max(1, Math.floor((30 * sampleRate / 1000) / hop))
-    const noiseFloor = rmsFrames.slice(0, noiseFrameCount).reduce((a, b) => Math.max(a, b), 0)
-    const peakRms = rmsFrames.reduce((a, b) => Math.max(a, b), 0)
-    const minOnsetFrame = Math.max(1, Math.floor((20 * sampleRate / 1000) / hop))
-    const threshold = Math.max(noiseFloor * 3, peakRms * 0.5)
-    let onsetFrame = -1
-    for (let i = minOnsetFrame; i < rmsFrames.length; i += 1) {
-      if (rmsFrames[i] >= threshold) {
-        onsetFrame = i
-        break
+    const clickSource = ctx.createBufferSource()
+    clickSource.buffer = clickBuffer
+    const clickDest = ctx.createMediaStreamDestination()
+    clickSource.connect(clickDest)
+
+    // Hidden <audio> element plays the MediaStreamDestination output through
+    // the selected sink device (same setSinkId pattern as song playback).
+    const calibrationAudio = new Audio()
+    calibrationAudio.preload = 'auto'
+    calibrationAudio.srcObject = clickDest.stream
+
+    let routedToSelected = false
+    if (selectedOutputId) {
+      try {
+        const withSink = calibrationAudio as HTMLAudioElement & { setSinkId?: (sinkId: string) => Promise<void> }
+        if (withSink.setSinkId) {
+          await withSink.setSinkId(selectedOutputId)
+          routedToSelected = true
+        }
+      } catch {
+        // Fall back to default if device selection fails
       }
     }
-
-    // No detectable onset above the noise floor (e.g. closed headphones isolate
-    // the click from the mic): keep the prior calibration and warn the user.
-    if (onsetFrame < 0 || peakRms < noiseFloor * 2 + 1e-6) {
-      setCalibrationStatus('warn')
-      setStatus('Could not detect the test tone on the mic — check that the speaker/room lets the mic hear it; using last calibration.')
-      return
+    // Only route to the default destination when the click is not already
+    // routed to the selected output device, so the click is never audible on
+    // two devices at once. ctx.destination is the fallback for an unset device
+    // or a browser without setSinkId support.
+    if (!routedToSelected) {
+      clickSource.connect(ctx.destination)
     }
 
-    const onsetPerfMs = (onsetFrame * hop / sampleRate) * 1000
-    const roundTripMs = Math.max(0, Math.round(onsetPerfMs - (clickScheduledPerf - recStartPerf)))
-    setLatencyCalibrationMs(roundTripMs)
-    setCalibrationStatus(roundTripMs <= 180 ? 'pass' : 'warn')
-    window.localStorage.setItem(calibrationStorageKey, JSON.stringify({
-      latency_ms: roundTripMs,
-      input_device_label: inputDeviceLabel,
-      output_device_label: outputDeviceLabel,
-      calibrated_at: new Date().toISOString(),
-    }))
-    setStatus(`Loopback latency calibrated at ${roundTripMs} ms.`)
+    let clickScheduledPerf = 0
+    try {
+      // Start the hidden audio element so the MediaStreamDestination is audible
+      // through the selected output device before the click is scheduled.
+      await calibrationAudio.play().catch(() => {})
+
+      // Schedule the click at a precise Web Audio time (sub-ms precision,
+      // identical to the original oscillator approach). Capture the true
+      // audio-output-start timestamp in performance.now() terms AFTER play()
+      // resolves so canplaythrough/decode latency is not baked into the
+      // measurement (the prior pre-computed value added up to ~100ms of jitter).
+      const t0 = ctx.currentTime + scheduleDelaySec
+      clickSource.start(t0)
+      clickSource.stop(t0 + clickDurationSec)
+      clickScheduledPerf = performance.now() + scheduleDelaySec * 1000
+
+      // Record for ~700ms, then analyze.
+      await new Promise<void>((resolve) => window.setTimeout(() => resolve(), 700))
+
+      if (recorded.length === 0 || recStartPerf === 0) {
+        setCalibrationStatus('warn')
+        setStatus('Could not capture microphone audio for calibration; using last calibration.')
+        return
+      }
+
+      // Onset detection: short-frame RMS envelope, find the first frame after a
+      // minimum delay whose RMS clearly exceeds the noise floor.
+      const samples = new Float32Array(recorded)
+      const frameSize = 256
+      const hop = 128
+      const rmsFrames: number[] = []
+      for (let i = 0; i + frameSize <= samples.length; i += hop) {
+        let sumSq = 0
+        for (let j = 0; j < frameSize; j += 1) {
+          const v = samples[i + j]
+          sumSq += v * v
+        }
+        rmsFrames.push(Math.sqrt(sumSq / frameSize))
+      }
+      if (rmsFrames.length === 0) {
+        setCalibrationStatus('warn')
+        setStatus('Recorded audio was too short to analyze; using last calibration.')
+        return
+      }
+      const noiseFrameCount = Math.max(1, Math.floor((30 * sampleRate / 1000) / hop))
+      const noiseFloor = rmsFrames.slice(0, noiseFrameCount).reduce((a, b) => Math.max(a, b), 0)
+      const peakRms = rmsFrames.reduce((a, b) => Math.max(a, b), 0)
+      const minOnsetFrame = Math.max(1, Math.floor((20 * sampleRate / 1000) / hop))
+      const threshold = Math.max(noiseFloor * 3, peakRms * 0.5)
+      let onsetFrame = -1
+      for (let i = minOnsetFrame; i < rmsFrames.length; i += 1) {
+        if (rmsFrames[i] >= threshold) {
+          onsetFrame = i
+          break
+        }
+      }
+
+      // No detectable onset above the noise floor (e.g. closed headphones isolate
+      // the click from the mic): keep the prior calibration and warn the user.
+      if (onsetFrame < 0 || peakRms < noiseFloor * 2 + 1e-6) {
+        setCalibrationStatus('warn')
+        setStatus('Could not detect the test tone on the mic — check that the speaker/room lets the mic hear it; using last calibration.')
+        return
+      }
+
+      const onsetPerfMs = (onsetFrame * hop / sampleRate) * 1000
+      const roundTripMs = Math.max(0, Math.round(onsetPerfMs - (clickScheduledPerf - recStartPerf)))
+      setLatencyCalibrationMs(roundTripMs)
+      setCalibrationStatus(roundTripMs <= 180 ? 'pass' : 'warn')
+      window.localStorage.setItem(calibrationStorageKey, JSON.stringify({
+        latency_ms: roundTripMs,
+        input_device_label: inputDeviceLabel,
+        output_device_label: outputDeviceLabel,
+        calibrated_at: new Date().toISOString(),
+      }))
+      setStatus(`Loopback latency calibrated at ${roundTripMs} ms.`)
+    } finally {
+      // Tear down every created node and the stream regardless of outcome.
+      try { clickSource.stop() } catch { /* noop */ }
+      try { clickSource.disconnect() } catch { /* noop */ }
+      try { clickDest.disconnect() } catch { /* noop */ }
+      try { processor.disconnect() } catch { /* noop */ }
+      try { source.disconnect() } catch { /* noop */ }
+      try { silentGain.disconnect() } catch { /* noop */ }
+      stopStream(stream)
+      try { calibrationAudio.pause() } catch { /* noop */ }
+      try { calibrationAudio.srcObject = null } catch { /* noop */ }
+      await ctx.close().catch(() => undefined)
+    }
   }
 
   const startRecording = async () => {

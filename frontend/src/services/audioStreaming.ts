@@ -198,6 +198,11 @@ export class AudioStreamingClient {
       this.socket.on('embedding_updated', (data: unknown) => {
         this.emitEvent('embedding_updated', data);
       });
+
+      // Pipeline warning from backend (passthrough for UI warnings)
+      this.socket.on('pipeline_warning', (data: unknown) => {
+        this.emitEvent('pipeline_warning', data);
+      });
     });
   }
 

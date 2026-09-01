@@ -35,7 +35,9 @@ type MockCommonApiOptions = {
   voiceCloneError?: string
   apiToken?: string
   conversionRecords?: MockConversionRecord[]
+  qualityConversionRecords?: MockConversionRecord[]
   webhooks?: Array<Record<string, unknown>>
+  qualityConversionOptionsStatus?: number
   profileOverrides?: Partial<Record<string, unknown>>
 }
 
@@ -399,8 +401,10 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       isFavorite: false,
       targetVoice: 'Smoke Profile',
       originalFileName: 'demo-vocal.wav',
+      quality_metrics: { quality_score: 0.91, speaker_similarity: 0.9 },
     },
   ]
+  const qualityConversionRecords = options.qualityConversionRecords ?? conversionRecords
   const checkpoints = [
     {
       id: 'checkpoint-active',
@@ -1853,6 +1857,114 @@ export async function mockCommonApi(page: Page, options: MockCommonApiOptions = 
       stale_adapters: 0,
       low_quality_adapters: 0,
       adapter_types: { unified: 1 },
+    })
+  })
+
+  const serializeQualityConversion = (record: MockConversionRecord) => {
+    const metrics = (record.quality_metrics ?? {}) as Record<string, number>
+    const sourceLabel = String(record.originalFileName ?? record.input_file ?? 'demo-vocal.wav')
+    const sourceId = `input:${sourceLabel}`
+    const methodology = [
+      record.resolved_pipeline ?? record.pipeline_type ?? record.preset ?? 'conversion',
+      record.active_model_type ?? 'model',
+      record.adapter_type,
+      String(record.id).slice(0, 8),
+    ].filter(Boolean).join(' · ')
+
+    return {
+      id: record.id,
+      source_id: sourceId,
+      source_label: sourceLabel,
+      label: `${sourceLabel} / ${record.targetVoice ?? record.profile_id ?? 'Smoke Profile'} / ${methodology}`,
+      methodology,
+      profile_id: record.profile_id,
+      profile_name: record.targetVoice ?? 'Smoke Profile',
+      status: record.status,
+      completed_at: record.completed_at ?? record.created_at,
+      duration: record.duration ?? record.audio_duration_seconds,
+      rtf: record.rtf,
+      active_model_type: record.active_model_type,
+      adapter_type: record.adapter_type,
+      pipeline_type: record.pipeline_type,
+      resolved_pipeline: record.resolved_pipeline,
+      runtime_backend: record.runtime_backend,
+      preset: record.preset,
+      quality_score: record.quality_score ?? metrics.quality_score,
+      speaker_similarity: record.speaker_similarity ?? metrics.speaker_similarity,
+    }
+  }
+
+  await page.route('**/api/v1/quality/conversion-options', async (route) => {
+    if (options.qualityConversionOptionsStatus && options.qualityConversionOptionsStatus >= 400) {
+      return jsonResponse(route, { error: 'quality options unavailable' }, options.qualityConversionOptionsStatus)
+    }
+
+    const conversions = qualityConversionRecords.map(serializeQualityConversion)
+    const sourcesById: Record<string, { id: string; label: string; conversions: unknown[] }> = {}
+
+    for (const conversion of conversions) {
+      sourcesById[conversion.source_id] ??= {
+        id: conversion.source_id,
+        label: conversion.source_label,
+        conversions: [],
+      }
+      sourcesById[conversion.source_id].conversions.push(conversion)
+    }
+
+    return jsonResponse(route, {
+      sources: Object.values(sourcesById),
+      conversions,
+    })
+  })
+
+  await page.route('**/api/v1/quality/conversion-analysis', async (route) => {
+    analyzeRequests += 1
+    const body = route.request().postDataJSON() as { conversion_id?: string }
+    const conversion = qualityConversionRecords.map(serializeQualityConversion).find((item) => item.id === body.conversion_id)
+    if (!conversion) {
+      return jsonResponse(route, { error: 'conversion not found' }, 404)
+    }
+    return jsonResponse(route, {
+      conversion,
+      methodology: conversion.methodology,
+      metrics: { speaker_similarity: conversion.speaker_similarity ?? 0.9, pitch_rmse: 12.5 },
+      quality_score: conversion.quality_score ?? 0.9,
+      passes_thresholds: true,
+      threshold_failures: [],
+      recommendations: [],
+      timestamp: '2026-07-01T00:00:00Z',
+    })
+  })
+
+  await page.route('**/api/v1/quality/conversion-comparison', async (route) => {
+    compareRequests += 1
+    const body = route.request().postDataJSON() as { conversion_ids?: string[]; source_id?: string }
+    const selected = qualityConversionRecords
+      .map(serializeQualityConversion)
+      .filter((conversion) => (body.conversion_ids ?? []).includes(conversion.id))
+    const rankings = selected.map((conversion) => [conversion.methodology, conversion.quality_score ?? 0.8])
+    const best = rankings.reduce(
+      (bestRank, rank) => (Number(rank[1]) > Number(bestRank[1]) ? rank : bestRank),
+      rankings[0] ?? ['none', 0]
+    )
+
+    return jsonResponse(route, {
+      source_id: body.source_id,
+      records: selected,
+      methodology_to_record: Object.fromEntries(selected.map((conversion) => [conversion.methodology, conversion.id])),
+      best_methodology: String(best[0]),
+      rankings,
+      summary: { compared: selected.length },
+      analyses: Object.fromEntries(
+        selected.map((conversion) => [
+          conversion.methodology,
+          {
+            metrics: { speaker_similarity: conversion.speaker_similarity ?? 0.82 },
+            passes_thresholds: true,
+            threshold_failures: [],
+          },
+        ])
+      ),
     })
   })
 

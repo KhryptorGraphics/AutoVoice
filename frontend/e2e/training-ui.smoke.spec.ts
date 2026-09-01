@@ -55,6 +55,49 @@ test.describe('Training UI smoke', () => {
     expect(config.architecture).toBe('como')
   })
 
+
+  test('profile detail tabs expose ARIA roles and keyboard navigation', async ({ page }) => {
+    await mockCommonApi(page)
+
+    await page.goto('/profiles')
+    await page.getByTestId('profile-card').first().click()
+
+    const tablist = page.getByRole('tablist', { name: 'Profile sections' })
+    const samplesTab = page.getByRole('tab', { name: /Samples/ })
+    const jobsTab = page.getByRole('tab', { name: 'Training Jobs' })
+    const tabpanel = page.locator('#profile-tabpanel')
+
+    await expect(tablist).toBeVisible()
+    await expect(samplesTab).toHaveAttribute('aria-selected', 'true')
+    await expect(samplesTab).toHaveAttribute('aria-controls', 'profile-tabpanel')
+    await expect(tabpanel).toHaveAttribute('aria-labelledby', 'profile-tab-samples')
+
+    const verticalArrowResults = await samplesTab.evaluate((element) =>
+      ['ArrowDown', 'ArrowUp'].map((key) => {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+        element.dispatchEvent(event)
+        return { key, defaultPrevented: event.defaultPrevented }
+      })
+    )
+    expect(verticalArrowResults).toEqual([
+      { key: 'ArrowDown', defaultPrevented: false },
+      { key: 'ArrowUp', defaultPrevented: false },
+    ])
+
+    await samplesTab.press('ArrowLeft')
+    await expect(jobsTab).toHaveAttribute('aria-selected', 'true')
+    await expect(tabpanel).toHaveAttribute('aria-labelledby', 'profile-tab-jobs')
+
+    await jobsTab.press('ArrowRight')
+    await expect(samplesTab).toHaveAttribute('aria-selected', 'true')
+
+    await samplesTab.press('End')
+    await expect(jobsTab).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tabpanel', { name: 'Training Jobs' })).toBeVisible()
+
+    await jobsTab.press('Home')
+    await expect(samplesTab).toHaveAttribute('aria-selected', 'true')
+  })
   test('workflow full training sends force when clean-vocal threshold is unmet', async ({ page }) => {
     const mockedApi = await mockCommonApi(page, {
       profileOverrides: {
