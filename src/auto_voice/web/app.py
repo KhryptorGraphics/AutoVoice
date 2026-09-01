@@ -292,10 +292,18 @@ def _init_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
             # PATCH /settings/app so they survive restarts (yaml config only
             # carries repo defaults).
             try:
+                # Iterate PIPELINE_SETTING_KEYS, never a literal list. This loop
+                # WAS a hardcoded four-key tuple - a fourth copy of that list,
+                # and it drifted exactly as the constant's docstring warns.
+                # Every key outside those four silently reverted to its code
+                # default on each restart while the API kept reporting the
+                # stored value, so operator tuning survived until the next
+                # restart and then quietly vanished. Observed: a backing
+                # whole-stem threshold tuned to 0.92 came back as 0.70 and
+                # flattened a decomposed harmony stack back into one voice.
+                from ..runtime_contract import PIPELINE_SETTING_KEYS
                 stored = app.state_store.get_app_settings() or {}
-                for key in ('multi_speaker_separator', 'multi_speaker_backing_gain',
-                            'multi_speaker_backing_voiced_min',
-                            'multi_speaker_karaoke_leak_voiced_min'):
+                for key in PIPELINE_SETTING_KEYS:
                     if stored.get(key) is not None:
                         singing_pipeline.config[key] = stored[key]
                         logger.info(f"Applied stored app setting {key}={stored[key]}")

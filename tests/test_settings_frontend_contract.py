@@ -59,3 +59,26 @@ def test_no_frontend_key_is_unknown_to_the_backend():
         f"AppSettings declares {sorted(unknown)}, which the backend does not "
         f"accept - a PATCH would be rejected as unsupported"
     )
+
+
+def test_boot_reapply_uses_the_shared_key_list():
+    """create_app must reapply stored settings from PIPELINE_SETTING_KEYS.
+
+    This loop was a hardcoded four-key tuple - a fourth copy of that list,
+    which drifted exactly as the constant's docstring warns. Everything outside
+    those four reverted to its code default on every restart while the API kept
+    reporting the stored value, so tuning silently vanished on restart. A
+    backing whole-stem threshold tuned to 0.92 came back as 0.70 and flattened
+    a decomposed harmony stack into a single voice.
+    """
+    app_src = (ROOT / "src" / "auto_voice" / "web" / "app.py").read_text()
+    reapply = app_src[app_src.index("Reapply operator-tuned"):]
+    reapply = reapply[:reapply.index("except Exception")]
+    assert "PIPELINE_SETTING_KEYS" in reapply, (
+        "create_app's stored-settings reapply must iterate PIPELINE_SETTING_KEYS, "
+        "not a literal tuple - a private copy drifts and silently drops settings "
+        "on restart"
+    )
+    assert "for key in ('multi_speaker" not in reapply, (
+        "the boot reapply is iterating a hardcoded literal tuple again"
+    )
