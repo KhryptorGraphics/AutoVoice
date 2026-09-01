@@ -343,6 +343,16 @@ Located in `models/pretrained/`:
 - `hifigan_ljspeech.ckpt` - HiFiGAN vocoder
 - `hubert-soft-0d54a1f4.pt` - HuBERT feature extractor
 
+## Served models and tuned serving settings
+
+**Read [docs/served-models.md](docs/served-models.md) before changing which
+checkpoint a profile serves, or before "correcting" anything in
+`data/fork_models/*.json`.** `data/` is gitignored, so the live checkpoint
+choice, `f0_method`, and the by-ear multi-speaker settings do not appear in any
+diff — a registry entry that differs from `HEAD` is usually a deliberate,
+by-ear decision rather than drift, and that file records which. It also lists
+the rollback backups and the thresholds known to be fragile.
+
 ## File Organization Rules
 - Source code: `/src`
 - Tests: `/tests`
