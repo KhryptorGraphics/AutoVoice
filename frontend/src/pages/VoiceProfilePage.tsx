@@ -323,7 +323,20 @@ function ProfileDetail({ profile, onBack, onDelete }: ProfileDetailProps) {
       const sampleIds = samples
         .filter(sample => selectedSampleIds.has(sample.id))
         .map(s => s.id)
-      const job = await apiService.createTrainingJob(profile.profile_id, sampleIds, trainingConfig)
+      // Send force exactly when the panel says it will. The hint under the
+      // Full Training button reads "Starting early in this single-user install
+      // sends force: true", but this call never passed it - so starting Full
+      // on an under-30-minute profile got a hard 400 whose message contradicted
+      // the hint the user had just read. Scoped to the case the hint describes:
+      // full mode, not yet unlocked. LoRA never needs it.
+      const needsForce = trainingConfig.training_mode === 'full' && !allowFullTraining
+      const job = await apiService.createTrainingJob(
+        profile.profile_id, sampleIds, trainingConfig,
+        needsForce ? { force: true } : undefined,
+      )
+      if (needsForce) {
+        toast.warning('Started below the 30-minute clean-vocal threshold; quality may suffer.')
+      }
       setSelectedJob(job)
       await refreshProfile()
       if (job.rejected_sample_ids?.length) {

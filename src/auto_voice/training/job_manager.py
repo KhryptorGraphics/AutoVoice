@@ -1220,6 +1220,26 @@ class TrainingJobManager:
                 f"Job {job_id} is not in pending state (current: {job.status})"
             )
 
+        # One training run at a time. There was no guard at all: execute_job
+        # spawned a daemon thread unconditionally, so two clicks of Start ran
+        # two so-vits-svc-fork fine-tunes against the same GPU. On Jetson, GPU
+        # memory IS system RAM, and a single run at batch_size 16 has already
+        # OOM'd this box once at ~epoch 70 - two would starve it and take the
+        # live conversion path down with them. The existing pending/running
+        # check lives in auto_queue_training and is per-profile, so it does not
+        # cover the manual API at all.
+        running = [
+            other for other in self._jobs.values()
+            if other.job_id != job_id and other.status == JobStatus.RUNNING.value
+        ]
+        if running:
+            busy = running[0]
+            raise ValueError(
+                f"Training job {busy.job_id} is already running (profile "
+                f"{busy.profile_id}). Only one training run at a time - they "
+                f"share one GPU. Wait for it to finish or cancel it first."
+            )
+
         requested_device = (job.config.device_id if job.config else "auto") or "auto"
         if requested_device == "auto":
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
