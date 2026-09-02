@@ -70,6 +70,10 @@ PIPELINE_SETTING_KEYS: Tuple[str, ...] = (
     # conversion does - merge_voiced_min decides whether a singer is treated as
     # lead or backing, convert_backing decides whether harmonies are converted
     # at all. Tuning them required editing source.
+    # Master switch for the per-speaker path. Defaulted ON: it was off, so the
+    # web UI (which sends null) silently ran single-stem and got none of the
+    # harmony work, while hand-built API calls got all of it.
+    "enable_multi_speaker_conversion",
     "multi_speaker_convert_backing",
     "multi_speaker_merge_voiced_min",
     "multi_speaker_min_coverage",

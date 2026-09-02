@@ -14,6 +14,12 @@ from .offline_realtime import run_offline_realtime_conversion
 
 logger = logging.getLogger(__name__)
 
+# Stems that may be persisted and downloaded. 'backing' is the converted
+# background singers alone: judging them inside the mixed vocal is close to
+# impossible because the lead dominates it, and every measurement taken there
+# reported "nothing wrong" while the harmonies were audibly wrong.
+_STEM_NAMES = ('vocals', 'instrumental', 'backing')
+
 
 class JobManager:
     """Manages async voice conversion jobs with thread pool and progress tracking."""
@@ -890,7 +896,11 @@ class JobManager:
     ) -> Dict[str, str]:
         """Persist optional conversion stems for later download/reassembly."""
         saved_paths: Dict[str, str] = {}
-        for stem_name in ('vocals', 'instrumental'):
+        # Persist whatever the pipeline produced, rather than a hardcoded pair.
+        # The list was ('vocals', 'instrumental'), so a 'backing' stem the
+        # pipeline had already computed was silently dropped here - the export
+        # existed end to end except for this loop.
+        for stem_name in _STEM_NAMES:
             stem_audio = stems.get(stem_name)
             if not isinstance(stem_audio, np.ndarray) or stem_audio.size == 0:
                 continue

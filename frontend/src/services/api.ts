@@ -444,6 +444,7 @@ export interface AppSettings {
   // even though the backend accepted them. Keep in step with
   // PIPELINE_SETTING_KEYS in runtime_contract.py.
   multi_speaker_backing_whole_voiced_min?: number
+  enable_multi_speaker_conversion?: boolean
   multi_speaker_convert_backing?: boolean
   multi_speaker_merge_voiced_min?: number
   multi_speaker_min_coverage?: number
@@ -754,8 +755,11 @@ export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
   preserve_techniques: true,
   encoder_backend: 'hubert',
   vocoder_type: 'hifigan',
-  enable_multi_speaker: null,
-  convert_backing: null,
+  // Explicit, not null: null resolves against a server default the UI
+  // cannot see, which is how the interface ended up silently running a
+  // different (single-stem) path from the API calls that were being tuned.
+  enable_multi_speaker: true,
+  convert_backing: true,
   preserve_speakers: '',
 }
 

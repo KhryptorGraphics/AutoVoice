@@ -337,6 +337,8 @@ def get_app_settings():
         # operator has not overridden them via PATCH).
         pipeline = getattr(current_app, 'singing_conversion_pipeline', None)
         cfg = getattr(pipeline, 'config', None) or {}
+        payload.setdefault('enable_multi_speaker_conversion',
+                           bool(cfg.get('enable_multi_speaker_conversion', True)))
         payload.setdefault('multi_speaker_separator',
                            cfg.get('multi_speaker_separator', 'diarization'))
         payload.setdefault('multi_speaker_backing_gain',
@@ -490,7 +492,8 @@ def update_app_settings():
                     )
                 updates[key] = value
 
-        for bool_key in ('multi_speaker_convert_backing',
+        for bool_key in ('enable_multi_speaker_conversion',
+                         'multi_speaker_convert_backing',
                          'fork_hq_match_source_bandwidth'):
             if bool_key in data and not isinstance(data[bool_key], bool):
                 return root.validation_error_response(

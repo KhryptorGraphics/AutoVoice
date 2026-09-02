@@ -461,6 +461,27 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
               {expandedSections.has('multiSpeaker') && appSettings && (
                 <div className="mt-2 p-3 bg-gray-750 rounded-lg space-y-4" data-testid="multi-speaker-settings">
                   <div>
+                    <label className="text-sm text-gray-400">Convert backing singers separately</label>
+                    <select
+                      value={String(appSettings.enable_multi_speaker_conversion ?? true)}
+                      onChange={e => updateAppSettingsMutation.mutate({
+                        enable_multi_speaker_conversion: e.target.value === 'true',
+                      })}
+                      className="mt-1 w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"
+                      data-testid="enable-multi-speaker-select"
+                    >
+                      <option value="true">On — separate the singers, convert each</option>
+                      <option value="false">Off — convert the whole vocal as one voice</option>
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      The master switch for everything below. Off, the whole vocal is converted as a
+                      single voice and none of the harmony handling runs — which was the default, so
+                      conversions started here behaved differently from ones started through the API.
+                      Individual songs can still override this per conversion.
+                    </p>
+                  </div>
+
+                  <div>
                     <label className="text-sm text-gray-400">Lead/backing separator</label>
                     <select
                       value={appSettings.multi_speaker_separator ?? 'diarization'}

@@ -160,6 +160,25 @@ _BAND_FLAT_FRAC = 0.95
 # the same fraction - so it trades cleanliness for continuity and naturalness.
 _LINE_MASK_FLOOR_DEFAULT = 0.20
 
+# Above this frequency the comb stops being a comb. Band width is +/-50 cents
+# (~5.8% of each harmonic), while adjacent harmonics are f0 apart, so past
+# roughly the 17th harmonic the bands merge into a continuous passband anyway -
+# there is nothing left to discriminate, because up there the energy is
+# sibilance and air rather than pitched partials.
+#
+# Cutting it off instead is what made converted harmonies muffled: measured, a
+# 24-harmonic comb on a 220 Hz line passed 99% of its energy below 4.6 kHz
+# while the source line reached 17 kHz. A voice handed to the engine with no
+# air also comes back sounding synthetic, so this drives the "electronic"
+# character as much as the dullness.
+#
+# A fixed frequency, not a harmonic count, deliberately: n_harmonics * f0 gives
+# a LOW harmony less bandwidth than a high one, so the singers would not even
+# match each other. The partition shares this band between whichever lines are
+# sounding, so passing it per line does not multiply it.
+_LINE_AIR_HZ = 4000.0
+_LINE_AIR_WEIGHT = 0.6
+
 _LINE_GAIN_MIN = 0.02
 _LINE_GAIN_MAX = 4.0
 
@@ -280,6 +299,9 @@ def _extract_line_audios(stack: np.ndarray, sample_rate: int, lines,
                             0.0, 1.0))),
                     ).astype(np.float32)
                     weights[bsel] = np.maximum(weights[bsel], taper)
+                # Air shelf above the comb's useful range (see _LINE_AIR_HZ).
+                weights[freqs >= _LINE_AIR_HZ] = np.maximum(
+                    weights[freqs >= _LINE_AIR_HZ], _LINE_AIR_WEIGHT)
                 mask[:, fsel] = np.maximum(mask[:, fsel], weights[:, None])
             if onset_weight > 0.0 and onset_s > 0.0:
                 # DECAYING onset, not a rectangular one. A flat broadband
@@ -675,16 +697,31 @@ class SingingConversionPipeline:
         An explicit ``override`` (from the request/job settings) wins over
         everything; ``None`` (the default) keeps the config-then-env resolution.
         Config ``enable_multi_speaker_conversion`` wins when set (testable);
-        otherwise the ``ENABLE_MULTI_SPEAKER_CONVERSION`` env var flips it on for
-        ops. Off by default: the single-stem path stays the production behaviour.
+        otherwise the ``ENABLE_MULTI_SPEAKER_CONVERSION`` env var can still force
+        it on for ops.
+
+        ON by default. It used to be off - "the single-stem path stays the
+        production behaviour" - which meant the entire per-speaker path was
+        unreachable unless a caller passed ``enable_multi_speaker: true``
+        explicitly. The web UI does not: it sends ``null``, which resolves here.
+        So every conversion started from the interface silently took the
+        single-stem path and got none of the harmony work, while hand-built API
+        calls got all of it. Two code paths, no way for a user to tell which one
+        ran, and the good one reachable only by knowing to ask for it.
+
+        An explicit ``False`` still wins, because single-stem remains the right
+        answer when the multi-speaker gates decline (<=1 speaker, thin coverage);
+        that fallback is internal to _convert_multi_speaker, not this switch.
         """
         if override is not None:
             return bool(override)
         cfg = self.config.get('enable_multi_speaker_conversion')
         if cfg is not None:
             return bool(cfg)
-        return os.environ.get('ENABLE_MULTI_SPEAKER_CONVERSION', '').strip().lower() in (
-            '1', 'true', 'yes', 'on')
+        env = os.environ.get('ENABLE_MULTI_SPEAKER_CONVERSION', '').strip().lower()
+        if env in ('0', 'false', 'no', 'off'):
+            return False
+        return True
 
     def _split_lead_backing_karaoke(self, voc_mono, sr):
         """Split lead/backing with a karaoke separation model (Mel-RoFormer).
@@ -1441,6 +1478,13 @@ class SingingConversionPipeline:
             if n == 0:
                 return None
             combined = (converted_primary[:n] + backing[:n]).astype(np.float32)
+            # Carry the converted backing out so it can be exported as its own
+            # stem. Every measurement of "the background singers sound wrong"
+            # so far has been taken on the MIXED vocal, where the lead
+            # dominates and hides exactly the thing being judged. Passed via
+            # info because the tests pin this function's two-value return; the
+            # caller pops it immediately, before info is serialised as JSON.
+            info['_backing_audio'] = backing[:n].astype(np.float32)
             logger.info(
                 "Multi-speaker conversion (%s): lead converted, %.1fs backing "
                 "%s, coverage=%.3f",
@@ -1506,6 +1550,7 @@ class SingingConversionPipeline:
         converted = None
         multi_speaker = False
         multi_speaker_info = None
+        backing_only = None
         if self._multi_speaker_enabled(override=enable_multi_speaker):
             ms = self._convert_multi_speaker(
                 voc_mono, sr, target_profile_id, mm, pitch_shift,
@@ -1513,6 +1558,9 @@ class SingingConversionPipeline:
                 preserve_speakers=preserve_speakers)
             if ms is not None:
                 converted, multi_speaker_info = ms
+                # Pop before anything serialises info: it carries audio, not
+                # metadata, purely to reach the stem export below.
+                backing_only = multi_speaker_info.pop('_backing_audio', None)
                 multi_speaker = True
 
         if converted is None:
@@ -1674,6 +1722,10 @@ class SingingConversionPipeline:
                 'vocals': conv.astype(np.float32),
                 'instrumental': inst.mean(axis=0).astype(np.float32),
             }
+            # The converted background singers on their own. Without this the
+            # only way to judge them is inside a mix the lead dominates.
+            if backing_only is not None and len(backing_only):
+                result['stems']['backing'] = np.asarray(backing_only, dtype=np.float32)
         logger.info(
             f"Fork HQ conversion complete: {duration:.1f}s stereo/{sr}Hz "
             f"(profile={target_profile_id})"

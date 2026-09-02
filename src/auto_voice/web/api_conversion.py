@@ -930,8 +930,8 @@ def download_converted_audio(job_id):
         return root.service_unavailable_response('Job management service unavailable')
 
     variant = request.args.get('variant', 'mix').strip().lower() or 'mix'
-    if variant not in {'mix', 'vocals', 'instrumental'}:
-        return root.validation_error_response('variant must be one of: mix, vocals, instrumental')
+    if variant not in {'mix', 'vocals', 'instrumental', 'backing'}:
+        return root.validation_error_response('variant must be one of: mix, vocals, instrumental, backing')
 
     result_path = root._coerce_existing_file_path(job_manager.get_job_asset_path(job_id, variant))
     if not result_path:

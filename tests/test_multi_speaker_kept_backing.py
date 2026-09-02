@@ -657,3 +657,95 @@ class TestMaskFloorBridgesGaps:
         g = _extract_line_audios(sig, sr, [line], mask_floor=0.20)[0][0]
         assert float(np.abs(g[int(6 * sr):]).max()) < 1e-4, (
             "a line must stay silent where it is not singing")
+
+
+class TestAirShelf:
+    """A harmonic comb ends at n_harmonics * f0, which lowpassed every
+    converted harmony: measured, a 24-harmonic comb on a 220 Hz line passed 99%
+    of its energy below 4.6 kHz while the source line reached 17 kHz. That is
+    audibly muffled, and a voice with no sibilance or air also comes back
+    sounding synthetic - so the ceiling drove the "electronic" character too.
+    """
+
+    @staticmethod
+    def _voice(sr=44100, f0=220.0, secs=4):
+        import numpy as np
+        t = np.arange(secs * sr) / sr
+        rng = np.random.default_rng(0)
+        return (sum((1.0 / k) * np.sin(2 * np.pi * f0 * k * t) for k in range(1, 60)) * 0.2
+                + 0.04 * rng.standard_normal(len(t))).astype(np.float32)
+
+    @staticmethod
+    def _rolloff(x, sr=44100):
+        import numpy as np, librosa
+        S = np.abs(librosa.stft(x, n_fft=2048, hop_length=512))
+        fr = librosa.fft_frequencies(sr=sr, n_fft=2048)
+        p = (S ** 2).mean(axis=1)
+        c = np.cumsum(p) / max(np.sum(p), 1e-20)
+        return float(fr[np.searchsorted(c, 0.99)])
+
+    @staticmethod
+    def _notes(midi):
+        return [{'pitch_midi': midi, 'start': 0.0, 'end': 4.0, 'amplitude': 1.0}]
+
+    def test_extract_is_not_lowpassed_at_the_comb_ceiling(self):
+        from auto_voice.inference.singing_conversion_pipeline import _extract_line_audios
+        sig = self._voice()
+        g = _extract_line_audios(sig, 44100, [self._notes(57)])[0][1]
+        assert self._rolloff(g) > 10000.0, (
+            "the extract is band-limited to the comb ceiling; the engine will "
+            "return a muffled, synthetic-sounding line")
+
+    def test_bandwidth_does_not_depend_on_the_line_s_pitch(self):
+        """n_harmonics * f0 gives a LOW harmony less bandwidth than a high one,
+        so the converted singers would not even match each other."""
+        from auto_voice.inference.singing_conversion_pipeline import _extract_line_audios
+        sig = self._voice()
+        rolloffs = [
+            self._rolloff(_extract_line_audios(sig, 44100, [self._notes(m)])[0][1])
+            for m in (45, 57, 69)      # two octaves apart
+        ]
+        assert min(rolloffs) > 10000.0
+        assert max(rolloffs) / min(rolloffs) < 2.0, (
+            f"bandwidth varies too much with pitch: {rolloffs}")
+
+
+class TestMultiSpeakerIsTheDefaultPath:
+    """A caller that says nothing must still get the per-speaker path.
+
+    This was off by default, and the web UI sends `enable_multi_speaker: null`,
+    which resolves to the default. So every conversion started from the
+    interface silently ran the single-stem path and received none of the
+    harmony work, while hand-built API calls passing `true` received all of it -
+    two code paths, with no way for a user to tell which one had run.
+    """
+
+    @staticmethod
+    def _pipeline(**cfg):
+        p = object.__new__(SingingConversionPipeline)
+        p.config = dict(cfg)
+        return p
+
+    def test_omitting_the_flag_enables_the_path(self, monkeypatch):
+        monkeypatch.delenv('ENABLE_MULTI_SPEAKER_CONVERSION', raising=False)
+        assert self._pipeline()._multi_speaker_enabled(None) is True
+
+    def test_an_explicit_false_still_wins(self, monkeypatch):
+        """Single-stem stays reachable: it is the right answer for a solo
+        vocal, and the per-conversion override must not be overridden."""
+        monkeypatch.delenv('ENABLE_MULTI_SPEAKER_CONVERSION', raising=False)
+        assert self._pipeline()._multi_speaker_enabled(False) is False
+
+    def test_config_off_still_wins(self, monkeypatch):
+        monkeypatch.delenv('ENABLE_MULTI_SPEAKER_CONVERSION', raising=False)
+        p = self._pipeline(enable_multi_speaker_conversion=False)
+        assert p._multi_speaker_enabled(None) is False
+
+    def test_env_can_still_force_it_off(self, monkeypatch):
+        monkeypatch.setenv('ENABLE_MULTI_SPEAKER_CONVERSION', 'false')
+        assert self._pipeline()._multi_speaker_enabled(None) is False
+
+    def test_an_explicit_true_is_honoured_over_config_off(self, monkeypatch):
+        monkeypatch.delenv('ENABLE_MULTI_SPEAKER_CONVERSION', raising=False)
+        p = self._pipeline(enable_multi_speaker_conversion=False)
+        assert p._multi_speaker_enabled(True) is True
