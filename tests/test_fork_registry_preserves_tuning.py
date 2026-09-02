@@ -59,8 +59,28 @@ class TestPreservedKeys:
             "f0_method", "noise_scale", "transpose",
             "chunk_seconds", "max_chunk_seconds", "pad_seconds",
             "db_thresh", "absolute_thresh",
+            # These three were missing when the constant was first written, so
+            # a retrain silently reverted them: requires_uv_contract selects a
+            # decoder patch that must match how the checkpoint was trained, and
+            # the cluster pair blends content vectors toward the training
+            # speaker. All three are set by hand and exist nowhere else.
+            "requires_uv_contract", "cluster_model_path", "cluster_infer_ratio",
         ):
             assert key in _PRESERVED_INFERENCE_KEYS, f"{key} would be lost on retrain"
+
+    def test_it_covers_every_key_the_bridge_actually_reads(self):
+        """Derive the list from the bridge rather than restating it, so a new
+        entry.get(...) there cannot be forgotten here."""
+        import re
+        from pathlib import Path
+        src = Path(__file__).resolve().parents[1] / "src/auto_voice/inference/svc_fork_bridge.py"
+        read = set(re.findall(r'entry\.get\(\s*"([a-z0-9_]+)"', src.read_text()))
+        # Keys training legitimately owns and must NOT carry forward.
+        owned = {"model_path", "config_path", "speaker", "trained_epochs", "svc_bin"}
+        for key in sorted(read - owned):
+            assert key in _PRESERVED_INFERENCE_KEYS, (
+                f"svc_fork_bridge reads {key!r} at serving time but a retrain "
+                f"would not preserve it")
 
     @pytest.mark.parametrize("owned", ["model_path", "config_path", "trained_epochs", "speaker"])
     def test_training_owned_keys_are_not_preserved(self, owned):

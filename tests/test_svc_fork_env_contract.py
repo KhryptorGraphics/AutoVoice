@@ -39,3 +39,31 @@ class TestCleanEnvAllocator:
             env = _clean_env()
         assert "PYTHONPATH" not in env
         assert env["PYTHONNOUSERSITE"] == "1"
+
+
+class TestInferenceAllocatorMatchesTrainer:
+    """Training and inference share one GPU with no guard between them, so they
+    must not run it under opposite allocator policies.
+
+    The systemd unit exports PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True.
+    The trainer overrode it; the inference bridge did not, so infer subprocesses
+    inherited the setting that never returns grown segments - and inference is
+    the one running continuously.
+    """
+
+    def test_inference_pins_the_allocator_too(self):
+        from auto_voice.inference.svc_fork_bridge import _clean_env
+        env = _clean_env(None)
+        assert "PYTORCH_CUDA_ALLOC_CONF" in env
+        assert "expandable_segments" not in env["PYTORCH_CUDA_ALLOC_CONF"]
+
+    @mock.patch.dict(os.environ, {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True,max_split_size_mb:512"})
+    def test_the_units_inherited_value_is_overridden(self):
+        """The exact value the systemd unit exports today."""
+        from auto_voice.inference.svc_fork_bridge import _clean_env
+        assert "expandable_segments" not in _clean_env(None)["PYTORCH_CUDA_ALLOC_CONF"]
+
+    def test_both_sides_agree(self):
+        from auto_voice.inference.svc_fork_bridge import _clean_env as infer_env
+        from auto_voice.training.svc_fork_trainer import _clean_env as train_env
+        assert infer_env(None)["PYTORCH_CUDA_ALLOC_CONF"] == train_env()["PYTORCH_CUDA_ALLOC_CONF"]

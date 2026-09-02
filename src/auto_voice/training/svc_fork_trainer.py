@@ -65,6 +65,14 @@ _PRESERVED_INFERENCE_KEYS = (
     "pad_seconds",
     "db_thresh",
     "absolute_thresh",
+    # Also serving-side, and also lost on retrain until now. requires_uv_contract
+    # selects a decoder patch that must match how the checkpoint was trained;
+    # the cluster pair blends content vectors toward the training speaker. All
+    # three are set by hand on the entry and exist nowhere else, so a retrain
+    # silently reverted them and nothing said so.
+    "requires_uv_contract",
+    "cluster_model_path",
+    "cluster_infer_ratio",
 )
 
 

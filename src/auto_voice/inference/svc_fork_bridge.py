@@ -29,6 +29,11 @@ DEFAULT_SVC_BIN = os.environ.get(
 )
 _INFER_TIMEOUT_S = int(os.environ.get("AUTOVOICE_SVCFORK_TIMEOUT", "900"))
 
+# Kept identical to svc_fork_trainer._ALLOC_CONF on purpose: training and
+# inference share one GPU with no guard between them, so they must not run it
+# under conflicting allocator policies.
+_ALLOC_CONF = "max_split_size_mb:512"
+
 # Parsed-entry cache keyed by (data_dir, profile_id) -> entry|None. Cleared by
 # tests via clear_cache(); production entries are static per server run.
 _CACHE: Dict[Tuple[str, str], Optional[dict]] = {}
@@ -96,6 +101,15 @@ def _clean_env(entry: Optional[dict] = None) -> Dict[str, str]:
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["PYTHONNOUSERSITE"] = "1"
+    # Pin the allocator, matching svc_fork_trainer._clean_env. The systemd unit
+    # exports PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, which infer
+    # subprocesses were inheriting: expandable_segments never returns the
+    # segments it grows, and on Jetson GPU memory IS system RAM, so a long
+    # serving session drifts the whole box toward starvation. The trainer
+    # already overrode this; the inference side was left inheriting it, so the
+    # two subprocesses ran the same GPU under opposite policies - and only the
+    # one that never gives memory back was the one running continuously.
+    env["PYTORCH_CUDA_ALLOC_CONF"] = _ALLOC_CONF
     if entry and entry.get("requires_uv_contract"):
         env["SVCFORK_UV_CONTRACT"] = "1"
     return env
