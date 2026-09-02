@@ -1,6 +1,7 @@
 """Async job manager for voice conversion with WebSocket progress."""
 import logging
 import os
+from pathlib import Path
 import threading
 import time
 import uuid
@@ -297,7 +298,26 @@ class JobManager:
         resolved_pipeline = requested_pipeline
         runtime_backend = 'pytorch'
 
-        if active_model_type == 'full_model' and requested_pipeline in {'quality_seedvc', 'quality_shortcut'}:
+        # A fork-registered profile IS running its own fine-tuned weights, but
+        # its checkpoint lives in data/fork_models/<id>.json rather than under
+        # trained_models_dir, so has_full_model (and therefore active_model_type)
+        # can never read 'full_model' for it. Without this a fork-only voice
+        # falls through to quality_seedvc and dies importing SeedVC - a backend
+        # it should never have reached. The offline pipeline already routes on
+        # this same predicate (singing_conversion_pipeline: svc_fork_bridge).
+        from ..inference import svc_fork_bridge
+        # Derive the data dir from the profile store rather than taking the
+        # bridge's 'data' default: that default only resolves because the
+        # service happens to run with the repo root as cwd, and it silently
+        # disables fork routing for any other data dir (tests included).
+        _store = getattr(self.voice_profile_manager, 'store', None)
+        _trained_dir = getattr(_store, 'trained_models_dir', None)
+        _fork_data_dir = str(Path(_trained_dir).parent) if _trained_dir else 'data'
+        fork_backed = bool(job.get('profile_id')) and svc_fork_bridge.is_available(
+            job['profile_id'], _fork_data_dir)
+        full_model_lane = active_model_type == 'full_model' or fork_backed
+
+        if full_model_lane and requested_pipeline in {'quality_seedvc', 'quality_shortcut'}:
             resolved_pipeline = 'quality'
         if active_model_type == 'full_model' and resolved_pipeline == 'quality':
             runtime_backend = 'pytorch_full_model'

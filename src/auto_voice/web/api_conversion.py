@@ -435,6 +435,15 @@ def convert_song():
     adapter_manager = root._get_adapter_manager()
     has_adapter_model = adapter_manager.has_adapter(profile_id)
     has_full_model = bool(serialized_profile.get('has_full_model'))
+    # so-vits-svc-fork registers its checkpoint in data/fork_models/<id>.json and
+    # writes nothing under trained_models_dir, so a fork-only profile has neither
+    # a LoRA adapter nor a profile-dir full model and was rejected 404 here even
+    # when fully trained and serving. The two fork voices that did work only
+    # passed because they still carry a *_full_model.pt from the older engine.
+    # The pipeline already routes on exactly this predicate.
+    from ..inference import svc_fork_bridge
+    has_fork_model = svc_fork_bridge.is_available(
+        profile_id, str(current_app.config.get('DATA_DIR', 'data')))
 
     if not serialized_profile.get('has_trained_model'):
         root.logger.warning("No trained adapter found for profile %s", profile_id)
@@ -446,7 +455,7 @@ def convert_song():
 
     active_model_type = serialized_profile.get('active_model_type', 'base')
     use_full_model = bool(has_full_model and active_model_type == 'full_model')
-    if use_full_model:
+    if use_full_model or has_fork_model:
         if adapter_type is not None:
             root.logger.info(
                 "Ignoring adapter selection %s for full-model target profile %s",
