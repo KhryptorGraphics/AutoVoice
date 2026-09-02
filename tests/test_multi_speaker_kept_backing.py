@@ -562,16 +562,24 @@ class TestPerLineGainIsBounded:
     singers at inconsistent volumes.
     """
 
-    def test_bounds_are_symmetric_in_dB_and_sane(self):
-        import numpy as np
+    def test_the_floor_does_not_truncate_real_attenuation(self):
+        """A gain well below 1.0 is correct physics, not a bad measurement: the
+        converted line is a full voice, the reference is a thin comb slice.
+        Measured gains on real renders were 0.1-0.3. A symmetric +/-12 dB bound
+        was tried and was clearly worse by ear - it placed lines that wanted
+        0.2 at 0.25, and on top of backing_gain 1.6 the harmonies blared."""
         from auto_voice.inference.singing_conversion_pipeline import (
             _LINE_GAIN_MIN, _LINE_GAIN_MAX)
-        assert _LINE_GAIN_MIN > 0.0
-        assert _LINE_GAIN_MAX > 1.0 > _LINE_GAIN_MIN
-        db = 20 * np.log10(_LINE_GAIN_MAX)
-        assert abs(db - abs(20 * np.log10(_LINE_GAIN_MIN))) < 1e-6, (
-            "bounds should be symmetric in dB so neither direction is favoured")
-        assert db <= 18.0, "a level match needing >18 dB is a bad measurement"
+        for observed in (0.10, 0.19, 0.25, 0.32):
+            assert _LINE_GAIN_MIN < observed < _LINE_GAIN_MAX, (
+                f"{observed} was measured on a real render and must pass through")
+
+    def test_the_ceiling_still_guards_runaway_amplification(self):
+        """Asymmetric on purpose: a gain far ABOVE 1.0 means the engine
+        rendered near-silence for the line, and amplifying that amplifies only
+        artifacts."""
+        from auto_voice.inference.singing_conversion_pipeline import _LINE_GAIN_MAX
+        assert 1.0 < _LINE_GAIN_MAX <= 8.0
 
     def test_a_runaway_ratio_is_clamped(self):
         import numpy as np
@@ -589,3 +597,63 @@ class TestPerLineGainIsBounded:
             _LINE_GAIN_MIN, _LINE_GAIN_MAX)
         for raw in (0.8, 1.0, 1.3, 2.0):
             assert float(np.clip(raw, _LINE_GAIN_MIN, _LINE_GAIN_MAX)) == raw
+
+
+class TestMaskFloorBridgesGaps:
+    """A harmony line's extract is silent between its notes, and the fork
+    splits its input on silence before converting each piece INDEPENDENTLY -
+    measured: a 12-note line became 12 separate conversions, each with its own
+    timbre and level. That is what was heard as background singers going
+    muffled-then-loud in a repeating pattern, and a ~0.3s isolated fragment
+    also gives the engine almost no context to work from.
+
+    The floor bridges those gaps so the engine sees one phrase. It applies ONLY
+    in the gaps, and only within the line's own phrase.
+    """
+
+    @staticmethod
+    def _line(n=6):
+        return [{'pitch_midi': 57, 'start': i * 0.8, 'end': i * 0.8 + 0.35,
+                 'amplitude': 1.0} for i in range(n)]
+
+    @staticmethod
+    def _signal(sr=22050, secs=10):
+        import numpy as np
+        t = np.arange(secs * sr) / sr
+        rng = np.random.default_rng(0)
+        return (0.3 * np.sin(2 * np.pi * 220 * t)
+                + 0.06 * rng.standard_normal(len(t))).astype(np.float32)
+
+    def test_floor_collapses_per_note_fragmentation(self):
+        import librosa
+        from auto_voice.inference.singing_conversion_pipeline import _extract_line_audios
+        sr = 22050
+        sig, line = self._signal(), self._line()
+        without = _extract_line_audios(sig, sr, [line], mask_floor=0.0)[0][0]
+        with_floor = _extract_line_audios(sig, sr, [line], mask_floor=0.20)[0][0]
+        assert len(librosa.effects.split(without, top_db=40)) >= 6, (
+            "fixture no longer reproduces the fragmentation it guards against")
+        assert len(librosa.effects.split(with_floor, top_db=40)) == 1
+
+    def test_floor_stays_out_of_the_notes_themselves(self):
+        """During a note the comb already passes the line's own energy;
+        flooring there would admit the other singers into exactly the frames
+        this line is supposed to dominate."""
+        import numpy as np
+        from auto_voice.inference.singing_conversion_pipeline import _extract_line_audios
+        sr = 22050
+        sig, line = self._signal(), self._line()
+        a = _extract_line_audios(sig, sr, [line], mask_floor=0.0)[0][0]
+        b = _extract_line_audios(sig, sr, [line], mask_floor=0.20)[0][0]
+        note = slice(int(0.05 * sr), int(0.30 * sr))   # inside note 0
+        assert np.allclose(a[note], b[note], atol=1e-6), (
+            "the floor changed the audio inside a note; it must only fill gaps")
+
+    def test_floor_never_leaks_outside_the_phrase(self):
+        import numpy as np
+        from auto_voice.inference.singing_conversion_pipeline import _extract_line_audios
+        sr = 22050
+        sig, line = self._signal(), self._line()   # last note ends ~4.35s
+        g = _extract_line_audios(sig, sr, [line], mask_floor=0.20)[0][0]
+        assert float(np.abs(g[int(6 * sr):]).max()) < 1e-4, (
+            "a line must stay silent where it is not singing")

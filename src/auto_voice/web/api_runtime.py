@@ -347,6 +347,8 @@ def get_app_settings():
                            float(cfg.get('multi_speaker_line_harmonics', 24)))
         payload.setdefault('multi_speaker_line_onset_ms',
                            float(cfg.get('multi_speaker_line_onset_ms', 30.0)))
+        payload.setdefault('multi_speaker_line_mask_floor',
+                           float(cfg.get('multi_speaker_line_mask_floor', 0.20)))
         payload.setdefault('multi_speaker_line_concentration_min',
                            float(cfg.get('multi_speaker_line_concentration_min', 1.2)))
         payload.setdefault('multi_speaker_unison_semitones',
@@ -441,6 +443,9 @@ def update_app_settings():
             # Broadband window at each note onset, milliseconds. 0 disables
             # (pure harmonic comb, the old behaviour).
             ('multi_speaker_line_onset_ms', 0.0, 120.0),
+            # Share of the between-harmonic spectrum each line keeps: adds breath
+            # and consonant texture at the cost of isolation between singers.
+            ('multi_speaker_line_mask_floor', 0.0, 0.6),
             # How much of the stack a line must claim to count as real.
             # Lower converts more (incl. marginal lines); higher is stricter.
             ('multi_speaker_line_concentration_min', 0.5, 10.0),

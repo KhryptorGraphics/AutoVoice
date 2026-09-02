@@ -125,20 +125,50 @@ def _group_notes_into_lines(notes, max_lines: int = 3):
 # concentration gate. 0.95 keeps ~100% while still softening the edge.
 _BAND_FLAT_FRAC = 0.95
 
-# Bounds on the per-line level match (+/- 12 dB). A converted harmony line is
-# placed at the level of the extract it replaced; that ratio should sit near
-# 1.0, so a wild value means the measurement is untrustworthy rather than that
-# the line needs that much gain. Left unbounded it amplified a quietly-rendered
-# line's artifacts into distortion, and the resulting stem-RMS inflation made
-# _finish_backing duck every other line - heard as uneven background singers.
-_LINE_GAIN_MIN = 0.25
+# Bounds on the per-line level match. ASYMMETRIC, deliberately.
+#
+# A gain far BELOW 1.0 is the correct physics here, not a bad measurement: the
+# converted line is a full voice while the reference it is matched against is a
+# thin comb slice of the original, so conv_rms legitimately exceeds ref_rms by
+# a large factor. Measured on real renders, lines wanted 0.1-0.3.
+#
+# A symmetric +/-12 dB bound was tried and was clearly worse by ear: it
+# truncated that natural range, so lines that wanted 0.2 were placed at 0.25
+# and - on top of a backing_gain of 1.6 - the harmonies came out blaring. The
+# floor is now low enough never to clamp a genuine match.
+#
+# The CEILING still earns its place: a gain far above 1.0 means conv_rms is
+# near zero, i.e. the engine rendered near-silence for this line, and
+# amplifying that only amplifies artifacts.
+# Floor under the comb mask: what fraction of the BETWEEN-harmonic spectrum a
+# line's extract keeps. This is not cosmetic - it decides whether the engine
+# sees a phrase or a pile of fragments.
+#
+# At 0.0 the extract is digital silence between notes, and the fork splits its
+# input on silence (db_thresh) before converting each piece independently.
+# Measured on a 12-note line: floor 0.0 -> 12 separate conversions, one per
+# note, each with its own timbre and level; floor 0.20 -> ONE continuous
+# conversion. That per-note fragmentation is what was heard as backing singers
+# going "muffled, then loud, then muffled" in a repeating pattern, and a ~0.3s
+# isolated fragment also gives the model almost no context, which is where much
+# of the "electronic" character comes from.
+#
+# It restores real texture too: breath and consonant noise live between the
+# harmonics, and a pure comb deletes them.
+#
+# The cost is isolation - the floor admits the other singers and the lead at
+# the same fraction - so it trades cleanliness for continuity and naturalness.
+_LINE_MASK_FLOOR_DEFAULT = 0.20
+
+_LINE_GAIN_MIN = 0.02
 _LINE_GAIN_MAX = 4.0
 
 
 def _extract_line_audios(stack: np.ndarray, sample_rate: int, lines,
                          n_harmonics: int = 24, width_cents: float = 50.0,
                          onset_s: float = 0.03, onset_weight: float = 0.5,
-                         onset_max_hz: float = 8000.0):
+                         onset_max_hz: float = 8000.0,
+                         mask_floor: float = _LINE_MASK_FLOOR_DEFAULT):
     """Isolate every harmony line from a stack at once, sharing one STFT.
 
     Replaces a per-line 10-harmonic ±40-cent BINARY comb. That comb produced
@@ -193,6 +223,29 @@ def _extract_line_audios(stack: np.ndarray, sample_rate: int, lines,
     masks = []
     for line_notes in lines:
         mask = np.zeros(S.shape, dtype=np.float32)
+        # Floor only ACROSS THIS LINE'S OWN PHRASE - first note to last - not
+        # across the whole timeline. The floor exists to bridge the gaps
+        # BETWEEN a line's notes so the engine sees one continuous phrase
+        # instead of splitting on the silence and converting each note alone.
+        # Applying it everywhere would also hand this line a low-level copy of
+        # the entire stack while it is not even singing: bleed bought for
+        # nothing, and it broke the "silent outside its notes" contract.
+        if mask_floor > 0.0 and line_notes:
+            first = min(float(n['start']) for n in line_notes)
+            last = max(float(n['end']) for n in line_notes)
+            phrase = (times >= first) & (times <= last)
+            sounding = np.zeros_like(phrase)
+            for n in line_notes:
+                sounding |= (times >= float(n['start'])) & (times <= float(n['end']))
+            # Only in the GAPS. During a note the comb already passes the
+            # line's own energy, so flooring there would just dilute isolation
+            # - it admits the other singers into the very frames where this
+            # line is supposed to dominate. The gaps are the only place the
+            # floor is needed, because silence there is what makes the engine
+            # split the phrase into one fragment per note.
+            gaps = phrase & ~sounding
+            if gaps.any():
+                mask[:, gaps] = float(mask_floor)
         for note in line_notes:
             f0 = 440.0 * 2.0 ** ((float(note['pitch_midi']) - 69.0) / 12.0)
             fsel = (times >= note['start']) & (times <= note['end'])
@@ -229,10 +282,22 @@ def _extract_line_audios(stack: np.ndarray, sample_rate: int, lines,
                     weights[bsel] = np.maximum(weights[bsel], taper)
                 mask[:, fsel] = np.maximum(mask[:, fsel], weights[:, None])
             if onset_weight > 0.0 and onset_s > 0.0:
+                # DECAYING onset, not a rectangular one. A flat broadband
+                # window that ends abruptly makes every note bright for its
+                # first 30ms and then harmonics-only for the sustain - the
+                # spectrum steps down mid-note, once per note, which is heard
+                # as a repeating loud-then-muffled pulsing through the whole
+                # backing part. Ramping the extra bandwidth away over the
+                # window turns that step into a natural attack decay.
                 osel = (times >= note['start']) & (times < note['start'] + onset_s)
                 if osel.any():
+                    span = times[osel] - note['start']
+                    # 1.0 at the attack -> 0.0 at the end of the window.
+                    ramp = np.clip(1.0 - span / max(onset_s, 1e-9), 0.0, 1.0)
+                    weights_t = (onset_weight * ramp).astype(np.float32)
                     block = mask[np.ix_(onset_band, osel)]
-                    mask[np.ix_(onset_band, osel)] = np.maximum(block, onset_weight)
+                    mask[np.ix_(onset_band, osel)] = np.maximum(
+                        block, weights_t[None, :])
         masks.append(mask)
 
     # Partition: where several lines claim a bin, share it rather than letting
@@ -1026,6 +1091,8 @@ class SingingConversionPipeline:
             backing, sr, lines,
             n_harmonics=int(self.config.get('multi_speaker_line_harmonics', 24)),
             onset_s=float(self.config.get('multi_speaker_line_onset_ms', 30.0)) / 1000.0,
+            mask_floor=float(self.config.get('multi_speaker_line_mask_floor',
+                                             _LINE_MASK_FLOOR_DEFAULT)),
         )
         for i, line_notes in enumerate(lines):
             # mix_extract is this line's partitioned share (what actually

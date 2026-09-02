@@ -703,6 +703,34 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                   </div>
 
                   <div>
+                    <label className="text-sm text-gray-400">Harmony breath / texture</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={0.6}
+                      step={0.02}
+                      value={dragValue('lineMaskFloor', appSettings.multi_speaker_line_mask_floor ?? 0.20)}
+                      onChange={onDrag('lineMaskFloor')}
+                      onPointerUp={onCommit('lineMaskFloor', v => updateAppSettingsMutation.mutate({ multi_speaker_line_mask_floor: v }))}
+                      onKeyUp={onCommit('lineMaskFloor', v => updateAppSettingsMutation.mutate({ multi_speaker_line_mask_floor: v }))}
+                      className="mt-1 w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Isolated (0)</span>
+                      <span>{dragValue('lineMaskFloor', appSettings.multi_speaker_line_mask_floor ?? 0.20).toFixed(2)}</span>
+                      <span>Natural (0.6)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      How much of the sound BETWEEN a harmony&apos;s harmonics is kept. At 0 the line
+                      is digital silence between notes, so the engine splits it and converts every
+                      note separately — each with its own timbre and level, heard as backing singers
+                      pulsing muffled-then-loud. Above 0 the line stays one continuous phrase, and
+                      the breath and consonant noise that make a voice sound human are preserved.
+                      Costs isolation: the same setting lets the other singers bleed in.
+                    </p>
+                  </div>
+
+                  <div>
                     <label className="text-sm text-gray-400">Harmony note attack (ms)</label>
                     <input
                       type="range"

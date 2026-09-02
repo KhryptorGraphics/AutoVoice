@@ -431,6 +431,7 @@ export interface AppSettings {
   multi_speaker_kept_backing_gain?: number
   multi_speaker_line_harmonics?: number
   multi_speaker_line_onset_ms?: number
+  multi_speaker_line_mask_floor?: number
   multi_speaker_line_concentration_min?: number
   multi_speaker_unison_semitones?: number
   multi_speaker_unison_note_frac?: number

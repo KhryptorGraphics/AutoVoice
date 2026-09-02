@@ -46,6 +46,7 @@ PIPELINE_SETTING_KEYS: Tuple[str, ...] = (
     # fullness against bleed between lines; onset_ms restores note attacks.
     "multi_speaker_line_harmonics",
     "multi_speaker_line_onset_ms",
+    "multi_speaker_line_mask_floor",
     "multi_speaker_line_concentration_min",
     # A karaoke separator faithfully splits out a double-tracked lead, and
     # every downstream gate then accepts it as a harmony line - so the same
