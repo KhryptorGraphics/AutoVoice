@@ -95,6 +95,28 @@
       "selected_adapter": "unified",
       "version": "1.0"
     },
+    "3e946252adf245c98d0bdd75f7171519": {
+      "active_model_type": "svc_fork",
+      "created_at": "2026-07-04T19:33:54.048515+00:00",
+      "epoch": 100,
+      "id": "3e946252adf245c98d0bdd75f7171519",
+      "is_active": true,
+      "model_version": "svcfork_epoch100",
+      "profile_snapshot": {
+        "config_path": "checkpoints/svcfork/config.json",
+        "engine": "so-vits-svc-fork",
+        "has_trained_model": true,
+        "loss_final": 0.0,
+        "model_path": "checkpoints/svcfork/G_100.pth",
+        "model_version": "svcfork_epoch100",
+        "runtime_artifact_manifest_path": "checkpoints/svcfork/config.json",
+        "speaker_id": "connor",
+        "training_epochs": 100,
+        "training_status": "ready"
+      },
+      "selected_adapter": null,
+      "version": "svcfork_epoch100"
+    },
     "4bea4e7985814cfc88c927f73eba9261": {
       "active_model_type": "adapter",
       "created_at": "2026-07-02T22:19:12.292331+00:00",
@@ -379,28 +401,65 @@
       },
       "selected_adapter": "unified",
       "version": "1.0"
-    },
-    "3e946252adf245c98d0bdd75f7171519": {
-      "id": "3e946252adf245c98d0bdd75f7171519",
-      "created_at": "2026-07-04T19:33:54.048515+00:00",
-      "epoch": 100,
-      "model_version": "svcfork_epoch100",
-      "version": "svcfork_epoch100",
-      "active_model_type": "svc_fork",
-      "selected_adapter": null,
-      "is_active": true,
+    }
+  },
+  "fb17af66-8415-4ffe-81b3-600efe75b6d7": {
+    "133e5d767f90470a8d3c27b9bb800810": {
+      "active_model_type": "full_model",
+      "created_at": "2026-09-02T14:24:47.472501+00:00",
+      "epoch": 106,
+      "id": "133e5d767f90470a8d3c27b9bb800810",
+      "is_active": false,
+      "model_version": "1.0",
       "profile_snapshot": {
         "has_trained_model": true,
-        "loss_final": 0.0,
-        "model_path": "checkpoints/svcfork/G_100.pth",
-        "model_version": "svcfork_epoch100",
-        "runtime_artifact_manifest_path": "checkpoints/svcfork/config.json",
-        "training_epochs": 100,
-        "training_status": "ready",
-        "engine": "so-vits-svc-fork",
-        "speaker_id": "connor",
-        "config_path": "checkpoints/svcfork/config.json"
-      }
+        "loss_final": 0.6917255861418588,
+        "model_path": "data/trained_models/fb17af66-8415-4ffe-81b3-600efe75b6d7_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/fb17af66-8415-4ffe-81b3-600efe75b6d7/artifact_manifest.json",
+        "training_epochs": 106,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "645816b5d7aa4bda90ab2880007c1260": {
+      "active_model_type": "full_model",
+      "created_at": "2026-09-02T14:43:58.812388+00:00",
+      "epoch": 106,
+      "id": "645816b5d7aa4bda90ab2880007c1260",
+      "is_active": true,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.6949726683752877,
+        "model_path": "data/trained_models/fb17af66-8415-4ffe-81b3-600efe75b6d7_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/fb17af66-8415-4ffe-81b3-600efe75b6d7/artifact_manifest.json",
+        "training_epochs": 106,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
+    },
+    "f5269cd4d7c2468d8102ea9e0537f57a": {
+      "active_model_type": "full_model",
+      "created_at": "2026-09-02T14:17:25.923852+00:00",
+      "epoch": 107,
+      "id": "f5269cd4d7c2468d8102ea9e0537f57a",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": 0.7218334547110966,
+        "model_path": "data/trained_models/fb17af66-8415-4ffe-81b3-600efe75b6d7_full_model.pt",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": "data/trained_models/fb17af66-8415-4ffe-81b3-600efe75b6d7/artifact_manifest.json",
+        "training_epochs": 107,
+        "training_status": "ready"
+      },
+      "selected_adapter": "unified",
+      "version": "1.0"
     }
   }
 }

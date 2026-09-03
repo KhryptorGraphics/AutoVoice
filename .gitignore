@@ -24,7 +24,7 @@ htmlcov/
 
 # Data & Models (large files)
 data/
-models/pretrained/
+models/pretrained
 *.ckpt
 *.pth
 *.pt
