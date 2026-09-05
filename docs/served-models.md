@@ -199,12 +199,9 @@ This investigation spans two batches of new source material, six training runs t
 - **st2 / st2b**: an earlier batch of 4 files (3 band-limited + 1 full-band, found and
   separated in a prior session) folded into the existing corpus, in two stages: Stage 1
   (5000 steps, full corpus, seeded from `v3 ep135`) produced an intermediate checkpoint
-  (`st1`, epoch 143 — both numbers reconfirmed directly from the training logs still on
-  the GPU box, not recalled). Stage 2 fine-tuned that on the full-band subset only. st2 =
-  Stage 2 at a short run (~2k steps, this run's own log was later overwritten by st2b's
-  relaunch so the exact count isn't independently re-checkable, but the config target
-  this session set was 2000); st2b = the same Stage 2 re-run at 10000 steps (`max_epochs:
-  257` reached — also reconfirmed live) after st2 underperformed.
+  (`st1`, epoch 143). Stage 2 fine-tuned that on the full-band subset only: st2 at
+  ≈2000 steps (this session's config target; underperformed), st2b re-running the same
+  Stage 2 at 10000 steps (`max_epochs: 257` in the training log) after st2 underperformed.
 - **st3 / st4 / st5 / st6**: 6 new phone videos (~23 min separated vocals after demucs,
   the batch explicitly requested this session) added on top of the st2 corpus (so they
   carry the earlier 4-file batch too). st3 = full corpus, new files x3; st4 = same,
@@ -232,24 +229,30 @@ A/B by ear before acting on this table.
 | st5 | fidelity tail on st4 (full-band-only subset) | -21.5 | 14.4k | 0.911 |
 | st6 | single cleanest new video only, x3 | -18.5 | 14.9k | 0.915 |
 
-**Every configuration scored worse than the `v3 ep135` seed/baseline on 6-8k level**, and none
-beat it on identity either. Two things ruled out along the way:
+**Every configuration scored worse than the `v3 ep135` seed/baseline on 6-8k level**,
+and none beat it on identity either — st2b ties it exactly (0.929, see below); nothing
+exceeded it. Two things ruled out along the way:
 - **Not a bandwidth-extension problem**: 5 of 6 new files are band-limited (11.8-14.6 kHz);
   the 1 full-band file (`b4_6`, 22.1 kHz) alone (st6) still lost on every axis, including
   its own bandwidth — the model didn't even fully learn that file's ceiling at 5k steps.
-- **Not a "need more fidelity steps" problem**: st2 (~2k steps) underperformed the
-  baseline, and going 5x further on the same corpus (st2b, 10k steps) did not recover
-  it — nor did st5's fidelity tail (full-band-only subset). The "full-band" subset in
-  this corpus is ~60% speech by duration, so a fidelity tail re-anchors toward *speech*
-  spectra, not singing — the tail direction was wrong for this corpus, not just
-  under-trained.
+- **Not simply a "need more fidelity steps" problem**: st2 (≈2k steps) → st2b (10k
+  steps, 5x more) recovered `fmax` and identity to exact parity with the baseline
+  (17.9k/0.929 both ways) but left the 6-8k deficit essentially unchanged (-17.2 →
+  -17.3). More steps fixes bandwidth and identity here, not brightness — a narrower,
+  more specific problem than plain undertraining. st5's fidelity tail (on st4, a
+  different corpus) underperformed outright, for the speech-dominance reason below.
+  The "full-band" subset in this corpus is ~60% speech by duration, so a fidelity tail
+  re-anchors toward *speech* spectra, not singing — the tail direction was wrong for
+  that corpus, not just under-trained.
 
 **Conclusion**: the `v3 ep135` seed/baseline sits at a local optimum for this speaker
 embedding + decoder combo on this corpus at this recipe. Adding data, in any ratio or
-subset tried, perturbs the gradient distribution and the 5k-step budget isn't enough to
-re-settle past it. Getting a strictly-better model needs a recipe change (more steps to
-re-settle, LR warmup, curriculum ordering, or per-sample loss weighting) rather than more
-data at the current settings — tracked as a follow-up issue (`AV-6sxy`).
+subset tried, perturbs the gradient distribution, and every step budget tried (2k-10k)
+wasn't enough to re-settle past it on the 6-8k axis specifically — st2b showed steps
+alone *can* recover bandwidth ceiling and identity, just not this one band. Getting a
+strictly-better model needs a recipe change (more steps targeted at this band, LR
+warmup, curriculum ordering, or per-sample loss weighting) rather than more data at
+the current settings — tracked as a follow-up issue (`AV-6sxy`).
 
 **No registry change — live model is still ep235, exactly as it was at the start of
 this session.** The `v3 ep135` promote/rollback from 09-04 was not revisited or
