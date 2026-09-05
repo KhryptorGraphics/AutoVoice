@@ -111,6 +111,14 @@ The current vhost accepts both hostnames:
 - `autovoice.giggadev.com`
 - `autovoice.giggahost.com`
 
+**Do not confuse this with `gigaghost.com`** (single "a": *giga*ghost) — a
+different domain this project does not control. Its DNS is delegated to
+GoDaddy's aftermarket/parking nameservers (`ns1.namefind.com` /
+`ns2.namefind.com`), so every path under `autovoice.gigaghost.com`, including
+`/quality`, serves GoDaddy's generic "domain for sale" landing page
+(`/lander`) and never reaches this host. This was the root cause of AV-8cmk.
+Only the two hostnames listed above are wired to AutoVoice.
+
 For public HTTPS on `autovoice.giggahost.com`, the host still needs two
 external prerequisites outside the repo:
 
