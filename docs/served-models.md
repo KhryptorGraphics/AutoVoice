@@ -542,10 +542,36 @@ widening is real model decorrelation, not a pseudo-stereo trick: L and R are con
 | served #5 (width 0.0) | -13.7 | -25.7 | -27.4 | 22.1k |
 | ep235 + FIXES (width 0.35) | **-10.9** | -27.4 | -31.4 | 18.0k |
 
-Width 0.35 overshoots the original's side/mid slightly and is darker up top (that render also
-used `-db -35` and a different instrumental, so width is not its only difference). The point
-stands: **the spatial halo is one setting away**, and a prior session already shipped a render
-with it.
+**The width value is not a free parameter — the code fixes its meaning.** At
+`singing_conversion_pipeline.py:1666-1668` the side is scaled by
+`stereo_width * mid_rms / side_rms`, so **the vocal's side/mid ratio equals `stereo_width`
+exactly**. That makes the correct value arithmetic, not taste:
+
+| `fork_hq_stereo_width` | vocal side/mid | vs her stem's -15.7 dB |
+|---|---|---|
+| 0.35 (the existing render) | -9.1 dB | **6.6 dB too wide** |
+| 0.25 | -12.0 dB | 3.7 dB too wide |
+| **0.164** | **-15.7 dB** | **matched** |
+| 0.10 | -20.0 dB | too narrow |
+
+So if the halo is what she is missing, the value that reproduces *her own* stem is **≈0.16**,
+not the 0.35 that exists. Higher width also means more of the chorus/decorrelation artefact
+the pipeline's own comments warn about, since side is the difference of two stochastic
+conversions.
+
+Two caveats on the existing render. Its tone cannot be judged as width-only: it also used
+`-db -35`, and it measures 1.9 dB darker at 8-12k, 4.6 dB at 12-16k, walling 4.1 kHz lower
+than the served render. And the instrumental is *not* a confound on this axis — the htdemucs
+and BS-RoFormer remixes of the same render both measure **-10.9 dB** side/mid, identically.
+
+**`fork_hq_stereo_width` is a global app setting** (one value for every song and profile), and
+0.0 is the documented recipe behind "every approved OLT render" — a user-approved state, not
+an oversight. Only a listening verdict should move it.
+
+**Both fix renders predate the complaint** (09-04 11:19 and 13:22; the complaint is 09-05).
+If she already heard "ep235 + FIXES (stereo 0.35)" and still reports edges cut off, then
+width 0.35 is empirically not the fix and the spatial hypothesis is largely dead — that one
+answer is worth more than any further measurement here.
 
 **Not the bandwidth-match filter.** `fork_hq_match_source_bandwidth` defaults on and
 low-passes the converted vocal to the source's measured wall, which made it a suspect for the
