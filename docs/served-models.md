@@ -510,11 +510,26 @@ reference, so a global gain cannot produce it:
 | 12-16k (sheen) | -27.0 | -40.6 | **-13.6 dB** |
 | `fmax` | 20.0k | 17.9k | **-2.1 kHz** |
 
-The halo of air and sheen that sits *around* a voice in a mix (8-16 kHz) is 9-14 dB down and
-the spectrum stops 2.1 kHz early, while 6-8k is actually *brighter* than the source. "Edges
-cut off around her voice" is this, not a gate: in mixing vocabulary the "edge" of a voice is
-its presence/air, and this is the band where it lives. It is also the same top-end deficit
-the whole 2026-09-05 programme above was circling with its 6-8k/`fmax` metrics.
+The halo of air and sheen that sits around a voice in a mix (8-16 kHz) is 9-14 dB down and
+the spectrum stops 2.1 kHz early, while 6-8k is actually *brighter* than the source. Verified
+as real vocal content rather than separator bleed: 12-16k is +20.4 dB in-phrase versus
+between-phrase and correlates +0.82 with her envelope (8-12k: +23.1 dB, +0.85). This is also
+the same top-end deficit the 2026-09-05 programme above was circling with its 6-8k/`fmax`
+metrics.
+
+**Loss 1b — the stereo halo, removed by design.** The served lead is **1 channel**:
+pipeline #5's own note records "mono centred vocal (stereo width 0.0 like every approved OLT
+render)". Mariah's own vocal stem is 2 channels carrying side content at **-15.7 dB**
+relative to centre, and at the mix level the delivered render has **-13.7 dB** side/mid
+against the original's **-11.9 dB**. So everything spatially *around* her voice is discarded
+before the metrics above ever run — every one of them sums to mono first, which is why none
+could see it. This is present in every approved render by construction, which fits "the
+*best* conversion still has it".
+
+**Which of these her words name is not yet established.** "Edges cut off around her
+converted voice" fits Loss 1 (presence/air) and Loss 1b (spatial halo) equally well on
+paper; attributing it without a listen would repeat the mistakes retracted below. Both are
+now restorable offline and registered for comparison — see the listening set.
 
 **Loss 2 — level collapse with pitch.** Render minus source by source F0, loud in-phrase
 frames, aligned (verified 0 samples length delta, 0 ms envelope lag):
@@ -523,8 +538,10 @@ frames, aligned (verified 0 samples length delta, 0 ms envelope lag):
 |---|---|---|---|---|---|---|
 | ep235 (served) | +1.3 | +1.7 | -2.1 | **-5.6** | **-5.5** | **-10.9** |
 
-Monotonic from 400 Hz up, reaching **-10.9 dB** on her top notes — worse on the served
-checkpoint than on any candidate measured (MRD ep41: -7.8 dB). Cause is corpus pitch
+Monotonic from 400 Hz up, reaching **-10.9 dB** on her top notes. MRD ep41 measured -7.8 dB
+on the same window, but these are single renders of different checkpoints and 3.1 dB sits
+inside the ~3 dB checkpoint-to-checkpoint noise floor measured this session, so no checkpoint
+ranking is claimed. Cause is corpus pitch
 coverage: her training corpus (10 singing files, 168,079 voiced frames, harvest
 `f0_ceil=1600`) has median 292 Hz, **p99 496 Hz**, **max 844 Hz**, 0.48% of frames >= 550 Hz
 and <0.01% >= 700 Hz, against a source that reaches **1031 Hz**. The collapse begins where
@@ -586,6 +603,18 @@ pitch-tracked make-up gain in the pipeline would test whether Loss 2 is level or
 Loss 1 is the project's long-running brightness thread and interacts with the
 `fmax`-tracks-fresh-data-volume finding above.
 
-Listening set in the GUI History tab, tagged `highreg`: source vs served ep235 vs MRD ep41
-over her highest-register window (168-188 s), vocals only so the instrumental masks nothing.
-Registration helper: `scripts/register_render.py`.
+### The listening set (this is the instrument that settles the attribution)
+
+GUI History tab. Nothing here changes the model or the registry; the restorations are the
+delivered mix plus a measured delta, so only the tested variable differs.
+
+- Tagged **`edges-ab`**, 40-60 s, full mixes: original Mariah / served as delivered /
+  **+air** (lead EQ-matched to the source spectrum above 3 kHz, +8 dB cap, never above the
+  source's own 20.0k bandwidth: 8-12k -25.7 -> -23.1, 12-16k -27.4 -> -25.9) / **+stereo
+  halo** (decorrelated side reaching the original's -11.9 dB side/mid) / **+both**. Whichever
+  of these stops sounding cut off identifies the loss, and both deltas are pipeline
+  post-stages — no retraining involved.
+- Tagged **`highreg`**, 168-188 s, vocals only: source / served ep235 / MRD ep41, for Loss 2.
+
+Registration helper: `scripts/register_render.py` (argparse, `DATA_DIR`-aware, uuid5-keyed so
+re-runs replace rather than duplicate, and it preserves anything you set in the GUI).
