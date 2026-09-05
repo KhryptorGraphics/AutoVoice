@@ -421,6 +421,49 @@ overall; `lowlr` remains the closest challenger; the fresh-data cost is real but
 clip-dependent. The warmup lever is closed (trigger failed: no early shock). Nobody has
 listened to any render.
 
+### Fresh-data quantity boundary and checkpoint averaging (2026-09-05, same later session)
+
+**Phase C — 2-file fresh-data run (`st2f`, LR 2e-5, 5000 steps, seed G_135/D_135).**
+Corpus: the 79 originals plus exactly 2 of the 6 `sing_b4` files (`sing_b4_1_r1`,
+band-limited, and `sing_b4_6_r1`, full-band). If the fmax volume trend were already
+satisfied by any fresh data, 2 files would hold the ceiling. It does not:
+
+| st2f (2 files) | 6-8k | 8-12k | fmax | aper 2-6k | aper 6-12k | identity |
+|---|---|---|---|---|---|---|
+| hero20 | -19.8 | -34.6 | **14.6k** | 0.551 | 0.753 | 0.911 |
+| clip_hero | -16.5 | -32.4 | 16.9k | 0.612 | 0.761 | 0.896 |
+| clip_conor | -24.8 | -35.7 | 16.7k | 0.595 | 0.749 | 0.822 |
+| clip_fullsong | -11.8 | -29.1 | 18.0k | 0.704 | 0.827 | 0.845 |
+
+**The minimum fresh volume that holds `fmax` is between 2 and 6 files.** st2f's hero20
+fmax is 14.6k — squarely in the no-data cluster (ctl 14.6k, lowlr 15.0k), not st4's
+17.9k. Not bisected further, per plan. Two second-order readings:
+- **Less fresh data costs MORE brightness, not less**: st2f's 6-8k (-19.8) is worse
+  than st4lr's 6-file value (-18.2) on the same clip, LR, and steps. The fresh-data
+  6-8k cost is not a fixed "you touched new material" penalty; it scales with how
+  *dilute* the fresh signal is.
+- **fmax does not flip to the no-data basin on every clip** (clip_hero 16.9k, fullsong
+  18.0k), consistent with the replication section: single-clip fmax is partly
+  clip-controlled. The cluster assignment above rests on hero20, the same clip the
+  trend was established on.
+
+**Phase D — checkpoint averaging (ctl G_143/137/123 [/109/96], key-wise float32 mean,
+optimizer stripped, iteration 0).** Rendered on hero20 and all three replication clips:
+
+| avg vs G_143 | hero20 6-8k | clip_hero 6-8k | clip_conor 6-8k | clip_fullsong 6-8k |
+|---|---|---|---|---|
+| ctl G_143 | -15.6 | -13.0 | -21.2 | -11.0 |
+| ctl_avg3 | -15.5 | -12.7 | -20.3 | -10.4 |
+| ctl_avg5 | -15.6 | -12.8 | -21.0 | -10.8 |
+| seed | -13.2 | -11.6 | -17.3 | -9.4 |
+
+**Averaging doesn't move it.** Every avg-vs-G_143 delta is 0.1-0.9 dB — inside the
+noise floor — and nothing approaches the seed. Aperiodicity and identity likewise
+track G_143 (avg5 hero20: aper 0.616/0.805, identity 0.924). Averaging is not the cheap
+improvement; it is a no-op on this run's 6-8k oscillation (expected: the oscillation is
+not noise *around* a good solution that averaging could recover — the arm's mean itself
+sits ~1 dB below the seed).
+
 **No registry change — live model is still ep235, exactly as it was at the start of
 this session.** The `v3 ep135` promote/rollback from 09-04 was not revisited or
 re-decided today; whether to promote anything from today's candidates (or `G_112`
@@ -431,7 +474,9 @@ Candidate checkpoints (not served), each a complete `G_*`+`D_*` pair — the for
 `train.py` silently starts from **random init** if only `G` is present, so never seed a
 continuation from a G-only directory:
 `v3_uv_bright/` (the seed), `ctl_recipe_only/`, `lowlr_2e5/` (best challenger),
-`st4lr_2e5/`, `st3_b4/`, `st4_b4x1/`, `st6_b46only/`, `two_stage_band/`.
+`st4lr_2e5/`, `st3_b4/`, `st4_b4x1/`, `st6_b46only/`, `two_stage_band/`,
+`st2f_2file/` (Phase C), and render-only `ctl_avg3/` + `ctl_avg5/` (Phase D, G-only
+by construction — never train from them).
 
 **These live under `data/`, which is gitignored — they are local to this machine only**,
 as are `renders_hero20/` (all 10 A/B renders) and the `RECIPE_FINDINGS_20260905.md`
