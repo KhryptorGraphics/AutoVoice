@@ -162,6 +162,28 @@ def test_conversion_workflow_create_requires_dual_uploads(client_workflow, app_w
     assert missing_user.status_code == 400
 
 
+def test_conversion_workflow_create_accepts_profile_instead_of_user_vocals(client_workflow, app_workflow):
+    """Picking a target profile replaces the user-vocal upload: the clips only
+    existed to find a profile, and the manager skips their analysis whenever the
+    override is set."""
+    app_workflow.conversion_workflow_manager = _FakeWorkflowManager()
+
+    response = client_workflow.post(
+        "/api/v1/convert/workflows",
+        data={"artist_song": (BytesIO(b"artist"), "artist.wav"), "target_profile_id": "profile-123"},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 201
+    assert response.get_json()["user_vocals"] == []   # nothing uploaded, nothing required
+
+    neither = client_workflow.post(
+        "/api/v1/convert/workflows",
+        data={"artist_song": (BytesIO(b"artist"), "artist.wav")},
+        content_type="multipart/form-data",
+    )
+    assert neither.status_code == 400
+
+
 def test_conversion_workflow_convert_rejects_invalid_pipeline_type(client_workflow, app_workflow):
     class _RejectingWorkflowManager(_FakeWorkflowManager):
         def create_conversion_job(self, workflow_id, settings):

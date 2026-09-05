@@ -161,15 +161,20 @@ def create_conversion_workflow():
     artist_song = request.files.get('artist_song')
     user_vocals = request.files.getlist('user_vocals')
 
-    if artist_song is None or artist_song.filename == '':
-        return root.validation_error_response('artist_song file is required')
-    if not user_vocals:
-        return root.validation_error_response('At least one user_vocals file is required')
-    if any(upload.filename == '' for upload in user_vocals):
-        return root.validation_error_response('All user_vocals files must have a filename')
-
     dominant_source_profile_override = request.form.get('dominant_source_profile_id') or None
     target_profile_override = request.form.get('target_profile_id') or None
+
+    if artist_song is None or artist_song.filename == '':
+        return root.validation_error_response('artist_song file is required')
+    # A chosen target profile stands in for uploaded vocals: the workflow already
+    # resolves the target from ``target_profile_override`` and skips user-vocal
+    # analysis when it is set, so the clips were only ever needed to *find* a
+    # profile. Uploads stay optional alongside a chosen profile.
+    if not user_vocals and not target_profile_override:
+        return root.validation_error_response(
+            'Provide at least one user_vocals file, or choose a target profile (target_profile_id)')
+    if any(upload.filename == '' for upload in user_vocals):
+        return root.validation_error_response('All user_vocals files must have a filename')
 
     workflow = root._get_conversion_workflow_manager().create_workflow(
         artist_song=artist_song,

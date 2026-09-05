@@ -1,0 +1,114 @@
+--- /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/modules/descriminators.py.orig_pre_mrd	2026-09-04 13:40:27.055952151 -0500
++++ /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/modules/descriminators.py	2026-09-04 13:40:27.111952177 -0500
+@@ -171,3 +171,93 @@
+             fmap_gs.append(fmap_g)
+ 
+         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
++
++
++class DiscriminatorR(torch.nn.Module):
++    """Single-resolution STFT sub-discriminator: 2D convs over |STFT(x)|.
++
++    Standard multi-resolution-discriminator design (as in the published
++    MRD/UnivNet-family vocoder-GAN literature and its many open reimplementations),
++    operating on magnitude spectra at several (n_fft, hop, win) resolutions rather
++    than on periodic-reshaped or scale-pooled waveforms like DiscriminatorP/S. Shares
++    their (x, fmap) return contract so it drops into the existing generic loss
++    functions and MultiPeriodDiscriminator's own forward loop unchanged.
++    """
++
++    def __init__(self, resolution, use_spectral_norm=False):
++        super().__init__()
++        self.resolution = resolution  # (n_fft, hop_length, win_length)
++        norm_f = weight_norm if use_spectral_norm == False else spectral_norm
++        self.convs = nn.ModuleList(
++            [
++                norm_f(Conv2d(1, 32, (3, 9), padding=(1, 4))),
++                norm_f(Conv2d(32, 32, (3, 9), stride=(1, 2), padding=(1, 4))),
++                norm_f(Conv2d(32, 32, (3, 9), stride=(1, 2), padding=(1, 4))),
++                norm_f(Conv2d(32, 32, (3, 9), stride=(1, 2), padding=(1, 4))),
++                norm_f(Conv2d(32, 32, (3, 3), padding=(1, 1))),
++            ]
++        )
++        self.conv_post = norm_f(Conv2d(32, 1, (3, 3), padding=(1, 1)))
++
++    def spectrogram(self, x):
++        n_fft, hop_length, win_length = self.resolution
++        x = F.pad(x, (int((n_fft - hop_length) / 2), int((n_fft - hop_length) / 2)), mode="reflect")
++        x = x.squeeze(1)
++        # torch.stft's complex path needs fp32; the rest of this fork trains in
++        # fp32 anyway (fp16_run/bf16_run are both false in every config touched
++        # this session), so this is belt-and-suspenders, not a new constraint.
++        # Hann, matching mel_processing.py's own spectrogram_torch elsewhere
++        # in this fork - a rectangular default window has worse spectral
++        # leakage, undesirable input for a discriminator judging spectral
++        # realism.
++        window = torch.hann_window(win_length, device=x.device, dtype=torch.float32)
++        with torch.autocast(device_type=x.device.type if x.device.type != "cpu" else "cpu", enabled=False):
++            mag = torch.stft(
++                x.float(), n_fft=n_fft, hop_length=hop_length, win_length=win_length,
++                window=window, center=False, return_complex=True,
++            ).abs()
++        return mag.unsqueeze(1)  # [B, 1, F, T]
++
++    def forward(self, x):
++        fmap = []
++        x = self.spectrogram(x)
++        for l in self.convs:
++            x = l(x)
++            x = F.leaky_relu(x, modules.LRELU_SLOPE)
++            fmap.append(x)
++        x = self.conv_post(x)
++        fmap.append(x)
++        x = torch.flatten(x, 1, -1)
++        return x, fmap
++
++
++class MultiPeriodDiscriminatorWithMRD(MultiPeriodDiscriminator):
++    """MultiPeriodDiscriminator + a multi-resolution STFT discriminator.
++
++    Appends the new sub-discriminators to the SAME ``self.discriminators``
++    ModuleList the parent class builds, rather than nesting them under a new
++    submodule name. That keeps every original entry's state_dict key
++    (``discriminators.0.*`` .. ``discriminators.5.*``) byte-identical to an
++    unmodified MultiPeriodDiscriminator checkpoint, so this fork's own
++    ``safe_load``/``_substitute_if_same_shape`` (utils.py) loads a pretrained or
++    fine-tuned MPD-only checkpoint's matching keys automatically and leaves
++    only the new resolutions (indices 6+) at their fresh init - no manual key
++    remapping needed. ``forward()`` is inherited unchanged: the parent's loop
++    over ``self.discriminators`` only relies on each entry returning
++    ``(x, fmap)``, which DiscriminatorR does too.
++
++    Added to address the researched, evidence-backed gap in this fork's
++    discriminator set: only MPD (which itself bundles one DiscriminatorS) is
++    ever instantiated in train.py. The separate MultiScaleDiscriminator class
++    in this same file is never imported there - genuinely dead code, not a
++    second discriminator already in use. No multi-resolution/time-frequency
++    discriminator exists anywhere in this fork.
++    """
++
++    def __init__(
++        self,
++        use_spectral_norm=False,
++        resolutions=((1024, 120, 600), (2048, 240, 1200), (512, 50, 240)),
++    ):
++        super().__init__(use_spectral_norm)
++        self.discriminators.extend(DiscriminatorR(r, use_spectral_norm) for r in resolutions)
+--- /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/train.py.orig_pre_mrd	2026-09-04 13:40:27.055952151 -0500
++++ /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/train.py	2026-09-04 13:40:27.115952179 -0500
+@@ -148,7 +148,14 @@
+             self.hparams.train.segment_size // self.hparams.data.hop_length,
+             **self.hparams.model,
+         )
+-        self.net_d = MultiPeriodDiscriminator(self.hparams.model.use_spectral_norm)
++        # SVCFORK_MRD=1 adds a multi-resolution STFT discriminator (3 resolutions)
++        # to the same ModuleList, so MPD-only checkpoints still load key-for-key
++        # (patches/svcfork_mrd_discriminator.patch). Unset = original fork.
++        if os.environ.get("SVCFORK_MRD", "") == "1":
++            from .modules.descriminators import MultiPeriodDiscriminatorWithMRD
++            self.net_d = MultiPeriodDiscriminatorWithMRD(self.hparams.model.use_spectral_norm)
++        else:
++            self.net_d = MultiPeriodDiscriminator(self.hparams.model.use_spectral_norm)
+         self.automatic_optimization = False
+         self.learning_rate = self.hparams.train.learning_rate
+         self.optim_g = torch.optim.AdamW(

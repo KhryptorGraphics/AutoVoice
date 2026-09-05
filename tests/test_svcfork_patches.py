@@ -73,3 +73,31 @@ def test_cluster_loader_torch_load_patch_is_applied():
         "svcfork_cluster_torch_load.patch is missing - a pip upgrade likely "
         "reverted it. Reapply per patches/README.md."
     )
+
+F0 = SYNTH.parent.parent / "f0.py"
+
+
+def test_crepe_periodicity_uv_patch_is_applied():
+    """Other half of the uv contract: crepe never emits f0==0, so without this
+    patch uv is 1 on every frame and the SVCFORK_UV_CONTRACT mask is a no-op."""
+    text = F0.read_text()
+    assert "SVCFORK_CREPE_UV_THRESHOLD" in text, (
+        "svcfork_crepe_periodicity_uv.patch is missing from the installed package - "
+        "a pip upgrade likely reverted it. Reapply per patches/README.md."
+    )
+    assert "return_periodicity=True" in text
+    # env-gated: unset must keep the original crepe path so serving is unaffected
+    assert '_os.environ.get("SVCFORK_CREPE_UV_THRESHOLD"' in text
+
+DISC = SYNTH.parent / "descriminators.py"
+TRAIN = SYNTH.parent.parent / "train.py"
+
+
+def test_mrd_discriminator_patch_is_applied():
+    """The MRD discriminator (Conor's served G_197 was trained with it) lived only
+    on a rented box until 2026-09-04; this guards the rebuilt copy. Env-gated:
+    SVCFORK_MRD=1 at training time, otherwise the fork's plain MPD."""
+    text = DISC.read_text()
+    assert "class MultiPeriodDiscriminatorWithMRD" in text and "class DiscriminatorR" in text
+    assert "self.discriminators.extend(" in text, "MRD must extend the SAME ModuleList so MPD-only D checkpoints load key-for-key"
+    assert 'os.environ.get("SVCFORK_MRD"' in TRAIN.read_text()

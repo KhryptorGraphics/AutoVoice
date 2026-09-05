@@ -112,6 +112,13 @@ def _clean_env(entry: Optional[dict] = None) -> Dict[str, str]:
     env["PYTORCH_CUDA_ALLOC_CONF"] = _ALLOC_CONF
     if entry and entry.get("requires_uv_contract"):
         env["SVCFORK_UV_CONTRACT"] = "1"
+    # ``crepe_uv_threshold`` is the other half of the same contract: crepe never
+    # emits f0==0, so without it uv is 1 on every frame and the mask above is a
+    # no-op. It opts the entry into patches/svcfork_crepe_periodicity_uv.patch,
+    # zeroing f0 where crepe periodicity < threshold. Per-model for the same
+    # train/serve-match reason; unset reproduces the fork's original crepe path.
+    if entry and entry.get("crepe_uv_threshold") is not None:
+        env["SVCFORK_CREPE_UV_THRESHOLD"] = str(float(entry["crepe_uv_threshold"]))
     return env
 
 

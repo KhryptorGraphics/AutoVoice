@@ -181,6 +181,10 @@ _LINE_AIR_WEIGHT = 0.6
 
 _LINE_GAIN_MIN = 0.02
 _LINE_GAIN_MAX = 4.0
+# Lead level match bounds: symmetric +/-12 dB. The lead is a whole voice, not a
+# thin comb slice, so unlike the line floor there is no reason to allow 0.02x.
+_LEAD_GAIN_MIN = 0.25
+_LEAD_GAIN_MAX = 4.0
 
 
 def _extract_line_audios(stack: np.ndarray, sample_rate: int, lines,
@@ -1284,6 +1288,38 @@ class SingingConversionPipeline:
         return new_backing, {'mode': mode, 'lines_detected': lines_detected,
                              'lines_converted': lines_converted, 'method': method}
 
+    def _match_lead_level(self, converted, source, sr):
+        """Level-match the converted LEAD to the source vocal over the source's own
+        active spans - the same match every backing line already gets. The fork's
+        output level is whatever the checkpoint happens to emit: Conor's landed
+        within 0.2 dB of his source by luck; Brandy's came out ~4 dB hot on every
+        render ("loud"). Bounded like the line match: a ratio far from 1.0 means
+        the measurement is unreliable, not that the lead needs 20 dB.
+        ``fork_hq_match_lead_level: false`` restores the unmatched behaviour.
+        """
+        import librosa
+        self._last_lead_gain_db = 0.0
+        if not bool(self.config.get('fork_hq_match_lead_level', True)):
+            return converted
+        n = min(len(converted), len(source))
+        if n < int(1.5 * sr):
+            return converted
+        src = np.asarray(source[:n], dtype=np.float32)
+        conv = np.asarray(converted[:n], dtype=np.float32)
+        spans = librosa.effects.split(src, top_db=30)
+        if not len(spans):
+            return converted
+        ref = np.concatenate([src[s:e] for s, e in spans])
+        act = np.concatenate([conv[s:e] for s, e in spans])
+        ref_rms = float(np.sqrt(np.mean(np.square(ref, dtype=np.float64))))
+        conv_rms = float(np.sqrt(np.mean(np.square(act, dtype=np.float64))) + 1e-12)
+        if ref_rms <= 1e-9:
+            return converted
+        gain = float(np.clip(ref_rms / conv_rms, _LEAD_GAIN_MIN, _LEAD_GAIN_MAX))
+        self._last_lead_gain_db = round(20.0 * float(np.log10(gain)), 2)
+        logger.info("Lead level match %.2fx (%+.1f dB)", gain, self._last_lead_gain_db)
+        return (np.asarray(converted, dtype=np.float32) * gain).astype(np.float32)
+
     def _convert_multi_speaker(self, voc_mono, sr, target_profile_id, mm, pitch_shift,
                                convert_backing=None, preserve_speakers=None):
         """Convert the lead vocal per-speaker; keep backing vocals as original.
@@ -1473,6 +1509,7 @@ class SingingConversionPipeline:
                 mm.infer(primary_track, target_profile_id, np.zeros(256, dtype=np.float32), sr),
                 dtype=np.float32,
             )
+            converted_primary = self._match_lead_level(converted_primary, primary_track, sr)
 
             n = min(len(converted_primary), len(backing))
             if n == 0:
@@ -1574,6 +1611,7 @@ class SingingConversionPipeline:
                 mm.infer(voc_single, target_profile_id, np.zeros(256, dtype=np.float32), sr),
                 dtype=np.float32,
             )
+            converted = self._match_lead_level(converted, voc_single, sr)
 
         n = min(inst_st.shape[-1], len(converted))
         if n == 0:
@@ -1691,6 +1729,7 @@ class SingingConversionPipeline:
                 'preset': preset,
                 'pitch_shift': pitch_shift,
                 'vocal_volume': vocal_volume,
+                'lead_level_gain_db': getattr(self, '_last_lead_gain_db', 0.0),
                 'instrumental_volume': instrumental_volume,
                 'processing_time': time.time() - start_time,
                 'target_profile_id': target_profile_id,

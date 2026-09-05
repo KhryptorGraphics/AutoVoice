@@ -81,3 +81,29 @@ no `sep` kwarg). Not carried as a `.patch` file since it only reproduces what
 a normal `pip install so-vits-svc-fork` already gives on this repo's own Thor
 env - reapply by diffing against a fresh install if a from-scratch remote box
 pulls the older wheel variant again.
+
+## svcfork_crepe_periodicity_uv.patch (2026-09-04)
+
+Target: `so_vits_svc_fork/f0.py` in the `svcfork` env. Crepe never emits
+`f0 == 0`, so `interpolate_f0()` derives `uv == 1` on every frame and the
+uv-contract mask above is a no-op for crepe-trained models. With
+`SVCFORK_CREPE_UV_THRESHOLD=<float>` set, frames whose median-filtered crepe
+periodicity is below the threshold are zeroed at pre-hubert and at inference.
+Calibrated on Brandy's singing: 0.3 gives ~13.5 % unvoiced on active frames
+(harvest gives 13.4 %). Unset = original behaviour. Per-model at serving time via
+the registry key `crepe_uv_threshold` (see `svc_fork_bridge._clean_env`); must
+match how the checkpoint was trained. Apply with
+`patch <env>/site-packages/so_vits_svc_fork/f0.py < patches/svcfork_crepe_periodicity_uv.patch`.
+
+## svcfork_mrd_discriminator.patch (rebuilt 2026-09-04)
+
+Targets `so_vits_svc_fork/modules/descriminators.py` and `train.py`. Adds
+`DiscriminatorR` (UnivNet-style STFT-magnitude sub-discriminator: 5x weight-normed
+Conv2d, 32 ch) at resolutions (1024,120,600) (2048,240,1200) (512,50,240), appended
+to MultiPeriodDiscriminator's own `discriminators` ModuleList so an MPD-only
+`D_*.pth` (111 keys) loads key-for-key and only indices 6-8 start fresh.
+`train.py` builds it when `SVCFORK_MRD=1`; unset = original fork. Conor's served
+`G_197` (`svcfork_conor_fullband_20260828_mrd_uvfix`) was trained with exactly this
+(its `D_197` has 165 keys and strict-loads into the rebuilt class). The original
+patch was lost with the box; this copy was recovered from the session transcript
+and verified against `D_197`. Apply: `patch -p0` per file, or copy the two files.

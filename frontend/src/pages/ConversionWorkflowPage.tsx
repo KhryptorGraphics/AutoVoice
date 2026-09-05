@@ -280,7 +280,7 @@ export function ConversionWorkflowPage() {
   )
 
   const submissionKey = useMemo(() => {
-    if (!artistSong || userVocalFiles.length === 0) return null
+    if (!artistSong || (userVocalFiles.length === 0 && !targetProfileOverride)) return null
     return JSON.stringify({
       artist: [artistSong.name, artistSong.size, artistSong.lastModified],
       user: userVocalFiles.map((file) => [file.name, file.size, file.lastModified]),
@@ -357,7 +357,7 @@ export function ConversionWorkflowPage() {
     if (submissionKey === lastSubmissionKey) return
 
     const startWorkflow = async () => {
-      if (!artistSong || userVocalFiles.length === 0) return
+      if (!artistSong || (userVocalFiles.length === 0 && !targetProfileOverride)) return
       setSubmittingWorkflow(true)
       setWorkflowError(null)
       setConversionStatus(null)
@@ -643,7 +643,7 @@ export function ConversionWorkflowPage() {
       <div>
         <h1 className="text-3xl font-bold">Voice Conversion</h1>
         <p className="text-gray-400 mt-2">
-          Upload an artist song and your own vocal clips. AutoVoice will split the song, diarize every singer,
+          Upload an artist song and pick the voice it should be sung in (or upload clips of it). AutoVoice will split the song, diarize every singer,
           match or create profiles automatically, then hand the resolved target voice into the same granular
           training and conversion flow used elsewhere in the app.
         </p>
@@ -692,9 +692,37 @@ export function ConversionWorkflowPage() {
         </div>
 
         <div className="space-y-4">
+          <div className="bg-gray-800 rounded-lg p-6">
+            <h2 className="text-lg font-semibold">2. Your Voice</h2>
+            <p className="text-sm text-gray-400 mt-1 mb-3">
+              Pick the profile the song should be sung in. Uploading clips is optional once a profile is chosen;
+              leave it unset to match a profile from uploaded clips instead.
+            </p>
+            <select
+              value={targetProfileOverride}
+              onChange={(event) => {
+                setTargetProfileOverride(event.target.value)
+                setWorkflow(null)
+                setLastSubmissionKey(null)
+              }}
+              className="w-full p-3 bg-gray-700 rounded-lg"
+              data-testid="target-profile-select"
+            >
+              <option value="">Match automatically from uploaded clips</option>
+              {targetProfiles.map((profile) => (
+                <option key={profile.profile_id} value={profile.profile_id}>
+                  {profile.name || profile.profile_id}
+                </option>
+              ))}
+            </select>
+          </div>
           <FileDropField
-            label="2. User Vocals"
-            help="Upload one or more user vocal clips. These attach to an existing target-user profile when the match is clear, or create a new one automatically."
+            label={targetProfileOverride ? 'Optional: vocal clips' : 'Upload your vocal clips'}
+            help={
+              targetProfileOverride
+                ? 'Not required - a profile is selected above.'
+                : 'One or more clips of the target voice. They are matched to an existing target-user profile, or a new profile is created for review.'
+            }
             files={userVocalFiles}
             inputId="user-vocals-upload"
             multiple={true}
@@ -704,25 +732,6 @@ export function ConversionWorkflowPage() {
               setLastSubmissionKey(null)
             }}
           />
-          <div className="bg-gray-800 rounded-lg p-4">
-            <label className="block text-sm text-gray-400 mb-2">Optional target-user override</label>
-            <select
-              value={targetProfileOverride}
-              onChange={(event) => {
-                setTargetProfileOverride(event.target.value)
-                setWorkflow(null)
-                setLastSubmissionKey(null)
-              }}
-              className="w-full p-3 bg-gray-700 rounded-lg"
-            >
-              <option value="">Auto-match target user</option>
-              {targetProfiles.map((profile) => (
-                <option key={profile.profile_id} value={profile.profile_id}>
-                  {profile.name || profile.profile_id}
-                </option>
-              ))}
-            </select>
-          </div>
         </div>
       </div>
 

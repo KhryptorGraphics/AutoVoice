@@ -167,6 +167,38 @@ class TestUvContractFlagWiring:
             bridge.convert(np.zeros(1600, dtype=np.float32), 16000, "p1", str(data_dir))
         assert captured["env"]["SVCFORK_UV_CONTRACT"] == "1"
 
+    def test_crepe_uv_threshold_sets_env_var(self, tmp_path):
+        """The periodicity threshold is the other half of the uv contract:
+        without it crepe gives uv==1 everywhere and the mask is a no-op."""
+        data_dir = _registry_entry(tmp_path, crepe_uv_threshold=0.3)
+        captured = {}
+
+        def _run(cmd, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            import shutil
+            out = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-o"][0]
+            shutil.copy([a for a in cmd if a.endswith("in.wav")][0], out)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=_run):
+            bridge.convert(np.zeros(1600, dtype=np.float32), 16000, "p1", str(data_dir))
+        assert captured["env"]["SVCFORK_CREPE_UV_THRESHOLD"] == "0.3"
+
+    def test_crepe_uv_threshold_absent_by_default(self, tmp_path):
+        data_dir = _registry_entry(tmp_path)
+        captured = {}
+
+        def _run(cmd, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            import shutil
+            out = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-o"][0]
+            shutil.copy([a for a in cmd if a.endswith("in.wav")][0], out)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=_run):
+            bridge.convert(np.zeros(1600, dtype=np.float32), 16000, "p1", str(data_dir))
+        assert "SVCFORK_CREPE_UV_THRESHOLD" not in captured["env"]
+
     def test_other_profiles_are_unaffected(self, tmp_path):
         """Flipping one model's flag must not leak into a sibling profile's
         subprocess env within the same process."""

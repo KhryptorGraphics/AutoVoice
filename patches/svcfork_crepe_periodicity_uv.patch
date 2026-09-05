@@ -1,0 +1,48 @@
+--- /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/f0.py.orig_pre_periodicity	2026-09-04 12:03:01.597953912 -0500
++++ /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/f0.py	2026-09-04 12:04:52.441861823 -0500
+@@ -5,6 +5,7 @@
+ 
+ import numpy as np
+ import torch
++import os as _os
+ import torchcrepe
+ from cm_time import timer
+ from numpy import dtype, float32, ndarray
+@@ -163,17 +164,26 @@
+     # (T) -> (1, T)
+     audio = audio.detach()
+ 
+-    pitch: Tensor = torchcrepe.predict(
+-        audio,
+-        sampling_rate,
+-        hop_length,
+-        f0_min,
+-        f0_max,
+-        model,
+-        batch_size=hop_length * 2,
+-        device=device,
+-        pad=True,
+-    )
++    # SVCFORK_CREPE_UV_THRESHOLD: crepe never emits f0==0, so interpolate_f0()
++    # derives uv==1 on every frame and the NSF noise branch never fires (the
++    # uv-contract patch in synthesizers.py was a no-op for the same reason).
++    # When set, frames whose median-filtered crepe periodicity is below the
++    # threshold are zeroed: real unvoiced frames at pre-hubert and inference.
++    # Unset (default) = original behaviour, so serving is unaffected.
++    _uv_thr = _os.environ.get("SVCFORK_CREPE_UV_THRESHOLD", "")
++    if _uv_thr:
++        pitch, periodicity = torchcrepe.predict(
++            audio, sampling_rate, hop_length, f0_min, f0_max, model,
++            return_periodicity=True, batch_size=hop_length * 2, device=device, pad=True,
++        )
++        periodicity = torchcrepe.filter.median(periodicity, 3)
++        pitch = pitch.clone()
++        pitch[periodicity < float(_uv_thr)] = 0.0
++    else:
++        pitch = torchcrepe.predict(
++            audio, sampling_rate, hop_length, f0_min, f0_max, model,
++            batch_size=hop_length * 2, device=device, pad=True,
++        )
+ 
+     f0 = pitch.squeeze(0).cpu().float().numpy()
+     p_len = p_len or wav_numpy.shape[0] // hop_length

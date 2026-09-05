@@ -65,6 +65,7 @@ class TestPreservedKeys:
             # the cluster pair blends content vectors toward the training
             # speaker. All three are set by hand and exist nowhere else.
             "requires_uv_contract", "cluster_model_path", "cluster_infer_ratio",
+            "crepe_uv_threshold",  # pairs with requires_uv_contract; same reason
         ):
             assert key in _PRESERVED_INFERENCE_KEYS, f"{key} would be lost on retrain"
 

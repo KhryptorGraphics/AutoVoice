@@ -71,6 +71,7 @@ _PRESERVED_INFERENCE_KEYS = (
     # three are set by hand on the entry and exist nowhere else, so a retrain
     # silently reverted them and nothing said so.
     "requires_uv_contract",
+    "crepe_uv_threshold",
     "cluster_model_path",
     "cluster_infer_ratio",
 )
