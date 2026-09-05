@@ -559,19 +559,39 @@ not the 0.35 that exists. Higher width also means more of the chorus/decorrelati
 the pipeline's own comments warn about, since side is the difference of two stochastic
 conversions.
 
-Two caveats on the existing render. Its tone cannot be judged as width-only: it also used
-`-db -35`, and it measures 1.9 dB darker at 8-12k, 4.6 dB at 12-16k, walling 4.1 kHz lower
-than the served render. And the instrumental is *not* a confound on this axis — the htdemucs
-and BS-RoFormer remixes of the same render both measure **-10.9 dB** side/mid, identically.
+**Which of the two 0.35 remixes you compare against matters, and it is the instrumental.**
+Measured on vocal-silent frames only, i.e. the instrumental alone:
+
+| instrumental alone | 8-12k | 12-16k | `fmax` |
+|---|---|---|---|
+| served #5 | -20.9 | -21.6 | 22.1k |
+| `herofix-d9e90fc4` (htdemucs) | **-30.1** | **-34.7** | **17.9k** |
+| `herofix-c5e8decd` (BS-RoFormer) | -20.8 | -21.5 | 19.6k |
+
+The darkness and the 18k wall in the htdemucs remix are its *instrumental*, 9-13 dB down and
+walled 4 kHz lower, not anything about the vocal or the width. The RoFormer remix's
+instrumental matches the served render's within 0.1 dB, so **`herofix-c5e8decd` is the only
+one of the two whose tone can be compared to serving** — the htdemucs one would be heard as
+duller for reasons unrelated to width. (Side/mid is unaffected either way: both measure
+-10.9 dB.) The width-0.35 render still also used `-db -35`, so even the RoFormer remix is
+not a strict single-variable comparison.
 
 **`fork_hq_stereo_width` is a global app setting** (one value for every song and profile), and
 0.0 is the documented recipe behind "every approved OLT render" — a user-approved state, not
 an oversight. Only a listening verdict should move it.
 
-**Both fix renders predate the complaint** (09-04 11:19 and 13:22; the complaint is 09-05).
-If she already heard "ep235 + FIXES (stereo 0.35)" and still reports edges cut off, then
-width 0.35 is empirically not the fix and the spatial hypothesis is largely dead — that one
-answer is worth more than any further measurement here.
+**Width 0.0 was a later choice, not a regression.** The 0.35 renders came *first*
+(09-04 11:19 and 13:22) and the served #5 recipe with width 0.0 was built after them, at
+18:03 the same day. So something about 0.35 was rejected, or the OLT mono recipe was
+preferred for other reasons — the doc records 0.0 as the recipe behind "every approved OLT
+render".
+
+**Both 0.35 renders also predate the complaint** (09-04 vs 09-05). If they were already
+auditioned and the complaint stands, width 0.35 is empirically not the fix and the spatial
+hypothesis is largely dead. The history's user-set fields cannot answer this: `isFavorite`,
+`notes` and user `tags` are unset on both, and only one record in the entire 236-entry
+history has `isFavorite` set at all (an unrelated "One Last Time" render from 09-02), so
+those fields are not used as an audition trail here. It has to be asked.
 
 **Not the bandwidth-match filter.** `fork_hq_match_source_bandwidth` defaults on and
 low-passes the converted vocal to the source's measured wall, which made it a suspect for the

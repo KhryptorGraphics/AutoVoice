@@ -83,7 +83,11 @@ def main() -> None:
     hist = json.loads(hist_path.read_text())
     dest = data / "conversions" / job_id
     dest.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest / "mix.wav")
+    target = dest / "mix.wav"
+    # Re-registering an already-registered clip (e.g. to fix a title) passes
+    # the destination back in as --wav; copying it onto itself raises.
+    if src.resolve() != target.resolve():
+        shutil.copy2(src, target)
     # Preserve anything the user set in the GUI on this entry, the way
     # JobManager._emit_conversion_history does (job_manager.py:873-876).
     prev = hist.get(job_id, {})
