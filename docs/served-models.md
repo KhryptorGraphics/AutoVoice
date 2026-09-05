@@ -142,3 +142,75 @@ is safe and is the shipped default.
 - Verify via `GET /api/v1/profiles/<id>/adapters` after restarting — it reads the
   same cache the conversion path uses.
 - Then update this file.
+
+## Brandy (`fb17af66`) — 2026-09-04: `db_thresh: -40`, `pad_seconds: 1.0` added
+
+The entry had neither key, so inference fell back to the fork's `-db -20`, which
+gates everything quieter than -20 dB relative to peak. Measured on the real
+"Hero" vocal: converted output sat **-31 dB below the source on quiet voiced
+frames** and -24 dB in the 150 ms after phrase ends — the user heard it as "the
+voice falls off around the edges". `-35` and `-50` both restored the edges
+(+4 dB, i.e. fully); `-40` matches Conor's proven value. `pad_seconds: 1.0`
+likewise matches Conor (longer chunk crossfade).
+
+Weights unchanged (ep235). Two 2026-09-04 retrains did not measurably beat it:
+the synthetic-data run was 9-15 dB dark above 6 kHz (SeedVC clips brick-walled at
+13.1 kHz) and the real-only control was level on brightness but noisier in
+8-12 kHz. Candidates: `data/fork_models/_candidates_fb17af66_20260904/`.
+Rollback: `fb17af66-...json.pre_edgefix_20260904`.
+
+## Brandy (`fb17af66`) — 2026-09-04 evening: Conor's inference keys applied
+
+`noise_scale: 0.2`, `chunk_seconds: 30`, `max_chunk_seconds: 40` (plus the
+`pad_seconds: 1.0` / `db_thresh: -40` from the morning). The entry never had
+them, so Brandy ran at the fork defaults — `noise_scale 0.4` and **`chunk_seconds
+0.5`**, i.e. the vocal converted in half-second slices — while Conor's good
+"One Last Time" renders used 30 s chunks. Rollback: `*.pre_conorkeys_20260904`.
+
+Pipeline finding on "Hero" (job `e2711bfe`): the karaoke separator measured
+0.1 % backing energy (One Last Time: 19.5 %), so the song is handled as a solo
+via diarization; the diarizer put 25.6 s of quiet phrase tails/onsets into a
+"backing" speaker and the `multi_speaker_backing_voiced_min` gate (0.50) kept
+them unconverted at voiced 0.49 — audible as the source singer bleeding at the
+edges of the converted lead. Gate lowered to 0.45 at runtime for the re-run.
+
+## Brandy (`fb17af66`) — 2026-09-05: six new-data training levers tried, none promoted
+
+Six new phone videos (~23 min separated vocals after demucs) were tested as additional
+training data on top of the serving checkpoint (`v3 ep135`, the winner from the
+2026-09-04 candidates). Every configuration was seeded from `v3 ep135`, 5000-step budget,
+same recipe (crepe f0, `SVCFORK_UV_CONTRACT=1`, `SVCFORK_CREPE_UV_THRESHOLD=0.3`, LR 1e-4,
+batch 16), scored on the same hero20.wav render with the same scorecard (`measure2.py`:
+6-8kHz/8-12kHz band levels relative to 300-1000Hz, `fmax`, D4C aperiodicity) plus
+Resemblyzer identity against her singing centroid.
+
+| run | corpus | 6-8k dB | fmax | identity |
+|---|---|---|---|---|
+| **v3 ep135 (serving)** | — | **-13.2** | 17.9k | **0.929** |
+| st3 | full corpus + all 6 new files x3 | -23.3 | 22.1k | 0.900 |
+| st4 | same, band-limited 5 files at x1 | -17.7 | 17.9k | 0.925 |
+| st2b | 10k-step (5x) fidelity variant | -17.3 | 17.9k | 0.929 |
+| st5 | fidelity tail on st4 (full-band-only subset) | -21.5 | 14.4k | 0.911 |
+| st6 | single cleanest new file only, x3 | -18.5 | 14.9k | 0.915 |
+
+**Every configuration scored worse than v3 ep135 on 6-8k level**, and none beat it on
+identity either. Two things ruled out along the way:
+- **Not a bandwidth-extension problem**: 5 of 6 new files are band-limited (11.8-14.6 kHz);
+  the 1 full-band file (`b4_6`, 22.1 kHz) alone (st6) still lost on every axis, including
+  its own bandwidth — the model didn't even fully learn that file's ceiling at 5k steps.
+- **Not a "need more fidelity steps" problem**: st2b (10k steps) and st5 (fidelity tail
+  on the full-band-only subset) both underperformed the shorter runs. The "full-band"
+  subset in this corpus is ~60% speech by duration, so a fidelity tail re-anchors toward
+  *speech* spectra, not singing — the tail direction was wrong for this corpus, not just
+  under-trained.
+
+**Conclusion**: `v3 ep135` sits at a local optimum for this speaker embedding + decoder
+combo on this corpus at this recipe. Adding data, in any ratio or subset tried, perturbs
+the gradient distribution and the 5k-step budget isn't enough to re-settle past it.
+Getting a strictly-better model needs a recipe change (more steps to re-settle, LR
+warmup, curriculum ordering, or per-sample loss weighting) rather than more data at
+the current settings — tracked as a follow-up issue.
+
+No registry change. Candidate checkpoints (not served) under
+`data/fork_models/_candidates_fb17af66_20260904/{st3_b4,st4_b4x1,st6_b46only}/` plus
+the original two-stage run in `two_stage_band/`.
