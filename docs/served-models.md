@@ -324,6 +324,103 @@ signal — and `v3 ep135` was itself *selected* as the best of a noisy per-epoch
 some regression toward the mean is expected in any continuation from it. Nobody has
 listened to any render.
 
+### Noise floor and replication (2026-09-05, later session)
+
+The caveats above were addressed directly: every retained intermediate checkpoint of the
+two no-fresh-data 2x2 arms was rendered on hero20 and scored on the same basis, and the
+headline ordering was re-rendered on three clips it had never been measured on.
+
+**A1 — ctl (LR 1e-4, no fresh data) per-epoch trajectory, 11 checkpoints:**
+
+| epoch | 6-8k | 8-12k | fmax | aper 2-6k | aper 6-12k | identity |
+|---|---|---|---|---|---|---|
+| seed (G_135) | -13.2 | -32.2 | 17.9k | 0.664 | 0.835 | 0.929 |
+| ep14 | -13.7 | -31.7 | 17.9k | 0.673 | 0.836 | 0.917 |
+| ep28 | -13.3 | -33.1 | 15.0k | 0.677 | 0.832 | 0.913 |
+| ep41 | -14.1 | -33.3 | 17.9k | 0.636 | 0.818 | 0.921 |
+| ep55 | -15.4 | -33.1 | 15.2k | 0.649 | 0.813 | 0.923 |
+| ep69 | -16.8 | -35.5 | 14.9k | 0.612 | 0.810 | 0.923 |
+| ep82 | -13.6 | -31.3 | 15.2k | 0.678 | 0.830 | 0.922 |
+| ep96 | -13.8 | -32.0 | 16.9k | 0.658 | 0.822 | 0.922 |
+| ep109 | -16.1 | -33.5 | 14.9k | 0.612 | 0.800 | 0.924 |
+| ep123 | -15.2 | -33.3 | 14.5k | 0.637 | 0.810 | 0.926 |
+| ep137 | -13.6 | -32.9 | 14.6k | 0.650 | 0.822 | 0.920 |
+| ep143 | -15.6 | -34.9 | 14.6k | 0.607 | 0.806 | 0.925 |
+
+Shape: **oscillation, not early shock and not monotonic drift.** 6-8k swings between
+-13.3 and -16.8 with no trend; ep14 sits at -13.7, essentially the seed's -13.2, so the
+loss is *not* front-loaded — a warmup schedule has nothing to absorb, and warmup was
+**not tested** (its trigger condition failed). Adjacent retained epochs swing 6-8k by up
+to **3.2 dB** (mean 1.4; 8-12k up to 4.2, mean 1.3). `fmax` flickers between two basins
+(14.5-15.2k vs 16.9-17.9k) from epoch to epoch with no trend. The endpoint the 2x2
+happened to land on (ep143) is a simultaneous trough on 6-8k, fmax, and both aperiodicity
+bands.
+
+**A2 — lowlr (LR 2e-5, no fresh data), 8 retained checkpoints:**
+
+| epoch | 6-8k | 8-12k | fmax | aper 2-6k | aper 6-12k | identity |
+|---|---|---|---|---|---|---|
+| ep55 | -14.1 | -33.3 | 17.9k | 0.671 | 0.829 | 0.917 |
+| ep69 | -14.1 | -33.0 | 17.7k | 0.657 | 0.822 | 0.929 |
+| ep82 | -14.8 | -32.9 | 16.9k | 0.641 | 0.813 | 0.924 |
+| ep96 | -14.4 | -32.7 | 17.9k | 0.658 | 0.823 | 0.929 |
+| ep109 | -13.8 | -32.1 | 17.9k | 0.659 | 0.829 | 0.921 |
+| ep123 | -14.6 | -32.5 | 15.2k | 0.648 | 0.817 | 0.926 |
+| ep137 | -13.5 | -31.6 | 17.9k | 0.673 | 0.835 | 0.914 |
+| ep143 | -14.5 | -32.7 | 15.0k | 0.656 | 0.820 | 0.918 |
+
+At 2e-5 the same oscillation exists but is 3x tighter: adjacent swings <= **1.1 dB**
+6-8k (mean 0.7), <= 1.1 dB 8-12k (mean 0.5), fmax >= 17.7k in 5 of 8 epochs (vs 2 of 11
+at 1e-4). The LR-1e-4 arm's extra motion, not a systematic LR penalty, is what the 2x2's
+single endpoint measured.
+
+**The noise floor, stated.** Adjacent retained epochs of the *same run* swing 6-8k by up
+to 3.2 dB (mean 1.4 dB) at LR 1e-4 and up to 1.1 dB (mean 0.7 dB) at 2e-5; a re-render of
+the identical G_143 differs by 0.1-0.5 dB. **Deltas under ~1.5 dB between single
+checkpoints are noise at either LR**, including across arms. Consequently the 2x2's
+"1.5 dB LR effect" (ctl -15.5 vs lowlr -14.0) is **endpoint luck, not signal**: the two
+full trajectories average -14.65 (ctl) vs -14.25 (lowlr) — 0.4 dB apart, inside noise.
+Both arms' *means* sit ~1 dB below the seed's -13.2, so a small real continued-training
+cost may exist but no LR conclusion survives the noise floor.
+
+**A3 — replication on three clips the study never measured** (20s excerpts: hero
+source resampled 44.1k mono, conor vocal, full-song 60-80s; five checkpoints each):
+
+| 6-8k (dB) | seed | ctl | lowlr | st4 | st4lr |
+|---|---|---|---|---|---|
+| clip_hero | -11.6 | -13.0 | -12.3 | -14.3 | -17.4 |
+| clip_conor | -17.3 | -21.2 | -20.9 | -27.0 | -28.7 |
+| clip_fullsong | -9.4 | -11.0 | -10.2 | -10.1 | -10.4 |
+
+| fmax | seed | ctl | lowlr | st4 | st4lr |
+|---|---|---|---|---|---|
+| clip_hero | 22.1k | 15.1k | 14.6k | 17.9k | 14.7k |
+| clip_conor | 16.7k | 16.7k | 16.7k | 16.7k | 16.7k |
+| clip_fullsong | 22.1k | 18.0k | 18.0k | 18.0k | 22.1k |
+
+Identity (vs singing centroid) stays 0.79-0.93 across all 15 renders; aperiodicity
+follows 6-8k as before. Readouts:
+- **`ctl < lowlr < seed` on 6-8k held on all three clips** — but every inter-arm delta
+  is 0.3-0.8 dB, inside the noise floor above. Direction replicates; the 2x2's *sizes*
+  do not.
+- **The fresh-data 6-8k cost is clip-dependent, not universal.** st4lr-lowlr = -5.1 dB
+  on clip_hero, ~-7 dB on clip_conor, but **+0.2/-0.2 dB on clip_fullsong** (st4 -10.1
+  actually beats ctl -11.0 there). The "this new material costs 4.2 dB" headline is an
+  average over clips that respond differently; on some material it costs nothing.
+- **`fmax` does not replicate as a checkpoint property.** On clip_hero the seed holds
+  22.1k while st4lr falls to 14.7k; on clip_conor all five arms are pinned at 16.7k;
+  on clip_fullsong every arm sits at 18k+. A large share of what the 2x2 attributed to
+  training arms is controlled by the *source clip's own spectrum* (16.7k = conor clip's
+  apparent ceiling; 22.1k = hero/fullsong material). The corpus-volume trend in the 2x2
+  stands only *on hero20*; treat any single-clip fmax comparison across clips as
+  uninterpretable.
+
+Revised conclusion: the 2x2's per-arm magnitudes were amplified by endpoint luck and
+single-clip fmax aliasing, but its direction survives — the seed remains the best
+overall; `lowlr` remains the closest challenger; the fresh-data cost is real but
+clip-dependent. The warmup lever is closed (trigger failed: no early shock). Nobody has
+listened to any render.
+
 **No registry change — live model is still ep235, exactly as it was at the start of
 this session.** The `v3 ep135` promote/rollback from 09-04 was not revisited or
 re-decided today; whether to promote anything from today's candidates (or `G_112`
