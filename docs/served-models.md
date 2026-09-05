@@ -517,7 +517,10 @@ between-phrase and correlates +0.82 with her envelope (8-12k: +23.1 dB, +0.85). 
 the same top-end deficit the 2026-09-05 programme above was circling with its 6-8k/`fmax`
 metrics.
 
-**Loss 1b — the stereo halo, removed by design.** The served lead is **1 channel**:
+**Loss 1b — the stereo halo, removed by a live setting.** `fork_hq_stereo_width` is
+explicitly **`0.0`** in `data/app_state/app_settings.json`, and the knob is a documented
+runtime setting accepting 0.0-1.0 (`runtime_contract.py:86`, `api_runtime.py:482`). So this
+is configuration, not a model limit. The served lead is **1 channel**:
 pipeline #5's own note records "mono centred vocal (stereo width 0.0 like every approved OLT
 render)". Mariah's own vocal stem is 2 channels carrying side content at **-15.7 dB**
 relative to centre, and at the mix level the delivered render has **-13.7 dB** side/mid
@@ -525,6 +528,30 @@ against the original's **-11.9 dB**. So everything spatially *around* her voice 
 before the metrics above ever run — every one of them sums to mono first, which is why none
 could see it. This is present in every approved render by construction, which fits "the
 *best* conversion still has it".
+
+**A width-0.35 render of these exact weights already exists** — `herofix-d9e90fc4`,
+"HERO FULL SONG - ep235 + FIXES (edges kept, stereo 0.35)", whose own note says it was built
+"for your complaints" and asks for a comparison against the serving render. The pipeline's
+widening is real model decorrelation, not a pseudo-stereo trick: L and R are converted
+**separately** and their difference becomes side, scaled by `stereo_width`
+(`singing_conversion_pipeline.py:1648-1676`). Measured against the served render:
+
+| | side/mid | 8-12k | 12-16k | `fmax` |
+|---|---|---|---|---|
+| ORIGINAL Mariah mix | -11.9 | -21.8 | -24.2 | 20.0k |
+| served #5 (width 0.0) | -13.7 | -25.7 | -27.4 | 22.1k |
+| ep235 + FIXES (width 0.35) | **-10.9** | -27.4 | -31.4 | 18.0k |
+
+Width 0.35 overshoots the original's side/mid slightly and is darker up top (that render also
+used `-db -35` and a different instrumental, so width is not its only difference). The point
+stands: **the spatial halo is one setting away**, and a prior session already shipped a render
+with it.
+
+**Not the bandwidth-match filter.** `fork_hq_match_source_bandwidth` defaults on and
+low-passes the converted vocal to the source's measured wall, which made it a suspect for the
+`fmax` gap — but `_detect_bandwidth_hz` on this material returns **20000 Hz**, above the
+render's own rolloff, so it is inert here. The 17.9-18k ceiling is the decoder, not this
+filter.
 
 **Which of these her words name is not yet established.** "Edges cut off around her
 converted voice" fits Loss 1 (presence/air) and Loss 1b (spatial halo) equally well on
@@ -608,12 +635,13 @@ Loss 1 is the project's long-running brightness thread and interacts with the
 GUI History tab. Nothing here changes the model or the registry; the restorations are the
 delivered mix plus a measured delta, so only the tested variable differs.
 
-- Tagged **`edges-ab`**, 40-60 s, full mixes: original Mariah / served as delivered /
-  **+air** (lead EQ-matched to the source spectrum above 3 kHz, +8 dB cap, never above the
-  source's own 20.0k bandwidth: 8-12k -25.7 -> -23.1, 12-16k -27.4 -> -25.9) / **+stereo
-  halo** (decorrelated side reaching the original's -11.9 dB side/mid) / **+both**. Whichever
-  of these stops sounding cut off identifies the loss, and both deltas are pipeline
-  post-stages — no retraining involved.
+- Tagged **`edges-ab`**, 40-60 s, full mixes, six entries: original Mariah / served as
+  delivered / **+air** (offline EQ match above 3 kHz, +8 dB cap, 8-12k -25.7 -> -23.1) /
+  **+synthesized halo** (labelled an approximation — it is *not* how the pipeline makes
+  width) / **+both** / **real pipeline width 0.35** on the same ep235 weights. The last one
+  is the only spatially-restored variant that is shippable as-is, because it came from the
+  pipeline's own code path; the offline ones exist to isolate the variable. No retraining is
+  involved in any of them.
 - Tagged **`highreg`**, 168-188 s, vocals only: source / served ep235 / MRD ep41, for Loss 2.
 
 Registration helper: `scripts/register_render.py` (argparse, `DATA_DIR`-aware, uuid5-keyed so
