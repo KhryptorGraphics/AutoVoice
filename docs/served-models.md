@@ -208,9 +208,11 @@ This investigation spans two batches of new source material, six training runs t
   band-limited files at x1; st5 = fidelity tail on st4; st6 = the single cleanest new
   file only, x3.
 
-Every run was seeded from the `v3 ep135` checkpoint — directly for st3-st6, or via the
-intermediate `st1` checkpoint for st2/st2b (see above) — same recipe throughout (crepe f0,
-`SVCFORK_UV_CONTRACT=1`, `SVCFORK_CREPE_UV_THRESHOLD=0.3`, LR 1e-4, batch 16), scored on
+Every run was seeded from the `v3 ep135` checkpoint — directly for st3/st4/st6
+(5000-step budget each, live-confirmed in their training logs), st5 as a shorter tail
+on st4's output (not a fresh 5000-step run), or via the intermediate `st1` checkpoint
+for st2/st2b (see above) — same recipe throughout (crepe f0, `SVCFORK_UV_CONTRACT=1`,
+`SVCFORK_CREPE_UV_THRESHOLD=0.3`, LR 1e-4, batch 16), scored on
 the same hero20.wav render with the same scorecard (`measure2.py`: 6-8kHz/8-12kHz band
 levels relative to 300-1000Hz, `fmax`, D4C aperiodicity) plus Resemblyzer identity
 against her singing centroid. **This scorecard is metric-only — no one listened to any
