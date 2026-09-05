@@ -174,27 +174,43 @@ via diarization; the diarizer put 25.6 s of quiet phrase tails/onsets into a
 them unconverted at voiced 0.49 — audible as the source singer bleeding at the
 edges of the converted lead. Gate lowered to 0.45 at runtime for the re-run.
 
-## Brandy (`fb17af66`) — 2026-09-05: six new-data training levers tried, none promoted
+## Brandy (`fb17af66`) — 2026-09-05: six new-data training levers tried against the
+best 09-04 candidate; **live registry unchanged**
+
+**What is actually serving right now** (verified via
+`GET /api/v1/profiles/fb17af66-.../adapters` and the registry file, not assumed):
+`trained_epochs: 235`, `model_path: fb17af66-...-svcfork/G.pth` — the original
+pre-v3 checkpoint. Registry mtime 2026-09-04 20:06, unchanged since. Full history from
+the backup files beside the registry entry: `v3 ep135` *was* promoted at 14:30 that day
+(`.v3_ep135_serving_snapshot`), then superseded by the MRD-discriminator experiments
+that evening, which were themselves rolled back by 20:06 — landing back on this same
+ep235 checkpoint. `v3 ep135` has not been re-promoted since. **Do not read "v3 ep135"
+below as the live model** — it is the best-scoring *candidate* from 09-04
+(`_candidates_fb17af66_20260904/v3_uv_bright/G_135.pth`), used here only as the seed
+and comparison baseline because it was the strongest known checkpoint at hand.
 
 Six new phone videos (~23 min separated vocals after demucs) were tested as additional
-training data on top of the serving checkpoint (`v3 ep135`, the winner from the
-2026-09-04 candidates). Every configuration was seeded from `v3 ep135`, 5000-step budget,
-same recipe (crepe f0, `SVCFORK_UV_CONTRACT=1`, `SVCFORK_CREPE_UV_THRESHOLD=0.3`, LR 1e-4,
-batch 16), scored on the same hero20.wav render with the same scorecard (`measure2.py`:
-6-8kHz/8-12kHz band levels relative to 300-1000Hz, `fmax`, D4C aperiodicity) plus
-Resemblyzer identity against her singing centroid.
+training data on top of that `v3 ep135` candidate. Every configuration was seeded from
+it, 5000-step budget, same recipe (crepe f0, `SVCFORK_UV_CONTRACT=1`,
+`SVCFORK_CREPE_UV_THRESHOLD=0.3`, LR 1e-4, batch 16), scored on the same hero20.wav
+render with the same scorecard (`measure2.py`: 6-8kHz/8-12kHz band levels relative to
+300-1000Hz, `fmax`, D4C aperiodicity) plus Resemblyzer identity against her singing
+centroid. **This scorecard is metric-only — no one listened to any of these renders.**
+Treat every number below as a screening signal, not a substitute for hearing them; the
+renders are on disk (see below) if a future session wants to A/B by ear before acting
+on this table.
 
 | run | corpus | 6-8k dB | fmax | identity |
 |---|---|---|---|---|
-| **v3 ep135 (serving)** | — | **-13.2** | 17.9k | **0.929** |
+| **v3 ep135 (best candidate, NOT live)** | — | **-13.2** | 17.9k | **0.929** |
 | st3 | full corpus + all 6 new files x3 | -23.3 | 22.1k | 0.900 |
 | st4 | same, band-limited 5 files at x1 | -17.7 | 17.9k | 0.925 |
 | st2b | 10k-step (5x) fidelity variant | -17.3 | 17.9k | 0.929 |
 | st5 | fidelity tail on st4 (full-band-only subset) | -21.5 | 14.4k | 0.911 |
 | st6 | single cleanest new file only, x3 | -18.5 | 14.9k | 0.915 |
 
-**Every configuration scored worse than v3 ep135 on 6-8k level**, and none beat it on
-identity either. Two things ruled out along the way:
+**Every configuration scored worse than the v3 ep135 candidate on 6-8k level**, and none
+beat it on identity either. Two things ruled out along the way:
 - **Not a bandwidth-extension problem**: 5 of 6 new files are band-limited (11.8-14.6 kHz);
   the 1 full-band file (`b4_6`, 22.1 kHz) alone (st6) still lost on every axis, including
   its own bandwidth — the model didn't even fully learn that file's ceiling at 5k steps.
@@ -204,13 +220,16 @@ identity either. Two things ruled out along the way:
   *speech* spectra, not singing — the tail direction was wrong for this corpus, not just
   under-trained.
 
-**Conclusion**: `v3 ep135` sits at a local optimum for this speaker embedding + decoder
-combo on this corpus at this recipe. Adding data, in any ratio or subset tried, perturbs
-the gradient distribution and the 5k-step budget isn't enough to re-settle past it.
-Getting a strictly-better model needs a recipe change (more steps to re-settle, LR
-warmup, curriculum ordering, or per-sample loss weighting) rather than more data at
-the current settings — tracked as a follow-up issue.
+**Conclusion**: the `v3 ep135` candidate sits at a local optimum for this speaker
+embedding + decoder combo on this corpus at this recipe. Adding data, in any ratio or
+subset tried, perturbs the gradient distribution and the 5k-step budget isn't enough to
+re-settle past it. Getting a strictly-better model needs a recipe change (more steps to
+re-settle, LR warmup, curriculum ordering, or per-sample loss weighting) rather than more
+data at the current settings — tracked as a follow-up issue (`AV-6sxy`).
 
-No registry change. Candidate checkpoints (not served) under
-`data/fork_models/_candidates_fb17af66_20260904/{st3_b4,st4_b4x1,st6_b46only}/` plus
-the original two-stage run in `two_stage_band/`.
+**No registry change — live model is still ep235, exactly as it was at the start of this
+session.** The `v3 ep135` promote/rollback from 09-04 was not revisited or re-decided
+today; whether to promote it (or anything from today's candidates) over the current
+ep235 is still an open question this session did not touch. Candidate checkpoints (not
+served) under `data/fork_models/_candidates_fb17af66_20260904/{v3_uv_bright,st3_b4,
+st4_b4x1,st6_b46only,two_stage_band}/`.
