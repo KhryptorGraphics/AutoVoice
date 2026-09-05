@@ -194,28 +194,39 @@ because it was independently confirmed best. Nothing in today's session was meas
 against `G_112`, nor against the live ep235 — every comparison below is new experiments
 vs. one render of `v3 ep135`, nothing more.
 
-Six new phone videos (~23 min separated vocals after demucs) were tested as additional
-training data on top of that `v3 ep135` checkpoint. Every configuration was seeded from
-it, 5000-step budget, same recipe (crepe f0, `SVCFORK_UV_CONTRACT=1`,
-`SVCFORK_CREPE_UV_THRESHOLD=0.3`, LR 1e-4, batch 16), scored on the same hero20.wav
-render with the same scorecard (`measure2.py`: 6-8kHz/8-12kHz band levels relative to
-300-1000Hz, `fmax`, D4C aperiodicity) plus Resemblyzer identity against her singing
-centroid. **This scorecard is metric-only — no one listened to any of these renders.**
-Treat every number below as a screening signal, not a substitute for hearing them; all
-7 renders (the `v3 ep135` baseline plus the six challengers) are saved at
-`data/fork_models/_candidates_fb17af66_20260904/renders_hero20/` for a future session
-to A/B by ear before acting on this table.
+This investigation spans two batches of new source material, six training runs total
+(matching every render saved in `renders_hero20/`):
+- **st2 / st2b**: an earlier batch of 4 files (3 band-limited + 1 full-band, found and
+  separated in a prior session) folded into the existing corpus. st2 = 2000-step
+  fidelity tail; st2b = the same corpus at 10000 steps (5x), tried after st2
+  underperformed.
+- **st3 / st4 / st5 / st6**: 6 new phone videos (~23 min separated vocals after demucs,
+  the batch explicitly requested this session) added on top of the st2 corpus (so they
+  carry the earlier 4-file batch too). st3 = full corpus, new files x3; st4 = same,
+  band-limited files at x1; st5 = fidelity tail on st4; st6 = the single cleanest new
+  file only, x3.
+
+Every run was seeded from the `v3 ep135` checkpoint, same recipe throughout (crepe f0,
+`SVCFORK_UV_CONTRACT=1`, `SVCFORK_CREPE_UV_THRESHOLD=0.3`, LR 1e-4, batch 16), scored on
+the same hero20.wav render with the same scorecard (`measure2.py`: 6-8kHz/8-12kHz band
+levels relative to 300-1000Hz, `fmax`, D4C aperiodicity) plus Resemblyzer identity
+against her singing centroid. **This scorecard is metric-only — no one listened to any
+of these renders.** Treat every number below as a screening signal, not a substitute
+for hearing them; all 7 renders (the `v3 ep135` baseline plus the six runs) are saved at
+`data/fork_models/_candidates_fb17af66_20260904/renders_hero20/` for a future session to
+A/B by ear before acting on this table.
 
 | run | corpus | 6-8k dB | fmax | identity |
 |---|---|---|---|---|
 | **v3 ep135 (seed/baseline, NOT live)** | — | **-13.2** | 17.9k | **0.929** |
-| st3 | full corpus + all 6 new files x3 | -23.3 | 22.1k | 0.900 |
-| st4 | same, band-limited 5 files at x1 | -17.7 | 17.9k | 0.925 |
-| st2b | 10k-step (5x) fidelity variant | -17.3 | 17.9k | 0.929 |
+| st2 | existing corpus + earlier 4-file batch, 2k-step fidelity tail | -17.2 | 15.5k | 0.923 |
+| st2b | same corpus, 10k-step fidelity tail | -17.3 | 17.9k | 0.929 |
+| st3 | + 6 new videos x3 | -23.3 | 22.1k | 0.900 |
+| st4 | same, 5 band-limited new videos at x1 | -17.7 | 17.9k | 0.925 |
 | st5 | fidelity tail on st4 (full-band-only subset) | -21.5 | 14.4k | 0.911 |
-| st6 | single cleanest new file only, x3 | -18.5 | 14.9k | 0.915 |
+| st6 | single cleanest new video only, x3 | -18.5 | 14.9k | 0.915 |
 
-**Every configuration scored worse than the v3 ep135 candidate on 6-8k level**, and none
+**Every configuration scored worse than the `v3 ep135` seed/baseline on 6-8k level**, and none
 beat it on identity either. Two things ruled out along the way:
 - **Not a bandwidth-extension problem**: 5 of 6 new files are band-limited (11.8-14.6 kHz);
   the 1 full-band file (`b4_6`, 22.1 kHz) alone (st6) still lost on every axis, including
@@ -226,7 +237,7 @@ beat it on identity either. Two things ruled out along the way:
   *speech* spectra, not singing — the tail direction was wrong for this corpus, not just
   under-trained.
 
-**Conclusion**: the `v3 ep135` candidate sits at a local optimum for this speaker
+**Conclusion**: the `v3 ep135` seed/baseline sits at a local optimum for this speaker
 embedding + decoder combo on this corpus at this recipe. Adding data, in any ratio or
 subset tried, perturbs the gradient distribution and the 5k-step budget isn't enough to
 re-settle past it. Getting a strictly-better model needs a recipe change (more steps to
