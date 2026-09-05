@@ -26,17 +26,29 @@ def _fake_train_dir(tmp_path):
 def _patch_pipeline(monkeypatch):
     """Mock the fork subprocess steps; pre-config writes config.json, train
     writes a final checkpoint (both consumed by train_svc_fork)."""
-    calls = []
+    class _Calls(list):
+        """list, so the existing callers are untouched, plus `.env` holding the
+        per-step uv contract train_svc_fork passed down."""
+        env: dict = {}
 
-    def fake_step(cmd, cwd=None, cancel_event=None, timeout=None):
+    calls = _Calls()
+    env_seen = {}
+    calls.env = env_seen
+
+    def fake_step(cmd, cwd=None, cancel_event=None, timeout=None, env_extra=None):
         sub = cmd[1]
+        # env_extra carries the per-model uv contract the retrain will be
+        # served with; recorded so tests can assert training ran under it.
         calls.append(sub)
+        env_seen[sub] = dict(env_extra or {})
         if sub == "pre-config":
             cfg = Path(cwd) / "configs" / "44k"
             cfg.mkdir(parents=True, exist_ok=True)
             (cfg / "config.json").write_text('{"train": {}}')
 
-    def fake_train(cmd, cwd, epochs, cancel_event=None, progress_cb=None):
+    def fake_train(cmd, cwd, epochs, cancel_event=None, progress_cb=None,
+                   env_extra=None):
+        env_seen['train'] = dict(env_extra or {})
         logs = Path(cwd) / "logs" / "44k"
         logs.mkdir(parents=True, exist_ok=True)
         (logs / "G_0.pth").write_bytes(b"base")
@@ -96,7 +108,8 @@ def test_train_svc_fork_no_checkpoint_raises(tmp_path, monkeypatch):
     _patch_pipeline(monkeypatch)
     # train that writes only the base checkpoint -> no trained model
     monkeypatch.setattr(fork, "_run_train",
-                        lambda cmd, cwd, epochs, cancel_event=None, progress_cb=None:
+                        lambda cmd, cwd, epochs, cancel_event=None, progress_cb=None,
+                               env_extra=None:
                         (Path(cwd) / "logs" / "44k").mkdir(parents=True, exist_ok=True))
     train_dir = _fake_train_dir(tmp_path)
     with pytest.raises(fork.ForkTrainingError, match="no checkpoint"):
@@ -167,3 +180,48 @@ def test_run_fork_training_cancel_marks_cancelled(monkeypatch, tmp_path):
     job.cancel.assert_called_once()
     mgr._emit_cancelled_event.assert_called_once()
     job.fail.assert_not_called()
+
+def test_training_runs_under_the_served_uv_contract(tmp_path, monkeypatch):
+    """End-to-end: a registry entry carrying the uv contract must reach the
+    training subprocesses, not just be preserved onto the new entry.
+
+    Without this the retrain trains with crepe's uv==1 and is then served with
+    the contract on - the mismatch the keys exist to prevent, inverted.
+    """
+    import json
+    from auto_voice.training import svc_fork_trainer as fork
+
+    calls = _patch_pipeline(monkeypatch)
+    train_dir = _fake_train_dir(tmp_path)
+    data_dir = tmp_path / "data"
+    (data_dir / "fork_models").mkdir(parents=True)
+    (data_dir / "fork_models" / "p1.json").write_text(json.dumps({
+        "profile_id": "p1", "engine": "so-vits-svc-fork", "speaker": "spk",
+        "model_path": "x", "config_path": "y",
+        "requires_uv_contract": True, "crepe_uv_threshold": 0.3,
+    }))
+
+    fork.train_svc_fork(str(train_dir), "p1", "spk", epochs=20, data_dir=str(data_dir),
+                        workspace_root=str(tmp_path / "ws"))
+
+    for stage in ("pre-hubert", "train"):
+        env = calls.env.get(stage, {})
+        assert env.get("SVCFORK_UV_CONTRACT") == "1", f"{stage} ran without the uv contract"
+        assert env.get("SVCFORK_CREPE_UV_THRESHOLD") == "0.3", f"{stage} ran without the threshold"
+
+
+def test_a_plain_voice_trains_with_no_contract(tmp_path, monkeypatch):
+    """The contract must come from the registry entry only - never inherited."""
+    from auto_voice.training import svc_fork_trainer as fork
+
+    calls = _patch_pipeline(monkeypatch)
+    train_dir = _fake_train_dir(tmp_path)
+    data_dir = tmp_path / "data"
+    (data_dir / "fork_models").mkdir(parents=True)
+
+    fork.train_svc_fork(str(train_dir), "p2", "spk", epochs=20, data_dir=str(data_dir),
+                        workspace_root=str(tmp_path / "ws"))
+
+    for stage in ("pre-hubert", "train"):
+        assert calls.env.get(stage, {}) == {}, f"{stage} picked up a contract it was not given"
+
