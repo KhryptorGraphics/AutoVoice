@@ -208,9 +208,12 @@ def test_config_options_advertises_architectures(client):
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["defaults"]["architecture"] == "diffusion_mel"
-    assert data["enums"]["architecture"] == ["diffusion_mel", "mel_gan", "svc_fork"]
+    # 'como' is the legacy L1-regression CoMoSVC decoder, still reachable from
+    # training/job_manager and surfaced in the UI with its own description - it
+    # was added to the enum without updating this expectation.
+    assert data["enums"]["architecture"] == ["como", "diffusion_mel", "mel_gan", "svc_fork"]
     ids = {arch["id"] for arch in data["architectures"]}
-    assert ids == {"diffusion_mel", "mel_gan", "svc_fork"}
+    assert ids == {"como", "diffusion_mel", "mel_gan", "svc_fork"}
 
 
 def test_create_training_job_accepts_svc_fork_architecture(client, app, monkeypatch):
