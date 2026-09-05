@@ -482,3 +482,101 @@ by construction — never train from them).
 as are `renders_hero20/` (all 10 A/B renders) and the `RECIPE_FINDINGS_20260905.md`
 summary beside them. Nothing in that directory survives a fresh clone; this file and
 `AV-6sxy` are the durable record.
+
+## Brandy (`fb17af66`) — 2026-09-05 late: first listen. `db_thresh: -40` → `-60` (LIVE CHANGE)
+
+**The first time anybody listened to a render.** Every entry above is metric-only, with a
+standing caveat saying so. The listen reported two defects on the best Brandy conversion of
+Mariah's "Hero": the voice's **quiet edges cut off**, and dropouts that are **worst in her
+highest registers**. Both reproduced and measured; they have different causes and only one
+is fixable in the serving recipe.
+
+### Defect 1 — quiet edges cut off. Cause: the `-db` split threshold. FIXED.
+
+`-db` is a silence threshold in **absolute dBFS**: the fork splits the input on silence and
+leaves sub-threshold pieces unconverted. Level-transfer curve on hero20 (frame levels
+self-normalised to each file's p95) showed the render tracking the source within ±3 dB
+everywhere — then falling off a cliff:
+
+| source frame level | render level | delta |
+|---|---|---|
+| −30…−24 dB | −24.0 | +2.8 |
+| −40…−30 dB | −33.2 | +2.0 |
+| −50…−40 dB | **−140 (digital silence)** | **−94** |
+| −60…−50 dB | **−142 (digital silence)** | **−87** |
+
+In absolute terms the zeroed material sits at **−54 to −64 dBFS** — breath tails and note
+decays just above the separated stem's own floor (source p2 = −59 dBFS). The audible defect
+is the **hard discontinuity to exact zero**, not the level. Identical cliff in `ctl`, `seed`
+and `st3`, so it is the render flag, not the checkpoint.
+
+| variant | zeroed edge frames (hero20 / high clip) | silence bleed |
+|---|---|---|
+| `-db -40` (old) | 26 / 21 | −54.3 dBFS |
+| **`-db -60` (applied)** | **0 / 0** | −49.8 dBFS |
+| `-db -200` (gate off) | 0 / 0 | −48.6 dBFS — **rejected** |
+
+Fully disabling the gate also works but bleeds model noise into true silences (−40 dB
+relative on hero20, −29 dB on the high clip). `-60` keeps silence gated while converting
+everything down to the stem floor. **`db_thresh` is now `-60` in
+`data/fork_models/fb17af66-8415-4ffe-81b3-600efe75b6d7.json`** (live). Rollback:
+`cp data/fork_models/fb17af66-…json.pre_dbthresh60_20260905 data/fork_models/fb17af66-…json`.
+`trained_epochs` still 235 — the checkpoint was not touched.
+
+### Defect 2 — high-register dropout. Cause: zero training coverage. NOT FIXED, `AV-41e4`.
+
+Brandy's corpus simply does not contain the notes Mariah sings:
+
+| | Brandy training (singing, n=168,079 frames) | Hero source |
+|---|---|---|
+| median F0 | 292 Hz | 384 Hz |
+| p95 | 414 Hz | 982 Hz (high window) |
+| max | **844 Hz** | **1031 Hz** |
+| frames ≥ 700 Hz | **0.00 %** | present |
+
+Loud-frame-only render-vs-source level by source F0 (gate excluded as a confound): +0.6 dB
+at 200-300 Hz, +2.6 at 300-400, −4.6 at 500-600, −4.7 at 600-800, **−5.0 at 800-1036**. A
+monotonic ~5 dB duck starting exactly where corpus coverage ends.
+
+Ruled out by measurement, not argument:
+- **Not the crepe UV threshold.** `SVCFORK_CREPE_UV_THRESHOLD=0.3` zeroes pitch for 15.7%
+  of hero20 frames, so it was the prime suspect — but re-rendering at UV 0.1 and with UV
+  unset gave −4.9 dB, no better than the −4.2 dB of the gate fix alone. Crepe periodicity
+  in the 800-1100 Hz bin is 0.717 with only 3.9% below threshold.
+- **Not the `f0_max` ceiling.** `f0.py` hardcodes 1100 Hz; her top note is 1031 Hz, so
+  nothing clamps. No patch needed (it *would* matter for whistle-register sources).
+- **No checkpoint escapes it — measured across all ten arms**, not asserted. Same clip
+  (hero20), same basis, render-minus-source by source F0, loud frames only:
+
+| arm | 200-300 | 300-400 | 400-500 | 500-600 | 600-800 | 800-1100 |
+|---|---|---|---|---|---|---|
+| seed v3ep135 | +0.6 | +2.6 | −1.6 | −4.6 | −4.7 | −5.0 |
+| ctl ep143 | −0.8 | +1.8 | −0.9 | −4.1 | −2.6 | −1.8 |
+| lowlr ep143 | −0.4 | +1.7 | −1.4 | −5.2 | −4.9 | −3.7 |
+| st4 ep100 | +0.6 | +2.5 | −1.1 | −4.4 | −4.1 | −3.9 |
+| st4lr ep100 | +0.4 | +1.6 | −1.8 | −5.3 | −5.1 | −4.7 |
+| st3 ep73 (6 files ×3) | +1.3 | +2.9 | −1.7 | −5.5 | −4.8 | −4.9 |
+| st2 ep52 | +0.3 | +2.1 | −0.8 | −4.5 | −4.3 | −3.0 |
+| st2b ep257 | +0.4 | +2.7 | −1.4 | −4.8 | −3.7 | −4.3 |
+| st5 ep61 | +0.6 | +2.8 | −0.7 | −3.9 | −4.0 | −2.6 |
+| st6 ep114 | +0.4 | +2.5 | −1.7 | −5.9 | −4.8 | −5.0 |
+
+  Every arm is flat-or-positive to 400 Hz and **every arm is 3.9-5.9 dB down at
+  500-600 Hz** — the duck is universal. The 800-1100 Hz column spreads −1.8 to −5.0 dB,
+  but that 3.2 dB spread is exactly the noise floor this session measured for adjacent
+  checkpoints, so `ctl`'s −1.8 is not evidence of a better arm and no checkpoint choice
+  is a demonstrated fix. Note especially that **more fresh data does not help**: `st3`
+  (6 files ×3, the largest fresh corpus, the only run that reached 22.1k `fmax`) is
+  −4.9 dB at the top, among the worst. Whatever those six videos contained, it was not
+  high-register material.
+- **Why the earlier programme missed this.** The 2×2, noise-floor, replication and
+  averaging work measured brightness bands (6-8k, 8-12k, `fmax`) and never measured
+  **pitch coverage**. That is the methodological lesson of this entry.
+
+Options (undecided, in `AV-41e4`): add sung material ≥700 Hz; transpose down and back;
+blend the original vocal above ~700 Hz; or document the limit. Note option 1 interacts with
+the `fmax`-tracks-fresh-data-volume finding above.
+
+A/B renders are in the GUI History tab tagged `edge-fix` (BEFORE/AFTER on hero20 and on the
+168-188s highest-register window, plus the two rejected probes). Registration helper:
+`scripts/register_edge_ab.py`.
