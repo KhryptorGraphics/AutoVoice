@@ -285,9 +285,40 @@ further data work:
   discriminator. That is the same gap the 09-04 MRD (multi-resolution discriminator)
   experiment was aimed at.
 
-**Conclusion**: the fix is a recipe change, not a data change — and the first thing to
-establish is whether a gentler LR preserves the seed instead of walking off it. Tracked
-as `AV-6sxy`.
+### LR was the cause — confirmed (run after the control)
+
+Re-ran the control corpus unchanged, with the single variable being peak LR: 2e-5
+instead of 1e-4 (5x lower). `warmup_epochs` is vestigial in this fork so a lower flat
+LR is the implementable equivalent. Verified the arm actually took effect by reading the
+runtime optimizer state out of the saved checkpoint —
+`optimizer.param_groups[0]["lr"] = 1.9967e-05`, i.e. 2e-5 after `ExponentialLR`'s
+`gamma=0.999875` over 490 steps — not just the config value.
+
+| run | LR | 6-8k | 8-12k | fmax | aper 2-6k | aper 6-12k | identity |
+|---|---|---|---|---|---|---|---|
+| **v3 ep135 (seed)** | — | **-13.2** | -32.2 | **17.9k** | 0.664 | 0.835 | **0.929** |
+| ctl | 1e-4 | -15.5 | -34.8 | 14.6k | 0.599 | 0.799 | 0.921 |
+| **lowlr** | **2e-5** | **-14.0** | **-32.4** | 15.0k | **0.675** | **0.827** | 0.922 |
+
+Dropping the LR 5x recovers most of the damage: 6-8k regains 1.5 of the 2.3 dB lost
+(now within 0.8 dB of the seed), 8-12k returns to the seed's level (-32.4 vs -32.2),
+and **both aperiodicity bands recover fully** — 2-6k actually exceeds the seed
+(0.675 vs 0.664). Aperiodicity is the buzz metric this whole line of work started from,
+so that is the headline: the buzz signature was substantially self-inflicted by the
+fine-tuning LR.
+
+Two things do **not** recover with LR alone and are therefore a separate mechanism:
+`fmax` (15.0k vs the seed's 17.9k) and identity (0.922 vs 0.929). The mel-loss
+HF-blindness candidate above is the obvious suspect for the bandwidth ceiling and is
+still untested.
+
+**Conclusion**: the recipe, not the data, was the dominant problem — LR was ~5x too high
+for fine-tuning this converged seed. Every one of the six new-data runs above was
+therefore handicapped by a training recipe that damaged the model independent of its
+data, which means **the ~2.2 dB "data penalty" measured in those runs is not a valid
+estimate** and the new material deserves re-testing at 2e-5 before being written off.
+That re-test (st4's corpus at 2e-5, same 5000-step/100-epoch horizon as st4 so LR is the
+only difference) is the immediate next step. Tracked as `AV-6sxy`.
 
 **No registry change — live model is still ep235, exactly as it was at the start of
 this session.** The `v3 ep135` promote/rollback from 09-04 was not revisited or
