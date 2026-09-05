@@ -247,14 +247,47 @@ exceeded it. Two things ruled out along the way:
   re-anchors toward *speech* spectra, not singing — the tail direction was wrong for
   that corpus, not just under-trained.
 
-**Conclusion**: the `v3 ep135` seed/baseline sits at a local optimum for this speaker
-embedding + decoder combo on this corpus at this recipe. Adding data, in any ratio or
-subset tried, perturbs the gradient distribution, and every step budget tried (2k-10k)
-wasn't enough to re-settle past it on the 6-8k axis specifically — st2b showed steps
-alone *can* recover bandwidth ceiling and identity, just not this one band. Getting a
-strictly-better model needs a recipe change (more steps targeted at this band, LR
-warmup, curriculum ordering, or per-sample loss weighting) rather than more data at
-the current settings — tracked as a follow-up issue (`AV-6sxy`).
+### The control run that reattributes the cause (run after the six above)
+
+Every one of the six runs changed *two* things at once versus the seed: it added new
+data **and** it continued training. Nobody had run the control that separates them —
+continue training from `v3 ep135` on **exactly the data `v3 ep135` was already trained
+on** (`corpus_v3`: 071/072/075 x3 + 074 x1 + speech x1, 79 files, verified to contain
+zero new material), with **exactly the same recipe** (crepe f0, UV contract, LR 1e-4,
+batch 16, 5000 steps). Same hero20 render, same scorecard:
+
+| run | data vs seed | 6-8k dB | fmax | identity |
+|---|---|---|---|---|
+| **v3 ep135 (seed)** | — | **-13.2** | **17.9k** | **0.929** |
+| **ctl (control)** | **none — identical corpus** | **-15.5** | **14.6k** | 0.921 |
+| st4 (best new-data run) | + 6 new videos x1 | -17.7 | 17.9k | 0.925 |
+
+**The control degraded on its own.** With zero new data, 5000 steps of this recipe cost
+2.3 dB of 6-8k and 3.3 kHz of `fmax` — a *larger* bandwidth loss than st4's. So roughly
+half of st4's 6-8k deficit (-4.5 dB vs seed) is reproduced by the recipe alone, and the
+seed's `fmax` is not even preserved by training on its own data.
+
+**This corrects the attribution above.** The dominant cause is not the new data; it is
+that continuing to train from this converged seed at this recipe walks away from it.
+New data adds a further penalty on top (st4 -17.7 vs ctl -15.5, ≈2.2 dB attributable to
+data), but it is the secondary effect, not the primary one. It also explains cleanly why
+more steps never recovered brightness (st2/st2b): more steps means more of whatever is
+doing the damage.
+
+Two mechanism candidates, both consistent with the numbers and worth testing before any
+further data work:
+- **LR too high for fine-tuning a converged checkpoint.** Flat 1e-4 with
+  `lr_decay=0.999875` is nearly constant. Note `warmup_epochs` and `init_lr_ratio` exist
+  in the config but this fork's `train.py` never reads them — warmup is *not*
+  implemented, so a lower flat LR is the implementable equivalent.
+- **The mel loss barely sees 6-8k.** `c_mel=45` dominates the loss, and the mel scale
+  compresses high frequencies into few bins, so that band is constrained mostly by the
+  discriminator. That is the same gap the 09-04 MRD (multi-resolution discriminator)
+  experiment was aimed at.
+
+**Conclusion**: the fix is a recipe change, not a data change — and the first thing to
+establish is whether a gentler LR preserves the seed instead of walking off it. Tracked
+as `AV-6sxy`.
 
 **No registry change — live model is still ep235, exactly as it was at the start of
 this session.** The `v3 ep135` promote/rollback from 09-04 was not revisited or
