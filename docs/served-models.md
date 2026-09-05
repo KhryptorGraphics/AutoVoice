@@ -312,13 +312,42 @@ Two things do **not** recover with LR alone and are therefore a separate mechani
 HF-blindness candidate above is the obvious suspect for the bandwidth ceiling and is
 still untested.
 
-**Conclusion**: the recipe, not the data, was the dominant problem — LR was ~5x too high
-for fine-tuning this converged seed. Every one of the six new-data runs above was
-therefore handicapped by a training recipe that damaged the model independent of its
-data, which means **the ~2.2 dB "data penalty" measured in those runs is not a valid
-estimate** and the new material deserves re-testing at 2e-5 before being written off.
-That re-test (st4's corpus at 2e-5, same 5000-step/100-epoch horizon as st4 so LR is the
-only difference) is the immediate next step. Tracked as `AV-6sxy`.
+### The data re-test at the corrected LR — data is worse than first measured
+
+Ran st4's exact 88-file corpus at LR 2e-5, same 5000-step/100-epoch horizon as st4, so
+LR is the only difference from st4 and data is the only difference from `lowlr`:
+
+| run | LR | new data | 6-8k | 8-12k | fmax | aper 2-6k | aper 6-12k | identity |
+|---|---|---|---|---|---|---|---|---|
+| **v3 ep135 (seed)** | — | — | **-13.2** | -32.2 | **17.9k** | 0.664 | **0.835** | **0.929** |
+| ctl | 1e-4 | none | -15.5 | -34.8 | 14.6k | 0.599 | 0.799 | 0.921 |
+| **lowlr** | **2e-5** | **none** | **-14.0** | **-32.4** | 15.0k | **0.675** | 0.827 | 0.922 |
+| st4 | 1e-4 | +6 videos | -17.7 | -33.7 | **17.9k** | 0.549 | 0.786 | 0.925 |
+| st4lr | 2e-5 | +6 videos | -18.2 | -33.7 | **17.9k** | 0.555 | 0.753 | 0.919 |
+
+Isolating the data penalty at each LR:
+- at **1e-4**: ctl -15.5 → st4 -17.7 = **2.2 dB**
+- at **2e-5**: lowlr -14.0 → st4lr -18.2 = **4.2 dB**
+
+**The data penalty nearly doubles once the recipe is fixed.** The broken LR was doing
+enough damage of its own to partly mask the data's contribution; removing it reveals the
+data cost as larger, not smaller. Aperiodicity says the same: st4lr's 6-12k drops to
+0.753, its worst value anywhere in this table. So the earlier "adding this material
+hurts" conclusion was correct in direction and *understated* in magnitude — this
+re-test closes that question rather than reopening it.
+
+One thing the new data does buy, and LR cannot: **`fmax` 17.9k**, matching the seed,
+where both no-data runs top out at 14.6-15.0k. So the two factors act on different axes
+— LR governs brightness and aperiodicity, the new material governs the bandwidth
+ceiling — which is why no single-lever run has beaten the seed on everything at once.
+
+**Conclusion**: two independent, quantified findings. (1) The recipe was genuinely
+broken: LR ~5x too high for fine-tuning this converged seed, costing 2.3 dB of 6-8k and
+all of the aperiodicity regression, fixable by dropping to 2e-5. (2) The new material
+genuinely hurts, by 4.2 dB of 6-8k at the corrected LR, while being the only thing that
+restores `fmax`. Nothing tested beats `v3 ep135` overall; `lowlr` is the closest
+challenger (within 0.8 dB on 6-8k, level on 8-12k, better on aper 2-6k) and loses only
+on `fmax` and identity. Tracked as `AV-6sxy`.
 
 **No registry change — live model is still ep235, exactly as it was at the start of
 this session.** The `v3 ep135` promote/rollback from 09-04 was not revisited or
