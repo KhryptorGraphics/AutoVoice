@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 DEFAULT_SVC_BIN = os.environ.get(
     "AUTOVOICE_SVCFORK_BIN", "/home/kp/anaconda3/envs/svcfork/bin/svc")
@@ -77,16 +77,51 @@ _PRESERVED_INFERENCE_KEYS = (
 )
 
 
-def _clean_env() -> Dict[str, str]:
+def _uv_contract_env(previous: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """Training-side half of the uv contract, derived from what will be SERVED.
+
+    ``_PRESERVED_INFERENCE_KEYS`` carries ``requires_uv_contract`` and
+    ``crepe_uv_threshold`` from the old registry entry onto the new one, so a
+    retrain of a uv-contract voice is served with the contract ON. But the
+    trainer never exported the matching env vars, so the retrain itself ran with
+    crepe's uv==1 everywhere - the model learned no unvoiced frames and was then
+    served as though it had. That is precisely the train/serve mismatch those
+    keys exist to prevent, inverted.
+
+    Deriving the env from the same ``previous`` entry the preservation reads
+    makes the two agree by construction: whatever we will serve with, we train
+    with.
+    """
+    env: Dict[str, str] = {}
+    if not previous:
+        return env
+    if previous.get("requires_uv_contract"):
+        env["SVCFORK_UV_CONTRACT"] = "1"
+    thr = previous.get("crepe_uv_threshold")
+    if thr is not None:
+        env["SVCFORK_CREPE_UV_THRESHOLD"] = str(float(thr))
+    return env
+
+
+def _clean_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Env for fork subprocesses: drop the serving PYTHONPATH so the fork imports
-    only its own packages; pin PYTHONNOUSERSITE and the CUDA allocator."""
+    only its own packages; pin PYTHONNOUSERSITE and the CUDA allocator.
+
+    ``extra`` carries the per-model uv contract (see :func:`_uv_contract_env`).
+    """
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env["PYTHONNOUSERSITE"] = "1"
+    # Never inherit a stale contract from whatever launched the service: the
+    # value must come from the registry entry, or not be set at all.
+    env.pop("SVCFORK_UV_CONTRACT", None)
+    env.pop("SVCFORK_CREPE_UV_THRESHOLD", None)
     # Override rather than setdefault: the serving environment has been seen
     # exporting expandable_segments:True, and inheriting it is the regression
     # this guards against.
     env["PYTORCH_CUDA_ALLOC_CONF"] = _ALLOC_CONF
+    if extra:
+        env.update(extra)
     return env
 
 
@@ -164,16 +199,18 @@ def _supervise(proc, label: str, cancel_event, timeout: Optional[int],
 
 
 def _run_step(cmd: List[str], cwd: Optional[str] = None, cancel_event=None,
+               env_extra: Optional[Dict[str, str]] = None,
               timeout: Optional[int] = 1800) -> None:
     """Run a preprocessing step, interruptible mid-run by ``cancel_event``."""
     label = cmd[1] if len(cmd) > 1 else cmd[0]
     with tempfile.TemporaryFile(mode="w+") as logf:
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=logf,
-                                stderr=subprocess.STDOUT, text=True, env=_clean_env())
+                                stderr=subprocess.STDOUT, text=True, env=_clean_env(env_extra))
         _supervise(proc, label, cancel_event, timeout, logf)
 
 
 def _run_train(cmd: List[str], cwd: str, epochs: int, cancel_event=None,
+                env_extra: Optional[Dict[str, str]] = None,
                progress_cb: ProgressCB = None, timeout: Optional[int] = None) -> None:
     """Run ``svc train``, mapping epochs -> 50..95% progress and terminating
     promptly if ``cancel_event`` fires (checked every 0.3s, not per-line)."""
@@ -186,7 +223,7 @@ def _run_train(cmd: List[str], cwd: str, epochs: int, cancel_event=None,
 
     with tempfile.TemporaryFile(mode="w+") as logf:
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=logf,
-                                stderr=subprocess.STDOUT, text=True, env=_clean_env())
+                                stderr=subprocess.STDOUT, text=True, env=_clean_env(env_extra))
         _supervise(proc, "train", cancel_event, timeout, logf, on_new_output=_on_out)
 
 
@@ -238,6 +275,23 @@ def train_svc_fork(
         shutil.copy2(w, raw / f"{i:04d}_{w.stem}.wav")
     _report(progress_cb, 5, "staging")
 
+    # Read the outgoing registry entry up front. Two things need it: the uv
+    # contract the training subprocesses must run under, and the by-ear serving
+    # tuning preserved onto the new entry further down. Reading it once keeps
+    # those two in agreement - training with whatever we will serve with.
+    registry = Path(data_dir) / "fork_models" / f"{profile_id}.json"
+    previous: Dict[str, Any] = {}
+    if registry.is_file():
+        try:
+            loaded = json.loads(registry.read_text())
+            if isinstance(loaded, dict):
+                previous = loaded
+        except (OSError, ValueError):
+            previous = {}
+    uv_env = _uv_contract_env(previous)
+    if uv_env:
+        logger.info("Training %s under the served uv contract: %s", profile_id, uv_env)
+
     def _check_cancel():
         if cancel_event is not None and cancel_event.is_set():
             raise ForkTrainingError("cancelled")
@@ -249,17 +303,17 @@ def train_svc_fork(
               cancel_event=cancel_event)
     _check_cancel(); _report(progress_cb, 15, "preprocessing")
     # 2-3. resample + config (cwd-relative dirs)
-    _run_step([svc_bin, "pre-resample"], cwd=ws_s, cancel_event=cancel_event)
-    _run_step([svc_bin, "pre-config"], cwd=ws_s, cancel_event=cancel_event)
+    _run_step([svc_bin, "pre-resample"], cwd=ws_s, cancel_event=cancel_event, env_extra=uv_env)
+    _run_step([svc_bin, "pre-config"], cwd=ws_s, cancel_event=cancel_event, env_extra=uv_env)
     _set_config(ws / "configs" / "44k" / "config.json", epochs,
                 batch_size=batch_size, precision=precision)
     _check_cancel(); _report(progress_cb, 30, "extracting features")
     # 4. ContentVec + F0 (single-process avoids the CUDA-fork deadlock)
-    _run_step([svc_bin, "pre-hubert", "-n", "1", "-fm", f0_method], cwd=ws_s,
+    _run_step([svc_bin, "pre-hubert", "-n", "1", "-fm", f0_method], cwd=ws_s, env_extra=uv_env,
               cancel_event=cancel_event)
     _check_cancel(); _report(progress_cb, 50, "training")
     # 5. train from the auto-downloaded base (no tensorboard)
-    _run_train([svc_bin, "train", "-nt"], cwd=ws_s, epochs=epochs,
+    _run_train([svc_bin, "train", "-nt"], cwd=ws_s, epochs=epochs, env_extra=uv_env,
                cancel_event=cancel_event, progress_cb=progress_cb)
 
     final = _latest_epoch_checkpoint(ws / "logs" / "44k")
@@ -271,17 +325,8 @@ def train_svc_fork(
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(final, dest / "G.pth")
     shutil.copy2(ws / "configs" / "44k" / "config.json", dest / "config.json")
-    registry = Path(data_dir) / "fork_models" / f"{profile_id}.json"
-    # Read the outgoing entry BEFORE overwriting it: its serving-side tuning was
-    # arrived at by ear and exists nowhere else (data/ is not in the repo).
-    previous = {}
-    if registry.is_file():
-        try:
-            loaded = json.loads(registry.read_text())
-            if isinstance(loaded, dict):
-                previous = loaded
-        except (OSError, ValueError):
-            previous = {}
+    # `registry` / `previous` were read before training (see above) so the uv
+    # contract used for training is the same one preserved onto this entry.
     entry = {
         "profile_id": profile_id, "engine": "so-vits-svc-fork", "speaker": speaker,
         "model_path": str(dest / "G.pth"), "config_path": str(dest / "config.json"),

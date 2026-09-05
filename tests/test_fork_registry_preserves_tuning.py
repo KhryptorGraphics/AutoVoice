@@ -184,3 +184,56 @@ class TestTheRealFunctionNotACopy:
         assert entry["model_path"] == "new/G.pth"    # training-owned, untouched
         assert entry["trained_epochs"] == 200
         assert any("Preserving tuned" in r.message for r in caplog.records)
+
+def test_training_runs_under_the_uv_contract_it_will_be_served_with():
+    """The trainer must EXPORT the uv contract it PRESERVES.
+
+    `requires_uv_contract` / `crepe_uv_threshold` select a decoder patch and a
+    crepe unvoiced threshold that must match between training and serving.
+    Preservation carried them onto the new registry entry, so a retrain of a
+    uv-contract voice was *served* with the contract on - but the trainer never
+    set the matching env vars, so the retrain itself ran with crepe's uv==1 and
+    learned no unvoiced frames. That is the train/serve mismatch these keys
+    exist to prevent, inverted.
+    """
+    from auto_voice.training.svc_fork_trainer import _uv_contract_env, _clean_env
+
+    # a plain voice gets nothing - and must not inherit a stale contract
+    assert _uv_contract_env({}) == {}
+    assert _uv_contract_env(None) == {}
+    assert _uv_contract_env({"f0_method": "crepe"}) == {}
+
+    # a uv-contract voice trains under exactly what it will serve under
+    env = _uv_contract_env({"requires_uv_contract": True, "crepe_uv_threshold": 0.3})
+    assert env["SVCFORK_UV_CONTRACT"] == "1"
+    assert env["SVCFORK_CREPE_UV_THRESHOLD"] == "0.3"
+
+    # and a contract leaking in from the launching process is scrubbed, so the
+    # value can only ever come from the registry entry
+    import os
+    os.environ["SVCFORK_UV_CONTRACT"] = "1"
+    os.environ["SVCFORK_CREPE_UV_THRESHOLD"] = "0.9"
+    try:
+        clean = _clean_env()
+        assert "SVCFORK_UV_CONTRACT" not in clean
+        assert "SVCFORK_CREPE_UV_THRESHOLD" not in clean
+        merged = _clean_env(env)
+        assert merged["SVCFORK_CREPE_UV_THRESHOLD"] == "0.3"
+    finally:
+        os.environ.pop("SVCFORK_UV_CONTRACT", None)
+        os.environ.pop("SVCFORK_CREPE_UV_THRESHOLD", None)
+
+
+def test_the_contract_is_read_before_training_not_after():
+    """Guards the ordering: the registry read must precede the training calls,
+    or `uv_env` cannot reach the subprocesses that need it."""
+    from pathlib import Path
+    src = Path("src/auto_voice/training/svc_fork_trainer.py").read_text()
+    read_at = src.index("uv_env = _uv_contract_env(previous)")
+    hubert_at = src.index('"pre-hubert"')
+    train_at = src.index('"train", "-nt"')
+    assert read_at < hubert_at < train_at, "uv contract resolved too late to be used"
+    for marker in ('"pre-hubert"', '"train", "-nt"'):
+        call = src[src.index(marker): src.index(marker) + 260]
+        assert "env_extra=uv_env" in call, f"{marker} does not run under the uv contract"
+
