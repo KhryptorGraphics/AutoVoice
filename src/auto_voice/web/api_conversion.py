@@ -507,8 +507,14 @@ def convert_song():
     runtime_backend = 'pytorch'
     if use_full_model and requested_pipeline in {'quality_seedvc', 'quality_shortcut'}:
         resolved_pipeline = 'quality'
-    if use_full_model and resolved_pipeline == 'quality':
-        runtime_backend = 'pytorch_full_model'
+    if resolved_pipeline == 'quality':
+        # Mirrors web/job_manager: a fork-backed profile is served by
+        # so-vits-svc-fork, so say so rather than falling through to the
+        # generic 'pytorch' label that made fork renders look like base ones.
+        if has_fork_model:
+            runtime_backend = 'so_vits_svc_fork'
+        elif use_full_model:
+            runtime_backend = 'pytorch_full_model'
 
     root.logger.info(
         "Converting song with profile %s, preset=%s, stems=%s, pipeline=%s",

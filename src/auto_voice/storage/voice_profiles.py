@@ -227,7 +227,17 @@ class VoiceProfileStore:
         # rollback, or adapter selection) wins as long as the corresponding
         # artifact exists; otherwise fall back to the best available.
         explicit = normalized.get("active_model_type")
-        if explicit == "full_model" and normalized["has_full_model"]:
+        if explicit == "svc_fork":
+            # A fork-registered profile is served by so-vits-svc-fork, whose
+            # checkpoint lives in data/fork_models/<id>.json rather than under
+            # trained_models_dir - so none of the has_* artifact flags below can
+            # ever see it. Without this branch the derivation downgrades a fork
+            # voice to "adapter" (or "base") and the profile then advertises an
+            # engine it does not use. convert_song() checks the fork bridge
+            # first and returns before the legacy artifact loader, so the fork
+            # genuinely is the serving engine whenever it is registered.
+            pass
+        elif explicit == "full_model" and normalized["has_full_model"]:
             pass
         elif explicit == "adapter" and normalized["has_trained_model"]:
             pass
@@ -252,7 +262,7 @@ class VoiceProfileStore:
         # not on disk yet (training saves the record before the artifact) —
         # load() re-derives the effective value against actual artifacts, so
         # storing the normalized downgrade would only destroy the choice.
-        if explicit_model_type in ('full_model', 'adapter', 'base'):
+        if explicit_model_type in ('full_model', 'adapter', 'base', 'svc_fork'):
             profile_data['active_model_type'] = explicit_model_type
         else:
             # No explicit choice given: don't persist the derived value —

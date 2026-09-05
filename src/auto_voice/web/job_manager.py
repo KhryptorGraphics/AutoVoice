@@ -319,8 +319,17 @@ class JobManager:
 
         if full_model_lane and requested_pipeline in {'quality_seedvc', 'quality_shortcut'}:
             resolved_pipeline = 'quality'
-        if active_model_type == 'full_model' and resolved_pipeline == 'quality':
-            runtime_backend = 'pytorch_full_model'
+        if resolved_pipeline == 'quality':
+            # Label with the SAME predicate the routing above uses. These two
+            # lines disagreed: routing gained `fork_backed` so a fork-only
+            # profile reaches the fork lane, but the label kept checking only
+            # 'full_model' - which a fork profile can never satisfy. Every fork
+            # conversion was therefore stamped plain 'pytorch', making the
+            # history read as though so-vits-svc-fork had not been used at all.
+            if fork_backed:
+                runtime_backend = 'so_vits_svc_fork'
+            elif active_model_type == 'full_model':
+                runtime_backend = 'pytorch_full_model'
 
         settings['pipeline_type'] = requested_pipeline
         settings['requested_pipeline'] = requested_pipeline
