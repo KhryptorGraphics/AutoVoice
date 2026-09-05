@@ -234,9 +234,11 @@ A/B by ear before acting on this table.
 **Every configuration scored worse than the `v3 ep135` seed/baseline on 6-8k level**,
 and none beat it on identity either — st2b ties it exactly (0.929, see below); nothing
 exceeded it. Two things ruled out along the way:
-- **Not a bandwidth-extension problem**: 5 of 6 new files are band-limited (11.8-14.6 kHz);
-  the 1 full-band file (`b4_6`, 22.1 kHz) alone (st6) still lost on every axis, including
-  its own bandwidth — the model didn't even fully learn that file's ceiling at 5k steps.
+- **Not a bandwidth-extension problem**: 5 of 6 new files are band-limited (11.8-14.6 kHz),
+  yet the runs *containing* them hold the highest output ceilings (st4 17.9k, st3 22.1k)
+  while the 1 full-band file alone (st6, `b4_6` at 22.1 kHz) gave only 14.9k. Added-file
+  bandwidth is anti-correlated with output `fmax` — see the 2x2 below, which identifies
+  fresh-data *volume* as what actually drives it.
 - **Not simply a "need more fidelity steps" problem**: st2 (≈2k steps) → st2b (10k
   steps, 5x more) recovered `fmax` and identity to exact parity with the baseline
   (17.9k/0.929 both ways) but left the 6-8k deficit essentially unchanged (-17.2 →
@@ -247,112 +249,94 @@ exceeded it. Two things ruled out along the way:
   re-anchors toward *speech* spectra, not singing — the tail direction was wrong for
   that corpus, not just under-trained.
 
-### The control run that reattributes the cause (run after the six above)
+### The 2x2 that settles it: LR and fresh-data volume act on different axes
 
-Every one of the six runs changed *two* things at once versus the seed: it added new
-data **and** it continued training. Nobody had run the control that separates them —
-continue training from `v3 ep135` on **exactly the data `v3 ep135` was already trained
-on** (`corpus_v3`: 071/072/075 x3 + 074 x1 + speech x1, 79 files, verified to contain
-zero new material), with **exactly the same recipe** (crepe f0, UV contract, LR 1e-4,
-batch 16, 5000 steps). Same hero20 render, same scorecard:
+Every one of the six runs above changed *two* things at once versus the seed — it added
+new data **and** it continued training — so none of them could attribute cause. Three
+further runs close that: a control (seed's own corpus, LR 1e-4), the same corpus at LR
+2e-5, and st4's corpus at LR 2e-5. All at 5000 steps from the same `v3 ep135` seed, same
+hero20 render, same scorecard. `warmup_epochs` is vestigial in this fork (`train.py`
+never reads it), so a lower flat LR is the implementable equivalent; the arm was verified
+by reading the runtime optimizer state out of the checkpoint
+(`optimizer.param_groups[0]["lr"] = 1.9967e-05`), not the config value.
 
-| run | data vs seed | 6-8k dB | fmax | identity |
-|---|---|---|---|---|
-| **v3 ep135 (seed)** | — | **-13.2** | **17.9k** | **0.929** |
-| **ctl (control)** | **none — identical corpus** | **-15.5** | **14.6k** | 0.921 |
-| st4 (best new-data run) | + 6 new videos x1 | -17.7 | 17.9k | 0.925 |
-
-**The control degraded on its own.** With zero new data, 5000 steps of this recipe cost
-2.3 dB of 6-8k and 3.3 kHz of `fmax` — a *larger* bandwidth loss than st4's. So roughly
-half of st4's 6-8k deficit (-4.5 dB vs seed) is reproduced by the recipe alone, and the
-seed's `fmax` is not even preserved by training on its own data.
-
-**This corrects the attribution above.** The dominant cause is not the new data; it is
-that continuing to train from this converged seed at this recipe walks away from it.
-New data adds a further penalty on top (st4 -17.7 vs ctl -15.5, ≈2.2 dB attributable to
-data), but it is the secondary effect, not the primary one. It also explains cleanly why
-more steps never recovered brightness (st2/st2b): more steps means more of whatever is
-doing the damage.
-
-Two mechanism candidates, both consistent with the numbers and worth testing before any
-further data work:
-- **LR too high for fine-tuning a converged checkpoint.** Flat 1e-4 with
-  `lr_decay=0.999875` is nearly constant. Note `warmup_epochs` and `init_lr_ratio` exist
-  in the config but this fork's `train.py` never reads them — warmup is *not*
-  implemented, so a lower flat LR is the implementable equivalent.
-- **The mel loss barely sees 6-8k.** `c_mel=45` dominates the loss, and the mel scale
-  compresses high frequencies into few bins, so that band is constrained mostly by the
-  discriminator. That is the same gap the 09-04 MRD (multi-resolution discriminator)
-  experiment was aimed at.
-
-### LR was the cause — confirmed (run after the control)
-
-Re-ran the control corpus unchanged, with the single variable being peak LR: 2e-5
-instead of 1e-4 (5x lower). `warmup_epochs` is vestigial in this fork so a lower flat
-LR is the implementable equivalent. Verified the arm actually took effect by reading the
-runtime optimizer state out of the saved checkpoint —
-`optimizer.param_groups[0]["lr"] = 1.9967e-05`, i.e. 2e-5 after `ExponentialLR`'s
-`gamma=0.999875` over 490 steps — not just the config value.
-
-| run | LR | 6-8k | 8-12k | fmax | aper 2-6k | aper 6-12k | identity |
-|---|---|---|---|---|---|---|---|
-| **v3 ep135 (seed)** | — | **-13.2** | -32.2 | **17.9k** | 0.664 | 0.835 | **0.929** |
-| ctl | 1e-4 | -15.5 | -34.8 | 14.6k | 0.599 | 0.799 | 0.921 |
-| **lowlr** | **2e-5** | **-14.0** | **-32.4** | 15.0k | **0.675** | **0.827** | 0.922 |
-
-Dropping the LR 5x recovers most of the damage: 6-8k regains 1.5 of the 2.3 dB lost
-(now within 0.8 dB of the seed), 8-12k returns to the seed's level (-32.4 vs -32.2),
-and **both aperiodicity bands recover fully** — 2-6k actually exceeds the seed
-(0.675 vs 0.664). Aperiodicity is the buzz metric this whole line of work started from,
-so that is the headline: the buzz signature was substantially self-inflicted by the
-fine-tuning LR.
-
-Two things do **not** recover with LR alone and are therefore a separate mechanism:
-`fmax` (15.0k vs the seed's 17.9k) and identity (0.922 vs 0.929). The mel-loss
-HF-blindness candidate above is the obvious suspect for the bandwidth ceiling and is
-still untested.
-
-### The data re-test at the corrected LR — data is worse than first measured
-
-Ran st4's exact 88-file corpus at LR 2e-5, same 5000-step/100-epoch horizon as st4, so
-LR is the only difference from st4 and data is the only difference from `lowlr`:
-
-| run | LR | new data | 6-8k | 8-12k | fmax | aper 2-6k | aper 6-12k | identity |
+| run | LR | fresh data | 6-8k | 8-12k | fmax | aper 2-6k | aper 6-12k | identity |
 |---|---|---|---|---|---|---|---|---|
-| **v3 ep135 (seed)** | — | — | **-13.2** | -32.2 | **17.9k** | 0.664 | **0.835** | **0.929** |
+| **v3 ep135 (seed)** | — | — | **-13.2** | -32.2 | 17.9k | 0.664 | **0.835** | **0.929** |
 | ctl | 1e-4 | none | -15.5 | -34.8 | 14.6k | 0.599 | 0.799 | 0.921 |
-| **lowlr** | **2e-5** | **none** | **-14.0** | **-32.4** | 15.0k | **0.675** | 0.827 | 0.922 |
-| st4 | 1e-4 | +6 videos | -17.7 | -33.7 | **17.9k** | 0.549 | 0.786 | 0.925 |
-| st4lr | 2e-5 | +6 videos | -18.2 | -33.7 | **17.9k** | 0.555 | 0.753 | 0.919 |
+| **lowlr** | **2e-5** | none | **-14.0** | **-32.4** | 15.0k | **0.675** | 0.827 | 0.922 |
+| st4 | 1e-4 | +6 videos | -17.7 | -33.7 | 17.9k | 0.549 | 0.786 | 0.925 |
+| st4lr | 2e-5 | +6 videos | -18.2 | -33.7 | 17.9k | 0.555 | 0.753 | 0.919 |
 
-Isolating the data penalty at each LR:
-- at **1e-4**: ctl -15.5 → st4 -17.7 = **2.2 dB**
-- at **2e-5**: lowlr -14.0 → st4lr -18.2 = **4.2 dB**
+**The two effects do not decompose.** An additive model (2.3 dB recipe + 2.2 dB data)
+predicts st4lr at ≈-16.2. It measured **-18.2** — *worse* than st4 at 5x the LR. So the
+LR term is not a constant you can subtract out of the new-data runs.
 
-**The data penalty nearly doubles once the recipe is fixed.** The broken LR was doing
-enough damage of its own to partly mask the data's contribution; removing it reveals the
-data cost as larger, not smaller. Aperiodicity says the same: st4lr's 6-12k drops to
-0.753, its worst value anywhere in this table. So the earlier "adding this material
-hurts" conclusion was correct in direction and *understated* in magnitude — this
-re-test closes that question rather than reopening it.
+**6-8k — LR matters only with no fresh data.**
+- no fresh data: -15.5 (1e-4) → **-14.0** (2e-5). Real, 1.5 dB.
+- with fresh data: -17.7 (1e-4) → -18.2 (2e-5). Nil; 8-12k is identical (-33.7) both ways.
 
-One thing the new data does buy, and LR cannot: **`fmax` 17.9k**, matching the seed,
-where both no-data runs top out at 14.6-15.0k. So the two factors act on different axes
-— LR governs brightness and aperiodicity, the new material governs the bandwidth
-ceiling — which is why no single-lever run has beaten the seed on everything at once.
+So continuing to train on already-fit data drifts ~2.3 dB and a gentler LR mostly avoids
+that — but once new material is present the 6-8k loss is data-driven and **LR-insensitive**.
+A future session must not fine-tune new material at 2e-5 expecting brightness to hold.
 
-**Conclusion**: two independent, quantified findings. (1) The recipe was genuinely
-broken: LR ~5x too high for fine-tuning this converged seed, costing 2.3 dB of 6-8k and
-all of the aperiodicity regression, fixable by dropping to 2e-5. (2) The new material
-genuinely hurts, by 4.2 dB of 6-8k at the corrected LR, while being the only thing that
-restores `fmax`. Nothing tested beats `v3 ep135` overall; `lowlr` is the closest
-challenger (within 0.8 dB on 6-8k, level on 8-12k, better on aper 2-6k) and loses only
-on `fmax` and identity. Tracked as `AV-6sxy`.
+**Aperiodicity — same shape.** With no fresh data, 2e-5 fully recovers both bands (2-6k
+0.675, above the seed's 0.664). With fresh data it does not (6-12k 0.753, the worst value
+in the table). Aperiodicity is the buzz metric this line of work started from, so on the
+seed's own corpus the buzz was substantially self-inflicted by the fine-tuning LR.
+
+**`fmax` — tracks fresh-data *volume*, not bandwidth, not LR, not the loss.** Measured
+directly, `corpus_v3` is **not** band-limited: speech median 22.1 kHz (n=69, only 6%
+below 16k), singing all ≥22.0 kHz. Yet it yields the *lowest* output ceiling. Ruling
+each candidate out:
+- not LR: 14.6k → 15.0k across a 5x change, vs a 3 kHz corpus-conditional split.
+- not the added files' bandwidth: st6's single *full-band* file gave 14.9k, while st4's
+  five *band-limited* files (11.8-14.6 kHz) gave 17.9k — anti-correlated.
+- not mel-loss HF blindness / MRD: `c_mel=45` and the discriminator are identical in all
+  four cells, so neither can produce a corpus-conditional split. **This refutes the
+  earlier MRD suspicion for this gap** — worth knowing before re-running that experiment.
+
+What it does track is how much *not-already-fit* material is in the corpus, monotonically:
+0 new files → 14.6-15.0k · 1 file x3 (st6) → 14.9k · earlier 4-file batch → 15.5k at 2k
+steps, 17.9k at 10k · 6 files x1 → 17.9k · 6 files x3 (st3) → 22.1k. Candidate mechanism
+(hypothesis, not established): data the model has already converged on yields little
+useful gradient, so the decoder's output distribution narrows; fresh material sustains it.
+st2→st2b shows steps substitute for volume within a fixed corpus, consistent with
+"sufficient effective learning signal" rather than volume alone.
+
+**Correcting the earlier framing in this file.** The recipe is a co-equal,
+previously-unattributed cause — not the dominant one. Against the *best* new-data run the
+split is 2.3 dB recipe (seed→ctl) vs 2.2 dB data (ctl→st4), a dead heat; against the
+others data dominates outright (delta from ctl: st2 1.7, st2b 1.8, st6 3.0, st5 6.0, st3
+7.8 dB). And the 6-8k loss is **incurred early and then plateaus** — st2→st2b at 5x steps
+left it flat (-17.2 → -17.3) — so it is not damage that accumulates with training.
+
+**Conclusion.** Two real, separately-scoped findings: (1) fine-tuning this converged seed
+at 1e-4 drifts it ~2.3 dB in 6-8k and costs all of the aperiodicity regression, avoidable
+with 2e-5 — but only in the zero-fresh-data case; (2) this new material costs 4.2-4.5 dB
+of 6-8k regardless of LR, while being the only thing that holds `fmax` up. Nothing tested
+beats `v3 ep135` overall. Closest challenger is `lowlr` (within 0.8 dB on 6-8k, level on
+8-12k, better on aper 2-6k; loses on `fmax` and identity). Tracked as `AV-6sxy`.
+
+**Caveats on all of the above.** Every number comes from one 20-second clip (hero20) and
+no per-epoch noise floor was established, so deltas under ~1 dB should not be trusted as
+signal — and `v3 ep135` was itself *selected* as the best of a noisy per-epoch search, so
+some regression toward the mean is expected in any continuation from it. Nobody has
+listened to any render.
 
 **No registry change — live model is still ep235, exactly as it was at the start of
 this session.** The `v3 ep135` promote/rollback from 09-04 was not revisited or
 re-decided today; whether to promote anything from today's candidates (or `G_112`
 from the original run) over the current ep235 is still an open question this session
-did not touch. Candidate checkpoints (not served) under
-`data/fork_models/_candidates_fb17af66_20260904/` in
-`v3_uv_bright/`, `st3_b4/`, `st4_b4x1/`, `st6_b46only/`, `two_stage_band/`.
+did not touch.
+
+Candidate checkpoints (not served), each a complete `G_*`+`D_*` pair — the fork's
+`train.py` silently starts from **random init** if only `G` is present, so never seed a
+continuation from a G-only directory:
+`v3_uv_bright/` (the seed), `ctl_recipe_only/`, `lowlr_2e5/` (best challenger),
+`st4lr_2e5/`, `st3_b4/`, `st4_b4x1/`, `st6_b46only/`, `two_stage_band/`.
+
+**These live under `data/`, which is gitignored — they are local to this machine only**,
+as are `renders_hero20/` (all 10 A/B renders) and the `RECIPE_FINDINGS_20260905.md`
+summary beside them. Nothing in that directory survives a fresh clone; this file and
+`AV-6sxy` are the durable record.
