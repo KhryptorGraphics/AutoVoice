@@ -197,16 +197,22 @@ vs. one render of `v3 ep135`, nothing more.
 This investigation spans two batches of new source material, six training runs total
 (matching every render saved in `renders_hero20/`):
 - **st2 / st2b**: an earlier batch of 4 files (3 band-limited + 1 full-band, found and
-  separated in a prior session) folded into the existing corpus. st2 = 2000-step
-  fidelity tail; st2b = the same corpus at 10000 steps (5x), tried after st2
-  underperformed.
+  separated in a prior session) folded into the existing corpus, in two stages: Stage 1
+  (5000 steps, full corpus, seeded from `v3 ep135`) produced an intermediate checkpoint
+  (`st1`, epoch 143 — both numbers reconfirmed directly from the training logs still on
+  the GPU box, not recalled). Stage 2 fine-tuned that on the full-band subset only. st2 =
+  Stage 2 at a short run (~2k steps, this run's own log was later overwritten by st2b's
+  relaunch so the exact count isn't independently re-checkable, but the config target
+  this session set was 2000); st2b = the same Stage 2 re-run at 10000 steps (`max_epochs:
+  257` reached — also reconfirmed live) after st2 underperformed.
 - **st3 / st4 / st5 / st6**: 6 new phone videos (~23 min separated vocals after demucs,
   the batch explicitly requested this session) added on top of the st2 corpus (so they
   carry the earlier 4-file batch too). st3 = full corpus, new files x3; st4 = same,
   band-limited files at x1; st5 = fidelity tail on st4; st6 = the single cleanest new
   file only, x3.
 
-Every run was seeded from the `v3 ep135` checkpoint, same recipe throughout (crepe f0,
+Every run was seeded from the `v3 ep135` checkpoint — directly for st3-st6, or via the
+intermediate `st1` checkpoint for st2/st2b (see above) — same recipe throughout (crepe f0,
 `SVCFORK_UV_CONTRACT=1`, `SVCFORK_CREPE_UV_THRESHOLD=0.3`, LR 1e-4, batch 16), scored on
 the same hero20.wav render with the same scorecard (`measure2.py`: 6-8kHz/8-12kHz band
 levels relative to 300-1000Hz, `fmax`, D4C aperiodicity) plus Resemblyzer identity
@@ -231,10 +237,11 @@ beat it on identity either. Two things ruled out along the way:
 - **Not a bandwidth-extension problem**: 5 of 6 new files are band-limited (11.8-14.6 kHz);
   the 1 full-band file (`b4_6`, 22.1 kHz) alone (st6) still lost on every axis, including
   its own bandwidth — the model didn't even fully learn that file's ceiling at 5k steps.
-- **Not a "need more fidelity steps" problem**: st2b (10k steps) and st5 (fidelity tail
-  on the full-band-only subset) both underperformed the shorter runs. The "full-band"
-  subset in this corpus is ~60% speech by duration, so a fidelity tail re-anchors toward
-  *speech* spectra, not singing — the tail direction was wrong for this corpus, not just
+- **Not a "need more fidelity steps" problem**: st2 (~2k steps) underperformed the
+  baseline, and going 5x further on the same corpus (st2b, 10k steps) did not recover
+  it — nor did st5's fidelity tail (full-band-only subset). The "full-band" subset in
+  this corpus is ~60% speech by duration, so a fidelity tail re-anchors toward *speech*
+  spectra, not singing — the tail direction was wrong for this corpus, not just
   under-trained.
 
 **Conclusion**: the `v3 ep135` seed/baseline sits at a local optimum for this speaker
