@@ -549,9 +549,15 @@ with it.
 
 **Not the bandwidth-match filter.** `fork_hq_match_source_bandwidth` defaults on and
 low-passes the converted vocal to the source's measured wall, which made it a suspect for the
-`fmax` gap — but `_detect_bandwidth_hz` on this material returns **20000 Hz**, above the
-render's own rolloff, so it is inert here. The 17.9-18k ceiling is the decoder, not this
-filter.
+`fmax` gap. Measured the way the pipeline does it — on the **original mix**, not the
+separated stem, because the code comment at `singing_conversion_pipeline.py:1689-1694` warns
+that a stem reads as full-band since the separator invents energy above the source's wall —
+`_detect_bandwidth_hz` returns **20000 Hz** (identical at the mix's native 48 kHz and
+resampled to 44.1 kHz). The filter therefore *does* fire, since 20000 < the 20947 Hz
+threshold, applying a 20 kHz low-pass — but 20 kHz sits **above** the decoder's own
+17.9-18k rolloff, so it cannot be what creates the `fmax` gap. The ceiling is the decoder.
+(Measuring the stem instead also returns 20000 Hz here, so the conclusion is unchanged, but
+the stem is the wrong signal to reason from and the number is a coincidence on this song.)
 
 **Which of these her words name is not yet established.** "Edges cut off around her
 converted voice" fits Loss 1 (presence/air) and Loss 1b (spatial halo) equally well on
