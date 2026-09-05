@@ -483,109 +483,109 @@ as are `renders_hero20/` (all 10 A/B renders) and the `RECIPE_FINDINGS_20260905.
 summary beside them. Nothing in that directory survives a fresh clone; this file and
 `AV-6sxy` are the durable record.
 
-## Brandy (`fb17af66`) — 2026-09-05 late: first listen. One cause, no serving change
+## Brandy (`fb17af66`) — 2026-09-05 late: first listen. Two top-end losses; gate, decay and UV exonerated
 
-**The first time anybody listened to a render.** Every entry above is metric-only and says
-so. The listen reported the best Brandy conversion of Mariah's "Hero" as having the voice's
-**quiet edges cut off**, and dropping out **worst in her highest registers**. Both were
-reproduced. They are **one mechanism, not two**, and the live config is unchanged.
+**The first time anybody listened to a render.** The report: the voice's **quiet edges cut
+off around her converted voice**, and dropouts **worst in her highest registers** — "it's
+both". Both are real and they are **two distinct losses**, both at the top of her voice but
+in different domains. No serving change was made.
 
-### What was measured, on the path that actually serves
+This entry was rewritten twice before this version; the retractions are listed at the end
+because each was a plausible mechanism that measurement removed.
 
-The decisive measurement is the served pipeline's own isolated lead stem
-(`data/conversions/<job>/vocals.wav` from "HERO via PIPELINE #7") against the source vocal,
-full 258 s, phrase spans from `librosa.effects.split(src, top_db=30)` — the same
-source-referenced pattern `singing_conversion_pipeline.py:1309` uses — with levels averaged
-as **linear RMS and converted to dB afterwards**:
+### Measured on the served path
 
-| region | render − source |
-|---|---|
-| in-phrase | +0.2 dB (level-matched, as intended) |
-| **phrase tails, 150 ms after phrase end** | **+4.4 dB** |
-| tail frames rendered as digital silence | **0** |
-| tail frames more than 20 dB below source | **0** |
+All numbers from the served pipeline's own isolated lead stem
+(`data/conversions/5ba195c0-b439-41ec-b036-4a1cd46f8f8a/vocals.wav`, "HERO via PIPELINE #5 —
+ep235", i.e. **the served weights**) against the source vocal stem, full 258 s.
 
-**Nothing gates her edges in the served render.** The tails are *louder* than the source.
+**Loss 1 — spectral air and presence.** Band levels relative to each file's own 300-1000 Hz
+reference, so a global gain cannot produce it:
 
-| source F0 | render − source (loud in-phrase frames) |
-|---|---|
-| 200-300 Hz | +1.1 dB |
-| 300-400 Hz | +1.2 dB |
-| 400-500 Hz | −1.2 dB |
-| 500-600 Hz | **−4.5 dB** |
-| 600-800 Hz | **−4.8 dB** |
-| 800-1600 Hz | **−7.8 dB** |
+| band | source | ep235 (served) | delta |
+|---|---|---|---|
+| 3-6k (presence) | -21.0 | -24.9 | **-3.9 dB** |
+| 6-8k | -22.2 | -19.0 | +3.2 dB |
+| 8-12k (air) | -22.7 | -31.3 | **-8.6 dB** |
+| 12-16k (sheen) | -27.0 | -40.6 | **-13.6 dB** |
+| `fmax` | 20.0k | 17.9k | **-2.1 kHz** |
 
-That is the whole defect: a monotonic level collapse that begins at 500-600 Hz and reaches
-−7.8 dB at the top. Her biggest sustained high notes land at phrase ends, and under a full
-instrumental mix an 8 dB drop there is the voice disappearing behind the band — which is why
-it is heard both as "edges around her voice" and as "worst in the highest registers".
+The halo of air and sheen that sits *around* a voice in a mix (8-16 kHz) is 9-14 dB down and
+the spectrum stops 2.1 kHz early, while 6-8k is actually *brighter* than the source. "Edges
+cut off around her voice" is this, not a gate: in mixing vocabulary the "edge" of a voice is
+its presence/air, and this is the band where it lives. It is also the same top-end deficit
+the whole 2026-09-05 programme above was circling with its 6-8k/`fmax` metrics.
 
-### Cause: the corpus has no notes up there
+**Loss 2 — level collapse with pitch.** Render minus source by source F0, loud in-phrase
+frames, aligned (verified 0 samples length delta, 0 ms envelope lag):
 
-Brandy's training corpus (`corpus_v3`, 10 singing files, 168,079 voiced frames, harvest with
-`f0_ceil=1600` — the default 800 would have manufactured this result):
+| source F0 | 200-300 | 300-400 | 400-500 | 500-600 | 600-800 | 800-1600 |
+|---|---|---|---|---|---|---|
+| ep235 (served) | +1.3 | +1.7 | -2.1 | **-5.6** | **-5.5** | **-10.9** |
 
-| | Brandy training | Hero source |
-|---|---|---|
-| median | 292 Hz | 384 Hz |
-| p99 | **496 Hz** | — |
-| max | **844 Hz** | **1031 Hz** |
-| frames ≥ 550 Hz | 0.48 % | — |
-| frames ≥ 700 Hz | <0.01 % (rounds to 0.00; max is 844) | present |
+Monotonic from 400 Hz up, reaching **-10.9 dB** on her top notes — worse on the served
+checkpoint than on any candidate measured (MRD ep41: -7.8 dB). Cause is corpus pitch
+coverage: her training corpus (10 singing files, 168,079 voiced frames, harvest
+`f0_ceil=1600`) has median 292 Hz, **p99 496 Hz**, **max 844 Hz**, 0.48% of frames >= 550 Hz
+and <0.01% >= 700 Hz, against a source that reaches **1031 Hz**. The collapse begins where
+coverage thins (p99 496 Hz), not at any threshold or flag.
 
-The deficit starts where coverage thins (p99 496 Hz), not at a threshold or a flag.
+**The two losses are independent.** Her top register does *not* sit at phrase ends, so
+Loss 2 cannot be what cuts the edges: phrase-final 300 ms frames are **0.8%** >= 500 Hz
+(median 324 Hz) versus **4.3%** in-phrase (median 334 Hz) — the high notes sit *inside*
+phrases. The user's "it's both" was correct and an earlier "one mechanism" claim here was
+wrong.
 
 ### Ruled out by measurement
 
-- **Not `db_thresh` / the silence gate — on the served path.** This was the first hypothesis
-  and it is wrong for serving. Swept `-40/-45/-50/-55/-60/-65/-70/-80` relative and
-  `-75/-85` absolute through the exact served command on the full vocal: **0 tail frames
-  zeroed at every value, including the live −40**, tails +8 dB, no value changing anything.
-  The live entry keeps `db_thresh: -40`.
-- **A diagnostic-vs-served divergence worth remembering.** Renders that *did* show 26 hard-
-  zeroed frames used `G_135` + `SVCFORK_UV_CONTRACT=1` + `SVCFORK_CREPE_UV_THRESHOLD=0.3` on
-  a 20 s clip. The served entry sets **neither** env key (no `requires_uv_contract`, no
-  `crepe_uv_threshold`), the served checkpoint is `..._svcfork/G.pth`, and a 20 s clip is a
-  single chunk that never exercises the split at all. Reproduce serving with the registry
-  entry's own flags, or measure an artifact that serving cannot produce.
-- **Not `-db` as absolute dBFS.** `core.py:251,254` is
-  `top_db=-db_thresh, ref=1 if absolute_thresh else np.max`, and `absolute_thresh` defaults
-  False with no such key in this entry — so `-db` is dB **below the clip's peak**. `-60` on
-  this material lands at −72.5 dBFS, below the stem's own floor, i.e. no gating at all.
-- **Not the crepe UV threshold.** Not even active in serving (see above); and where it *was*
-  active, UV 0.1 and UV-off gave −4.9 dB vs −4.2 dB for the gate alone — no improvement.
-  Crepe periodicity in the 800-1100 Hz bin is 0.717 with only 3.9 % below 0.3: it is
-  *confident* in her top register.
-- **Not the `f0_max` ceiling.** `f0.py` pins 1100 Hz; the highest-register 20 s window of the
-  whole song peaks at 1031 Hz (p95 982), so it never fires. No patch. Note `f0_max` also
-  feeds `f0_to_coarse`'s mel quantisation (`f0.py:238-239`), so raising it would reshape
-  pitch tokens for *every* frame — do not raise it casually.
-- **Not checkpoint choice.** Measured on hero20 across all ten arms, render−source by source
-  F0: every arm is flat-or-positive to 400 Hz and **every arm is 3.9-5.9 dB down at
-  500-600 Hz**. The 800-1100 column spreads −1.8 (ctl) to −5.0 (seed), but that is one
-  ~185-frame bin per render and adjacent ctl epochs already swing 3.2 dB on a single band,
-  so it is not evidence of a better arm. `st3` — 6 fresh singing files ×3, the only run that
-  reached 22.1k `fmax` — is −4.9 dB at the top, among the worst, so the fresh material did
-  not carry high notes either. Pipeline #7 (MRD ep41) shows the same shape on the full song.
+- **The silence gate / `db_thresh`.** Swept `-40/-45/-50/-55/-60/-65/-70/-80` relative and
+  `-75/-85` absolute through the exact served command on the full vocal: **0 tail frames of
+  real decaying voice zeroed at every value, including the live -40**, and 0 frames more than
+  20 dB below source. Tail-minus-body measured within each file (gain-invariant) is -10.1 dB
+  for the source and **-9.9 dB** for ep235: tails are not attenuated at all. `db_thresh`
+  stays -40.
+- **Decay truncation.** With phrase ends derived from the source and applied identically to
+  every file, the 20 dB fall time is source **330 ms** (n=39) vs ep235 **360 ms** (n=44) —
+  ep235 decays *slower*, and is faster than the source on 49% of offsets, a coin flip.
+- **The crepe UV threshold.** Not even active in serving: the registry entry has no
+  `requires_uv_contract` and no `crepe_uv_threshold`, and `svc_fork_bridge.py:113-121` only
+  sets those env vars when the entry carries them. Where it *was* active, UV 0.1 and UV-off
+  gave no improvement, and crepe periodicity at 800-1100 Hz is 0.717 with only 3.9% below
+  0.3 — it is *confident* in her top register.
+- **The `f0_max` ceiling.** `f0.py` pins 1100 Hz; the song's highest-register 20 s window
+  peaks at 1031 Hz (p95 982), so it never fires. `f0_max` also feeds `f0_to_coarse`'s mel
+  quantisation (`f0.py:238-239`), so raising it would reshape pitch tokens for every frame.
+- **Checkpoint choice, for Loss 2.** On hero20 across all ten arms, every arm is
+  flat-or-positive to 400 Hz and **every arm is 3.9-5.9 dB down at 500-600 Hz**. `st3` — 6
+  fresh singing files x3, the only run that reached 22.1k `fmax` — is -4.9 dB at the top,
+  among the worst, so the fresh material carried no high notes either.
 
-### Why the earlier programme missed it
+### Retracted from earlier versions of this entry
 
-The 2×2, noise-floor, replication, boundary and averaging work all measured **brightness
-bands** (6-8k, 8-12k, `fmax`) and **never measured pitch coverage**. That is why it kept
-concluding "nothing beats the seed" while the actual audible defect sat underneath,
-identical in every arm.
+1. **"`db_thresh` -40 -> -60 fixes the cut edges" (commit 275f903e).** Measured on the wrong
+   path: `G_135` plus `SVCFORK_UV_CONTRACT=1` and `SVCFORK_CREPE_UV_THRESHOLD=0.3` on 20 s
+   clips, none of which serving uses, and a 20 s clip is a single chunk that never exercises
+   the split. Also `-db` is dB **below the clip peak**, not absolute dBFS
+   (`core.py:251,254`, `ref=1 if absolute_thresh else np.max`, `absolute_thresh` default
+   False and absent here), so -60 lands below the stem floor and gates nothing — the "gate
+   off" case the same commit rejected. Set to -60 briefly, rolled back from
+   `.pre_dbthresh60_20260905`; the live entry is byte-identical to its pre-session state.
+2. **"One mechanism, not two."** Refuted by the phrase-final F0 test above.
+3. **"ep235 truncates decays 30% faster than the source."** An artifact of letting each file
+   define its own phrase spans (116 vs 134 phrases). The matched-window control reverses it.
 
 ### Open, tracked as `AV-41e4`
 
-No render-side knob addresses out-of-range F0. Candidates, cheapest first: formant-
-preserving pitch-shift augmentation of her existing `real_sing_sample_07x` files (+3…+12
-semitones via WORLD — untried; the 09-04 "synthetic data" run was SeedVC clips brick-walled
-at 13.1 kHz, a different thing); the fork's `-t` transpose to put her belts inside the
-trained range and shift back; keeping the source's own signal above ~550 Hz (the pipeline
-already has a keep-source-spans precedent in PIPELINE #1); or documenting the limit. Note
-option 1 interacts with the `fmax`-tracks-fresh-data-volume finding above.
+Loss 2 has no render-side knob (out-of-range F0). Cheapest untried lever is
+formant-preserving pitch-shift augmentation of her existing `real_sing_sample_07x` files
+(+3…+12 semitones via WORLD) — note the 09-04 "synthetic data" run was SeedVC clips
+brick-walled at 13.1 kHz, a different thing. Others: the fork's `-t` transpose to move her
+belts into the trained range and shift back; keeping the source's own signal above ~550 Hz
+(PIPELINE #1 already has a keep-source-spans precedent); or documenting the limit. A
+pitch-tracked make-up gain in the pipeline would test whether Loss 2 is level or timbre.
+Loss 1 is the project's long-running brightness thread and interacts with the
+`fmax`-tracks-fresh-data-volume finding above.
 
-**No serving change was made in this session.** `db_thresh` was briefly set to −60 and
-rolled back from `.pre_dbthresh60_20260905` once the peak-relative semantics were understood;
-the live entry is byte-identical to its pre-session state, `trained_epochs` still 235.
+Listening set in the GUI History tab, tagged `highreg`: source vs served ep235 vs MRD ep41
+over her highest-register window (168-188 s), vocals only so the instrumental masks nothing.
+Registration helper: `scripts/register_render.py`.

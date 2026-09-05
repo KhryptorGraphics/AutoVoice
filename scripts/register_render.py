@@ -84,8 +84,14 @@ def main() -> None:
     dest = data / "conversions" / job_id
     dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest / "mix.wav")
-    hist[job_id] = build(job_id, a.title, a.note, a.profile,
-                         a.tag, duration, time.time())
+    # Preserve anything the user set in the GUI on this entry, the way
+    # JobManager._emit_conversion_history does (job_manager.py:873-876).
+    prev = hist.get(job_id, {})
+    rec = build(job_id, a.title, a.note or prev.get("notes") or "",
+                a.profile, sorted(set(a.tag) | set(prev.get("tags") or [])),
+                duration, time.time())
+    rec["isFavorite"] = prev.get("isFavorite", False)
+    hist[job_id] = rec
     tmp = hist_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(hist, indent=2, sort_keys=True))
     tmp.replace(hist_path)
