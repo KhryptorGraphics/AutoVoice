@@ -1,0 +1,129 @@
+--- /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/modules/synthesizers.py.orig_pre_lora	2026-09-05 19:42:12.113210042 -0500
++++ /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/modules/synthesizers.py	2026-09-05 19:43:31.493233227 -0500
+@@ -243,3 +243,95 @@
+         else:
+             o = self.dec(z * c_mask, g=g, f0=_uv_masked_f0(f0, uv))
+         return o
++
++
++# ---------------------------------------------------------------------------
++# LoRA (svcfork_lora.patch) - low-rank adaptation for fine-tuning on small data
++# ---------------------------------------------------------------------------
++# Every full fine-tune of this voice degraded after ~epoch 150 on ~80 minutes of
++# audio: classic overfitting. LoRA freezes the pretrained base and learns a
++# low-rank delta instead, which is the standard remedy.
++#
++# Injection is a forward hook carrying a parallel A->B path, NOT a module
++# replacement, so every existing parameter keeps its exact state_dict key and an
++# ordinary (non-LoRA) checkpoint still loads key-for-key. The new parameters are
++# registered on the same module, so they appear as additional keys only.
++#
++# Targets the INFERENCE path only - dec, flow, enc_p and emb_g. enc_q is the
++# posterior encoder: it runs during training but never at inference (see
++# SynthesizerTrn.infer), so adapting it would spend capacity on something the
++# served model never uses.
++#
++# Off unless SVCFORK_LORA_RANK is set, so serving and existing training are
++# untouched.
++
++_LORA_TARGET_PREFIXES = ("dec.", "flow.", "enc_p.")
++
++
++def _lora_forward_hook(module, inputs, output):
++    x = inputs[0]
++    return output + module._lora_scale * module._lora_B(module._lora_A(x))
++
++
++def inject_lora(model, rank: int = 16, alpha: float = 32.0,
++                targets=_LORA_TARGET_PREFIXES):
++    """Attach low-rank side-paths to Conv1d layers on the inference path.
++
++    Returns the list of newly created parameters. ConvTranspose1d (the decoder's
++    upsamplers) is deliberately skipped: its weight layout is (in, out, k) and a
++    matching delta needs different construction, so it is left frozen rather than
++    adapted incorrectly.
++    """
++    import torch.nn as nn
++
++    # Collect first, THEN inject: adding child modules while walking
++    # named_modules() makes the walk descend into what was just added and
++    # recurse without bound.
++    victims = [
++        (name, mod) for name, mod in model.named_modules()
++        if isinstance(mod, nn.Conv1d)
++        and any(name.startswith(t) for t in targets)
++        and getattr(mod, "_lora_A", None) is None
++        and "_lora_" not in name
++    ]
++    new_params = []
++    for name, mod in victims:
++        r = min(rank, mod.in_channels, mod.out_channels)
++        if r < 1:
++            continue
++        # lora_A mirrors the base geometry so the summed shapes agree exactly;
++        # lora_B is 1x1, mapping the rank axis onto the output channels.
++        a = nn.Conv1d(mod.in_channels, r, mod.kernel_size, stride=mod.stride,
++                      padding=mod.padding, dilation=mod.dilation, bias=False)
++        b = nn.Conv1d(r, mod.out_channels, 1, bias=False)
++        nn.init.kaiming_uniform_(a.weight, a=5 ** 0.5)
++        nn.init.zeros_(b.weight)          # delta starts at exactly zero: the
++                                          # adapted model begins identical to base
++        a.to(mod.weight.device); b.to(mod.weight.device)
++        mod.add_module("_lora_A", a)
++        mod.add_module("_lora_B", b)
++        mod._lora_scale = float(alpha) / float(r)
++        mod.register_forward_hook(_lora_forward_hook)
++        new_params += [a.weight, b.weight]
++    return new_params
++
++
++def lora_parameters(model):
++    """Every parameter a LoRA run should optimise: the low-rank deltas plus the
++    speaker embedding, which must move for the voice to change at all."""
++    params = []
++    for name, p in model.named_parameters():
++        if "_lora_A" in name or "_lora_B" in name or name.startswith("emb_g"):
++            params.append(p)
++    return params
++
++
++def freeze_base_for_lora(model):
++    """Freeze everything except the LoRA deltas and the speaker embedding."""
++    trainable = 0
++    for name, p in model.named_parameters():
++        keep = ("_lora_A" in name or "_lora_B" in name or name.startswith("emb_g"))
++        p.requires_grad = keep
++        if keep:
++            trainable += p.numel()
++    return trainable
+--- /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/train.py.orig_pre_lora	2026-09-05 19:42:37.077217240 -0500
++++ /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/train.py	2026-09-05 19:42:37.113217250 -0500
+@@ -158,8 +158,27 @@
+             self.net_d = MultiPeriodDiscriminator(self.hparams.model.use_spectral_norm)
+         self.automatic_optimization = False
+         self.learning_rate = self.hparams.train.learning_rate
++        # SVCFORK_LORA_RANK: freeze the pretrained base and optimise only the
++        # low-rank deltas plus emb_g. Every full fine-tune of an ~80 min corpus
++        # degraded after ~epoch 150; constraining the update is the remedy.
++        # Unset = original behaviour (all parameters train).
++        _lora_rank = os.environ.get("SVCFORK_LORA_RANK", "")
++        if _lora_rank:
++            from .modules.synthesizers import (
++                inject_lora, freeze_base_for_lora, lora_parameters)
++            _alpha = float(os.environ.get("SVCFORK_LORA_ALPHA", str(2 * int(_lora_rank))))
++            inject_lora(self.net_g, rank=int(_lora_rank), alpha=_alpha)
++            _n = freeze_base_for_lora(self.net_g)
++            _tot = sum(p.numel() for p in self.net_g.parameters())
++            LOG.info(
++                "LoRA rank=%s alpha=%s: training %.2fM of %.1fM generator params (%.1f%%)",
++                _lora_rank, _alpha, _n / 1e6, _tot / 1e6, 100.0 * _n / _tot)
++            _g_params = lora_parameters(self.net_g)
++        else:
++            _g_params = self.net_g.parameters()
++
+         self.optim_g = torch.optim.AdamW(
+-            self.net_g.parameters(),
++            _g_params,
+             self.learning_rate,
+             betas=self.hparams.train.betas,
+             eps=self.hparams.train.eps,

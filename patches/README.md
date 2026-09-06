@@ -107,3 +107,27 @@ to MultiPeriodDiscriminator's own `discriminators` ModuleList so an MPD-only
 (its `D_197` has 165 keys and strict-loads into the rebuilt class). The original
 patch was lost with the box; this copy was recovered from the session transcript
 and verified against `D_197`. Apply: `patch -p0` per file, or copy the two files.
+
+## svcfork_lora.patch (2026-09-05)
+
+Targets `so_vits_svc_fork/modules/synthesizers.py` and `train.py`. Adds low-rank
+adaptation: `inject_lora()` attaches a parallel `A -> B` Conv1d path to every
+Conv1d under `dec.`, `flow.` and `enc_p.` via a **forward hook**, so each base
+parameter keeps its exact state_dict key and an ordinary checkpoint still loads
+key-for-key (verified: 751 -> 1109 keys, all 751 originals preserved, `safe_load`
+of a non-LoRA checkpoint succeeds). `lora_B` is zero-initialised, so training
+starts bit-identical to the base.
+
+Deliberately excludes `enc_q`: the posterior encoder runs during training but
+never in `SynthesizerTrn.infer`, so adapting it spends capacity the served model
+cannot use. `ConvTranspose1d` (the decoder upsamplers) is skipped - its (in,out,k)
+layout needs a different delta construction.
+
+`train.py` freezes the base and narrows `optim_g` to the LoRA deltas plus
+`emb_g` when `SVCFORK_LORA_RANK` is set: 2.39M of 48.0M generator params (5.0%)
+at rank 16. `SVCFORK_LORA_ALPHA` defaults to `2 * rank`. Unset = original
+behaviour, all parameters train.
+
+Rationale: every full fine-tune of this ~80 min corpus degraded after ~epoch 150
+(four runs, 2026-09-04/05). Constraining the update is the standard remedy.
+Serving a LoRA checkpoint needs this patch present at inference too.

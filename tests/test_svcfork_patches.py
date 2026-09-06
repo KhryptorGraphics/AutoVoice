@@ -101,3 +101,57 @@ def test_mrd_discriminator_patch_is_applied():
     assert "class MultiPeriodDiscriminatorWithMRD" in text and "class DiscriminatorR" in text
     assert "self.discriminators.extend(" in text, "MRD must extend the SAME ModuleList so MPD-only D checkpoints load key-for-key"
     assert 'os.environ.get("SVCFORK_MRD"' in TRAIN.read_text()
+
+def test_lora_patch_is_applied():
+    """LoRA on the fork: low-rank deltas for fine-tuning ~80 min of audio, where
+    every full fine-tune degraded after ~epoch 150.
+
+    The injection must be additive (a forward hook plus new parameters), never a
+    module replacement, or an ordinary checkpoint stops loading key-for-key.
+    """
+    text = SYNTH.read_text()
+    assert "def inject_lora" in text and "def freeze_base_for_lora" in text
+    assert "_lora_forward_hook" in text, "must hook, not replace the module"
+    assert "register_forward_hook" in text
+    # targets the inference path only - enc_q never runs at infer()
+    assert '_LORA_TARGET_PREFIXES = ("dec.", "flow.", "enc_p.")' in text
+    assert "enc_q" not in text.split("_LORA_TARGET_PREFIXES")[1][:400]
+    # zero-init on B, so the adapted model starts identical to the base
+    assert "zeros_(b.weight)" in text
+    # collect-then-mutate, or named_modules() recurses into what it just added
+    assert "victims = [" in text
+    assert 'os.environ.get("SVCFORK_LORA_RANK"' in TRAIN.read_text(), (
+        "train.py must gate LoRA on SVCFORK_LORA_RANK and narrow the optimiser")
+
+
+def test_lora_keeps_an_ordinary_checkpoint_loadable():
+    """The compatibility guarantee, exercised rather than asserted from source.
+
+    Runtime check, so it only runs where the fork is importable. The fork lives
+    in an isolated env and is normally driven as a subprocess, so this skips in
+    the main test env - test_lora_patch_is_applied covers the same patch from
+    source there.
+    """
+    import torch
+    pytest.importorskip("so_vits_svc_fork",
+                        reason="fork package is installed only in the svcfork env")
+    from so_vits_svc_fork.modules.synthesizers import SynthesizerTrn, inject_lora
+
+    hps = dict(inter_channels=192, hidden_channels=192, filter_channels=768,
+               n_heads=2, n_layers=6, kernel_size=3, p_dropout=0.1,
+               resblock="1", resblock_kernel_sizes=[3, 7, 11],
+               resblock_dilation_sizes=[[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+               upsample_rates=[8, 8, 2, 2, 2], upsample_initial_channel=512,
+               upsample_kernel_sizes=[16, 16, 4, 4, 4], gin_channels=256,
+               ssl_dim=768, n_speakers=200, sampling_rate=44100)
+    m = SynthesizerTrn(513, 10240 // 512, **hps)
+    before = set(m.state_dict())
+    inject_lora(m, rank=4, alpha=8.0)
+    after = set(m.state_dict())
+    assert before < after, "LoRA must only ADD keys"
+    assert before.issubset(after), "an original key was renamed or dropped"
+    # a base-shaped state dict still loads
+    m2 = SynthesizerTrn(513, 10240 // 512, **hps)
+    from so_vits_svc_fork.utils import safe_load
+    safe_load(m, m2.state_dict())
+
