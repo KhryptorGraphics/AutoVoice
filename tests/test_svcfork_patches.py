@@ -155,3 +155,18 @@ def test_lora_keeps_an_ordinary_checkpoint_loadable():
     from so_vits_svc_fork.utils import safe_load
     safe_load(m, m2.state_dict())
 
+def test_lora_is_injected_at_inference_too():
+    """A LoRA checkpoint carries 358 extra `_lora_*` tensors. inference/core.py
+    must inject the same side-paths BEFORE load_checkpoint, or safe_load copies
+    only matching keys and every delta is silently discarded - the model then
+    serves as the unadapted base and the whole LoRA run measures as a no-op.
+    Caught during the first LoRA evaluation, before scoring rather than after.
+    """
+    core = SYNTH.parent.parent / "inference" / "core.py"
+    text = core.read_text()
+    assert 'os.environ.get("SVCFORK_LORA_RANK"' in text
+    inject_at = text.index("inject_lora(")
+    load_at = text.index("utils.load_checkpoint(")
+    assert inject_at < load_at, (
+        "inject_lora must run BEFORE load_checkpoint or the deltas load as nothing")
+

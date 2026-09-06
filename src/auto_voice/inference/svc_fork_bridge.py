@@ -119,6 +119,16 @@ def _clean_env(entry: Optional[dict] = None) -> Dict[str, str]:
     # train/serve-match reason; unset reproduces the fork's original crepe path.
     if entry and entry.get("crepe_uv_threshold") is not None:
         env["SVCFORK_CREPE_UV_THRESHOLD"] = str(float(entry["crepe_uv_threshold"]))
+    # ``lora_rank`` opts the entry into patches/svcfork_lora.patch. A LoRA
+    # checkpoint carries 358 extra `_lora_*` tensors; without injecting the same
+    # side-paths before load, safe_load copies only matching keys and every delta
+    # is silently dropped - the model would serve as the unadapted base and the
+    # LoRA would appear to have done nothing. Must match the trained rank.
+    if entry and entry.get("lora_rank") is not None:
+        env["SVCFORK_LORA_RANK"] = str(int(entry["lora_rank"]))
+        alpha = entry.get("lora_alpha")
+        env["SVCFORK_LORA_ALPHA"] = str(float(alpha if alpha is not None
+                                              else 2 * int(entry["lora_rank"])))
     return env
 
 

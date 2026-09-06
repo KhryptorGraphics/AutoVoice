@@ -72,6 +72,8 @@ _PRESERVED_INFERENCE_KEYS = (
     # silently reverted them and nothing said so.
     "requires_uv_contract",
     "crepe_uv_threshold",
+    "lora_rank",
+    "lora_alpha",
     "cluster_model_path",
     "cluster_infer_ratio",
 )
