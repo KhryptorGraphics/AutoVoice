@@ -44,6 +44,10 @@ def _voiced_fraction(audio: np.ndarray, sample_rate: int, max_s: float = 20.0) -
     (calibrated leads: 0.76-0.87); harmony stacks / textures it would butcher
     score low (calibrated: 0.14-0.51). Measured on up to ``max_s`` of active
     audio with pyin fmin=80 fmax=1000, matching the calibration convention.
+
+    Calibration is coupled to librosa 0.10 pyin semantics (0.11 changed the
+    voiced decision: white noise jumps from 0.0 to ~0.43) — hence the
+    ``librosa<0.11`` bound in requirements-runtime.txt.
     """
     import librosa
 
