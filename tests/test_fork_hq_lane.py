@@ -33,7 +33,8 @@ def test_fork_hq_lane_is_stereo_and_mirrors_contract(tmp_path, monkeypatch):
 
     monkeypatch.setattr(p, "_get_separator", lambda: FakeSep())
     monkeypatch.setattr(p, "_get_model_manager", lambda: FakeMM())
-    monkeypatch.setattr(p, "_extract_pitch", lambda a, sr: np.zeros(8, np.float32))
+    monkeypatch.setattr(p, "_extract_pitch",
+                        lambda a, sr, method=None: np.zeros(8, np.float32))
 
     res = p._convert_song_fork_hq(str(song), "prof-1", 1.0, 0.9, True, "balanced", 0.0)
 
