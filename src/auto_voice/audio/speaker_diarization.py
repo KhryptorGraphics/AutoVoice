@@ -650,6 +650,79 @@ class SpeakerDiarizer:
 
         return merged
 
+
+    def extract_span_embeddings(
+        self,
+        audio,
+        sample_rate: int,
+        spans,
+    ) -> np.ndarray:
+        """Extract WavLM embeddings for each span from the original mix.
+
+        Args:
+            audio: Mono waveform, np.ndarray or torch.Tensor (any sample rate is
+                fine; ``sample_rate`` just tells the extractor what it is).
+            sample_rate: Sample rate of ``audio``.
+            spans: List of (start, end) time pairs in seconds.
+
+        Returns:
+            np.ndarray of shape (n_spans, 256), L2-normalized. Spans that are
+            empty/too short yield a zero row (so callers can detect them by
+            ``np.linalg.norm``).
+        """
+        if not spans:
+            return np.empty((0, 256), dtype=np.float32)
+
+        self._load_model()
+        if self._feature_extractor is None or self._model is None:
+            logger.warning("Speaker model unavailable; returning zero embeddings")
+            return np.zeros((len(spans), 256), dtype=np.float32)
+
+        if isinstance(audio, torch.Tensor):
+            audio = audio.detach().cpu().numpy()
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+
+        # WavLM / Wav2Vec2 feature extractors are trained at 16kHz and reject
+        # other rates; resample the mix to 16k before slicing (mirrors
+        # _load_audio, which diarization itself runs through).
+        target_sr = 16000
+        if sample_rate != target_sr:
+            import torchaudio
+            resampler = torchaudio.transforms.Resample(sample_rate, target_sr)
+            t = torch.from_numpy(audio).unsqueeze(0)
+            audio = resampler(t).squeeze(0).numpy()
+            sample_rate = target_sr
+
+        out = np.zeros((len(spans), 256), dtype=np.float32)
+        # Extract one span at a time. Batching would require zero-padding to
+        # the longest span, and mean-pooling over that padding drags every
+        # short span's embedding toward a shared silence direction — a 2s
+        # span next to a 45s span would be ~95% silence. Per-span extraction
+        # has no padding, so the mean-pool is over voiced frames only.
+        for i, (s0, s1) in enumerate(spans):
+            lo, hi = int(s0 * sample_rate), int(s1 * sample_rate)
+            hi = min(hi, len(audio))
+            if hi <= lo:
+                continue  # empty span -> zero row
+            seg = audio[lo:hi]
+            if len(seg) < int(0.05 * sample_rate):
+                continue  # too short for a stable embedding -> zero row
+            try:
+                with torch.no_grad():
+                    inputs = self._feature_extractor(
+                        seg, sampling_rate=sample_rate,
+                        return_tensors="pt", padding=True,
+                    )
+                    inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                    hidden = self._model(**inputs).last_hidden_state
+                    emb = hidden.mean(dim=1).cpu().numpy()[0, :256]
+            except Exception as exc:
+                logger.debug("Span %s-%s embedding failed: %s", s0, s1, exc)
+                continue
+            out[i] = emb / (np.linalg.norm(emb) + 1e-8)
+        return out
+
+
     def diarize(
         self,
         audio_path: Union[str, Path],

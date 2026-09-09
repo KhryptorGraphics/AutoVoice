@@ -505,7 +505,31 @@ class SingingConversionPipeline:
             logger.info("Speaker diarizer loaded")
         return self._diarizer
 
-    def _select_speaker_spans(self, result, voc_mono, sr, preserve=None):
+    @staticmethod
+    def _load_song_mono(song_path, sr):
+        """Mono original mix for the voice-category gates; None if unavailable.
+
+        The spectral-centroid gates need the ORIGINAL MIX (not the separated
+        vocal stem) because they measure where each cluster's spectral energy
+        sits relative to the whole accompaniment.
+        """
+        import soundfile as sf
+        if not song_path:
+            return None
+        try:
+            import librosa
+            y, native_sr = librosa.load(
+                str(song_path), sr=sr, mono=True)
+            if y.size == 0:
+                return None
+            return y
+        except Exception as exc:
+            logger.info("Multi-speaker: mix unavailable for voice-category "
+                        "gates (%s); gates will no-op", exc)
+            return None
+
+    def _select_speaker_spans(self, result, voc_mono, sr, preserve=None,
+                              song_path=None):
         """Partition diarization segments into lead vs backing spans.
 
         ``preserve`` lists diarization cluster ids whose voice is already the
@@ -526,6 +550,27 @@ class SingingConversionPipeline:
         textures the fork engine would butcher (it needs clean F0), so they
         stay original as backing. Calibrated margin: leads 0.76-0.87 vs
         keep-cases 0.14-0.51, threshold 0.65.
+
+        Voice-category gate (2026-09-07, Zendaya "All of Me" duet): the
+        voiced-fraction test measures melody CLEANLINESS, not whether the
+        voice category is convertible. A male co-vocal on a duet is perfectly
+        monophonic (vf ~0.7+) yet un-convertible by a model trained only on
+        the female target. Discriminator: median spectral centroid of the
+        ORIGINAL MIX over each cluster's spans (loud frames only); a cluster
+        >= ``multi_speaker_voice_category_ratio`` (2.0, one octave) darker
+        than the primary's is preserved verbatim. Works through piano where
+        per-cluster f0 does not (yin octave errors), but collapses on dense
+        orchestral mixes where both voices share the register.
+
+        Embedding reassignment (2026-09-07, Beauty and the Beast duet): on
+        dense mixes the centroid gate's separation collapses (male 2376-2532
+        Hz vs female 2607 Hz), so the male spans stay in the lead cluster and
+        get re-sung through the wrong model (measured f0 corr 0.072 on male
+        frames). WavLM timbre embeddings from the ORIGINAL MIX discriminate
+        overlapping-register voices that pitch statistics cannot: primary spans
+        whose embedding is closer to the preserved-cluster centroid than the
+        primary centroid (by ``multi_speaker_embedding_margin``) move to
+        kept-original backing.
 
         Non-primary segments shorter than ``multi_speaker_min_segment_s``
         (default 2s) are reassigned to the lead (blip policy). Lead segments
@@ -559,6 +604,12 @@ class SingingConversionPipeline:
                 return None
 
         preserved = set()
+        # Span-granularity preserve: an explicit time range ("39-77") does NOT
+        # resolve to a whole cluster. When two singers share a diarization
+        # cluster (overlapping registers), cluster resolution drags in the
+        # wrong singer. A range token carves out EXACTLY those seconds as
+        # kept-original backing, regardless of which cluster labels them.
+        preserve_ranges: list = []
         for item in (preserve or []):
             item = str(item).strip()
             if not item:
@@ -573,19 +624,9 @@ class SingingConversionPipeline:
                 logger.warning("Preserve token %r matches no cluster and is not "
                                "a valid time range; ignored", item)
                 continue
-            best, best_ov = None, 0.0
-            for spk in speakers:
-                ov = sum(max(0.0, min(seg.end, hi_s) - max(seg.start, lo_s))
-                         for seg in result.get_speaker_segments(spk))
-                if ov > best_ov:
-                    best, best_ov = spk, ov
-            if best is not None:
-                logger.info("Preserve range %s -> cluster %s (%.1fs overlap)",
-                            item, best, best_ov)
-                preserved.add(best)
-            else:
-                logger.warning("Preserve range %s overlaps no diarized singing; "
-                               "ignored", item)
+            preserve_ranges.append((lo_s, hi_s))
+            logger.info("Preserve range %s -> kept-original backing spans "
+                        "(%.1f-%.1fs), not whole cluster", item, lo_s, hi_s)
         candidates = [s for s in speakers if s not in preserved]
         if not candidates:
             logger.info(
@@ -595,12 +636,47 @@ class SingingConversionPipeline:
         primary = max(candidates, key=result.get_speaker_total_duration)
         min_seg = float(self.config.get('multi_speaker_min_segment_s', 2.0))
         merge_voiced = float(self.config.get('multi_speaker_merge_voiced_min', 0.65))
+        category_ratio = float(self.config.get(
+            'multi_speaker_voice_category_ratio', 2.0))
 
-        # Convertibility role per non-primary cluster. Clusters with <1.5s of
-        # active audio skip measurement (pyin is unreliable there); the blip
-        # policy below covers them.
+        mix_mono = self._load_song_mono(song_path, sr)
+
+        def _mix_centroid(spans):
+            """Median spectral centroid of the original mix over these spans,
+            loud frames only; None when there isn't enough signal."""
+            import librosa as _lr
+            if mix_mono is None:
+                return None
+            pieces, total = [], 0
+            for s0, e0 in sorted(spans):
+                lo, hi = int(s0 * sr), int(e0 * sr)
+                if hi > len(mix_mono):
+                    hi = len(mix_mono)
+                if hi <= lo:
+                    continue
+                pieces.append(mix_mono[lo:hi])
+                total += hi - lo
+                if total >= int(25 * sr):
+                    break
+            if total < int(1.5 * sr):
+                return None
+            y = np.concatenate(pieces)[:int(25 * sr)]
+            c = _lr.feature.spectral_centroid(y=y, sr=sr)[0]
+            r = _lr.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
+            loud = r > np.percentile(r, 50)
+            idx = loud[:len(c)] if len(loud) >= len(c) else np.zeros(len(c), bool)
+            if not idx.any():
+                return None
+            return float(np.median(c[idx]))
+
+        # Role per non-primary cluster. Clusters with <1.5s of active audio
+        # skip measurement (pyin is unreliable there); the blip policy below
+        # covers them.
         roles, voiced = {}, {}
         merged_speakers = set()
+        primary_spans_all = [(s.start, s.end)
+                             for s in result.get_speaker_segments(primary)]
+        primary_centroid = _mix_centroid(primary_spans_all)
         for spk in speakers:
             if spk == primary:
                 continue
@@ -610,6 +686,16 @@ class SingingConversionPipeline:
             spans = [(s.start, s.end) for s in result.get_speaker_segments(spk)]
             active = _active_audio(voc_mono, sr, spans)
             if len(active) < int(1.5 * sr):
+                continue
+            c = _mix_centroid(spans)
+            if (primary_centroid is not None and c is not None
+                    and primary_centroid / c >= category_ratio):
+                roles[spk] = 'preserved'
+                preserved.add(spk)
+                logger.info(
+                    "Multi-speaker: cluster %s voice category %.0f Hz vs "
+                    "primary %.0f Hz (>= %.1fx) -> preserved verbatim, "
+                    "not merged", spk, c, primary_centroid, category_ratio)
                 continue
             vf = _voiced_fraction(active, sr)
             voiced[spk] = round(vf, 3)
@@ -633,6 +719,199 @@ class SingingConversionPipeline:
                 reassigned += 1
             else:
                 backing_spans.append(span)
+
+        # Span-granularity time-range preserve: carve out EXACTLY the
+        # operator-named seconds (e.g. the male verses) from the converted
+        # lead. The lead (primary) cluster wins these spans by default;
+        # split each primary span against the ranges so in-range seconds
+        # ride as kept-original backing instead of being re-sung.
+        if preserve_ranges:
+            kept_primary: list = []
+            moved_s = 0
+            for sp_start, sp_end in primary_spans:
+                # clip span to the union of preserve ranges once
+                pieces = [(sp_start, sp_end)]
+                for lo_s, hi_s in sorted(preserve_ranges):
+                    next_pieces = []
+                    for a, b in pieces:
+                        if b <= lo_s or a >= hi_s:
+                            next_pieces.append((a, b))
+                            continue
+                        if a < lo_s:
+                            next_pieces.append((a, lo_s))
+                        preserved_spans.append((max(a, lo_s), min(b, hi_s)))
+                        moved_s += min(b, hi_s) - max(a, lo_s)
+                        if b > hi_s:
+                            next_pieces.append((hi_s, b))
+                    pieces = next_pieces
+                kept_primary.extend(pieces)
+            primary_spans = kept_primary
+            logger.info(
+                "Multi-speaker: time-range preserve carved %.1fs out of the "
+                "converted lead as kept-original backing", moved_s)
+
+        # Embedding-based span reassignment (2026-09-07, Beauty and the Beast
+        # duet): a second pass on the lead spans. Cluster-level gates route by
+        # PITCH statistics, which collapse when the singers share a register
+        # (light tenor ~300-330 Hz vs mezzo ~330-350 Hz). WavLM embeddings from
+        # the ORIGINAL MIX measure timbre instead: each primary span is
+        # compared against the centroids of the preserved (kept-original)
+        # clusters vs the primary cluster, and spans whose embedding sits
+        # closer to the preserved side (by the margin factor) move to backing,
+        # where they are left original rather than re-sung through the wrong
+        # model. No-op unless preserved clusters exist AND the diarizer can
+        # produce span embeddings.
+        embedding_moved = 0
+        if (self.config.get('multi_speaker_embedding_reassign', True)
+                and preserved and primary_spans and song_path is not None):
+            try:
+                diarizer = self._get_diarizer()
+            except Exception:
+                diarizer = None
+            if (diarizer is not None
+                    and hasattr(diarizer, 'extract_span_embeddings')
+                    and mix_mono is not None):
+                # Centroids: primary = the lead cluster's own spans;
+                # preserved = every kept-original cluster's spans.
+                try:
+                    primary_embs = diarizer.extract_span_embeddings(
+                        mix_mono, sr, primary_spans)
+                except Exception as exc:
+                    logger.warning(
+                        "Embedding reassignment skipped (%s)", exc)
+                    primary_embs = None
+                preserved_cent = None
+                pres_spans_all = []
+                for spk in sorted(preserved):
+                    pres_spans_all.extend(
+                        (s.start, s.end)
+                        for s in result.get_speaker_segments(spk))
+                if pres_spans_all:
+                    try:
+                        pres_embs = diarizer.extract_span_embeddings(
+                            mix_mono, sr, pres_spans_all)
+                        pres_embs = pres_embs[
+                            np.linalg.norm(pres_embs, axis=1) > 0.9]
+                        if len(pres_embs) > 0:
+                            preserved_cent = np.mean(pres_embs, axis=0)
+                            preserved_cent = preserved_cent / (
+                                np.linalg.norm(preserved_cent) + 1e-8)
+                    except Exception as exc:
+                        logger.debug(
+                            "Preserved centroid extraction failed: %s", exc)
+                if (primary_embs is not None
+                        and len(primary_embs) == len(primary_spans)
+                        and preserved_cent is not None):
+                    valid = np.linalg.norm(primary_embs, axis=1) > 0.9
+                    if valid.any():
+                        primary_cent = np.mean(primary_embs[valid], axis=0)
+                        primary_cent = primary_cent / (
+                            np.linalg.norm(primary_cent) + 1e-8)
+
+                        # Window-level comparison. The diarizer's segments
+                        # are coarse: one "span" can straddle a singer
+                        # handoff (on Beauty and the Beast, one 45s primary
+                        # span held ~38s of male then ~7s of female). A
+                        # single whole-segment embedding averages the two
+                        # voices into the middle and can't be reclassified,
+                        # so compare short windows instead - the same 1-4s
+                        # granularity the calibration used. A window whose
+                        # embedding sits closer to the preserved centroid
+                        # than to the primary centroid (by the margin
+                        # factor) is a different voice singing inside the
+                        # lead's span set: it moves to kept-original backing
+                        # instead of being re-sung through the wrong model.
+                        win = float(self.config.get(
+                            'multi_speaker_embedding_window_s', 4.0))
+                        margin = float(self.config.get(
+                            'multi_speaker_embedding_margin', 0.9))
+
+                        # Flatten primary spans into windows, remembering
+                        # which span each window came from.
+                        window_spans = []
+                        window_owner = []
+                        for s0, s1 in primary_spans:
+                            t = s0
+                            while t < s1:
+                                window_spans.append((t, min(t + win, s1)))
+                                window_owner.append((s0, s1))
+                                t += win
+
+                        # Embed windows (short ones stay with the lead -
+                        # WavLM is unstable under ~1.5s and the blip policy
+                        # already covers them).
+                        window_embs = []
+                        for w0, w1 in window_spans:
+                            if w1 - w0 < 1.5:
+                                window_embs.append(None)
+                                continue
+                            try:
+                                e = diarizer.extract_span_embeddings(
+                                    mix_mono, sr, [(w0, w1)])[0]
+                            except Exception:
+                                e = None
+                            if e is None or float(np.linalg.norm(e)) < 0.9:
+                                e = None
+                            window_embs.append(e)
+
+                        # Reassign per window. Moved windows are collected
+                        # and merged into contiguous spans (a singer handoff
+                        # is a run of windows, not isolated fragments); kept
+                        # windows are merged back into their source span so
+                        # the converted lead isn't fragmented.
+                        moved_windows = []
+                        kept_by_span: dict = {}
+                        for (w0, w1), owner, e in zip(
+                                window_spans, window_owner, window_embs):
+                            if e is not None:
+                                # Distance (1 - clipped cosine sim) to each
+                                # centroid; clipping keeps it in [0, 2] so a
+                                # window that IS the primary voice (d == 0)
+                                # can never be reassigned by float noise.
+                                d_primary = 1.0 - float(np.clip(
+                                    np.dot(e, primary_cent), -1.0, 1.0))
+                                d_preserved = 1.0 - float(np.clip(
+                                    np.dot(e, preserved_cent), -1.0, 1.0))
+                                if d_preserved < d_primary * margin:
+                                    moved_windows.append((w0, w1))
+                                    embedding_moved += 1
+                                    continue
+                            kept_by_span.setdefault(owner, []).append(
+                                (w0, w1))
+
+                        if embedding_moved:
+                            # Merge contiguous moved windows into spans.
+                            moved_windows.sort()
+                            moved_spans = [moved_windows[0]]
+                            for ws, we in moved_windows[1:]:
+                                if ws <= moved_spans[-1][1] + 1e-3:
+                                    moved_spans[-1] = (moved_spans[-1][0],
+                                                       max(moved_spans[-1][1], we))
+                                else:
+                                    moved_spans.append((ws, we))
+                            preserved_spans.extend(moved_spans)
+                            new_primary = []
+                            for s0, s1 in primary_spans:
+                                kept = kept_by_span.get((s0, s1))
+                                if not kept:
+                                    continue  # whole span moved to backing
+                                # Merge contiguous kept windows back into
+                                # one span per run.
+                                run = [kept[0]]
+                                for ws, we in kept[1:]:
+                                    if ws <= run[-1][1] + 1e-3:
+                                        run[-1] = (run[-1][0],
+                                                   max(run[-1][1], we))
+                                    else:
+                                        run.append((ws, we))
+                                new_primary.extend(run)
+                            primary_spans = new_primary
+                            logger.info(
+                                "Multi-speaker: %d lead window(s) moved to "
+                                "preserved backing by embedding reassignment "
+                                "(%d span(s) kept in lead)",
+                                embedding_moved, len(new_primary))
+
 
         # Clip backing spans against the lead's spans: overlapping regions must
         # not land in both tracks, or that audio plays twice in the output
@@ -693,6 +972,13 @@ class SingingConversionPipeline:
         if preserved:
             info['preserved_speakers'] = sorted(preserved)
             info['preserved_s'] = round(sum(e - s for s, e in preserved_spans), 1)
+        if preserve_ranges:
+            info['preserved_time_ranges'] = \
+            [[round(lo, 2), round(hi, 2)] for lo, hi in preserve_ranges]
+            info['preserved_s'] = round(
+                sum(e - s for s, e in preserved_spans), 1)
+        if embedding_moved:
+            info['embedding_reassigned_spans'] = embedding_moved
         return primary_spans, backing_spans, info
 
     def _multi_speaker_enabled(self, override: Optional[bool] = None) -> bool:
@@ -1321,7 +1607,8 @@ class SingingConversionPipeline:
         return (np.asarray(converted, dtype=np.float32) * gain).astype(np.float32)
 
     def _convert_multi_speaker(self, voc_mono, sr, target_profile_id, mm, pitch_shift,
-                               convert_backing=None, preserve_speakers=None):
+                               convert_backing=None, preserve_speakers=None,
+                               song_path=None):
         """Convert the lead vocal per-speaker; keep backing vocals as original.
 
         Diarizes the mono vocal stem, converts the primary speaker (most total
@@ -1380,7 +1667,8 @@ class SingingConversionPipeline:
 
             result = self._get_diarizer().diarize(tmp)
             selection = self._select_speaker_spans(
-                result, voc_for_spans, sr, preserve=preserve_speakers)
+                result, voc_for_spans, sr, preserve=preserve_speakers,
+                song_path=song_path)
             if selection is None:
                 if simul_backing is None:
                     return None
@@ -1592,7 +1880,8 @@ class SingingConversionPipeline:
             ms = self._convert_multi_speaker(
                 voc_mono, sr, target_profile_id, mm, pitch_shift,
                 convert_backing=convert_backing,
-                preserve_speakers=preserve_speakers)
+                preserve_speakers=preserve_speakers,
+                song_path=song_path)
             if ms is not None:
                 converted, multi_speaker_info = ms
                 # Pop before anything serialises info: it carries audio, not

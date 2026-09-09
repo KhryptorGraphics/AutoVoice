@@ -68,3 +68,23 @@ multi_speaker_karaoke_leak_voiced_min: 0.65
 # conversion leaves no original residual between notes (per-line comb swaps
 # audibly speckle the source voice through doubles-heavy tracks).
 multi_speaker_backing_whole_voiced_min: 0.7
+
+
+# Embedding-based span reassignment for multi-speaker conversion
+# Used when cluster-level spectral centroid gate cannot separate overlapping-register voices
+# (e.g. light tenor vs Mezzo-Soprano sharing similar pitch ranges)
+multi_speaker_embedding_reassign: true
+  # If True, reassign primary spans whose wavlm embeddings are closer to the
+  # preserved-speaker centroid than the primary centroid (by margin).
+  # Set to False to disable and rely only on spectral centroid gating.
+multi_speaker_embedding_margin: 0.9
+  # Margin factor for embedding distance comparison.
+  # A span is reassigned to backing if: dist_to_preserved < dist_to_primary * margin
+  # Higher values (up to 1.0) are more aggressive about reassigning;
+  # lower values (e.g. 0.7) are more conservative.
+multi_speaker_embedding_window_s: 4.0
+  # Window (seconds) the reassignment subdivides lead spans into. Diarizer
+  # segments straddle singer handoffs (one 45s span held ~38s male + ~7s
+  # female on the B&B duet), so whole-segment embeddings average the voices
+  # and can't reclassify. 4s windows resolve the handoff (calibration used
+  # 1s blocks); windows under 1.5s are not embedded at all.

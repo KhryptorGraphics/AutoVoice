@@ -45,6 +45,11 @@ class FakeDiarizer:
     def diarize(self, path, **kwargs):
         return self._result
 
+    def extract_span_embeddings(self, spans):
+        """Fallback: return zero embeddings for spans."""
+        import numpy as np
+        return np.zeros((len(spans), 256), dtype=np.float32)
+
 
 class TestVoicedFraction:
     def test_sine_is_voiced(self):
@@ -699,10 +704,11 @@ class TestPreserveSpeakers:
         assert not called, "span backing with preserved voices must not be re-voiced"
         assert info['backing_mode'] == 'kept'
 
-    def test_preserve_by_time_range_resolves_cluster(self, monkeypatch):
-        # Cluster labels are not stable run-to-run; a time range where the
-        # already-target singer performs must resolve to whichever cluster
-        # owns that range in this run's diarization.
+    def test_preserve_by_time_range_carves_seconds(self, monkeypatch):
+        # A time range where the already-target singer performs keeps EXACTLY
+        # those seconds as original (span granularity), not the whole cluster
+        # that happens to dominate the range. This is what makes time ranges
+        # usable when the two singers share a diarization cluster.
         sr = 8000
         voc = np.zeros(12 * sr, dtype=np.float32)
         voc[:int(11 * sr)] = 0.5
@@ -714,9 +720,10 @@ class TestPreserveSpeakers:
                                        preserve_speakers=['0:07-0:10'])
         assert out is not None
         _, info = out
-        assert info['preserved_speakers'] == ['SPEAKER_01']
+        assert info['preserved_time_ranges'] == [[7.0, 10.0]]
         assert info['primary_speaker'] == 'SPEAKER_00'
-        assert info['roles']['SPEAKER_01'] == 'preserved'
+        assert info['preserved_s'] >= 3.0
+        assert info['backing_s'] >= 3.0
 
     def test_all_clusters_preserved_falls_back(self, monkeypatch):
         sr = 8000
@@ -767,3 +774,291 @@ class TestConvertBackingWiring:
         assert seen['called'] is True
         assert out[1]['backing_mode'] == 'converted'
         assert out[1]['harmony_lines'] == {'detected': 2, 'converted': 2}
+
+
+def _overlap_lookup(span_map):
+    """Return fn(spans) -> embeddings, keying on which span_map entry each
+    requested span overlaps most (window-level calls map to their span)."""
+    def lookup(spans):
+        out = []
+        for (s0, s1) in spans:
+            best, best_ov = None, 0.0
+            for (m0, m1), emb in span_map.items():
+                ov = min(s1, m1) - max(s0, m0)
+                if ov > best_ov:
+                    best, best_ov = emb, ov
+            out.append(best if best is not None else np.zeros(256, np.float32))
+        return np.array(out, np.float32)
+    return lookup
+
+
+class TestVoiceCategoryGate:
+    """Cluster-level mix-centroid gate: an octave-darker cluster is kept
+    original, not merged into the converted lead (Zendaya duet case)."""
+
+    def test_octave_darker_cluster_preserved(self, monkeypatch):
+        import auto_voice.inference.singing_conversion_pipeline as m
+        patch_voiced(monkeypatch, 0.9)  # male melody is perfectly clean
+        p = make_pipeline()
+        result = make_result([
+            (0.0, 30.0, 'SPEAKER_00'),   # lead (female), bright mix
+            (30.0, 60.0, 'SPEAKER_01'),  # male, dark mix (centroid ratio 4x)
+        ])
+        # Deterministic route: patch librosa feature extraction.
+        import librosa as lr
+        # call order: primary centroid, primary rms, male centroid, male rms
+        cents = [3000.0, 750.0]
+        idx = {'c': 0}
+
+        class FakeFeat:
+            @staticmethod
+            def spectral_centroid(y=None, sr=None):
+                i = idx['c']
+                idx['c'] += 1
+                n = int(1.0 * sr / 512)
+                # 2-D like real librosa (pipeline takes [0])
+                return np.full((1, max(n, 1)),
+                               cents[min(i, len(cents) - 1)])
+
+            @staticmethod
+            def rms(y=None, sr=None, **kw):
+                n = max(len(y) // 512, 1)
+                return (0.5 + 0.4 * np.cos(np.arange(n)))[np.newaxis, :]
+
+        monkeypatch.setattr(lr, 'feature', FakeFeat())
+        monkeypatch.setattr(
+            p, '_load_song_mono',
+            lambda path, sr: np.ones(60 * sr, np.float32) * 0.1)
+
+        primary, backing, info = p._select_speaker_spans(
+            result, VOC, VOC_SR, song_path='fake.wav')
+        assert info['roles'] == {'SPEAKER_01': 'preserved'}
+        # male spans (30-60) must NOT be in primary
+        assert not any(s < 60.0 and e > 30.0 for s, e in primary)
+        assert (30.0, 60.0) in backing
+        assert info['preserved_speakers'] == ['SPEAKER_01']
+
+    def test_similar_centroid_not_preserved(self, monkeypatch):
+        import auto_voice.inference.singing_conversion_pipeline as m
+        import librosa as lr
+        patch_voiced(monkeypatch, 0.9)
+        p = make_pipeline()
+        result = make_result([
+            (0.0, 30.0, 'SPEAKER_00'),
+            (30.0, 60.0, 'SPEAKER_01'),
+        ])
+        class FakeFeat:
+            @staticmethod
+            def spectral_centroid(y=None, sr=None):
+                n = int(1.0 * sr / 512)
+                return np.full((1, max(n, 1)), 3000.0)  # identical centroids
+
+            @staticmethod
+            def rms(y=None, sr=None, **kw):
+                n = max(len(y) // 512, 1)
+                return (0.5 + 0.4 * np.cos(np.arange(n)))[np.newaxis, :]
+
+        monkeypatch.setattr(lr, 'feature', FakeFeat())
+        monkeypatch.setattr(
+            p, '_load_song_mono',
+            lambda path, sr: np.ones(60 * sr, np.float32) * 0.1)
+
+        out = p._select_speaker_spans(result, VOC, VOC_SR, song_path='fake.wav')
+        # ratio 1.0 < 2.0 -> male merges into lead as convertible; with no
+        # other backing the multi-speaker path declines (single-stem).
+        assert out is None
+
+
+class TestEmbeddingReassignment:
+    """WavLM-span reassignment: lead spans closer to a preserved cluster's
+    timbre move to kept-original backing (Beauty and the Beast case)."""
+
+    def _pipeline_with_embeddings(self, monkeypatch, span_embs):
+        """span_embs: dict span-index -> 256-dim vector. FakeDiarizer returns
+        them; zero row for unlisted spans (skipped by the norm check)."""
+        patch_voiced(monkeypatch, 0.9)
+        p = make_pipeline(multi_speaker_voice_category_ratio=99.0)
+        # centroid gate no-op'd (ratio 99): male cluster must pass through to
+        # the embedding stage as lead_merge or backing — we force the
+        # preserved set by patching the config preserve token instead.
+    def test_span_moves_to_preserved_cluster(self, monkeypatch):
+        import numpy.random as npr
+        rng = npr.default_rng(0)
+        female = rng.standard_normal(256).astype(np.float32)
+        female /= np.linalg.norm(female)
+        male = -female  # maximally distinct timbre (normalized)
+
+        p = make_pipeline(multi_speaker_voice_category_ratio=99.0)
+        result = make_result([
+            (0.0, 30.0, 'SPEAKER_00'),   # primary (female)
+            (30.0, 60.0, 'SPEAKER_01'),  # male -> explicit preserve token
+        ])
+        span_map = {
+            (0.0, 30.0): female,   # real female span
+            (30.0, 60.0): male,    # male span mislabeled into primary
+        }
+        # Force the male cluster's spans to be primary-labeled:
+        # give SPEAKER_01 spans inside the primary set by making the primary
+        # cluster hold a misdiarized male segment. Simpler: use explicit
+        # preserve on SPEAKER_01 and a misdiarized male span (60-70) in the
+        # primary cluster.
+        result = make_result([
+            (0.0, 30.0, 'SPEAKER_00'),   # female
+            (30.0, 60.0, 'SPEAKER_01'),  # male, preserved via token
+            (60.0, 90.0, 'SPEAKER_00'),  # female
+            (90.0, 100.0, 'SPEAKER_00'), # male span mislabeled as lead
+        ])
+        span_map = {
+            (0.0, 30.0): female,
+            (30.0, 60.0): male,
+            (60.0, 90.0): female,
+            (90.0, 100.0): male,  # this span should move to backing
+        }
+        class EmbDiarizer(FakeDiarizer):
+            lookup = staticmethod(_overlap_lookup(span_map))
+
+            def extract_span_embeddings(self, audio, sr, spans):
+                return self.lookup(spans)
+
+        p._diarizer = EmbDiarizer(result)
+        # _load_song_mono: fake mix so the embedding stage runs
+        monkeypatch.setattr(
+            p, '_load_song_mono',
+            lambda path, sr: np.ones(110 * sr, np.float32) * 0.1)
+
+        primary, backing, info = p._select_speaker_spans(
+            result, VOC, VOC_SR, preserve=['SPEAKER_01'],
+            song_path='fake.wav')
+        # the mislabeled male span moved out of the lead at window
+        # granularity: 4s windows 90-94, 94-98, 98-100 all embed as male
+        # (each >= 1.5s) and merge back into the whole 90-100 span
+        assert (90.0, 100.0) in backing
+        assert (90.0, 100.0) not in primary
+        assert (0.0, 30.0) in primary   # real female spans stay
+        assert (60.0, 90.0) in primary
+        assert info.get('embedding_reassigned_spans', 0) == 3
+        assert info['preserved_speakers'] == ['SPEAKER_01']
+
+    def test_all_female_keeps_spans_in_lead(self, monkeypatch):
+        import numpy.random as npr
+        rng = npr.default_rng(1)
+        female = rng.standard_normal(256).astype(np.float32)
+        female /= np.linalg.norm(female)
+        p = make_pipeline(multi_speaker_voice_category_ratio=99.0)
+        result = make_result([
+            (0.0, 30.0, 'SPEAKER_00'),
+            (30.0, 60.0, 'SPEAKER_01'),  # preserve token; female timbre
+        ])
+        second = female + 0.01 * rng.standard_normal(256).astype(np.float32)
+        second /= np.linalg.norm(second)
+        span_map = {
+            (0.0, 30.0): female,
+            (30.0, 60.0): second,
+        }
+
+        class EmbDiarizer(FakeDiarizer):
+            lookup = staticmethod(_overlap_lookup(span_map))
+
+            def extract_span_embeddings(self, audio, sr, spans):
+                return self.lookup(spans)
+
+        p._diarizer = EmbDiarizer(result)
+        monkeypatch.setattr(
+            p, '_load_song_mono',
+            lambda path, sr: np.ones(70 * sr, np.float32) * 0.1)
+
+        primary, backing, info = p._select_speaker_spans(
+            result, VOC, VOC_SR, preserve=['SPEAKER_01'], song_path='fake.wav')
+        # same timbre -> nothing moved by embeddings
+        assert info.get('embedding_reassigned_spans', 0) == 0
+        assert (0.0, 30.0) in primary
+        assert (30.0, 60.0) in backing  # preserved spans always backing
+
+    def test_disabled_by_config(self, monkeypatch):
+        import numpy.random as npr
+        rng = npr.default_rng(2)
+        female = rng.standard_normal(256).astype(np.float32)
+        female /= np.linalg.norm(female)
+        male = -female
+        p = make_pipeline(multi_speaker_voice_category_ratio=99.0,
+                          multi_speaker_embedding_reassign=False)
+        result = make_result([
+            (0.0, 30.0, 'SPEAKER_00'),
+            (30.0, 60.0, 'SPEAKER_01'),
+            (60.0, 90.0, 'SPEAKER_00'),
+            (90.0, 100.0, 'SPEAKER_00'),  # male mislabeled as lead
+        ])
+
+        class EmbDiarizer(FakeDiarizer):
+            def extract_span_embeddings(self, audio, sr, spans):
+                raise AssertionError("must not extract when disabled")
+
+        p._diarizer = EmbDiarizer(result)
+        monkeypatch.setattr(
+            p, '_load_song_mono',
+            lambda path, sr: np.ones(80 * sr, np.float32) * 0.1)
+
+        primary, backing, info = p._select_speaker_spans(
+            result, VOC, VOC_SR, preserve=['SPEAKER_01'], song_path='fake.wav')
+        # reassignment disabled -> male span stays whole in the lead (the
+        # old failure: converted through the wrong model)
+        assert (90.0, 100.0) in primary
+        assert not any(s < 100 and e > 90 and (s, e) != (90.0, 100.0)
+                       for s, e in primary)
+
+
+class TestTimeRangePreserve:
+    """Operator-named time ranges carve EXACT seconds out of the converted
+    lead, even when the two singers share a diarization cluster."""
+
+    def test_range_carves_out_of_lead(self, monkeypatch):
+        patch_voiced(monkeypatch, 0.9)  # everything is clean melody
+        p = make_pipeline()
+        # Two segments, both in the SPEAKER_00 (primary) cluster: the lead
+        # contains both the female and the male (which would be converted).
+        result = make_result([
+            (0.0, 60.0, 'SPEAKER_00'),
+            (60.0, 120.0, 'SPEAKER_01'),
+        ])
+        primary, backing, info = p._select_speaker_spans(
+            result, VOC, VOC_SR, preserve=['39-45'],
+            song_path=None)
+        # 39-45 carved out verbatim; the rest of lead stays primary
+        assert (39.0, 45.0) in backing
+        assert (39.0, 45.0) not in primary
+        assert (0.0, 39.0) in primary
+        assert (45.0, 60.0) in primary
+        assert info['preserved_time_ranges'] == [[39.0, 45.0]]
+        assert info['preserved_s'] >= 5.0
+
+    def test_range_clips_to_span_boundaries(self, monkeypatch):
+        patch_voiced(monkeypatch, 0.9)
+        p = make_pipeline()
+        result = make_result([
+            (0.0, 60.0, 'SPEAKER_00'),
+            (60.0, 120.0, 'SPEAKER_01'),
+        ])
+        primary, backing, _ = p._select_speaker_spans(
+            result, VOC, VOC_SR, preserve=['55-65'],
+            song_path=None)
+        # carve clips to the actual lead span: 55-60 inside first span
+        assert (55.0, 60.0) in backing
+        # and 60-65 inside second span
+        assert (60.0, 65.0) in backing
+        assert (0.0, 55.0) in primary
+        assert (65.0, 120.0) in primary
+
+    def test_cluster_token_still_works(self, monkeypatch):
+        patch_voiced(monkeypatch, 0.9)
+        p = make_pipeline()
+        result = make_result([
+            (0.0, 60.0, 'SPEAKER_00'),
+            (60.0, 120.0, 'SPEAKER_01'),
+        ])
+        primary, backing, info = p._select_speaker_spans(
+            result, VOC, VOC_SR, preserve=['SPEAKER_01'],
+            song_path=None)
+        assert info['preserved_speakers'] == ['SPEAKER_01']
+        assert (60.0, 120.0) in backing
+        assert (60.0, 120.0) not in primary
+        assert 'preserved_time_ranges' not in info
