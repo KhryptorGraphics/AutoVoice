@@ -373,3 +373,39 @@ Renders on disk: `data/conversions/{c23927f0-…(Hero, full chain, stems), d06bd
 - The user's ear is the final gate. Measurements decide what to build, not
   whether it shipped well.
 - Terse. Code first, then at most a few lines. No essays unless asked for a report.
+
+---
+
+## 11. Model-recipe workstream (AV-6sxy) — landed 2026-09-09, separate from the output chain above
+
+**Status: RESOLVED with a 2×2 + replication + averaging, all pushed.** The tracked
+record is in `docs/served-models.md` (sections "The 2x2 that settles it", "The data
+re-test at the corrected LR", "The control run that reattributes the cause") and in
+the `AV-6sxy` bead body. Full checkpoint set: `data/fork_models/_candidates_fb17af66_20260904/`
+(each a G+D pair; the fork silently random-inits from a G-only dir — never resume one).
+A recreated scorecard (`score2.py`, identical math to the lost `measure2.py`) and a
+rebuilt identity centroid (`brandy_centroid_rebuilt.npy`, from the 76 sample uploads)
+live in that dir too. All 25 renders are in `renders_hero20/`.
+
+Headlines: (1) fine-tuning this converged seed at LR 1e-4 drifts it 2.3 dB in 6-8k and
+costs the whole aperiodicity regression; 2e-5 mostly avoids that — but ONLY in the
+zero-fresh-data case. (2) With the 2026-09-05 new material present, 6-8k is data-driven
+and LR-insensitive (st4 -17.7 @1e-4 vs st4lr -18.2 @2e-5): the data penalty is 4.2 dB
+and nearly doubled once the recipe was fixed. (3) `fmax` tracks fresh-data *volume*,
+not bandwidth/LR/loss — measured directly on corpus_v3 (full-band, speech median 22.1k)
+yet it yields the LOWEST ceiling. (4) Checkpoint averaging (ctl+lowlr arms) did NOT beat
+its parents. (5) The LR-2e-5 advantage over 1e-4 is clip-dependent (~0.8 dB, within
+clip-to-clip variation on the 15-render replication) — do not build on it.
+
+Serving remains **ep235**, unchanged since 2026-09-04. Closest challenger is `lowlr`
+(2e-5, no new data). **Nobody has listened to any render** — every conclusion is
+metric-only; `renders_hero20/` is there for a perceptual A/B before any further GPU
+spend.
+
+**Env note for any future box rebuild** (this bit us twice): so-vits-svc-fork 4.2.30
+breaks on librosa 1.x (`get_duration() got an unexpected keyword argument 'filename'`)
+— pin `librosa==0.10.2.post1`. And `torchaudio` must match the torch CUDA build or the
+CLI dies on `libcudart.so.13` (fix: `pip install "torchaudio==2.8.0+cu128" --no-deps
+--index-url https://download.pytorch.org/whl/cu128`). Also `warmup_epochs` /
+`init_lr_ratio` in the config are DEAD KEYS — `train.py` never reads them; warmup needs
+a code patch, and a lower flat LR is the implementable equivalent.
