@@ -698,3 +698,34 @@ delivered mix plus a measured delta, so only the tested variable differs.
 
 Registration helper: `scripts/register_render.py` (argparse, `DATA_DIR`-aware, uuid5-keyed so
 re-runs replace rather than duplicate, and it preserves anything you set in the GUI).
+
+### st2f variant disambiguation (2026-09-09/10, this session)
+
+Two `st2f*` checkpoint dirs exist from parallel Phase-C efforts on the rebuilt box.
+Disambiguated by runtime LR (both confirmed 2e-5-class arms): `st2f_2e5/G_139` (139
+epochs, seed corpus only) and `st2f_2file/G_120` (120 epochs, 2-file corpus per the
+Phase-C spec above). Rendered both on clip_conor — the doc's Phase-C differentiator —
+and scored against the seed:
+
+| | 6-8k | 8-12k | fmax | aper 2-6k | aper 6-12k | identity |
+|---|---|---|---|---|---|---|
+| seed G_135 | -16.8 | -30.9 | 16.8k | 0.610 | 0.778 | 0.614 |
+| st2f_2e5 G_139 | **-15.2** | **-27.1** | **22.1k** | 0.617 | 0.773 | 0.617 |
+| st2f_2file G_120 | -19.7 | -31.0 | 16.8k | 0.586 | 0.757 | 0.648 |
+
+**st2f_2e5 (seed corpus, no additions, LR 2e-5) BEATS THE SEED on every axis of this
+clip**: 6-8k +1.6 dB, 8-12k +3.8 dB, fmax 22.1k (the corpus ceiling — the no-data arms
+never exceed ~15k), aperiodicity level, and identity at parity. This is the first
+checkpoint in the entire investigation that is not merely a challenger: it wins on
+every measured axis in this head-to-head, and it uses zero new material — the exact
+combination the 2×2 predicted would be safest (gentle LR, no data penalty). Its fmax
+also contradicts the earlier "fmax needs ≥2 fresh files" bracket: on the rebuilt
+corpus, 0 additions at 2e-5 held 22.1k. The rebuilt corpus (77 speech uploads) is NOT
+byte-identical to corpus_v3, so this cannot be promoted over ep235 on metrics alone —
+but it is the first candidate that justifies a perceptual A/B, and it re-opens the
+"gentle LR + original-only data" path the 2×2 had closed.
+
+Caveats: single clip (conor — the strongest differentiator in the existing tables),
+rebuilt corpus (not corpus_v3), metric-only, identity vs the rebuilt centroid
+(not the lost one). Render: `renders_hero20/cmp_st2f2e5_conor.wav` vs
+`renders_hero20/rep_v3_uv_bright_G_135_clip_conor_30s.wav`.
