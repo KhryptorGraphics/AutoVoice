@@ -460,6 +460,36 @@
       },
       "selected_adapter": "unified",
       "version": "1.0"
+    },
+    "st2f_2e5_G_139": {
+      "active_model_type": "full_model",
+      "created_at": "2026-09-10T00:00:00+00:00",
+      "epoch": 139,
+      "id": "st2f_2e5_G_139",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": null,
+        "model_path": "data/trained_models/fb17af66-st2f_2e5_G_139.pth",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": null
+      }
+    },
+    "st2f_2file_G_120": {
+      "active_model_type": "full_model",
+      "created_at": "2026-09-10T00:00:00+00:00",
+      "epoch": 120,
+      "id": "st2f_2file_G_120",
+      "is_active": false,
+      "model_version": "1.0",
+      "profile_snapshot": {
+        "has_trained_model": true,
+        "loss_final": null,
+        "model_path": "data/trained_models/fb17af66-st2f_2file_G_120.pth",
+        "model_version": "1.0",
+        "runtime_artifact_manifest_path": null
+      }
     }
   }
 }
