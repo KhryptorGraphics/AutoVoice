@@ -5,6 +5,7 @@ import clsx from 'clsx'
 import { AdapterSelector, AdapterBadge } from '../components/AdapterSelector'
 import { ConversionHistoryTable } from '../components/ConversionHistoryTable'
 import { ConversionSettingsPanel } from '../components/ConversionSettingsPanel'
+import { RegisterRoutingPanel } from '../components/RegisterRoutingPanel'
 import { LiveTrainingMonitor } from '../components/LiveTrainingMonitor'
 import { PresetManager } from '../components/PresetManager'
 import { StatusBanner } from '../components/StatusBanner'
@@ -22,6 +23,7 @@ import {
   DEFAULT_CONVERSION_CONFIG,
   DEFAULT_TRAINING_CONFIG,
   type OfflinePipelineType,
+  registerProfilesForRequest,
   type TrainingConfig,
   type TrainingConfigOptions,
   type TrainingJob,
@@ -278,6 +280,12 @@ export function ConversionWorkflowPage() {
     () => profiles.filter((profile) => profile.profile_role === 'source_artist'),
     [profiles]
   )
+  // Duet register pickers: per-register routing only works on the fork lane,
+  // and the API rejects anything else, so don't offer it.
+  const trainedTargetProfiles = useMemo(
+    () => targetProfiles.filter((profile) => profile.has_trained_model && profile.fork_backed),
+    [targetProfiles]
+  )
 
   const submissionKey = useMemo(() => {
     if (!artistSong || (userVocalFiles.length === 0 && !targetProfileOverride)) return null
@@ -517,6 +525,9 @@ export function ConversionWorkflowPage() {
         ...(config.enable_multi_speaker != null ? { enable_multi_speaker: config.enable_multi_speaker } : {}),
         ...(config.convert_backing != null ? { convert_backing: config.convert_backing } : {}),
         ...(config.preserve_speakers.trim() ? { preserve_speakers: config.preserve_speakers.trim() } : {}),
+        ...(registerProfilesForRequest(config.register_profiles)
+          ? { register_profiles: registerProfilesForRequest(config.register_profiles) }
+          : {}),
       })
       const pollStatus = async () => {
         const status = await apiService.getConversionStatus(result.job_id)
@@ -625,6 +636,12 @@ export function ConversionWorkflowPage() {
     }
     toast.info(`Loaded settings from ${record.originalFileName || record.input_file}`)
   }, [toast])
+
+  // An id is not legible in a result; fall back to it only when unresolvable.
+  const profileName = useCallback(
+    (id: string) => profiles.find((p) => p.profile_id === id)?.name || id || 'unknown profile',
+    [profiles]
+  )
 
   const conversionMetadata = conversionStatus?.conversion_metadata
   const multiSpeakerInfo = conversionMetadata?.multi_speaker_info
@@ -1139,6 +1156,8 @@ export function ConversionWorkflowPage() {
                 config={config}
                 onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
                 disabled={isConverting}
+                registerProfileOptions={trainedTargetProfiles}
+                leadProfileId={workflow.resolved_target_profile_id}
               />
               <div className="rounded-lg border border-gray-700 p-4 space-y-2 text-sm text-gray-300">
                 <div>Training readiness: <strong>{formatReason(workflow.training_readiness.reason)}</strong></div>
@@ -1238,6 +1257,11 @@ export function ConversionWorkflowPage() {
                       </p>
                     </details>
                   ) : null}
+                  <RegisterRoutingPanel
+                    rows={multiSpeakerInfo?.register_routing}
+                    assignment={multiSpeakerInfo?.register_assignment}
+                    profileName={profileName}
+                  />
                   {multiSpeakerInfo?.preserved_speakers?.length ? (
                     <span
                       title="These singers' original voices were kept (already the target artist)"

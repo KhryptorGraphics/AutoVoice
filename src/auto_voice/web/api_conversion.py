@@ -47,6 +47,96 @@ def _parse_preserve_speakers(raw) -> list[str] | None:
     return tokens or None
 
 
+VOCAL_REGISTERS = ('female', 'male')
+
+
+def _parse_register_profiles(raw) -> dict | None:
+    """Normalize register_profiles input to {'female': id|None, 'male': id|None}.
+
+    Per-request duet setting: each vocal register may name its own target
+    profile. A register left null keeps the original singer's voice (the
+    existing preserve behaviour), so absent/empty/all-null means the feature is
+    off and None is returned. Accepts a dict or a JSON object string (multipart
+    form fields are always strings).
+
+    Raises ValueError on an unusable shape - a misspelled register silently
+    dropped would convert a singer the operator asked to keep.
+    """
+    if raw is None or raw == '':
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raise ValueError('register_profiles must be a JSON object')
+    if not isinstance(raw, dict):
+        raise ValueError(
+            'register_profiles must be an object keyed by vocal register'
+        )
+    unknown = sorted(k for k in raw if k not in VOCAL_REGISTERS)
+    if unknown:
+        raise ValueError(
+            f'Unknown vocal register(s) {unknown}; expected {list(VOCAL_REGISTERS)}'
+        )
+    parsed: dict[str, str | None] = {}
+    for register in VOCAL_REGISTERS:
+        value = raw.get(register)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            parsed[register] = None
+            continue
+        if not isinstance(value, str):
+            raise ValueError(
+                f'register_profiles.{register} must be a profile id string'
+            )
+        parsed[register] = value.strip()
+    if not any(parsed.values()):
+        return None
+    return parsed
+
+
+def _validate_register_profiles(root, parsed: dict | None) -> None:
+    """Every named register profile must exist and be a trained, fork-served target.
+
+    Same predicate as the primary target gate below, so a profile that cannot
+    be the primary target cannot be a register target either, plus the
+    fork-servable check the pipeline makes. The pipeline raises ConversionError
+    on an unservable id part-way through a render; rejecting here turns that
+    into a 400 at submit time instead.
+    """
+    if not parsed:
+        return
+    from ..inference import svc_fork_bridge
+    data_dir = str(current_app.config.get('DATA_DIR', 'data'))
+    for register, profile_id in parsed.items():
+        if not profile_id:
+            continue
+        try:
+            profile = root._ensure_profile_in_store(profile_id)
+        except root.ProfileNotFoundError:
+            profile = None
+        if profile is None:
+            raise ValueError(
+                f'Voice profile {profile_id} for the {register} register was not found'
+            )
+        serialized = root._serialize_profile_for_response(profile)
+        if serialized.get('profile_role') != 'target_user':
+            raise ValueError(
+                f'Profile {profile_id} for the {register} register is a source '
+                'artist profile and cannot be a conversion target'
+            )
+        if not serialized.get('has_trained_model'):
+            raise ValueError(
+                f'Profile {profile_id} for the {register} register has no '
+                'trained model. Please train the model first.'
+            )
+        if not svc_fork_bridge.is_available(profile_id, data_dir):
+            raise ValueError(
+                f'Profile {profile_id} for the {register} register is not served '
+                'by the so-vits-svc-fork engine, which per-register routing '
+                'requires. Choose a fork-backed profile or keep the original voice.'
+            )
+
+
 def _register_conversion_original_asset(
     path: str,
     *,
@@ -242,6 +332,11 @@ def convert_from_workflow(workflow_id: str):
     """Queue a conversion job using the source song and resolved target profile from a workflow."""
     root = _root()
     payload = request.get_json(silent=True) or {}
+    try:
+        register_profiles = _parse_register_profiles(payload.get('register_profiles'))
+        _validate_register_profiles(root, register_profiles)
+    except ValueError as exc:
+        return root.validation_error_response(str(exc))
     settings = {
         'preset': payload.get('preset'),
         'vocal_volume': payload.get('vocal_volume'),
@@ -254,6 +349,7 @@ def convert_from_workflow(workflow_id: str):
         'enable_multi_speaker': payload.get('enable_multi_speaker'),
         'convert_backing': payload.get('convert_backing'),
         'preserve_speakers': _parse_preserve_speakers(payload.get('preserve_speakers')),
+        'register_profiles': register_profiles,
     }
     try:
         result = root._get_conversion_workflow_manager().create_conversion_job(workflow_id, settings)
@@ -423,6 +519,17 @@ def convert_song():
         (settings_data or {}).get('preserve_speakers',
                                   request.form.get('preserve_speakers')))
 
+    # Duet: a target profile per vocal register. A register with no profile
+    # keeps the original singer's voice, which is the preserve path above, not
+    # a new one. Absent entirely -> None -> behaviour unchanged.
+    try:
+        register_profiles = _parse_register_profiles(
+            (settings_data or {}).get('register_profiles',
+                                      request.form.get('register_profiles')))
+        _validate_register_profiles(root, register_profiles)
+    except ValueError as exc:
+        return root.validation_error_response(str(exc))
+
     try:
         output_quality = root.get_param(
             settings_data,
@@ -559,6 +666,7 @@ def convert_song():
                 'enable_multi_speaker': enable_multi_speaker,
                 'convert_backing': convert_backing,
                 'preserve_speakers': preserve_speakers,
+                'register_profiles': register_profiles,
                 'preset': preset,
                 'adapter_type': adapter_type,
                 'pipeline_type': requested_pipeline,

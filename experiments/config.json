@@ -1,0 +1,8 @@
+{
+  "arm": "baseline",
+  "shifts": [],
+  "epochs": 120,
+  "batch_size": 12,
+  "eval_every": 10,
+  "note": "No augmentation. Establishes the three numbers every child is judged against."
+}

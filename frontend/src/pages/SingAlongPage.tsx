@@ -286,6 +286,7 @@ export function SingAlongPage() {
           profiles={profiles}
           disabled={profilesLoading}
           onSampleAttached={loadProfiles}
+          onProfileCreated={loadProfiles}
         />
       ) : (
         <div className="rounded-xl border border-gray-700 bg-gray-800 p-8 text-center" data-testid="singalong-empty-state">

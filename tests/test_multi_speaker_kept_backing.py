@@ -33,6 +33,17 @@ def _bare_pipeline(config):
     else here is instance-attribute mocks shadowing the real methods.
     """
     obj = object.__new__(SingingConversionPipeline)
+    # The decoder output-correction chain runs inside _convert_multi_speaker
+    # as of 2026-09-15, once per converted track and keyed on that track's own
+    # source, so the lead reaching the sum is no longer bit-identical to what
+    # mm.infer returned. These tests pin the MIXING ARITHMETIC with identity
+    # inference, so the chain is off here and the sums stay exact. The chain
+    # itself is covered by tests/test_fork_{hum_suppression,subharmonics,
+    # voice_polish}.py and tests/test_register_routing_pipeline.py.
+    config = dict(config)
+    for _flag in ('fork_hq_hum_suppress', 'fork_hq_subharmonic_suppress',
+                  'fork_hq_voice_polish'):
+        config.setdefault(_flag, False)
     obj.config = config
     obj._get_diarizer = MagicMock(return_value=MagicMock(diarize=MagicMock(return_value=object())))
     obj._select_speaker_spans = MagicMock()

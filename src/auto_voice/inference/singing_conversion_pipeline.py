@@ -576,6 +576,31 @@ class SingingConversionPipeline:
         (default 2s) are reassigned to the lead (blip policy). Lead segments
         are never dropped — that would punch holes in the converted vocal.
 
+        Both directions (2026-09-15): the centroid gate compares |log2| of the
+        ratio, so a cluster an octave BRIGHTER than the primary (a female
+        co-vocal over a male lead) is flagged exactly as a darker one is. The
+        one-directional form only ever fired downward. Verified against the two
+        calibration duets from the numbers above: on Beauty and the Beast the
+        female sits at 2607 Hz against a 2376-2532 Hz male primary, a ratio of
+        1.03-1.10 — nowhere near the 2.0 threshold in either direction, so no
+        female cluster newly fires; on All of Me the female IS the primary and
+        is never a candidate. The embedding pass now also runs when the
+        preserved cluster is the brighter one, which is the intended symmetry.
+
+        ``info['span_reasons']`` records WHY each backing span is not being
+        converted with the lead, as ``[start, end, reason, group]``. This is
+        the only record of it — ``roles`` labels both the operator's explicit
+        preserve and the centroid gate 'preserved'. The reasons split into two
+        classes with genuinely different consequences downstream (see
+        ``vocal_register.ROUTABLE_REASONS``): the auto-detected foreign-voice
+        verdicts ('voice_category', 'embedding') may be re-sung through an
+        operator-chosen per-register model, while 'low_voiced' (harmony stacks
+        no model renders well) and the operator's own 'operator' /
+        'operator_range' choices always stay original. ``group`` keys the spans
+        to their source cluster so two preserved voices are never measured as
+        one; embedding-moved windows carry '_embedding' because a single
+        centroid spans every preserved cluster and cannot attribute them.
+
         Returns:
             ``(primary_spans, backing_spans, info)`` or ``None`` when the
             multi-speaker path should not run (<=1 speaker, or no backing
@@ -604,6 +629,14 @@ class SingingConversionPipeline:
                 return None
 
         preserved = set()
+        # WHY each cluster is preserved, which is not the same question as
+        # WHETHER it is. Register routing (see ``vocal_register``) may re-sing
+        # an auto-detected foreign voice through an operator-chosen model, but
+        # must never touch a cluster the operator explicitly named, nor a
+        # harmony stack that no model renders well. ``roles`` cannot carry
+        # this: it labels both operator-preserve and the centroid gate
+        # 'preserved'.
+        preserve_reason: dict = {}
         # Span-granularity preserve: an explicit time range ("39-77") does NOT
         # resolve to a whole cluster. When two singers share a diarization
         # cluster (overlapping registers), cluster resolution drags in the
@@ -616,6 +649,7 @@ class SingingConversionPipeline:
                 continue
             if item in speakers:
                 preserved.add(item)
+                preserve_reason[item] = 'operator'
                 continue
             lo_tok, sep, hi_tok = item.partition('-')
             lo_s = _parse_ts(lo_tok) if sep else None
@@ -688,14 +722,24 @@ class SingingConversionPipeline:
             if len(active) < int(1.5 * sr):
                 continue
             c = _mix_centroid(spans)
+            # Symmetric in the ratio: a cluster an octave BRIGHTER than the
+            # primary is as foreign as one an octave darker (a female
+            # co-vocal over a male lead — the user's "if converting either
+            # female or male"). Distance in octaves, so both directions use
+            # the one calibrated threshold.
             if (primary_centroid is not None and c is not None
-                    and primary_centroid / c >= category_ratio):
+                    and c > 0 and primary_centroid > 0
+                    and abs(np.log2(primary_centroid / c))
+                    >= np.log2(category_ratio)):
                 roles[spk] = 'preserved'
                 preserved.add(spk)
+                preserve_reason[spk] = 'voice_category'
                 logger.info(
                     "Multi-speaker: cluster %s voice category %.0f Hz vs "
-                    "primary %.0f Hz (>= %.1fx) -> preserved verbatim, "
-                    "not merged", spk, c, primary_centroid, category_ratio)
+                    "primary %.0f Hz (%s by >= %.1fx) -> preserved verbatim, "
+                    "not merged", spk, c, primary_centroid,
+                    'darker' if c < primary_centroid else 'brighter',
+                    category_ratio)
                 continue
             vf = _voiced_fraction(active, sr)
             voiced[spk] = round(vf, 3)
@@ -711,7 +755,11 @@ class SingingConversionPipeline:
             span = (seg.start, seg.end)
             if seg.speaker_id in preserved:
                 # Preserved voices never blip-reassign into the converted lead.
-                preserved_spans.append(span)
+                # Carried as (start, end, reason, group): the group key keeps
+                # two preserved clusters from being measured as one voice.
+                preserved_spans.append(
+                    span + (preserve_reason.get(seg.speaker_id, 'operator'),
+                            seg.speaker_id))
             elif seg.speaker_id == primary or seg.speaker_id in merged_speakers:
                 primary_spans.append(span)
             elif seg.duration < min_seg:
@@ -739,7 +787,9 @@ class SingingConversionPipeline:
                             continue
                         if a < lo_s:
                             next_pieces.append((a, lo_s))
-                        preserved_spans.append((max(a, lo_s), min(b, hi_s)))
+                        preserved_spans.append(
+                            (max(a, lo_s), min(b, hi_s),
+                             'operator_range', '_range'))
                         moved_s += min(b, hi_s) - max(a, lo_s)
                         if b > hi_s:
                             next_pieces.append((hi_s, b))
@@ -889,7 +939,12 @@ class SingingConversionPipeline:
                                                        max(moved_spans[-1][1], we))
                                 else:
                                     moved_spans.append((ws, we))
-                            preserved_spans.extend(moved_spans)
+                            # One centroid covers every preserved cluster, so
+                            # a moved window cannot be attributed to a
+                            # particular one: they form their own group.
+                            preserved_spans.extend(
+                                (ws, we, 'embedding', '_embedding')
+                                for ws, we in moved_spans)
                             new_primary = []
                             for s0, s1 in primary_spans:
                                 kept = kept_by_span.get((s0, s1))
@@ -926,32 +981,44 @@ class SingingConversionPipeline:
             else:
                 primary_union.append((start, end))
         def _clip_against_lead(spans):
+            """Clip spans out of the lead's union.
+
+            Any tuple elements after ``(start, end)`` — the preserve reason and
+            group key — ride through onto every surviving piece. Tagging has to
+            happen before this, not after: clipping rewrites the boundaries, so
+            a span can come out as two pieces with different times.
+            """
             clipped = []
-            for start, end in spans:
+            for span in spans:
+                start, end, rest = span[0], span[1], tuple(span[2:])
                 for u_start, u_end in primary_union:
                     if u_end <= start:
                         continue
                     if u_start >= end:
                         break
                     if u_start > start:
-                        clipped.append((start, u_start))
+                        clipped.append((start, u_start) + rest)
                     start = max(start, u_end)
                     if start >= end:
                         break
                 if start < end:
-                    clipped.append((start, end))
+                    clipped.append((start, end) + rest)
             return clipped
 
         kept = []
         for start, end in _clip_against_lead(backing_spans):
             if end - start >= min_seg:
-                kept.append((start, end))
+                # Harmony stacks / textures: the fork engine needs a clean
+                # monophonic f0 and butchers these, so no model renders them
+                # well and register routing must leave them alone.
+                kept.append((start, end, 'low_voiced', 'low_voiced'))
             else:
                 primary_spans.append((start, end))
                 reassigned += 1
         # Preserved slivers stay original — reassigning them would convert an
         # already-target voice.
-        backing_spans = kept + _clip_against_lead(preserved_spans)
+        span_reasons = kept + _clip_against_lead(preserved_spans)
+        backing_spans = [(s, e) for s, e, _r, _g in span_reasons]
 
         if not backing_spans:
             logger.info(
@@ -968,15 +1035,22 @@ class SingingConversionPipeline:
             'reassigned_blips': reassigned,
             'roles': roles,
             'voiced': voiced,
+            # Why each backing span is not being converted with the lead. The
+            # routing layer needs the distinction, and it is the only record
+            # of it — ``roles`` collapses operator-preserve and the centroid
+            # gate into one label. JSON-safe; ``info`` is serialised.
+            'span_reasons': [[round(s, 3), round(e, 3), r, str(g)]
+                             for s, e, r, g in span_reasons],
         }
         if preserved:
             info['preserved_speakers'] = sorted(preserved)
-            info['preserved_s'] = round(sum(e - s for s, e in preserved_spans), 1)
+            info['preserved_s'] = round(
+                sum(e - s for s, e, _r, _g in preserved_spans), 1)
         if preserve_ranges:
             info['preserved_time_ranges'] = \
             [[round(lo, 2), round(hi, 2)] for lo, hi in preserve_ranges]
             info['preserved_s'] = round(
-                sum(e - s for s, e in preserved_spans), 1)
+                sum(e - s for s, e, _r, _g in preserved_spans), 1)
         if embedding_moved:
             info['embedding_reassigned_spans'] = embedding_moved
         return primary_spans, backing_spans, info
@@ -1604,11 +1678,293 @@ class SingingConversionPipeline:
         gain = float(np.clip(ref_rms / conv_rms, _LEAD_GAIN_MIN, _LEAD_GAIN_MAX))
         self._last_lead_gain_db = round(20.0 * float(np.log10(gain)), 2)
         logger.info("Lead level match %.2fx (%+.1f dB)", gain, self._last_lead_gain_db)
-        return (np.asarray(converted, dtype=np.float32) * gain).astype(np.float32)
+        out = (np.asarray(converted, dtype=np.float32) * gain).astype(np.float32)
+        return self._follow_lead_contour(out, source, sr)
+
+    def _follow_lead_contour(self, converted, source, sr,
+                             max_db=6.0, smooth_s=0.75, gate_db=-42.0):
+        """Make the converted lead track the SOURCE's level contour over time.
+
+        The user's report: "voice still drops out a little and voice output
+        volume isnt constant". Those are one defect, not two. The gain above is
+        a single scalar for the whole song, so it fixes the average and can do
+        nothing about a contour that drifts. Measured on the G_250 Hero render,
+        converted-minus-source level error on loud frames:
+
+            before   sd 3.77 dB   p10..p90  -5.5 .. +3.2 dB   (8.7 dB span)
+            after    sd 2.34 dB   p10..p90  -2.6 .. +2.3 dB   (4.9 dB span)
+
+        A frame sitting 5 dB under where the source put it is heard as the
+        voice dropping out - the instrumental on this render averages 0.5 dB
+        ABOVE the vocal, so the lead only has to sag slightly to go under the
+        band. That is why fixing the contour also fixes the "drops out"
+        complaint, and why there is no separate dropout stage: there are no
+        silences to fill. Exact-zero runs longer than 20 ms in the render: 0.
+
+        Deliberately SLOW (0.75 s) and BOUNDED (+-6 dB). Slow because her real
+        musical dynamics have to survive - this corrects conversion drift, not
+        phrasing, and a fast follower would be a compressor. Bounded because a
+        bad envelope measurement must never be able to do something drastic.
+        Keyed on the source and gated at -42 dB so gaps are never lifted: where
+        the source is not singing the gain is exactly 1.0, which keeps the
+        between-word hum stage's work intact.
+
+        # ponytail: one bound for the whole song. Per-phrase bounds only if a
+        # render ever needs more than 6 dB somewhere.
+        """
+        import librosa
+        from scipy.ndimage import median_filter, uniform_filter1d
+
+        if not bool(self.config.get('fork_hq_follow_lead_contour', True)):
+            return converted
+        hop = 512
+        n = min(len(converted), len(source))
+        if n < int(1.5 * sr):
+            return converted
+
+        def env(y):
+            rms = librosa.feature.rms(y=np.asarray(y[:n], dtype=np.float32),
+                                      frame_length=2048, hop_length=hop)[0]
+            return 20.0 * np.log10(rms + 1e-9)
+
+        es, ec = env(source), env(converted)
+        m = min(len(es), len(ec))
+        es, ec = es[:m], ec[:m]
+        live = es > (es.max() + gate_db)
+        if not live.any():
+            return converted
+        diff = np.where(live, es - ec, 0.0)
+        diff = diff - np.median(diff[live])          # the scalar part is already applied
+        k = max(3, int(smooth_s * sr / hop) | 1)
+        diff = uniform_filter1d(median_filter(diff, size=k), size=k)
+        diff = np.clip(diff, -max_db, max_db) * live
+        g = np.interp(np.arange(len(converted)),
+                      np.arange(m) * hop + hop // 2, diff)
+        logger.info("Lead contour follow: %.0f%% of frames corrected >3 dB, range %+.1f..%+.1f dB",
+                    100.0 * float(np.mean(np.abs(diff) > 3.0)),
+                    float(diff.min()), float(diff.max()))
+        return (np.asarray(converted, dtype=np.float32)
+                * (10.0 ** (g / 20.0)).astype(np.float32)).astype(np.float32)
+
+    def _correct_fork_output(self, source, converted, sr):
+        """The decoder output-correction chain — three measured defects.
+
+        ⚠ EASY TO LOSE. This chain was silently dropped from disk once
+        (between 2026-09-07 and 09-08) and ran on nothing for a week; the
+        defects came back with no error and no log line. If you are reading
+        this after a merge, check all three stages are still here — grepping
+        the file for the three ``fork_hq_*`` flag names must find at least the
+        three ``self.config.get`` guards below, never zero.
+
+        Each stage is keyed on the SOURCE vocal so nothing moves where the
+        original singer was not singing. **Call this once per CONVERTED TRACK,
+        with that track's own source** — a duet has two singers and one f0
+        contour cannot describe both, so keying on the mixed vocal lands
+        stage 2's notches on the wrong voice. Never call it on kept-original
+        backing: that audio was never run through the decoder and has no
+        decoder defects to correct.
+
+        ALL THREE MUST RUN BEFORE THE HALO: its reverb tail otherwise carries
+        every artefact into the gaps (+4 dB) where no later stage can reach.
+        Order within the chain is load-bearing — see the module docstrings and
+        docs/served-models.md (2026-09-06/07) for the numbers.
+
+        Args:
+            source: The track that was fed to the decoder, AFTER any pitch
+                shift — the stages must measure what the model actually heard.
+            converted: The decoder's output for that track.
+            sr: Sample rate of both.
+
+        Returns:
+            The corrected converted audio.
+        """
+        # 1. Between-word hum: the decoder voices ~14 % of frames where the
+        # source is unvoiced. Measured on Hero: -11.5 -> -20.4 dB by level.
+        if bool(self.config.get('fork_hq_hum_suppress', True)):
+            from .fork_hum_suppression import suppress_hum
+            converted = suppress_hum(source, converted, sr)
+
+        # 2. Period doubling on belted notes: the decoder emits 3-5x the
+        # source's energy at the half-integer partials (f0/2, 3f0/2, 5f0/2),
+        # exploding above ~450 Hz where it extrapolates past Brandy's training
+        # data - heard as "fuzzes out when she puts umph into it". 0.515 ->
+        # 0.172 at 600-900 Hz (source 0.144). BEFORE the polish: a belt's
+        # 3f0/2 and 5f0/2 land inside the 1.2-5 kHz band the polish lifts, and
+        # polishing first made the rasp 22 % worse.
+        if bool(self.config.get('fork_hq_subharmonic_suppress', True)):
+            from .fork_subharmonics import suppress_subharmonics
+            converted = suppress_subharmonics(source, converted, sr)
+
+        # 3. Decoder colouring: it scoops 1.2-2 kHz, bumps 2.5-3.2 kHz and
+        # notches 4 kHz on every render - consonant definition, heard as "not
+        # clear" and soft edges. Deviation from the source is undone there and
+        # only there; above 5 kHz only fixed tones (17.9/18.6 kHz) are notched,
+        # because that band carries identity and has no defensible target.
+        if bool(self.config.get('fork_hq_voice_polish', True)):
+            from .fork_voice_polish import polish_voice
+            converted = polish_voice(source, converted, sr)
+
+        # 4. HF de-tonalize: the "double buzzing around the voice". Above
+        #    ContentVec's 8 kHz Nyquist the decoder has no content input and
+        #    invents a narrowband, tonal band; measured 10.1 % tonal frames
+        #    against the source's 8.6 %, concentrated in drifting 8.9-9.4 kHz
+        #    peaks. Runs LAST and after the polish on purpose: the polish's
+        #    LTAS notcher cannot see a moving tone (it reads 3.6 dB of excess
+        #    where the per-frame peaks are 6 dB in 55 % of frames), and the
+        #    polish must not re-lift what this removes.
+        if bool(self.config.get('fork_hq_hf_detonalize', True)):
+            from .fork_voice_polish import detonalize_hf
+            converted = detonalize_hf(converted, sr)
+        return converted
+
+    def _plan_register_routing(self, voc, sr, span_reasons, register_profiles,
+                               target_profile_id=None):
+        """Decide, per preserved span group, which model (if any) sings it.
+
+        This is the user's "convert the female with female, and male with male
+        ... or just one or the other leaving the original voice of whatever
+        voice a model has not been chosen for". Detection of WHICH spans are a
+        foreign voice already happened in ``_select_speaker_spans`` and is not
+        touched here.
+
+        **The register comes from the operator, not from the audio.** The slot
+        holding ``target_profile_id`` is the lead's register, so the other
+        filled slot is the co-vocal's — ``vocal_register.other_register``. An
+        absolute median-f0 gate was built and measured first and it does not
+        work on sung material: 36 of 40 male training samples classify as
+        female at the proposed split, no threshold has a positive margin, and
+        on both calibration duets the diarizer's clusters are not singer-pure
+        anyway (``scratchpad/registercal/FINDINGS.md``, 2026-09-15). The median
+        is still measured and reported, because it is worth seeing; it is not
+        allowed to decide anything.
+
+        ACCURACY IS BOUNDED BY SPAN PURITY, NOT BY THIS FUNCTION.
+        Elimination removes the classifier; it does not improve the spans it is
+        handed. On a dense mix the diarizer's clusters are not singer-pure:
+        measured against the operator's ear-marked ranges for job ``d85f96e6``
+        (male at 39-77 / 116-135 / 193-232 s, 96.0 s of a 232.4 s stem), both
+        forced-2 clusters are ~40 % male, and the centroid gate preserves the
+        cluster that is **57 % female**. So an operator who fills both slots in
+        good faith can have majority-female audio sung by the male model. A
+        sparse arrangement is fine (the gate fires 5.46x on All of Me vs 2.66x
+        on Beauty), which is exactly the pattern to expect from a MIX centroid:
+        it is dominated by instrumentation, so a sparse-backing passage reads
+        as a darker voice.
+
+        No automatic gate is offered, deliberately. The obvious candidate —
+        per-cluster f0 spread — points the wrong way: a correctly-carved male
+        span has an IQR of 218 Hz while the two impure clusters read ~130 and
+        ~175, so a PURE span is wider than a mixed one. Inventing a threshold
+        there would repeat the error this docstring already records. The
+        mitigation is legibility instead: the ledger and the disagreement
+        warning make a bad split visible after a render, and the operator is
+        listening to a two-model duet anyway.
+
+        The real fix, if someone returns to this, is span purity itself — the
+        span-range ``preserve`` form bypasses clustering entirely and produced
+        the only trustworthy measurement in the calibration. Any change to
+        diarization, the centroid gate or the WavLM pass can be scored against
+        those three ranges in seconds, without listening.
+
+        Args:
+            voc: The mono SEPARATED VOCAL STEM the spans index into. Not the
+                mix: the centroid gate measures the mix on purpose and crossing
+                the two would invalidate both calibrations.
+            sr: Sample rate of ``voc``.
+            span_reasons: ``info['span_reasons']`` — ``[start, end, reason,
+                group]`` rows.
+            register_profiles: ``{'female': id|None, 'male': id|None}``.
+            target_profile_id: The lead's model, which identifies the lead's
+                own slot.
+
+        Returns:
+            ``(routed, kept_spans, ledger)`` — ``routed`` is a list of
+            ``(profile_id, spans)`` to convert, ``kept_spans`` is every span
+            that stays original, and ``ledger`` is the JSON-safe record of
+            each decision.
+        """
+        from .vocal_register import (REGISTER_MARGIN_HZ, REGISTER_SPLIT_F0_HZ,
+                                     ROUTABLE_REASONS, classify_register,
+                                     other_register, route_action)
+
+        _split = self.config.get('register_split_f0_hz', REGISTER_SPLIT_F0_HZ)
+        split_hz = None if _split is None else float(_split)
+        margin_hz = float(self.config.get('register_margin_hz',
+                                          REGISTER_MARGIN_HZ))
+        # One register for every routable group: the co-vocal's, by
+        # elimination from the operator's slots. Ambiguity was already refused
+        # in _convert_song_fork_hq's validation, before any work.
+        register = other_register(target_profile_id, register_profiles)
+
+        groups: dict = {}
+        for row in span_reasons:
+            start, end, reason, group = row[0], row[1], row[2], row[3]
+            groups.setdefault((reason, group), []).append((float(start),
+                                                           float(end)))
+
+        routed, kept_spans, ledger = [], [], []
+        for (reason, group), spans in sorted(groups.items()):
+            if reason not in ROUTABLE_REASONS:
+                # Harmony stacks and the operator's own explicit choices are
+                # not measured at all — no register can change their fate, and
+                # pyin over them would only cost time.
+                kept_spans.extend(spans)
+                continue
+            # Diagnostics: the median is worth reporting, its verdict is not
+            # allowed to route (disproved — see the docstring above).
+            measured, median_f0 = classify_register(
+                _active_audio(voc, sr, spans), sr,
+                split_hz=split_hz, margin_hz=margin_hz)
+            action, profile_id = route_action(reason, register,
+                                              register_profiles)
+            ledger.append({
+                'group': str(group),
+                'reason': reason,
+                'register': register,
+                'register_source': 'operator_elimination',
+                'measured_register': measured,
+                'median_f0_hz': (None if median_f0 is None
+                                 else round(median_f0, 1)),
+                'spans_s': round(sum(e - s for s, e in spans), 1),
+                'action': action,
+                'profile_id': profile_id,
+            })
+            if action == 'convert':
+                routed.append((profile_id, spans))
+                logger.info(
+                    "Register routing: %s spans (%s, median f0 %.0f Hz, "
+                    "%.1fs) -> %s register -> profile %s",
+                    group, reason, median_f0 or 0.0,
+                    sum(e - s for s, e in spans), register, profile_id)
+            else:
+                kept_spans.extend(spans)
+                logger.info(
+                    "Register routing: %s spans (%s, median f0 %s, %.1fs) "
+                    "kept ORIGINAL — no model chosen for any voice other than "
+                    "the lead's", group, reason,
+                    'unmeasurable' if median_f0 is None
+                    else '%.0f Hz' % median_f0,
+                    sum(e - s for s, e in spans))
+
+        if not routed and register is not None:
+            # Routing cannot fix detection. When neither the centroid gate nor
+            # the embedding pass flagged a foreign voice (dense mixes collapse
+            # both, and on this project's two calibration duets the diarizer
+            # never produced singer-pure clusters), an assigned model changes
+            # nothing and that part stays in the lead's voice. The operator has
+            # to be told why.
+            logger.warning(
+                "Register routing: a %s model was chosen (%s) but no span was "
+                "flagged as a foreign voice, so nothing was routed and every "
+                "part stays as it is today. Detection, not routing, is the "
+                "limit here — on a dense mix the centroid gate and the "
+                "embedding pass can both miss a co-vocal.",
+                register, (register_profiles or {}).get(register))
+        return routed, kept_spans, ledger
 
     def _convert_multi_speaker(self, voc_mono, sr, target_profile_id, mm, pitch_shift,
                                convert_backing=None, preserve_speakers=None,
-                               song_path=None):
+                               song_path=None, register_profiles=None):
         """Convert the lead vocal per-speaker; keep backing vocals as original.
 
         Diarizes the mono vocal stem, converts the primary speaker (most total
@@ -1616,6 +1972,16 @@ class SingingConversionPipeline:
         and sums the untouched backing speakers back in. This avoids the muddiness
         of converting a mixed vocal as one voice (validated on Hotline Bling / Cry
         Me A River: 5-6x high-frequency energy).
+
+        ``register_profiles`` (``{'female': id|None, 'male': id|None}``) routes
+        each AUTO-DETECTED foreign-voice span group to the model chosen for its
+        register; a register with no model chosen keeps its original voice,
+        which is the behaviour without this argument. The lead always uses
+        ``target_profile_id``. See ``_plan_register_routing``.
+
+        The output-correction chain runs HERE, once per converted track and
+        keyed on that track's own source, before anything is mixed — the caller
+        reads ``info['_output_corrected']`` and does not run it again.
 
         Gates (all route back to single-stem): <=1 speaker detected; no backing
         segment >= ``multi_speaker_min_segment_s``; lead+backing spans capture
@@ -1698,6 +2064,31 @@ class SingingConversionPipeline:
                     "(VAD missed vocal content), using single-stem", coverage, min_cov)
                 return None
 
+            # Register routing: re-sing an auto-detected foreign voice through
+            # the model the operator chose for ITS register, leaving every
+            # register without a chosen model exactly as it is today. Placed
+            # after the coverage gate on purpose — that gate measures the span
+            # tracks against the whole vocal, and moving spans out of `backing`
+            # before it would look like missing coverage and drop the whole
+            # run to single-stem.
+            routed_tracks = []
+            if register_profiles and info.get('span_reasons'):
+                routed, kept_spans, ledger = self._plan_register_routing(
+                    voc_for_spans, sr, info['span_reasons'], register_profiles,
+                    target_profile_id=target_profile_id)
+                if ledger:
+                    info['register_routing'] = ledger
+                if routed:
+                    # Routed spans MUST leave the kept-original track, or that
+                    # voice plays twice — once original, once converted. This
+                    # is the same double-play the lead/backing clipping exists
+                    # to prevent.
+                    backing = build_speaker_track(voc_for_spans, sr, kept_spans)
+                    for profile_id, spans in routed:
+                        routed_tracks.append((
+                            profile_id,
+                            build_speaker_track(voc_for_spans, sr, spans)))
+
             # Transpose backing/simul_backing before any conversion attempt,
             # matching primary_track's later shift-then-convert treatment
             # (below) - shifting after conversion would smear already-
@@ -1709,6 +2100,10 @@ class SingingConversionPipeline:
                 if simul_backing is not None:
                     simul_backing = librosa.effects.pitch_shift(
                         simul_backing, sr=sr, n_steps=float(pitch_shift))
+                routed_tracks = [
+                    (pid, librosa.effects.pitch_shift(
+                        trk, sr=sr, n_steps=float(pitch_shift)))
+                    for pid, trk in routed_tracks]
 
             # Experimental: convert the backing stack to the target voice too
             # (per-line decomposition; falls back to keeping it original).
@@ -1766,6 +2161,13 @@ class SingingConversionPipeline:
                 info['simul_backing_s'] = karaoke_info.get('backing_s', 0.0)
                 info['backing_energy_ratio'] = karaoke_info.get('backing_energy_ratio')
 
+            # ponytail: converted backing stacks skip the output-correction
+            # chain. Their source is a polyphonic stack, and keying
+            # suppress_subharmonics on it is the same one-f0-for-two-singers
+            # bug this refactor fixes. It used to be corrected with the whole
+            # mixed vocal as the key, which was no better. Upgrade path:
+            # correct per line inside _convert_backing_stack, where each line
+            # does have its own monophonic source.
             if (do_convert_backing and not preserved_active
                     and float(np.abs(backing).max()) > 1e-4):
                 backing, harmony = self._convert_backing_stack(
@@ -1799,10 +2201,38 @@ class SingingConversionPipeline:
             )
             converted_primary = self._match_lead_level(converted_primary, primary_track, sr)
 
-            n = min(len(converted_primary), len(backing))
+            # Output-correction chain, PER CONVERTED TRACK, each keyed on its
+            # own post-shift source, and before anything is summed. Keying the
+            # whole duet on one source was wrong the moment a second voice got
+            # converted: the subharmonic stage runs yin on the key, and one f0
+            # contour cannot describe two singers, so its notches land on the
+            # wrong voice. The kept-original backing is deliberately NOT
+            # corrected — it never went through the decoder.
+            converted_primary = self._correct_fork_output(
+                primary_track, converted_primary, sr)
+
+            converted_routed = []
+            for profile_id, track in routed_tracks:
+                conv = np.asarray(
+                    mm.infer(track, profile_id,
+                             np.zeros(256, dtype=np.float32), sr),
+                    dtype=np.float32,
+                )
+                conv = self._match_lead_level(conv, track, sr)
+                converted_routed.append(
+                    self._correct_fork_output(track, conv, sr))
+
+            n = min([len(converted_primary), len(backing)]
+                    + [len(c) for c in converted_routed])
             if n == 0:
                 return None
             combined = (converted_primary[:n] + backing[:n]).astype(np.float32)
+            for conv in converted_routed:
+                combined = combined + conv[:n]
+            combined = combined.astype(np.float32)
+            # Tells the caller the chain has already run, per track. Popped
+            # there, like _backing_audio, before info is serialised.
+            info['_output_corrected'] = True
             # Carry the converted backing out so it can be exported as its own
             # stem. Every measurement of "the background singers sound wrong"
             # so far has been taken on the MIXED vocal, where the lead
@@ -1830,7 +2260,7 @@ class SingingConversionPipeline:
     def _convert_song_fork_hq(self, song_path, target_profile_id, vocal_volume,
                               instrumental_volume, return_stems, preset, pitch_shift,
                               enable_multi_speaker=None, convert_backing=None,
-                              preserve_speakers=None):
+                              preserve_speakers=None, register_profiles=None):
         """Fork-backed conversion: stereo, native output rate.
 
         Bypasses the two quality losses of the legacy lane for so-vits-svc-fork
@@ -1844,6 +2274,33 @@ class SingingConversionPipeline:
         import soundfile as sf
         start_time = time.time()
         target_sr = int(self._output_sample_rate)
+
+        # Validate every per-register model BEFORE any work, and OUTSIDE
+        # _convert_multi_speaker's broad except. In there, an unservable
+        # profile would raise, be swallowed as "multi-speaker failed", and the
+        # whole duet would fall back to being sung through the lead model with
+        # no error — the exact outcome this feature exists to prevent, and
+        # silently. No fallback behaviour: raise (CLAUDE.md).
+        if register_profiles:
+            from . import svc_fork_bridge as _bridge
+            from .vocal_register import other_register
+            _data_dir = self.config.get('data_dir', 'data')
+            for _register, _pid in sorted(register_profiles.items()):
+                if _pid and not _bridge.is_available(str(_pid), _data_dir):
+                    raise ConversionError(
+                        f"register_profiles[{_register!r}] = {_pid!r} is not a "
+                        "fork-servable profile. Refusing to run: that part "
+                        "would be sung through the lead's model instead, with "
+                        "no error.")
+            # The co-vocal's register comes from the operator's slots by
+            # elimination; an unresolvable assignment is refused here, before
+            # the expensive work, rather than guessed at. There is no register
+            # measurement to break the tie with — that was measured and
+            # disproved (scratchpad/registercal/FINDINGS.md, 2026-09-15).
+            try:
+                other_register(target_profile_id, register_profiles)
+            except ValueError as exc:
+                raise ConversionError(str(exc)) from exc
 
         try:
             audio, sr = sf.read(song_path, dtype='float32', always_2d=True)  # (N, C)
@@ -1876,18 +2333,47 @@ class SingingConversionPipeline:
         multi_speaker = False
         multi_speaker_info = None
         backing_only = None
+        # Source key for the output-correction chain below, used only by the
+        # single-stem path — the multi-speaker path keys each converted track
+        # on its own source and reports that it has already corrected them.
+        hum_key = voc_mono
+        output_corrected = False
         if self._multi_speaker_enabled(override=enable_multi_speaker):
             ms = self._convert_multi_speaker(
                 voc_mono, sr, target_profile_id, mm, pitch_shift,
                 convert_backing=convert_backing,
                 preserve_speakers=preserve_speakers,
-                song_path=song_path)
+                song_path=song_path,
+                register_profiles=register_profiles)
             if ms is not None:
                 converted, multi_speaker_info = ms
                 # Pop before anything serialises info: it carries audio, not
                 # metadata, purely to reach the stem export below.
                 backing_only = multi_speaker_info.pop('_backing_audio', None)
+                # The multi-speaker path corrects each converted track against
+                # its own source before mixing; running the chain again on the
+                # sum would key two singers on one f0 contour.
+                output_corrected = bool(
+                    multi_speaker_info.pop('_output_corrected', False))
                 multi_speaker = True
+
+        if converted is None and register_profiles:
+            # The per-speaker path never ran or declined — it is off, the
+            # coverage gate tripped, or (the common one, and the case the
+            # calibration duets actually hit) the diarizer produced no separate
+            # cluster for the co-vocal, so _plan_register_routing was never
+            # reached and its own warning could not fire. The operator chose a
+            # model and is about to get a render that ignores it. Say so.
+            from .vocal_register import other_register as _other
+            if _other(target_profile_id, register_profiles):
+                logger.warning(
+                    "register_profiles was given, but the per-speaker path did "
+                    "not run or declined, so the whole vocal is being converted "
+                    "as one voice through %s and the chosen co-vocal model is "
+                    "unused. Detection is the limit: on a dense mix the "
+                    "diarizer does not separate the singers, measured on both "
+                    "calibration duets (scratchpad/registercal/FINDINGS.md).",
+                    target_profile_id)
 
         if converted is None:
             voc_single = voc_mono
@@ -1901,6 +2387,20 @@ class SingingConversionPipeline:
                 dtype=np.float32,
             )
             converted = self._match_lead_level(converted, voc_single, sr)
+            hum_key = voc_single
+
+        # ---- decoder output-correction chain -------------------------------
+        # ⚠ DO NOT DROP THIS CALL. The three stages it runs were silently lost
+        # from disk once (2026-09-07 to 09-08) and the defects came back with
+        # no error and no log line. The stages, their order, their numbers and
+        # why they must precede the halo are all in _correct_fork_output.
+        #
+        # Single-stem only: the multi-speaker path already corrected each
+        # converted track against its own source, before mixing. Running it
+        # again on the sum would key two singers on one f0 contour.
+        if not output_corrected:
+            converted = self._correct_fork_output(hum_key, converted, sr)
+        # ---- end output-correction chain -----------------------------------
 
         n = min(inst_st.shape[-1], len(converted))
         if n == 0:
@@ -2314,7 +2814,8 @@ class SingingConversionPipeline:
                      preserve_techniques: bool = True,
                      enable_multi_speaker: Optional[bool] = None,
                      convert_backing: Optional[bool] = None,
-                     preserve_speakers: Optional[list] = None) -> Dict[str, Any]:
+                     preserve_speakers: Optional[list] = None,
+                     register_profiles: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Convert a song to target voice.
 
         Args:
@@ -2326,6 +2827,16 @@ class SingingConversionPipeline:
             return_stems: Whether to return separate stems
             preset: Quality preset (draft/fast/balanced/high/studio)
             preserve_techniques: Detect and preserve vocal techniques (vibrato, melisma)
+            enable_multi_speaker: Force the per-speaker path on/off for this request
+            convert_backing: Convert the backing stack too (experimental)
+            preserve_speakers: Cluster ids or time ranges to keep verbatim
+            register_profiles: ``{'female': id|None, 'male': id|None}`` — on a
+                duet, sing each auto-detected foreign-voice part through the
+                model chosen for its vocal register. A register with no model
+                chosen keeps its original voice. Fork-backed profiles only;
+                every assigned id must itself be fork-servable or the request
+                is refused. Ignored by the legacy lane, which has no
+                per-speaker path at all.
 
         Returns:
             Dict with: mixed_audio, sample_rate, duration, metadata,
@@ -2356,10 +2867,21 @@ class SingingConversionPipeline:
                 fork_kwargs['convert_backing'] = convert_backing
             if preserve_speakers:
                 fork_kwargs['preserve_speakers'] = list(preserve_speakers)
+            if register_profiles:
+                fork_kwargs['register_profiles'] = dict(register_profiles)
             return self._convert_song_fork_hq(
                 song_path, target_profile_id, vocal_volume,
                 instrumental_volume, return_stems, preset, pitch_shift,
                 **fork_kwargs)
+
+        if register_profiles and any(register_profiles.values()):
+            # The legacy lane has no per-speaker path, so there is nothing to
+            # route. Say so rather than letting the setting vanish.
+            logger.warning(
+                "register_profiles was given but profile %s is not fork-backed; "
+                "the legacy lane has no per-speaker path, so every voice will "
+                "be converted as one and the setting is ignored.",
+                target_profile_id)
 
         try:
             audio, sr = librosa.load(song_path, sr=self._output_sample_rate, mono=True)

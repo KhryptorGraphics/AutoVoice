@@ -36,6 +36,7 @@ def register_profile_sample_routes(api_bp: Blueprint, **deps: Any) -> None:
     _deps.update(deps)
     api_bp.add_url_rule('/voice/clone', view_func=clone_voice, methods=['POST'])
     api_bp.add_url_rule('/voice/profiles', view_func=get_voice_profiles, methods=['GET'])
+    api_bp.add_url_rule('/voice/profiles', view_func=create_named_voice_profile, methods=['POST'])
     api_bp.add_url_rule('/voice/profiles/duplicate-check', view_func=check_duplicate_profiles, methods=['GET'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>', view_func=get_voice_profile, methods=['GET'])
     api_bp.add_url_rule('/voice/profiles/<profile_id>', view_func=delete_voice_profile, methods=['DELETE'])
@@ -374,6 +375,61 @@ def clone_voice():
                 os.unlink(tmp_file.name)
             except OSError:
                 pass
+
+
+def create_named_voice_profile():
+    """Create an empty target-user profile from a name alone.
+
+    The sing-along studio needs a profile to exist *before* recording starts,
+    because the take is attached to a profile that must already be in the
+    store. ``/voice/clone`` cannot serve that moment: it requires reference
+    audio, which by definition does not exist until the take is recorded.
+    The profile this creates carries no embedding and no reference audio —
+    exactly the shape ``create_profile_from_diarization`` produces minus the
+    embedding — and is trainable as soon as samples land on it.
+    """
+    logger = _dep('logger')
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('name') or '').strip()
+    if not name:
+        return _dep('validation_error_response')(
+            'Profile name is required',
+            error_code='profile_name_required',
+        )
+
+    try:
+        store = _dep('get_profile_store')()
+        # Names are what the operator picks a profile by in every picker, so a
+        # duplicate is a real ambiguity, not a cosmetic one. Compared against
+        # every role: the pickers that filter by role still render one list.
+        for existing in store.list_profiles():
+            existing_name = str(existing.get('name') or '').strip()
+            if existing_name.casefold() == name.casefold():
+                return _dep('validation_error_response')(
+                    f"A voice profile named '{existing_name}' already exists",
+                    error_code='duplicate_profile_name',
+                    profile_id=existing.get('profile_id'),
+                )
+
+        user_id = data.get('user_id')
+        profile_id = store.save({
+            'name': name,
+            'user_id': user_id,
+            'profile_role': 'target_user',
+            'created_from': str(data.get('created_from') or 'singalong'),
+        })
+        payload = _dep('serialize_profile_for_response')(store.load(profile_id))
+        _audit_event(
+            "voice_profile.created",
+            "voice_profile",
+            profile_id,
+            {"name": name, "user_id": user_id, "created_from": payload.get('created_from')},
+        )
+        logger.info("Created named voice profile '%s' (%s)", name, profile_id)
+        return jsonify(_redact_profile_payload(payload, profile_id)), 201
+    except Exception as e:
+        logger.error(f"Error creating named voice profile: {e}", exc_info=True)
+        return _dep('error_response')(str(e))
 
 
 def _audio_file_metrics(audio_path: str) -> dict[str, float]:

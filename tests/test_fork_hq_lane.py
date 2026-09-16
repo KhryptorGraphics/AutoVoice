@@ -12,7 +12,14 @@ from auto_voice.inference import svc_fork_bridge
 
 
 def _pipeline(tmp_path):
-    return SingingConversionPipeline(device="cpu", config={"data_dir": str(tmp_path)})
+    # Chain off: this asserts the lane's stereo/contract behaviour, not the
+    # output-correction stages, and leaving them on runs torchcrepe on the CPU.
+    return SingingConversionPipeline(device="cpu", config={
+        "data_dir": str(tmp_path),
+        "fork_hq_hum_suppress": False,
+        "fork_hq_subharmonic_suppress": False,
+        "fork_hq_voice_polish": False,
+    })
 
 
 def test_fork_hq_lane_is_stereo_and_mirrors_contract(tmp_path, monkeypatch):

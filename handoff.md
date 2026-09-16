@@ -10,7 +10,36 @@ three conversions and four subagents were lost tonight to things listed there.
 
 ---
 
-## 0. Where things stand RIGHT NOW
+## 0. READ FIRST — the chain was lost once, on 2026-09-08
+
+The three-stage output-correction chain in `_convert_song_fork_hq` (§3) was
+**silently dropped from disk** between 2026-09-07 and 09-08 and ran on nothing
+for a week. Cause: the wiring was only ever in the working tree — `git log -S
+"fork_hq_subharmonic_suppress"` is empty, so a later checkout/commit of
+`singing_conversion_pipeline.py` by another session discarded it. The three
+modules and their 13 tests survived because untracked files are not touched by
+a checkout; only the call sites went. Nothing recorded it as deliberate, and
+this file's own §3 table still described all three stages as shipping.
+
+Restored 2026-09-15, suite re-run, with a warning comment in the code block.
+**It is still uncommitted. Committing it is the only thing that makes this
+safe** — see §6 step 5. Until then, every checkout of that file can drop it
+again, and the defects come back with no error and no log line.
+
+To check in one command:
+
+```bash
+grep -c "fork_hq_hum_suppress\|fork_hq_subharmonic_suppress\|fork_hq_voice_polish" \
+  src/auto_voice/inference/singing_conversion_pipeline.py     # expect 3, not 0
+```
+
+A live render proves it end to end: all three INFO lines
+(`fork hum suppression:`, `fork subharmonic suppression:`, `fork voice polish:`)
+must appear in `data/server.log` for that job.
+
+---
+
+## 0b. Where things stood at the original handoff (2026-09-07 01:25)
 
 A detached, serial driver script is running and owns the final steps. Do not
 duplicate its work; read its log.

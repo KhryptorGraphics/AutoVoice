@@ -104,3 +104,7 @@ graphify-out/
 .claude/memory.db-wal
 verify-*.png
 history-dark.png
+
+# Session working dir: renders and intermediate audio (1.1GB+), never committed.
+# Durable findings are promoted to docs/ instead.
+scratchpad/

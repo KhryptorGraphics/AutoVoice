@@ -1,15 +1,34 @@
 import { useState } from 'react'
 import { Sliders, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react'
 
-import { ConversionConfig, QUALITY_PRESETS, QualityPreset } from '../services/api'
+import {
+  ConversionConfig,
+  EMPTY_REGISTER_PROFILES,
+  QUALITY_PRESETS,
+  QualityPreset,
+  RegisterProfiles,
+  VoiceProfile,
+} from '../services/api'
 
 interface ConversionSettingsPanelProps {
   config: ConversionConfig
   onChange: (patch: Partial<ConversionConfig>) => void
   disabled?: boolean
+  /** Trained target profiles offered as per-register duet voices. */
+  registerProfileOptions?: VoiceProfile[]
+  /** The request's main profile. It occupies whichever slot you put it in. */
+  leadProfileId?: string | null
 }
 
 const PRESET_ORDER: QualityPreset[] = ['draft', 'fast', 'balanced', 'high', 'studio']
+
+const VOCAL_REGISTERS: { key: keyof RegisterProfiles; label: string }[] = [
+  { key: 'female', label: 'Female singer' },
+  { key: 'male', label: 'Male singer' },
+]
+
+const otherRegister = (key: keyof RegisterProfiles): keyof RegisterProfiles =>
+  key === 'female' ? 'male' : 'female'
 
 // Maps the (enable_multi_speaker, convert_backing) pair to one select:
 // auto = server default; preserve = per-speaker, harmonies kept original;
@@ -62,8 +81,28 @@ function VolumeSlider({
   )
 }
 
-export function ConversionSettingsPanel({ config, onChange, disabled }: ConversionSettingsPanelProps) {
+export function ConversionSettingsPanel({
+  config,
+  onChange,
+  disabled,
+  registerProfileOptions = [],
+  leadProfileId,
+}: ConversionSettingsPanelProps) {
   const [expanded, setExpanded] = useState(true)
+  // A preset saved before this setting existed has no register_profiles.
+  const registers = config.register_profiles ?? EMPTY_REGISTER_PROFILES
+
+  // The register bit comes from which slot holds the main profile, so two
+  // non-lead models leave nothing to say which singer is which and the
+  // pipeline refuses the render. Keep that state unreachable: once one slot
+  // holds a non-lead model, the other offers only the lead or no conversion.
+  const optionsFor = (key: keyof RegisterProfiles) => {
+    const other = registers[otherRegister(key)]
+    if (!other || other === leadProfileId) return registerProfileOptions
+    return registerProfileOptions.filter(
+      (profile) => profile.profile_id === leadProfileId || profile.profile_id === registers[key]
+    )
+  }
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 space-y-4" data-testid="conversion-settings-panel">
@@ -190,6 +229,49 @@ export function ConversionSettingsPanel({ config, onChange, disabled }: Conversi
               When the target artist already sings on this track (duets, features), give a time range where
               they sing solo — that singer is kept original instead of being re-converted. Comma-separate
               multiple ranges. Cluster ids from a previous result&apos;s speaker list also work.
+            </p>
+          </div>
+
+          <div className="space-y-2" data-testid="register-profiles">
+            <label className="text-sm text-gray-400">Duet voices</label>
+            <div className="grid grid-cols-2 gap-2">
+              {VOCAL_REGISTERS.map(({ key, label }) => (
+                <div key={key} className="space-y-1">
+                  <label className="text-xs text-gray-500" htmlFor={`register-${key}`}>
+                    {label}
+                  </label>
+                  <select
+                    id={`register-${key}`}
+                    value={registers[key] ?? ''}
+                    onChange={(e) =>
+                      onChange({
+                        register_profiles: { ...registers, [key]: e.target.value || null },
+                      })
+                    }
+                    disabled={disabled}
+                    data-testid={`register-profile-${key}`}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                  >
+                    <option value="">Keep original voice</option>
+                    {optionsFor(key).map((profile) => (
+                      <option key={profile.profile_id} value={profile.profile_id}>
+                        {profile.name || profile.profile_id}
+                        {profile.profile_id === leadProfileId ? ' (main profile)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500">
+              For duets. Put the main profile in the register it sings, and the other singer&apos;s
+              model in the other register. A register left on &ldquo;Keep original voice&rdquo; is not
+              converted at all — that singer stays as recorded. Assigning one model and leaving the
+              other register alone works too: the main profile takes the register you did not fill.
+              Leave both alone for a single-singer song. Nothing here is auto-detected from pitch,
+              which is why the slots decide who is who.
+              {registerProfileOptions.length === 0 &&
+                ' No fork-backed profiles are trained yet, so there is nothing to assign.'}
             </p>
           </div>
         </div>

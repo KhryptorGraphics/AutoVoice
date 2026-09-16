@@ -15,6 +15,14 @@ VOC = np.zeros(120 * VOC_SR, dtype=np.float32)  # silent canvas spans index into
 
 def make_pipeline(**config):
     config.setdefault('enable_multi_speaker_conversion', True)
+    # The output-correction chain is OFF for these tests unless a test asks for
+    # it. These target span selection and mixing arithmetic; the chain is a
+    # third thing, and leaving it on makes _convert_multi_speaker run torchcrepe
+    # on the CPU inside a unit test (measured: one test held the suite for 30+
+    # minutes). A test that wants the chain passes the flags explicitly.
+    for _flag in ('fork_hq_hum_suppress', 'fork_hq_subharmonic_suppress',
+                  'fork_hq_voice_polish'):
+        config.setdefault(_flag, False)
     return SingingConversionPipeline(device='cpu', config=config)
 
 

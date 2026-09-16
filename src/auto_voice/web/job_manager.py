@@ -394,6 +394,11 @@ class JobManager:
                 enable_multi_speaker=settings.get('enable_multi_speaker'),
                 convert_backing=settings.get('convert_backing'),
                 preserve_speakers=settings.get('preserve_speakers'),
+                # Per-register target voices for a duet: {'female': id|None,
+                # 'male': id|None}. None/absent keeps today's behaviour (the
+                # foreign-register singer is preserved verbatim). Validated in
+                # api_conversion._validate_register_profiles before it gets here.
+                register_profiles=settings.get('register_profiles'),
             )
             result.setdefault('metadata', {})
             result['metadata'].update({

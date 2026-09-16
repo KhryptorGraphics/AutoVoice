@@ -158,6 +158,35 @@ export interface MultiSpeakerInfo {
   // Clusters kept original because their voice is already the target
   preserved_speakers?: string[]
   preserved_s?: number
+  // Per-register duet routing. Nothing here is auto-detected from pitch: the
+  // register comes from which slot the operator put the main profile in.
+  // `measured_register` is a disproved diagnostic, recorded and never routed
+  // on; it is usually null because the classifier ships disarmed.
+  register_routing?: RegisterRoutingRow[]
+  register_assignment?: RegisterAssignment
+}
+
+export interface RegisterRoutingRow {
+  group: string
+  // Only auto-detected foreign-voice verdicts are routable and reach this
+  // ledger. voice_category is the centroid gate, which collapses on dense
+  // mixes; embedding is the WavLM pass added because of that.
+  reason: 'voice_category' | 'embedding' | string
+  register: 'female' | 'male' | null
+  measured_register: 'female' | 'male' | null
+  median_f0_hz: number | null
+  spans_s: number
+  action: 'convert' | 'keep' | string
+  profile_id: string | null
+  register_source?: string
+}
+
+// What the operator assigned, echoed back so "assigned but nothing routed"
+// is distinguishable from "assigned nothing".
+export interface RegisterAssignment {
+  female?: string | null
+  male?: string | null
+  lead_register?: 'female' | 'male' | null
 }
 
 // Pipeline result metadata surfaced verbatim by the backend (conversion_metadata)
@@ -743,6 +772,27 @@ export interface ConversionConfig {
   // Keep already-target singers original: comma-separated time ranges
   // ("1:23-1:40") or diarization cluster ids ("SPEAKER_02"); '' = none
   preserve_speakers: string
+  // Duet: a target profile per vocal register. null = keep that singer's
+  // original voice (the existing preserve behaviour, not a new path), which
+  // is the default for both, so an untouched config behaves as before.
+  register_profiles: RegisterProfiles
+}
+
+// Per-request duet targets. Server key and shape: register_profiles
+export interface RegisterProfiles {
+  female: string | null
+  male: string | null
+}
+
+export const EMPTY_REGISTER_PROFILES: RegisterProfiles = { female: null, male: null }
+
+// null when no register names a profile - the server treats absent and
+// all-null identically (feature off), so don't send an empty object.
+export function registerProfilesForRequest(
+  value: RegisterProfiles | undefined
+): RegisterProfiles | undefined {
+  if (!value || (!value.female && !value.male)) return undefined
+  return { female: value.female || null, male: value.male || null }
 }
 
 export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
@@ -761,6 +811,7 @@ export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
   enable_multi_speaker: true,
   convert_backing: true,
   preserve_speakers: '',
+  register_profiles: { female: null, male: null },
 }
 
 // Quality preset details matching backend PRESETS
@@ -1559,6 +1610,7 @@ class ApiService {
       enable_multi_speaker?: boolean | null
       convert_backing?: boolean | null
       preserve_speakers?: string
+      register_profiles?: RegisterProfiles
     }
   ): Promise<ConversionJobResponse> {
     const formData = new FormData()
@@ -1575,6 +1627,9 @@ class ApiService {
     if (settings?.enable_multi_speaker != null) formData.append('enable_multi_speaker', String(settings.enable_multi_speaker))
     if (settings?.convert_backing != null) formData.append('convert_backing', String(settings.convert_backing))
     if (settings?.preserve_speakers?.trim()) formData.append('preserve_speakers', settings.preserve_speakers.trim())
+    // Form fields are strings; the server parses this one as JSON.
+    const registerProfiles = registerProfilesForRequest(settings?.register_profiles)
+    if (registerProfiles) formData.append('register_profiles', JSON.stringify(registerProfiles))
 
     const response = await apiFetch(`${API_BASE}/convert/song`, {
       method: 'POST',
@@ -1667,6 +1722,7 @@ class ApiService {
       enable_multi_speaker?: boolean | null
       convert_backing?: boolean | null
       preserve_speakers?: string
+      register_profiles?: RegisterProfiles
     }
   ): Promise<ConversionJobResponse> {
     return this.request(`/convert/workflows/${workflowId}/convert`, {

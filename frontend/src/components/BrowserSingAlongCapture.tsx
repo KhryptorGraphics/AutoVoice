@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle, Download, Headphones, Loader2, Mic, Play, RotateCcw, Save, Square, Trash2, Volume2 } from 'lucide-react'
+import { CheckCircle, Download, Headphones, Loader2, Mic, Play, Plus, RotateCcw, Save, Square, Trash2, Volume2 } from 'lucide-react'
 import clsx from 'clsx'
 
-import { apiService, type VoiceProfile } from '../services/api'
+import { apiAuthHeaders, apiService, type VoiceProfile } from '../services/api'
 import { fetchSongAudio, type UploadedSong } from '../services/karaokeApi'
 import {
   getBrowserAudioCapabilities,
@@ -19,6 +19,7 @@ import {
 } from '../services/browserAudioQuality'
 
 const CALIBRATION_STORAGE_PREFIX = 'autovoice_singalong_calibration:'
+const PROFILES_ENDPOINT = `${import.meta.env.VITE_API_URL || '/api/v1'}/voice/profiles`
 
 interface BrowserSingAlongCaptureProps {
   song?: UploadedSong
@@ -29,6 +30,27 @@ interface BrowserSingAlongCaptureProps {
   profiles: VoiceProfile[]
   disabled?: boolean
   onSampleAttached?: () => Promise<void> | void
+  // Reloads the caller's profile list. The inline "New profile" affordance is
+  // rendered only when this is supplied: without a reload the new profile
+  // would never reach the select, and the take would attach to the wrong
+  // profile with nothing on screen saying so.
+  onProfileCreated?: () => Promise<void> | void
+}
+
+// Same shape as karaokeApi's local fetch wrapper: the shared apiFetch is not
+// exported, but apiAuthHeaders is, and that is the part that must not be
+// re-implemented (a missing token header 401s silently).
+async function createTargetProfile(name: string): Promise<VoiceProfile> {
+  const response = await fetch(PROFILES_ENDPOINT, {
+    method: 'POST',
+    headers: apiAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ name, created_from: 'singalong' }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null)
+    throw new Error(detail?.error || detail?.message || `Profile creation failed: ${response.status}`)
+  }
+  return response.json()
 }
 
 function formatDuration(seconds: number) {
@@ -106,6 +128,7 @@ export function BrowserSingAlongCapture({
   profiles,
   disabled = false,
   onSampleAttached,
+  onProfileCreated,
 }: BrowserSingAlongCaptureProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -144,6 +167,9 @@ export function BrowserSingAlongCapture({
   const [attaching, setAttaching] = useState(false)
   const [attachedSampleId, setAttachedSampleId] = useState<string | null>(null)
   const [mixingDuet, setMixingDuet] = useState(false)
+  const [newProfileOpen, setNewProfileOpen] = useState(false)
+  const [newProfileName, setNewProfileName] = useState('')
+  const [creatingProfile, setCreatingProfile] = useState(false)
 
   const targetProfiles = useMemo(
     () => profiles.filter((profile) => profile.profile_role !== 'source_artist'),
@@ -603,6 +629,33 @@ export function BrowserSingAlongCapture({
     }
   }
 
+  const createProfileForTake = async () => {
+    const name = newProfileName.trim()
+    if (!name) {
+      setError('Enter a name for the new profile before creating it.')
+      return
+    }
+
+    setCreatingProfile(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const profile = await createTargetProfile(name)
+      // Reload the caller's list BEFORE selecting: the effect above resets the
+      // selection to targetProfiles[0] whenever the current id is absent from
+      // the list, so selecting first would be silently undone.
+      await onProfileCreated?.()
+      setSelectedProfileId(profile.profile_id)
+      setNewProfileName('')
+      setNewProfileOpen(false)
+      setStatus(`Created profile "${profile.name}". The next take attaches to it.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create the voice profile')
+    } finally {
+      setCreatingProfile(false)
+    }
+  }
+
   const startRecording = async () => {
     if (!canRecord) {
       setError('This browser does not support microphone recording.')
@@ -899,7 +952,21 @@ export function BrowserSingAlongCapture({
 
       <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div>
-          <label className="mb-2 block text-sm text-gray-400">Target profile</label>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <label className="text-sm text-gray-400">Target profile</label>
+            {onProfileCreated && (
+              <button
+                type="button"
+                onClick={() => setNewProfileOpen((open) => !open)}
+                disabled={disabled || recording || creatingProfile}
+                data-testid="browser-capture-new-profile-toggle"
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-sky-300 hover:bg-gray-700 hover:text-sky-200 disabled:text-gray-500 disabled:hover:bg-transparent"
+              >
+                <Plus size={12} />
+                {newProfileOpen ? 'Cancel' : 'New profile'}
+              </button>
+            )}
+          </div>
           <select
             value={selectedProfileId}
             onChange={(event) => setSelectedProfileId(event.target.value)}
@@ -914,6 +981,36 @@ export function BrowserSingAlongCapture({
               </option>
             ))}
           </select>
+          {onProfileCreated && newProfileOpen && (
+            <div className="mt-2 flex gap-2" data-testid="browser-capture-new-profile-form">
+              <input
+                type="text"
+                value={newProfileName}
+                onChange={(event) => setNewProfileName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void createProfileForTake()
+                  }
+                }}
+                placeholder="New profile name"
+                aria-label="New profile name"
+                disabled={creatingProfile}
+                data-testid="browser-capture-new-profile-name"
+                className="min-w-0 flex-1 rounded bg-gray-700 p-2 text-sm disabled:opacity-60"
+              />
+              <button
+                type="button"
+                onClick={() => void createProfileForTake()}
+                disabled={creatingProfile || !newProfileName.trim()}
+                data-testid="browser-capture-new-profile-create"
+                className="flex items-center gap-2 rounded bg-sky-600 px-3 py-2 text-sm font-medium hover:bg-sky-500 disabled:bg-gray-700 disabled:text-gray-500"
+              >
+                {creatingProfile ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                Create
+              </button>
+            </div>
+          )}
         </div>
 
         <div>
