@@ -1679,10 +1679,11 @@ class SingingConversionPipeline:
         self._last_lead_gain_db = round(20.0 * float(np.log10(gain)), 2)
         logger.info("Lead level match %.2fx (%+.1f dB)", gain, self._last_lead_gain_db)
         out = (np.asarray(converted, dtype=np.float32) * gain).astype(np.float32)
-        out = self._follow_lead_contour(out, source, sr)
-        # Fast stage LAST: the slow follower's 0.75 s window cannot see a
-        # 0.2 s dropout, so the two are different instruments, not a retune.
-        return self._fill_lead_dropouts(out, source, sr)
+        # The fast dropout fill does NOT run here: this method runs BEFORE
+        # _correct_fork_output, and those four stages partially undo the lift
+        # (measured 2.64 % vs 1.23 % when the fill runs last). It is the final
+        # stage of _correct_fork_output instead.
+        return self._follow_lead_contour(out, source, sr)
 
     def _follow_lead_contour(self, converted, source, sr,
                              max_db=6.0, smooth_s=0.75, gate_db=-42.0):
@@ -1898,6 +1899,14 @@ class SingingConversionPipeline:
         if bool(self.config.get('fork_hq_hf_detonalize', True)):
             from .fork_voice_polish import detonalize_hf
             converted = detonalize_hf(converted, sr)
+
+        # 5. Short dropout fill, LAST. The slow contour follower in
+        #    _match_lead_level runs before this chain, so anything it lifts is
+        #    partially undone by stages 1-4 (the hum gate attenuates, the polish
+        #    and de-tonalize reshape). Measured on Hero: the fill mid-chain
+        #    leaves 2.64 % of sung frames >6 dB under the source, the same fill
+        #    last leaves 1.23 %. It has to be the final thing that touches level.
+        converted = self._fill_lead_dropouts(converted, source, sr)
         return converted
 
     def _plan_register_routing(self, voc, sr, span_reasons, register_profiles,
