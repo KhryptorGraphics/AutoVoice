@@ -180,7 +180,7 @@ def polish_voice(source: np.ndarray, converted: np.ndarray, sr: int, *,
 
 def detonalize_hf(converted: np.ndarray, sr: int, *,
                   above_hz: float = 7500.0,
-                  min_excess_db: float = 5.0,
+                  min_excess_db: float = 3.0,
                   max_cut_db: float = 12.0,
                   n_fft: int = 2048,
                   hop: int = 512) -> np.ndarray:
@@ -230,9 +230,31 @@ def detonalize_hf(converted: np.ndarray, sr: int, *,
     needs no source reference, because "narrow peak above 8 kHz" is decoder
     invention regardless of what the source was doing.
 
+    Threshold swept against the source, applied ONCE to a non-de-tonalized
+    render (applying it to an already-processed one measures a double pass and
+    flatters whatever you are testing). Excess over source, in points:
+
+        min_excess_db   7-8k  8-10.5k  10.5-14k  14-20k   clean-source residual
+        (none)          +1.3    +1.5     +2.0     +3.5          -
+        5.0             +0.7    +0.2     +0.8     +1.9      -26.2 dB
+        3.0  <- shipped +0.2    -0.7     -0.1     +1.0      -24.5 dB
+        2.0             +0.0    -1.1     -0.5     +0.6      -23.5 dB
+
+    3.0 halves what is left and still sits at the collateral benchmark. 2.0 is
+    past the point of usefulness: the bands go NEGATIVE, i.e. it is removing
+    real HF tonality the source has, and the collateral goes 1.4 dB past the
+    benchmark for it.
+
+    What this stage CANNOT fix: the converted voice is uniformly ~6 % too
+    PERIODIC than the source (spectral flux -5..-8 % in every band from 2 kHz
+    up), and this stage does not move that at all (-0.36 -> -0.34 at 2-4 kHz).
+    That is the decoder's own character, not isolated tones, and notching
+    cannot add noise back. It needs a model change, not more output work.
+
     # ponytail: 7.5 kHz start, not 8.0 - the resonance skirt begins just below
     # Nyquist. Drop to 6 kHz only if the ring is ever reported lower; that
-    # starts eating real brightness.
+    # starts eating real brightness (measured: 6 kHz drives 7-8k to -1.9, i.e.
+    # straight past the source).
     """
     import librosa
     from scipy.ndimage import median_filter

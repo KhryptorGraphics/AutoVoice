@@ -162,3 +162,85 @@ real voice at 30 % of the rate it removes the defect, for a component already
   render stochastic; `rms(a-b)/rms(a)` came out **+1.9 dB** (near-decorrelated)
   between two renders of the same audio. Statistical comparisons are fine;
   to isolate a stage, toggle it on ONE render.
+
+---
+
+# Round 2 (2026-09-17): the retrain, and why the dropouts persisted
+
+User: *"its like the voice isnt steady volume and it drops out"* — after the
+contour follower had already shipped.
+
+## The contour follower was the wrong instrument, not mistuned
+
+`_follow_lead_contour` smooths over **0.75 s** so real musical dynamics
+survive. The dropouts are **0.15-0.26 s** events - 3-5x shorter than its own
+window. It could never respond to them. The tell: it sat at its +-6 dB clip on
+only **0.2 %** of frames, so the bound was never the limit; the time constant
+was. Fixed by ADDING a fast stage (`_fill_lead_dropouts`), not by retuning the
+slow one.
+
+    slow follower only      3.58 % of sung frames >6 dB under source
+    + fast fill             1.23 %                        (66 % relative)
+
+Gated on SOURCE LEVEL alone - free, and better than a crepe/pyin voiced gate
+(2.75 %), because a voiced gate skips consonants and dropouts happen there too.
+Inharmonic fraction unchanged (0.572 -> 0.572 overall, 0.555 -> 0.556 on the
+lifted frames), so it is not merely making residue louder.
+
+`smooth_s` is a tremolo/dropout trade; 0.15 s ships. It adds 0.24 dB rms of
+3-8 Hz modulation against the SOURCE's own **2.15 dB rms** - under a tenth of
+what her voice does naturally. That reference matters: without it, "25 % of the
+gain energy is in the tremolo band" reads alarming when the absolute depth is
+inaudible.
+
+## The retrain: high-f0 loss weighting
+
+`patches/svcfork_hif0_loss_weight.py` weights the per-frame mel loss by source
+f0 (1x at 400 Hz -> 4x at 800 Hz). Normalised WEIGHTED MEAN, verified to
+reproduce the upstream loss exactly under uniform weights - otherwise it would
+silently act as a learning-rate change too.
+
+**The corpus was NOT the problem and this was checked before spending GPU:**
+the WORLD +12/+16 st files measure 0.343/0.365 inharmonic at 700-1100 Hz
+against a real voice's 0.329. The model was failing to learn clean data it
+already had, because high-f0 frames are a minority (270 plain vs 128 shifted).
+
+Fine-tuned G_250 -> epoch 400, LR 2e-5, `-r`. Raw inference at 700-1100 Hz:
+
+    G_250   dropout 63.4 %   inharmonic +70 %
+    G_389   dropout 36.1 %   inharmonic +52 %     <- promoted
+    G_400   dropout 44.6 %   inharmonic +53 %
+
+**G_389, not G_400** - the fifth run on this model to peak before the end.
+`keep_ckpts` must be low for disk but then rotates the peak away; preserve a
+spread to `/root/keep` DURING training or it is gone.
+
+## A single render CANNOT measure dropout
+
+Three G_250 pipeline renders, measured identically, spanned **6.1 % - 50.0 %**
+in the 700-1100 Hz band. Two of them differed only in a de-tonalizer threshold
+that cannot affect dropout, and still differed by 6 points. `noise_scale 0.4`
+makes every render a different draw.
+
+Anything quoted from one render per model is unreliable, including the
+per-band failure rates that motivated the loss weighting. The PITCH DEPENDENCE
+replicated across bands and checkpoints and is trustworthy; the absolute
+percentages are not. Use 3-5 renders per model before any A/B conclusion.
+
+## Dropouts are 69 % render-independent - best-of-N works, but modestly
+
+Jaccard overlap of dropout frames between renders is 0.44-0.50; only 31 % of
+dropped frames are dropped in all three. So a second take can patch the first.
+
+**Naive crossfading makes it WORSE** (4.1 % vs 3.9 %): two stochastic takes are
+phase-incoherent, so `A*(1-g)+B*g` partially cancels and manufactures new dips.
+Equal-power hard switching or STFT magnitude-select both work: 4.3 % -> 3.5 %.
+19 % for 2x the render time - not applied, on the shelf.
+
+## noise_scale
+
+Raw G_389, 700-1100 Hz: ns 0.4 -> dropout 32.3 %, inharmonic +55 %;
+ns 0.0 -> 29.2 % / +43 %. Overall dropout barely moves (11.1 -> 11.7 %).
+Lower ns looks like a small win on the buzz, but 0.4 was tuned by ear for the
+between-word hum and the hum cannot be measured on a clean stem (gaps read
+-157 dB either way). Needs an ear A/B on a real song before changing.

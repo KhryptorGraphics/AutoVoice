@@ -1679,7 +1679,10 @@ class SingingConversionPipeline:
         self._last_lead_gain_db = round(20.0 * float(np.log10(gain)), 2)
         logger.info("Lead level match %.2fx (%+.1f dB)", gain, self._last_lead_gain_db)
         out = (np.asarray(converted, dtype=np.float32) * gain).astype(np.float32)
-        return self._follow_lead_contour(out, source, sr)
+        out = self._follow_lead_contour(out, source, sr)
+        # Fast stage LAST: the slow follower's 0.75 s window cannot see a
+        # 0.2 s dropout, so the two are different instruments, not a retune.
+        return self._fill_lead_dropouts(out, source, sr)
 
     def _follow_lead_contour(self, converted, source, sr,
                              max_db=6.0, smooth_s=0.75, gate_db=-42.0):
@@ -1743,6 +1746,86 @@ class SingingConversionPipeline:
         logger.info("Lead contour follow: %.0f%% of frames corrected >3 dB, range %+.1f..%+.1f dB",
                     100.0 * float(np.mean(np.abs(diff) > 3.0)),
                     float(diff.min()), float(diff.max()))
+        return (np.asarray(converted, dtype=np.float32)
+                * (10.0 ** (g / 20.0)).astype(np.float32)).astype(np.float32)
+
+    def _fill_lead_dropouts(self, converted, source, sr,
+                            threshold_db=3.0, max_lift_db=12.0, smooth_s=0.15):
+        """Lift the SHORT level collapses the slow contour follower cannot see.
+
+        The user, after the contour follower shipped: "its like the voice isnt
+        steady volume and it drops out". Both halves are the same events.
+
+        `_follow_lead_contour` smooths over 0.75 s by design, so real musical
+        dynamics survive. But the decoder's dropouts are 0.15-0.26 s events -
+        three to five times SHORTER than that window - so the slow stage
+        physically cannot respond to them. It was not mistuned; it was the wrong
+        instrument. Measured: it sits at its +-6 dB clip on only 0.2 % of frames,
+        i.e. the bound was never the limit, the time constant was.
+
+        So this runs after it, fast enough to see the events. On the G_389 Hero
+        render, share of sung frames more than 6 dB under the source:
+
+            slow follower only          3.58 %
+            + this stage                1.23 %      (66 % relative)
+
+        Gated on the SOURCE's level alone, which is both free and BETTER than a
+        crepe/pyin voiced gate (2.75 %): a voiced gate excludes consonants, and
+        dropouts happen there too. It also keeps this stage off the GPU.
+
+        It does NOT simply make the residue louder - the point of the dropouts
+        is that the decoder emits inharmonic junk there. Inharmonic fraction is
+        unchanged, 0.572 -> 0.572 over all sung frames and 0.555 -> 0.556 over
+        the lifted frames alone. Broadband level moves +0.21 dB.
+
+        `smooth_s` is a tremolo/dropout trade and 0.15 s is deliberately on the
+        conservative side of it, because the complaint being fixed IS unsteady
+        level - a stage that pumps would make it worse:
+
+            smooth_s   dropout   3-8 Hz depth
+             0.06 s     1.23 %     0.35 dB
+             0.15 s     1.23 %     0.24 dB   <- shipped
+             0.30 s     3.05 %     0.06 dB
+
+        For scale, the SOURCE's own 3-8 Hz level modulation is 2.15 dB rms, so
+        what this adds is under a tenth of what her voice does naturally.
+
+        # ponytail: level gate, no pitch tracking. If it ever lifts something
+        # it should not, gate on the hum stage's existing voicing rather than
+        # adding a second crepe pass.
+        """
+        import librosa
+        from scipy.ndimage import median_filter, uniform_filter1d, maximum_filter1d
+
+        if not bool(self.config.get('fork_hq_fill_lead_dropouts', True)):
+            return converted
+        hop = 512
+        n = min(len(converted), len(source))
+        if n < int(1.5 * sr):
+            return converted
+
+        def env(y):
+            rms = librosa.feature.rms(y=np.asarray(y[:n], dtype=np.float32),
+                                      frame_length=2048, hop_length=hop)[0]
+            return 20.0 * np.log10(rms + 1e-9)
+
+        es, ec = env(source), env(converted)
+        m = min(len(es), len(ec))
+        es, ec = es[:m], ec[:m]
+        esn = es - np.median(es[es > es.max() - 30])
+        live = esn > -25.0
+        if not live.any():
+            return converted
+        ecn = ec - np.median(ec[esn > -30.0])
+        lift = np.clip(np.where(live, esn - ecn, 0.0) - threshold_db, 0.0, max_lift_db) * live
+        k = max(3, int(smooth_s * sr / hop) | 1)
+        lift = uniform_filter1d(maximum_filter1d(median_filter(lift, size=5), 3), size=k)
+        g = np.interp(np.arange(len(converted)),
+                      np.arange(m) * hop + hop // 2, lift)
+        logger.info("Lead dropout fill: %.1f%% of frames lifted, mean %.1f dB, max %.1f dB",
+                    100.0 * float(np.mean(lift > 0.5)),
+                    float(lift[lift > 0.5].mean()) if np.any(lift > 0.5) else 0.0,
+                    float(lift.max()))
         return (np.asarray(converted, dtype=np.float32)
                 * (10.0 ** (g / 20.0)).astype(np.float32)).astype(np.float32)
 

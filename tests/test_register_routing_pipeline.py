@@ -539,3 +539,49 @@ class TestRegisterProfileValidation:
                 str(song), 'lead-id', 1.0, 0.9, False, 'studio', 0.0,
                 register_profiles={'male': None, 'female': None})
         assert 'register_profiles' not in str(exc.value)
+
+
+class TestLeadDropoutFill:
+    """The fast stage: the slow contour follower smooths over 0.75 s and cannot
+    see a 0.2 s dropout. Both exist because they are different instruments."""
+
+    def _pipe(self, **cfg):
+        return make_pipeline(**cfg)
+
+    def test_lifts_a_short_dropout(self):
+        sr = 44100
+        t = np.arange(4 * sr) / sr
+        source = (0.3 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+        conv = source.copy()
+        conv[int(1.0 * sr):int(1.2 * sr)] *= 0.06          # ~24 dB collapse
+        out = self._pipe()._fill_lead_dropouts(conv, source, sr)
+        seg = slice(int(1.05 * sr), int(1.15 * sr))
+        before = float(np.sqrt(np.mean(conv[seg] ** 2)))
+        after = float(np.sqrt(np.mean(out[seg] ** 2)))
+        assert 20 * np.log10(after / before) > 3.0
+
+    def test_leaves_a_matching_render_alone(self):
+        """No deficit means no gain: this must not touch good audio."""
+        sr = 44100
+        t = np.arange(4 * sr) / sr
+        source = (0.3 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+        out = self._pipe()._fill_lead_dropouts(source.copy(), source, sr)
+        assert abs(20 * np.log10((np.sqrt(np.mean(out ** 2)) + 1e-12)
+                                 / (np.sqrt(np.mean(source ** 2)) + 1e-12))) < 0.5
+
+    def test_silent_source_is_a_no_op(self):
+        """Keyed on the source, so where she never sang nothing is lifted -
+        the same contract every other stage in this chain honours."""
+        sr = 44100
+        source = np.zeros(2 * sr, dtype=np.float32)
+        conv = (0.01 * np.random.default_rng(0).standard_normal(2 * sr)).astype(np.float32)
+        out = self._pipe()._fill_lead_dropouts(conv, source, sr)
+        assert np.allclose(out, conv, atol=1e-6)
+
+    def test_flag_disables_it(self):
+        sr = 44100
+        t = np.arange(4 * sr) / sr
+        source = (0.3 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+        conv = source.copy(); conv[int(1.0 * sr):int(1.2 * sr)] *= 0.06
+        off = self._pipe(fork_hq_fill_lead_dropouts=False)
+        assert np.allclose(off._fill_lead_dropouts(conv, source, sr), conv)
