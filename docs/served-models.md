@@ -729,3 +729,40 @@ Caveats: single clip (conor — the strongest differentiator in the existing tab
 rebuilt corpus (not corpus_v3), metric-only, identity vs the rebuilt centroid
 (not the lost one). Render: `renders_hero20/cmp_st2f2e5_conor.wav` vs
 `renders_hero20/rep_v3_uv_bright_G_135_clip_conor_30s.wav`.
+
+## Patrick `31b13ae6-9633-4109-bc63-b2709d105081` (2026-09-17)
+
+First model for this profile. **Serves `_patrick_20260917/G_1650.pth`**, not
+G_2000: identity measured 0.9927 vs 0.9926 — identical to four decimals, so
+1650 is the same model with 350 fewer epochs of overfit risk on 32 minutes of
+data. It had converged by then.
+
+Trained from the fork's pretrained base (not a fine-tune), LR 1e-4,
+2000 epochs, batch 48, `f0_method: crepe`. Corpus: 195 chunks / 32.5 min from
+12 sing-along recordings, `experiments/build_corpus_patrick.py`. No pitch
+shifts and no brightness lift, both deliberate — see that builder's docstring.
+
+**Quality: it learned his voice.** Mel-statistics centroid against a reference
+built from 10 of his real recordings: his own samples score 0.9785-0.9992
+(median 0.9972), an unrelated singer scores 0.9710, and the model's output
+scores **0.9927** — inside his own range and clear of the not-him floor.
+
+**HARD CEILING: his capture walls at 7.2 kHz.** `input_device_label: AirPods`
+in the sample metadata — a Bluetooth headset used as a MICROPHONE switches the
+link to HFP/SCO (16 kHz, Nyquist 8 kHz). Stored at 48 kHz, but nothing above
+7.2 kHz was ever recorded. The model reproduces that faithfully (8-12 kHz at
+-68.5 dB against -16.2 for a full-band vocal), so it sounds duller than Brandy.
+No training run and no output EQ can restore a band that was never captured.
+**The fix is a different input device at record time.** If he re-records, do
+not mix the two sets — differing bandwidth teaches an inconsistent timbre.
+
+**Registering a fork-only profile needs TWO things** (this 404'd on the first
+attempt with only the first):
+1. `data/fork_models/<id>.json` — speaker must match the `spk` key in
+   config.json, and paths must be ABSOLUTE (the bridge `os.path.exists()`
+   checks them).
+2. The profile record at `data/voice_profiles/<id>.json`:
+   `training_status: ready`, `has_trained_model: true`,
+   `runtime_artifact_manifest_path` -> the registry.
+   `active_model_type` normalizes to `adapter` for fork-only. That is expected.
+Backup of the pre-registration profile: `<id>.json.pre_fork_register`.
