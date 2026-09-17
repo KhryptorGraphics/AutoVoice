@@ -637,3 +637,84 @@ where the model starts failing.
 - **Sample GPU utilisation more than once.** `pre-hubert` alternates GPU and CPU
   phases; a single reading caught a trough and read 0 %, five readings showed
   46/0/0/45/10 %.
+
+---
+
+# 9. Decision log (2026-09-17)
+
+**Decision owner:** user (GPU spend). **Recorded by:** Claude.
+
+## Candidate taken: cluster A/B hybrid — corpus v5
+
+Chosen: WORLD shifts +4..+20 st (f0 coverage ~0 % -> 40.7 % of frames >=700 Hz)
+plus an 8-16 kHz brightness lift, fine-tuned from G_389 with the existing
+high-f0 loss weighting. Rejected at this stage: C1 (self-training — a
+confirmation loop), E1 (VTLP — perturbs identity, which is a gate), A1
+(formant correction — the literature says the warp is R1-specific and
+saturates, so a uniform envelope scale drags R3+ where identity lives).
+
+## Outcome: FAILED its pre-registered bar. Not promoted.
+
+Bar set before results were seen: beat G_389 on **both** dropout and inharmonic
+excess at 700-1100 Hz, identity >= 0.88, difference larger than the within-model
+render spread. Scored at 4 renders per model.
+
+    700-1100 Hz        dropout                inharmonic excess
+    base389       35.8 [34.2, 39.6]       54.4 [51.7, 56.4]
+    v5_400        34.8 [33.0, 37.7]       54.5 [52.6, 55.9]
+    v5_426        28.2 [25.7, 33.3]  ok   64.4 [62.0, 66.7]  WORSE
+    v5_452        30.8 [26.4, 34.0]       55.8 [54.1, 57.8]
+    v5_478        31.8 [27.1, 37.3]       72.5 [71.4, 73.9]  WORSE
+    v5_500        43.6 [36.6, 50.7] WORSE 74.1 [72.5, 78.0]  WORSE
+
+And every checkpoint regressed the MODAL range, which matters more than the
+high band because that is where she actually sings:
+
+    250-400 Hz dropout   base389 9.4 %   ->  v5 12.3-12.8 %
+    400-550 Hz dropout   base389 3.8 %   ->  v5  5.4-7.3 %
+
+**Interpretation `[evidence]`:** the augmented high-register audio is WORLD
+*synthesis*, not singing. Inharmonicity rose most at exactly the pitches the
+augmentation supplied, and rose further the longer training ran. The model
+learned the synthesiser's artifacts.
+
+**This is what the literature predicted** (§5-7): no located result where
+pitch-shift augmentation alone helped; SingAug's "shift toward the target
+region" was the worst of its three variants; WeSinger dropped ±1 st range
+extension for "no significant benefit". The project bet against that on the
+strength of its own world33 A/B (dropout 47.6 -> 26.5 %) and lost. Record the
+prior as having been right.
+
+## What DID work, and is worth banking
+
+**Brightness transferred from data to model, cleanly:**
+
+    8-12 kHz   -29.7 -> -24.6 dB      12-16 kHz  -37.8 -> -27.1 dB
+    centroid    741 -> 765-815 Hz     identity   0.9963-0.9973
+
+Fixing darkness in the DATA works. Fixing it on the OUTPUT does not: an HF lift
+raises the inharmonic residue that fills a dropout, which is why the user heard
+"brighter but worse dropouts".
+
+## Next actions, ranked
+
+1. `[decision]` **A brightness-only corpus** — the v5 lift, no shifts. Banks the
+   one win, ~30 min of GPU, and cleanly attributable. It would also let the
+   output-side air restore be switched off.
+2. `[idea]` **F-series: SPA-SVC cycle-consistency loss** (arXiv 2406.05692).
+   The only located method aimed at this exact large-range-gap case, its gain
+   concentrated on the large-gap target and absent on the small-gap one, and it
+   needs NO synthetic audio — it shifts the f0 conditioning during training and
+   penalises inconsistency against real audio. That sidesteps the failure mode
+   above entirely. Caveats: MOS-only, 13 listeners, and whether gradients flow
+   through the first pass is unstated in the paper.
+3. `[idea]` **E3 latent mixup** — filed "low prior, for completeness" in round 1
+   and, per the evidence check, carrying the best support of any of the fifteen.
+
+## Revisit trigger
+
+If (1) and (2) both fail to move the 700-1100 Hz band, the working hypothesis
+that this is a *data-coverage* problem should be abandoned in favour of an
+architectural one, and the next question becomes whether a 16 kHz content
+encoder and an NSF excitation fitted on a 291 Hz median can represent this
+register at all.
