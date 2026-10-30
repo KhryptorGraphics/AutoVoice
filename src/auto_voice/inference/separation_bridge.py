@@ -40,6 +40,19 @@ DEFAULT_KARAOKE_MODEL = os.environ.get(
     "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
 )
 _SEPARATE_TIMEOUT_S = int(os.environ.get("AUTOVOICE_UVR_TIMEOUT", "900"))
+# Threads for the audio-separator / basic-pitch subprocesses.
+#
+# Without a cap, each one lets torch grab every core: on this 14-core box three
+# concurrent conversions ran three separators, each spawning 14 torch threads,
+# which pushed the load average to 36 and the separator to 39 s per iteration.
+# One conversion alone took 1710 s; the same three together took over an hour
+# and the separation step was the whole difference.
+#
+# The cap is per subprocess and the budget is a fraction of the machine, so N
+# concurrent conversions share the cores instead of fighting over them. torch
+# reads OMP_NUM_THREADS and MKL_NUM_THREADS; audio-separator and basic-pitch
+# both go through torch.
+_SEPARATOR_THREADS = int(os.environ.get("AUTOVOICE_UVR_THREADS", "4"))
 
 
 def _clean_env() -> Dict[str, str]:
@@ -47,6 +60,12 @@ def _clean_env() -> Dict[str, str]:
     env = dict(os.environ)
     for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONNOUSERSITE"):
         env.pop(key, None)
+    # Cap the child's BLAS/torch threads so concurrent conversions share the
+    # cores rather than each trying to own all of them.
+    threads = str(max(1, _SEPARATOR_THREADS))
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        env[key] = threads
     return env
 
 

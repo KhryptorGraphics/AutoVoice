@@ -12,6 +12,8 @@ from typing import Optional, Dict, Any
 
 import numpy as np
 
+from .quality_presets import preset_overrides
+
 logger = logging.getLogger(__name__)
 
 
@@ -358,14 +360,12 @@ def _extract_line_audios(stack: np.ndarray, sample_rate: int, lines,
             for mask in masks]
 
 
-# Preset configurations
-PRESETS = {
-    'draft': {'n_steps': 10, 'denoise': 0.3},
-    'fast': {'n_steps': 20, 'denoise': 0.5},
-    'balanced': {'n_steps': 50, 'denoise': 0.7},
-    'high': {'n_steps': 100, 'denoise': 0.8},
-    'studio': {'n_steps': 200, 'denoise': 0.9},
-}
+# The quality presets live in quality_presets.py. They used to live here as
+# ``PRESETS`` with 'n_steps' and 'denoise' keys, and nothing ever read either
+# key: no stage in this module consumed them, so the dict only asserted a
+# shape. The frontend mirrors the same table in QUALITY_PRESETS, which made
+# the unused keys look load-bearing from both sides. The presets now set the
+# fork HQ chain's real knobs instead.
 
 
 def _detect_bandwidth_hz(audio: np.ndarray, sr: int, floor_db: float = 40.0) -> float:
@@ -1830,7 +1830,7 @@ class SingingConversionPipeline:
         return (np.asarray(converted, dtype=np.float32)
                 * (10.0 ** (g / 20.0)).astype(np.float32)).astype(np.float32)
 
-    def _correct_fork_output(self, source, converted, sr):
+    def _correct_fork_output(self, source, converted, sr, overrides=None):
         """The decoder output-correction chain — three measured defects.
 
         ⚠ EASY TO LOSE. This chain was silently dropped from disk once
@@ -1858,13 +1858,21 @@ class SingingConversionPipeline:
                 shift — the stages must measure what the model actually heard.
             converted: The decoder's output for that track.
             sr: Sample rate of both.
+            overrides: Per-request config overrides (a quality preset). They
+                win over the stored config. Passed in rather than written to
+                self.config because ONE pipeline instance serves every
+                concurrent conversion: mutating self.config for a request
+                would leak that request's settings into every other
+                conversion running at the same time.
 
         Returns:
             The corrected converted audio.
         """
+        cfg = overrides if overrides else self.config
+
         # 1. Between-word hum: the decoder voices ~14 % of frames where the
         # source is unvoiced. Measured on Hero: -11.5 -> -20.4 dB by level.
-        if bool(self.config.get('fork_hq_hum_suppress', True)):
+        if bool(cfg.get('fork_hq_hum_suppress', True)):
             from .fork_hum_suppression import suppress_hum
             converted = suppress_hum(source, converted, sr)
 
@@ -1875,7 +1883,7 @@ class SingingConversionPipeline:
         # 0.172 at 600-900 Hz (source 0.144). BEFORE the polish: a belt's
         # 3f0/2 and 5f0/2 land inside the 1.2-5 kHz band the polish lifts, and
         # polishing first made the rasp 22 % worse.
-        if bool(self.config.get('fork_hq_subharmonic_suppress', True)):
+        if bool(cfg.get('fork_hq_subharmonic_suppress', True)):
             from .fork_subharmonics import suppress_subharmonics
             converted = suppress_subharmonics(source, converted, sr)
 
@@ -1884,7 +1892,7 @@ class SingingConversionPipeline:
         # clear" and soft edges. Deviation from the source is undone there and
         # only there; above 5 kHz only fixed tones (17.9/18.6 kHz) are notched,
         # because that band carries identity and has no defensible target.
-        if bool(self.config.get('fork_hq_voice_polish', True)):
+        if bool(cfg.get('fork_hq_voice_polish', True)):
             from .fork_voice_polish import polish_voice
             converted = polish_voice(source, converted, sr)
 
@@ -1896,11 +1904,32 @@ class SingingConversionPipeline:
         #    LTAS notcher cannot see a moving tone (it reads 3.6 dB of excess
         #    where the per-frame peaks are 6 dB in 55 % of frames), and the
         #    polish must not re-lift what this removes.
-        if bool(self.config.get('fork_hq_hf_detonalize', True)):
+        if bool(cfg.get('fork_hq_hf_detonalize', True)):
             from .fork_voice_polish import detonalize_hf
             converted = detonalize_hf(converted, sr)
 
-        # 5. Short dropout fill, LAST. The slow contour follower in
+        # 5. Air restore: her CORPUS is 17 dB darker than the source at
+        #    8-12 kHz, so the model learned a dark voice. AFTER the
+        #    de-tonalizer on purpose - a broad shelf raises peak and floor
+        #    together so the ring does not return (measured: 8.1 % at every
+        #    lift), but lifting first would hand the de-tonalizer a hotter
+        #    target. An ear call the user asked for; tune fork_hq_air_lift_db.
+        air_cap_db = float(cfg.get('fork_hq_air_cap_db', 12.0) or 0.0)
+        if air_cap_db > 0.0:
+            from .fork_voice_polish import restore_air
+            converted = restore_air(source, converted, sr, cap_db=air_cap_db)
+
+        # 6. Bandwidth extension: a source captured through a Bluetooth mic
+        #    walls ~7.2 kHz and no gain can brighten an empty band - stage 5
+        #    tried and amplified its noise floor, which is what the user heard
+        #    as "electronic" and "through a pipe". Self-gating: does nothing to
+        #    a full-band render. AFTER the air restore, which now stops at the
+        #    wall, so the two are complementary rather than fighting.
+        if bool(cfg.get('fork_hq_extend_bandwidth', True)):
+            from .fork_voice_polish import extend_bandwidth
+            converted = extend_bandwidth(converted, sr)
+
+        # 7. Short dropout fill, LAST. The slow contour follower in
         #    _match_lead_level runs before this chain, so anything it lifts is
         #    partially undone by stages 1-4 (the hum gate attenuates, the polish
         #    and de-tonalize reshape). Measured on Hero: the fill mid-chain
@@ -2056,7 +2085,8 @@ class SingingConversionPipeline:
 
     def _convert_multi_speaker(self, voc_mono, sr, target_profile_id, mm, pitch_shift,
                                convert_backing=None, preserve_speakers=None,
-                               song_path=None, register_profiles=None):
+                               song_path=None, register_profiles=None,
+                               overrides=None):
         """Convert the lead vocal per-speaker; keep backing vocals as original.
 
         Diarizes the mono vocal stem, converts the primary speaker (most total
@@ -2301,7 +2331,7 @@ class SingingConversionPipeline:
             # wrong voice. The kept-original backing is deliberately NOT
             # corrected — it never went through the decoder.
             converted_primary = self._correct_fork_output(
-                primary_track, converted_primary, sr)
+                primary_track, converted_primary, sr, overrides=overrides)
 
             converted_routed = []
             for profile_id, track in routed_tracks:
@@ -2312,7 +2342,7 @@ class SingingConversionPipeline:
                 )
                 conv = self._match_lead_level(conv, track, sr)
                 converted_routed.append(
-                    self._correct_fork_output(track, conv, sr))
+                    self._correct_fork_output(track, conv, sr, overrides=overrides))
 
             n = min([len(converted_primary), len(backing)]
                     + [len(c) for c in converted_routed])
@@ -2352,7 +2382,8 @@ class SingingConversionPipeline:
     def _convert_song_fork_hq(self, song_path, target_profile_id, vocal_volume,
                               instrumental_volume, return_stems, preset, pitch_shift,
                               enable_multi_speaker=None, convert_backing=None,
-                              preserve_speakers=None, register_profiles=None):
+                              preserve_speakers=None, register_profiles=None,
+                              overrides=None):
         """Fork-backed conversion: stereo, native output rate.
 
         Bypasses the two quality losses of the legacy lane for so-vits-svc-fork
@@ -2436,7 +2467,8 @@ class SingingConversionPipeline:
                 convert_backing=convert_backing,
                 preserve_speakers=preserve_speakers,
                 song_path=song_path,
-                register_profiles=register_profiles)
+                register_profiles=register_profiles,
+                overrides=overrides)
             if ms is not None:
                 converted, multi_speaker_info = ms
                 # Pop before anything serialises info: it carries audio, not
@@ -2491,7 +2523,7 @@ class SingingConversionPipeline:
         # converted track against its own source, before mixing. Running it
         # again on the sum would key two singers on one f0 contour.
         if not output_corrected:
-            converted = self._correct_fork_output(hum_key, converted, sr)
+            converted = self._correct_fork_output(hum_key, converted, sr, overrides=overrides)
         # ---- end output-correction chain -----------------------------------
 
         n = min(inst_st.shape[-1], len(converted))
@@ -2561,7 +2593,8 @@ class SingingConversionPipeline:
         # the "electronic" character was measured. Filtering mid and side
         # separately is equivalent to filtering L and R, and preserves
         # ``L + R == 2 * mid`` exactly.
-        match_bandwidth = bool(self.config.get('fork_hq_match_source_bandwidth', True))
+        match_bandwidth = bool(
+            (overrides or self.config).get('fork_hq_match_source_bandwidth', True))
         source_bandwidth_hz = None
         applied_bandwidth_hz = None
         if match_bandwidth:
@@ -2637,6 +2670,35 @@ class SingingConversionPipeline:
         }
         if multi_speaker_info:
             result['metadata']['multi_speaker_info'] = multi_speaker_info
+
+        # True-peak ceiling on the converted vocal stem.
+        #
+        # The guards above compare a SAMPLE peak against 0.95, so a stem can
+        # measure 0.00 dBFS as a sample peak and still be +0.16 dBTP once the
+        # waveform between the samples is reconstructed - which is what a DAC
+        # reproduces, and what clips. Measured on a Brandy conversion of a
+        # full-band female source: the vocal stem came out at 0.00 dBFS
+        # sample peak, +0.16 dBTP, 5 samples at or above 0.999, while the
+        # mix was clean at -0.44 dBTP because the instrumental sat under it.
+        #
+        # A constant trim, not a compressor: the defect is a handful of
+        # samples at full scale, and a dynamic limiter would change the level
+        # envelope of the entire vocal to remove it. The trim is applied to
+        # the vocal stem only, so the mix is untouched.
+        vocal_true_peak_dbfs = float(
+            (overrides or self.config).get('fork_hq_vocal_true_peak_dbfs', -1.0))
+        vocal_gain_db = 0.0
+        if vocal_true_peak_dbfs is not None and vocal_true_peak_dbfs <= 0.0:
+            from ..audio.true_peak import limit_true_peak
+            conv, vocal_gain_db = limit_true_peak(conv, target_dbfs=vocal_true_peak_dbfs)
+            if vocal_gain_db:
+                logger.info(
+                    f"Fork HQ: trimmed converted vocal by {vocal_gain_db:.2f} dB to "
+                    f"hold its true peak at {vocal_true_peak_dbfs:.1f} dBTP"
+                )
+        result['metadata']['vocal_true_peak_dbfs'] = vocal_true_peak_dbfs
+        result['metadata']['vocal_trim_db'] = vocal_gain_db
+
         if return_stems:
             result['stems'] = {
                 'vocals': conv.astype(np.float32),
@@ -2961,6 +3023,12 @@ class SingingConversionPipeline:
                 fork_kwargs['preserve_speakers'] = list(preserve_speakers)
             if register_profiles:
                 fork_kwargs['register_profiles'] = dict(register_profiles)
+            # A quality preset overrides the stored chain settings for THIS
+            # request only. Passed down as an argument rather than written to
+            # self.config, which every concurrent conversion shares.
+            preset_cfg = preset_overrides(preset)
+            if preset_cfg:
+                fork_kwargs['overrides'] = preset_cfg
             return self._convert_song_fork_hq(
                 song_path, target_profile_id, vocal_volume,
                 instrumental_volume, return_stems, preset, pitch_shift,

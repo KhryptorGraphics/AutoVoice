@@ -480,6 +480,19 @@ def update_app_settings():
             # side channel stops reading as width and starts reading as a
             # second, phasey take.
             ('fork_hq_stereo_width', 0.0, 1.0),
+            # Ceiling on how much air the chain restores above 5 kHz, in dB.
+            # 0 disables the air restore entirely; 12 is the value the chain
+            # has always used. It was unreachable before: the code read it
+            # from the pipeline config and no settings key carried it, so the
+            # only way to change it was to edit source.
+            ('fork_hq_air_cap_db', 0.0, 24.0),
+            # True-peak ceiling for the converted vocal stem, in dBTP. A
+            # sample peak of 0.00 dBFS measured +0.16 dBTP once the
+            # inter-sample peaks were reconstructed, and the stem clipped.
+            # -1.0 is the streaming target; 0.0 means "never exceed full
+            # scale". Negative values beyond -3 are rejected because they
+            # would cost real level for no benefit.
+            ('fork_hq_vocal_true_peak_dbfs', -3.0, 0.0),
         ):
             if key in data:
                 try:
@@ -494,7 +507,12 @@ def update_app_settings():
 
         for bool_key in ('enable_multi_speaker_conversion',
                          'multi_speaker_convert_backing',
-                         'fork_hq_match_source_bandwidth'):
+                         'fork_hq_match_source_bandwidth',
+                         'fork_hq_hum_suppress',
+                         'fork_hq_subharmonic_suppress',
+                         'fork_hq_voice_polish',
+                         'fork_hq_hf_detonalize',
+                         'fork_hq_extend_bandwidth'):
             if bool_key in data and not isinstance(data[bool_key], bool):
                 return root.validation_error_response(
                     f'{bool_key} must be true or false'

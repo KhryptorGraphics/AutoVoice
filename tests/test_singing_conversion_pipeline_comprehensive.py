@@ -27,8 +27,8 @@ from auto_voice.inference.singing_conversion_pipeline import (
     SingingConversionPipeline,
     SeparationError,
     ConversionError,
-    PRESETS,
 )
+from auto_voice.inference.quality_presets import QUALITY_PRESETS
 
 
 # ============================================================================
@@ -826,7 +826,7 @@ def test_convert_song_all_presets(
 
     pipeline = SingingConversionPipeline(voice_cloner=mock_voice_cloner)
 
-    for preset in PRESETS.keys():
+    for preset in QUALITY_PRESETS.keys():
         result = pipeline.convert_song(temp_audio_file, 'test-profile', preset=preset)
         assert result['metadata']['preset'] == preset
 
@@ -880,23 +880,38 @@ def test_presets_exist():
     """Test all expected presets exist."""
     expected_presets = ['draft', 'fast', 'balanced', 'high', 'studio']
     for preset in expected_presets:
-        assert preset in PRESETS
+        assert preset in QUALITY_PRESETS
 
 
 def test_presets_have_required_keys():
-    """Test all presets have required configuration keys."""
-    for preset, config in PRESETS.items():
-        assert 'n_steps' in config
-        assert 'denoise' in config
-        assert isinstance(config['n_steps'], int)
-        assert isinstance(config['denoise'], float)
+    """Test all presets have the configuration keys the chain reads."""
+    required = {
+        'fork_hq_hum_suppress',
+        'fork_hq_subharmonic_suppress',
+        'fork_hq_voice_polish',
+        'fork_hq_hf_detonalize',
+        'fork_hq_air_cap_db',
+        'fork_hq_extend_bandwidth',
+        'fork_hq_match_source_bandwidth',
+        'fork_hq_vocal_true_peak_dbfs',
+    }
+    for preset, config in QUALITY_PRESETS.items():
+        assert required <= set(config), preset
+        assert isinstance(config['fork_hq_air_cap_db'], float)
+        assert isinstance(config['fork_hq_vocal_true_peak_dbfs'], float)
+        assert config['fork_hq_vocal_true_peak_dbfs'] <= 0.0
 
 
 def test_presets_ordered_by_quality():
-    """Test presets are ordered by increasing quality."""
-    preset_order = ['draft', 'fast', 'balanced', 'high', 'studio']
-    steps = [PRESETS[p]['n_steps'] for p in preset_order]
+    """Test presets are ordered by increasing quality.
 
-    # n_steps should increase with quality
-    for i in range(len(steps) - 1):
-        assert steps[i] < steps[i + 1]
+    Quality here is the air cap: the only knob that decides how much top end
+    the render gets, and the only one that differs between the presets.
+    """
+    preset_order = ['draft', 'fast', 'balanced', 'high', 'studio']
+    air = [QUALITY_PRESETS[p]['fork_hq_air_cap_db'] for p in preset_order]
+
+    assert air[0] == 0.0
+    assert air[1] == 0.0
+    for i in range(2, len(air) - 1):
+        assert air[i] <= air[i + 1]

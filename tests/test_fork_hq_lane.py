@@ -65,8 +65,9 @@ def test_convert_song_delegates_to_fork_lane_when_available(tmp_path, monkeypatc
     sentinel = {"mixed_audio": np.zeros((4, 2), np.float32), "sample_rate": 44100}
     monkeypatch.setattr(svc_fork_bridge, "is_available", lambda pid, dd: True)
     called = {}
-    def fake_lane(song_path, profile, vv, iv, rs, preset, ps):
-        called["hit"] = (song_path, profile); return sentinel
+    # The lane now also receives the per-request quality-preset overrides.
+    def fake_lane(song_path, profile, vv, iv, rs, preset, ps, **kwargs):
+        called["hit"] = (song_path, profile); called["kwargs"] = kwargs; return sentinel
     monkeypatch.setattr(p, "_convert_song_fork_hq", fake_lane)
 
     assert p.convert_song(str(song), "prof-1") is sentinel

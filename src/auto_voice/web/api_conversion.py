@@ -531,6 +531,10 @@ def convert_song():
         return root.validation_error_response(str(exc))
 
     try:
+        # Two names for the same thing, because the frontend sends 'preset'
+        # and the settings JSON calls it 'output_quality'. Reading only the
+        # settings key meant a request that set the form field was silently
+        # converted at the default 'balanced'.
         output_quality = root.get_param(
             settings_data,
             'output_quality',
@@ -541,6 +545,12 @@ def convert_song():
         )
     except ValueError as exc:
         return root.validation_error_response(str(exc))
+    if output_quality == 'balanced':
+        # The form field wins when it names a preset, so an explicit
+        # 'preset=studio' is not overridden by a settings default.
+        form_preset = request.form.get('preset')
+        if form_preset and preset_map.get(form_preset) is not None:
+            output_quality = form_preset
     preset = preset_map.get(output_quality, 'balanced')
     root.logger.info('Selected preset: %s for quality: %s', preset, output_quality)
 

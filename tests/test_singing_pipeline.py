@@ -3,8 +3,9 @@ import numpy as np
 import pytest
 
 from auto_voice.inference.singing_conversion_pipeline import (
-    SingingConversionPipeline, SeparationError, ConversionError, PRESETS
+    SingingConversionPipeline, SeparationError, ConversionError
 )
+from auto_voice.inference.quality_presets import QUALITY_PRESETS, PRESET_NAMES
 
 
 class TestExceptions:
@@ -21,21 +22,52 @@ class TestExceptions:
 
 
 class TestPresets:
-    """Preset configuration tests."""
+    """Preset configuration tests.
+
+    These assert what a preset actually changes, not the shape of a dict
+    nobody read: the old 'n_steps'/'denoise' keys had no consumer anywhere in
+    the pipeline, so asserting their presence only asserted that dead code
+    was still dead.
+    """
 
     @pytest.mark.smoke
     def test_all_presets_exist(self):
-        for name in ['draft', 'fast', 'balanced', 'high', 'studio']:
-            assert name in PRESETS
+        assert set(QUALITY_PRESETS) == {'draft', 'fast', 'balanced', 'high', 'studio'}
+        assert PRESET_NAMES == tuple(QUALITY_PRESETS)
 
     def test_preset_has_required_keys(self):
-        for name, config in PRESETS.items():
-            assert 'n_steps' in config
-            assert 'denoise' in config
+        required = {
+            'fork_hq_hum_suppress',
+            'fork_hq_subharmonic_suppress',
+            'fork_hq_voice_polish',
+            'fork_hq_hf_detonalize',
+            'fork_hq_air_cap_db',
+            'fork_hq_extend_bandwidth',
+            'fork_hq_match_source_bandwidth',
+            'fork_hq_vocal_true_peak_dbfs',
+        }
+        for name, config in QUALITY_PRESETS.items():
+            assert required <= set(config), name
 
     def test_preset_ordering(self):
-        assert PRESETS['draft']['n_steps'] < PRESETS['balanced']['n_steps']
-        assert PRESETS['balanced']['n_steps'] < PRESETS['studio']['n_steps']
+        """Cheaper presets do less air work; the default changes nothing."""
+        air = {name: cfg['fork_hq_air_cap_db'] for name, cfg in QUALITY_PRESETS.items()}
+        assert air['draft'] == 0.0
+        assert air['fast'] == 0.0
+        assert air['balanced'] == 12.0
+        assert air['high'] >= air['balanced']
+        assert air['studio'] >= air['high']
+
+    def test_balanced_preserves_the_historical_chain(self):
+        """'balanced' is what the pipeline always did, so it must not change."""
+        cfg = QUALITY_PRESETS['balanced']
+        assert cfg['fork_hq_hum_suppress'] is True
+        assert cfg['fork_hq_subharmonic_suppress'] is True
+        assert cfg['fork_hq_voice_polish'] is True
+        assert cfg['fork_hq_hf_detonalize'] is True
+        assert cfg['fork_hq_air_cap_db'] == 12.0
+        assert cfg['fork_hq_extend_bandwidth'] is True
+        assert cfg['fork_hq_match_source_bandwidth'] is True
 
 
 class TestSingingConversionPipeline:

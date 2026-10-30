@@ -135,7 +135,7 @@ export function ConversionSettingsPanel({
                 const preset = QUALITY_PRESETS[key]
                 return (
                   <option key={key} value={key}>
-                    {preset.label} — {preset.n_steps} steps · {preset.denoise} denoise
+                    {preset.label} — {preset.detail}
                   </option>
                 )
               })}

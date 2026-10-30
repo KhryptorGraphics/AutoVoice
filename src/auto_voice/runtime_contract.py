@@ -89,6 +89,21 @@ PIPELINE_SETTING_KEYS: Tuple[str, ...] = (
     # octave above a lossy stem's wall, which is invented content no input
     # evidence supports. A no-op on a genuinely full-band source.
     "fork_hq_match_source_bandwidth",
+    # The fork HQ correction chain's individual stages. Every one of these was
+    # read from the pipeline config and carried no settings key, so the only
+    # way to change any of them was to edit source. They are listed here so
+    # an operator's tuning survives a restart, which is the whole point of
+    # this constant (see the drift note in app.py).
+    "fork_hq_hum_suppress",
+    "fork_hq_subharmonic_suppress",
+    "fork_hq_voice_polish",
+    "fork_hq_hf_detonalize",
+    "fork_hq_extend_bandwidth",
+    # Ceiling on the air the chain restores above 5 kHz, in dB. 12 is what the
+    # chain has always used; 0 disables the air restore.
+    "fork_hq_air_cap_db",
+    # True-peak ceiling for the converted vocal stem, in dBTP.
+    "fork_hq_vocal_true_peak_dbfs",
 )
 
 

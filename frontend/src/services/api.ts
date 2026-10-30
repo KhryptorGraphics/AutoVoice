@@ -814,13 +814,18 @@ export const DEFAULT_CONVERSION_CONFIG: ConversionConfig = {
   register_profiles: { female: null, male: null },
 }
 
-// Quality preset details matching backend PRESETS
-export const QUALITY_PRESETS: Record<QualityPreset, { n_steps: number; denoise: number; label: string }> = {
-  draft: { n_steps: 10, denoise: 0.3, label: 'Draft (Fast)' },
-  fast: { n_steps: 20, denoise: 0.5, label: 'Fast' },
-  balanced: { n_steps: 50, denoise: 0.7, label: 'Balanced' },
-  high: { n_steps: 100, denoise: 0.8, label: 'High Quality' },
-  studio: { n_steps: 200, denoise: 0.9, label: 'Studio' },
+// Quality preset details, matching the backend's quality_presets.py. The
+// preset selects how much of the fork HQ correction chain runs and how much
+// air it restores; the numbers shown to the operator are the ones that
+// actually differ between presets. The old 'n_steps'/'denoise' pair was
+// never read by any backend stage, so the UI described settings that did
+// not exist.
+export const QUALITY_PRESETS: Record<QualityPreset, { airCapDb: number; label: string; detail: string }> = {
+  draft: { airCapDb: 0, label: 'Draft (Fast)', detail: 'correction only, no air' },
+  fast: { airCapDb: 0, label: 'Fast', detail: 'full correction, no air' },
+  balanced: { airCapDb: 12, label: 'Balanced', detail: 'full chain, +12 dB air' },
+  high: { airCapDb: 18, label: 'High Quality', detail: 'full chain, +18 dB air' },
+  studio: { airCapDb: 18, label: 'Studio', detail: 'full chain, +18 dB air, −1.5 dBTP ceiling' },
 }
 
 // Training sample for voice profile
