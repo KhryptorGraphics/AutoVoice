@@ -815,8 +815,24 @@ class AppStateStore:
         return _normalize_app_settings(self._read("app_settings", {}))
 
     def update_app_settings(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge updates into the store, deleting any key whose value is None.
+
+        A ``None`` value means "unset this key", not "store null". The store
+        is the input to the boot-time reapply loop, which pushes every stored
+        key into ``pipeline._explicit_settings`` - and that dict outranks a
+        quality preset. So a key that cannot be deleted stays pinned for the
+        life of the store, and the only way back to preset authority was to
+        hand-edit the JSON on disk. Deleting the key is what hands authority
+        back: the key is then absent from the store, absent from the explicit
+        set, and ``_chain_config`` falls through to the preset's value.
+        """
         settings = self.get_app_settings()
-        settings.update(deepcopy(updates))
+        unset = [key for key, value in updates.items() if value is None]
+        for key in unset:
+            settings.pop(key, None)
+        settings.update(
+            {key: deepcopy(value) for key, value in updates.items() if value is not None}
+        )
         normalized = _normalize_app_settings(settings)
         self._write("app_settings", normalized)
         return normalized

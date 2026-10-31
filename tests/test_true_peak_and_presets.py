@@ -235,3 +235,110 @@ class TestChainConfigPrecedence:
         cfg = p._chain_config(None)
         assert cfg['fork_hq_air_cap_db'] == 20.0
         assert cfg['fork_hq_vocal_true_peak_dbfs'] == -2.0
+
+
+class TestUnsetExplicitSettings:
+    """An override must be removable, or a preset can never govern again.
+
+    set_explicit_settings only ever merged, so a key the operator set once
+    stayed in _explicit_settings for the life of the process - and
+    _chain_config ranks that dict above any preset. The only way back to
+    preset authority was a restart with the key edited out of the store by
+    hand.
+    """
+
+    def _pipeline(self):
+        from auto_voice.inference.singing_conversion_pipeline import (
+            SingingConversionPipeline,
+        )
+        return SingingConversionPipeline(config={'fork_hq_air_cap_db': 12.0})
+
+    def test_unset_restores_preset_authority(self):
+        """After an unset, the preset's value governs again."""
+        from auto_voice.inference.quality_presets import preset_overrides
+        p = self._pipeline()
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        assert p._chain_config(preset_overrides('band_limited'))['fork_hq_air_cap_db'] == 20.0
+
+        p.unset_explicit_settings(['fork_hq_air_cap_db'])
+
+        cfg = p._chain_config(preset_overrides('band_limited'))
+        assert cfg['fork_hq_air_cap_db'] == 18.0
+        assert cfg['fork_hq_match_source_bandwidth'] is False
+
+    def test_unset_removes_the_key_from_the_explicit_set(self):
+        """The override is gone from the dict, not merely outranked."""
+        p = self._pipeline()
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        p.unset_explicit_settings(['fork_hq_air_cap_db'])
+        assert 'fork_hq_air_cap_db' not in p._explicit_settings
+
+    def test_unset_leaves_other_overrides_alone(self):
+        """Unsetting one key must not drop the others."""
+        p = self._pipeline()
+        p.set_explicit_settings({
+            'fork_hq_air_cap_db': 20.0,
+            'fork_hq_vocal_true_peak_dbfs': -2.0,
+        })
+        p.unset_explicit_settings(['fork_hq_air_cap_db'])
+        cfg = p._chain_config(None)
+        # The unset key falls back to the baseline the pipeline was built
+        # with, not to a stale override.
+        assert cfg['fork_hq_air_cap_db'] == 12.0
+        assert cfg['fork_hq_vocal_true_peak_dbfs'] == -2.0  # still overridden
+
+    def test_unset_falls_through_to_the_preset(self):
+        """With the override gone, the preset's value governs the key."""
+        from auto_voice.inference.quality_presets import preset_overrides
+        p = self._pipeline()
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        p.unset_explicit_settings(['fork_hq_air_cap_db'])
+        for preset, expected in (('balanced', 12.0), ('high', 18.0),
+                                 ('band_limited', 18.0), ('draft', 0.0)):
+            cfg = p._chain_config(preset_overrides(preset))
+            assert cfg['fork_hq_air_cap_db'] == expected, preset
+
+    def test_unset_restores_the_baseline_in_the_pipeline_config(self):
+        """The PATCH handler writes into pipeline.config; the override there
+        must go too, or it survives in the lowest-precedence layer."""
+        p = self._pipeline()
+        p.config['fork_hq_air_cap_db'] = 20.0
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        p.unset_explicit_settings(['fork_hq_air_cap_db'])
+        assert p.config['fork_hq_air_cap_db'] == 12.0
+
+    def test_unset_removes_a_key_that_has_no_baseline(self):
+        """A key with no baseline is removed, so the stage reads its own
+        code default rather than a value the pipeline never had."""
+        p = self._pipeline()
+        p.config['fork_hq_never_shipped'] = 7.0
+        p.set_explicit_settings({'fork_hq_never_shipped': 7.0})
+        p.unset_explicit_settings(['fork_hq_never_shipped'])
+        assert 'fork_hq_never_shipped' not in p.config
+
+    def test_unset_preserves_a_yaml_supplied_value(self):
+        """A value the config shipped with must survive an override+unset."""
+        from auto_voice.inference.singing_conversion_pipeline import (
+            SingingConversionPipeline,
+        )
+        p = SingingConversionPipeline(config={'fork_hq_air_cap_db': 9.5})
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        p.unset_explicit_settings(['fork_hq_air_cap_db'])
+        assert p.config['fork_hq_air_cap_db'] == 9.5
+
+    def test_unset_of_an_unknown_key_is_a_no_op(self):
+        """Unsetting a key that was never set must not raise."""
+        p = self._pipeline()
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        p.unset_explicit_settings(['fork_hq_not_a_real_key'])
+        assert p._chain_config(None)['fork_hq_air_cap_db'] == 20.0
+
+    def test_unset_survives_a_partially_constructed_instance(self):
+        """A test double built with __new__ has no _explicit_settings."""
+        from auto_voice.inference.singing_conversion_pipeline import (
+            SingingConversionPipeline,
+        )
+        p = object.__new__(SingingConversionPipeline)
+        p.config = {}
+        p.unset_explicit_settings(['fork_hq_air_cap_db'])
+        assert p._explicit_settings == {}

@@ -301,6 +301,49 @@ def test_app_state_store_settings_models_configs_and_karaoke_sessions(tmp_path):
         store.save_karaoke_session({"song_id": "missing-session-id"})
 
 
+def test_update_app_settings_deletes_a_key_passed_as_none(tmp_path):
+    """A None value means "unset", not "store null".
+
+    The store is the input to the boot-time reapply loop, which pushes every
+    stored key into pipeline._explicit_settings - and that dict outranks a
+    quality preset. A key that cannot be deleted therefore stays pinned, and
+    the only way back to preset authority was to hand-edit the JSON on disk.
+    """
+    store = AppStateStore(str(tmp_path))
+
+    store.update_app_settings({
+        "fork_hq_air_cap_db": 12.0,
+        "fork_hq_hf_detonalize": True,
+        "multi_speaker_backing_gain": 1.6,
+    })
+    assert store.get_app_settings()["fork_hq_air_cap_db"] == 12.0
+
+    settings = store.update_app_settings({"fork_hq_air_cap_db": None})
+
+    assert "fork_hq_air_cap_db" not in settings
+    assert "fork_hq_air_cap_db" not in store.get_app_settings()
+    # The other keys are untouched - an unset must not clear the store.
+    assert settings["fork_hq_hf_detonalize"] is True
+    assert settings["multi_speaker_backing_gain"] == 1.6
+
+
+def test_update_app_settings_unset_and_set_in_one_call(tmp_path):
+    """A null and a value in the same request are applied independently."""
+    store = AppStateStore(str(tmp_path))
+
+    store.update_app_settings({
+        "fork_hq_air_cap_db": 12.0,
+        "fork_hq_vocal_true_peak_dbfs": -1.0,
+    })
+    settings = store.update_app_settings({
+        "fork_hq_air_cap_db": None,
+        "fork_hq_vocal_true_peak_dbfs": -2.0,
+    })
+
+    assert "fork_hq_air_cap_db" not in settings
+    assert settings["fork_hq_vocal_true_peak_dbfs"] == -2.0
+
+
 def test_purge_tolerates_training_job_manager_schema(tmp_path):
     """training_jobs.json was historically shared with TrainingJobManager,
     which persists {"jobs": [...], "updated_at": ...}. The store now uses its

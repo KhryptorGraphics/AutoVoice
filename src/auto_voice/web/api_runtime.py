@@ -406,6 +406,25 @@ def update_app_settings():
             return root.validation_error_response('No JSON object provided')
 
         updates: Dict[str, Any] = {}
+
+        # A null value means "unset this key", not "store null". These are the
+        # runtime pipeline knobs - the only keys whose stored value reaches
+        # pipeline._explicit_settings, where it outranks a quality preset.
+        # A key set once could not be removed again (the store merged, and
+        # the merge had no delete), so a preset could never take a value back
+        # once an operator had touched the corresponding slider. Unsetting is
+        # what hands authority back: the key leaves the store, leaves the
+        # explicit set, and _chain_config falls through to the preset.
+        #
+        # The null is consumed here and excluded from the float/bool
+        # validation below, which would otherwise reject it ("must be a
+        # number") or, worse, coerce it into a disabled stage.
+        from ..runtime_contract import PIPELINE_SETTING_KEYS
+        unset_keys = {
+            key for key, value in data.items()
+            if value is None and key in PIPELINE_SETTING_KEYS
+        }
+
         if 'preferred_pipeline' in data:
             preferred_pipeline = str(data['preferred_pipeline']).strip().lower()
             if preferred_pipeline not in root.LEGACY_PIPELINES:
@@ -514,7 +533,7 @@ def update_app_settings():
             # would cost real level for no benefit.
             ('fork_hq_vocal_true_peak_dbfs', -3.0, 0.0),
         ):
-            if key in data:
+            if key in data and key not in unset_keys:
                 try:
                     value = float(data[key])
                 except (TypeError, ValueError):
@@ -533,11 +552,11 @@ def update_app_settings():
                          'fork_hq_voice_polish',
                          'fork_hq_hf_detonalize',
                          'fork_hq_extend_bandwidth'):
-            if bool_key in data and not isinstance(data[bool_key], bool):
-                return root.validation_error_response(
-                    f'{bool_key} must be true or false'
-                )
-            if bool_key in data:
+            if bool_key in data and bool_key not in unset_keys:
+                if not isinstance(data[bool_key], bool):
+                    return root.validation_error_response(
+                        f'{bool_key} must be true or false'
+                    )
                 updates[bool_key] = data[bool_key]
 
         if 'multi_speaker_convert_backing' in data:
@@ -548,11 +567,16 @@ def update_app_settings():
                 )
             updates['multi_speaker_convert_backing'] = value
 
-        if not updates:
+        if not updates and not unset_keys:
             return root.validation_error_response('No supported app settings were provided')
 
         updates['last_updated'] = root._utcnow_iso()
-        settings = root._get_state_store().update_app_settings(updates)
+        # The unset keys travel as None so update_app_settings can delete
+        # them; the store's own normalizer never sees a null value.
+        payload = dict(updates)
+        for key in unset_keys:
+            payload[key] = None
+        settings = root._get_state_store().update_app_settings(payload)
 
         # Apply multi-speaker knobs to the live pipeline: it reads its config
         # at call time, so mutating the dict takes effect on the next job
@@ -569,6 +593,26 @@ def update_app_settings():
             # by preset_overrides() on the next conversion.
             pipeline.set_explicit_settings(
                 {k: updates[k] for k in PIPELINE_SETTING_KEYS if k in updates})
+
+        if unset_keys:
+            # Remove the override from the live pipeline too. The store is
+            # the durable half, but the running process keeps its own
+            # _explicit_settings dict, and the PATCH handler writes operator
+            # values straight into pipeline.config - so without this the key
+            # would stay pinned in memory until the next restart, and the
+            # preset would stay shadowed in exactly the way the unset was
+            # meant to undo.
+            unsetter = getattr(pipeline, 'unset_explicit_settings', None)
+            if callable(unsetter):
+                unsetter(sorted(unset_keys))
+            elif pipeline is not None:
+                # A pipeline without the method (a test double) still must
+                # not keep the key pinned.
+                explicit = getattr(pipeline, '_explicit_settings', None)
+                if isinstance(explicit, dict):
+                    for key in unset_keys:
+                        explicit.pop(key, None)
+                        pipeline.config.pop(key, None)
 
         return jsonify(root._normalize_app_settings_payload(settings))
     except Exception as exc:

@@ -8,7 +8,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterable
 
 import numpy as np
 
@@ -448,6 +448,12 @@ class SingingConversionPipeline:
         import torch
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.config = config or {}
+        # The config as it was handed to us: the yaml/code baseline, before
+        # any operator override was written into self.config by the PATCH
+        # handler or the boot-time reapply loop. An unset restores the
+        # baseline value for that key rather than deleting the key - a key
+        # the yaml supplied must survive being overridden and then unset.
+        self._baseline_config: Dict[str, Any] = dict(self.config)
         # Settings the operator explicitly set via PATCH /settings/app (or that
         # were reapplied from the store on restart). They win over a quality
         # preset: a preset is a per-request profile, an explicit setting is a
@@ -497,6 +503,41 @@ class SingingConversionPipeline:
         # missing attribute here would break the conversion that called it.
         current = getattr(self, '_explicit_settings', None) or {}
         self._explicit_settings = {**current, **dict(updates)}
+
+    def unset_explicit_settings(self, keys: Iterable[str]) -> None:
+        """Drop operator overrides so a quality preset governs again.
+
+        The counterpart to :meth:`set_explicit_settings`, which only ever
+        merges. Without a way to remove a key, a value the operator set once
+        pinned that setting for the life of the process: the key stayed in
+        ``_explicit_settings``, which ``_chain_config`` ranks above any
+        preset, so the preset's value for it could never take effect.
+
+        Also restores the baseline value in ``self.config``. The PATCH
+        handler writes operator values straight into ``pipeline.config`` so
+        they apply to the next job without a restart; leaving the old value
+        there would keep the override alive in ``self.config`` (the
+        lowest-precedence layer) even after the explicit set no longer
+        shadows it.
+
+        The baseline is restored, not deleted: a key the yaml config
+        supplied must survive being overridden and then unset. A key with
+        no baseline is removed, so the stage reads its own code default.
+        """
+        # getattr, for the same reason as set_explicit_settings: a
+        # partially-constructed instance must not break on a missing attr.
+        current = dict(getattr(self, '_explicit_settings', None) or {})
+        for key in keys:
+            current.pop(key, None)
+        self._explicit_settings = current
+        config = getattr(self, 'config', None)
+        if isinstance(config, dict):
+            baseline = getattr(self, '_baseline_config', None) or {}
+            for key in keys:
+                if key in baseline:
+                    config[key] = baseline[key]
+                else:
+                    config.pop(key, None)
 
     def _chain_config(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Resolve the config the fork HQ chain should read for one request.

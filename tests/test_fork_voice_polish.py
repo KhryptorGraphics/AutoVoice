@@ -173,3 +173,157 @@ class TestRestoreAir:
         sr = 44100
         z = np.zeros(sr, dtype=np.float32)
         assert np.abs(restore_air(self._mk(sr, 1.0), z, sr, cap_db=12.0)).max() == 0.0
+
+
+class TestEffectiveFmax:
+    """The wall detector - where a band-limited capture stops.
+
+    It looks for a CLIFF (a steep drop in dB per octave above 3 kHz), not
+    an absolute threshold, because anything that lifts the noise floor
+    defeats an absolute threshold. A signal with no cliff reads as
+    full-band, which is the safe answer: callers treat "not band-limited"
+    as "do nothing".
+    """
+
+    SR = 48000
+
+    def _band_limited(self, seconds, cutoff, sr=None):
+        """Harmonics plus broadband noise below the cutoff, nothing above.
+
+        The broadband part matters: a signal carrying only low harmonics
+        measures nothing in the probe bands above 2.5 kHz, so there is no
+        drop to find and the detector reports full-band. A real voice has
+        content across the spectrum, so the test signal must too.
+        """
+        import librosa
+        sr = sr or self.SR
+        n = int(seconds * sr)
+        t = np.arange(n) / sr
+        y = sum(np.sin(2 * np.pi * f * t) for f in (220, 440, 660, 1200))
+        y = y / np.abs(y).max() * 0.4
+        rng = np.random.default_rng(0)
+        noise = rng.standard_normal(n).astype(np.float32)
+        S = librosa.stft(noise, n_fft=8192, hop_length=2048)
+        f = librosa.fft_frequencies(sr=sr, n_fft=8192)
+        S[f >= cutoff * 0.8] = 0
+        y = y + librosa.istft(S, hop_length=2048, length=n) * 0.5
+        # Brickwall the whole thing: a sharp drop, not a gradual slope.
+        S2 = librosa.stft(y.astype(np.float32), n_fft=8192, hop_length=2048)
+        S2[f >= cutoff] = 0
+        return librosa.istft(S2, hop_length=2048, length=n).astype(np.float32)
+
+    def _full_band(self, seconds, sr=None):
+        sr = sr or self.SR
+        n = int(seconds * sr)
+        t = np.arange(n) / sr
+        return (0.3 * np.sin(2 * np.pi * 220 * t)
+                + 0.2 * np.sin(2 * np.pi * 3000 * t)
+                + 0.1 * np.sin(2 * np.pi * 9000 * t)
+                + 0.05 * np.sin(2 * np.pi * 15000 * t)).astype(np.float32)
+
+    def test_finds_the_wall_of_a_band_limited_signal(self):
+        """A brickwall at 7 kHz reads as a wall well below Nyquist."""
+        from auto_voice.inference.fork_voice_polish import effective_fmax
+        wall = effective_fmax(self._band_limited(2.0, 7000.0), self.SR)
+        assert 3000.0 < wall < self.SR / 2, f"wall {wall:.0f} Hz"
+
+    def test_the_wall_tracks_the_cutoff(self):
+        """A lower cutoff must read as a lower wall."""
+        from auto_voice.inference.fork_voice_polish import effective_fmax
+        low = effective_fmax(self._band_limited(2.0, 6000.0), self.SR)
+        high = effective_fmax(self._band_limited(2.0, 7000.0), self.SR)
+        assert low < high, f"{low:.0f} Hz should be below {high:.0f} Hz"
+
+    def test_the_wall_is_near_the_cutoff(self):
+        """The reported wall is within a factor of the true cutoff.
+
+        The detector reports the probe frequency it found the drop at, not
+        the cutoff itself, so the value is near but not equal to it - the
+        bound has to be a band, not equality.
+        """
+        from auto_voice.inference.fork_voice_polish import effective_fmax
+        cutoff = 7000.0
+        wall = effective_fmax(self._band_limited(2.0, cutoff), self.SR)
+        assert 0.7 * cutoff <= wall <= 1.15 * cutoff, f"wall {wall:.0f} for cutoff {cutoff:.0f}"
+
+    def test_a_full_band_signal_reads_as_full_band(self):
+        """No cliff means no repair is needed, so Nyquist is returned."""
+        from auto_voice.inference.fork_voice_polish import effective_fmax
+        assert effective_fmax(self._full_band(2.0), self.SR) == pytest.approx(self.SR / 2)
+
+    def test_silence_reads_as_full_band(self):
+        """Silence has no cliff, so it is not treated as band-limited."""
+        from auto_voice.inference.fork_voice_polish import effective_fmax
+        z = np.zeros(self.SR, dtype=np.float32)
+        assert effective_fmax(z, self.SR) == pytest.approx(self.SR / 2)
+
+
+class TestExtendBandwidth:
+    """Synthesising the band a band-limited capture never recorded."""
+
+    SR = 48000
+
+    def _band_limited(self, seconds, cutoff, sr=None):
+        return TestEffectiveFmax()._band_limited(seconds, cutoff, sr)
+
+    def _full_band(self, seconds, sr=None):
+        return TestEffectiveFmax()._full_band(seconds, sr)
+
+    def _band_energy(self, y, lo, hi, sr=None):
+        import librosa
+        sr = sr or self.SR
+        S = np.abs(librosa.stft(y, n_fft=4096, hop_length=1024))
+        f = librosa.fft_frequencies(sr=sr, n_fft=4096)
+        m = (f >= lo) & (f < hi)
+        return float((S[m] ** 2).sum())
+
+    def test_a_full_band_render_is_left_alone(self):
+        """The stage is a repair for damaged capture, not a brightener.
+
+        The early return hands back the SAME object, so a caller can tell
+        nothing was processed.
+        """
+        from auto_voice.inference.fork_voice_polish import extend_bandwidth
+        y = self._full_band(2.0)
+        assert extend_bandwidth(y, self.SR) is y
+
+    def test_a_band_limited_render_gains_energy_above_the_wall(self):
+        """The band above the wall is filled."""
+        from auto_voice.inference.fork_voice_polish import effective_fmax, extend_bandwidth
+        y = self._band_limited(2.0, 7000.0)
+        wall = effective_fmax(y, self.SR)
+        out = extend_bandwidth(y, self.SR)
+        assert out is not y, "a band-limited signal must be processed"
+        assert len(out) == len(y)
+        assert out.dtype == np.float32
+        before = self._band_energy(y, wall * 1.2, 16000, self.SR)
+        after = self._band_energy(out, wall * 1.2, 16000, self.SR)
+        assert after > before * 10, f"energy above wall only {after / max(before, 1e-12):.1f}x"
+
+    def test_the_extension_is_deterministic(self):
+        """The noise mix uses a seeded generator, so two runs match."""
+        from auto_voice.inference.fork_voice_polish import extend_bandwidth
+        y = self._band_limited(2.0, 7000.0)
+        a = extend_bandwidth(y, self.SR)
+        b = extend_bandwidth(y, self.SR)
+        assert np.array_equal(a, b)
+
+    def test_a_wall_below_3_khz_is_skipped(self):
+        """Below 3 kHz the signal is not a capture wall, it is a bad signal."""
+        from auto_voice.inference.fork_voice_polish import extend_bandwidth
+        y = self._band_limited(2.0, 7000.0)
+        assert extend_bandwidth(y, self.SR, wall_hz=2000.0) is y
+
+    def test_a_wall_above_12_khz_is_skipped(self):
+        """Above 12 kHz the capture was real, so no band is invented."""
+        from auto_voice.inference.fork_voice_polish import extend_bandwidth
+        y = self._band_limited(2.0, 7000.0)
+        assert extend_bandwidth(y, self.SR, wall_hz=14000.0) is y
+
+    def test_a_short_or_empty_signal_is_left_alone(self):
+        """Too short to transform, or silent, is returned unchanged."""
+        from auto_voice.inference.fork_voice_polish import extend_bandwidth
+        short = np.zeros(64, dtype=np.float32)
+        assert extend_bandwidth(short, self.SR) is short
+        silent = np.zeros(self.SR, dtype=np.float32)
+        assert extend_bandwidth(silent, self.SR) is silent

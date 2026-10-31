@@ -339,3 +339,96 @@ def test_profile_training_state_prefers_serving_model_path(training_ui_app):
 
     saved = training_ui_app.voice_cloner.store.load(profile["profile_id"])
     assert saved["model_path"] == "/tmp/profile-serving-model_adapter_model.pt"
+
+
+def test_app_settings_null_unsets_a_key(training_ui_app, training_ui_client):
+    """A null value deletes the stored key and restores preset authority.
+
+    The stored value reaches pipeline._explicit_settings, which outranks a
+    quality preset, so a key that could not be removed pinned that setting
+    for the life of the store - the only way back to the preset's value was
+    a restart with the key hand-edited out of the JSON on disk.
+    """
+    from auto_voice.inference.quality_presets import preset_overrides
+
+    pipeline = training_ui_app.singing_conversion_pipeline
+
+    update = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_air_cap_db": 20.0},
+    )
+    assert update.status_code == 200
+    assert pipeline._explicit_settings["fork_hq_air_cap_db"] == 20.0
+    assert pipeline._chain_config(preset_overrides("band_limited"))["fork_hq_air_cap_db"] == 20.0
+
+    unset = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_air_cap_db": None},
+    )
+    assert unset.status_code == 200
+
+    # The live pipeline no longer carries the override...
+    assert "fork_hq_air_cap_db" not in pipeline._explicit_settings
+    # ...so the preset governs again.
+    cfg = pipeline._chain_config(preset_overrides("band_limited"))
+    assert cfg["fork_hq_air_cap_db"] == 18.0
+    assert cfg["fork_hq_match_source_bandwidth"] is False
+
+
+def test_app_settings_null_unsets_a_bool_key(training_ui_app, training_ui_client):
+    """A null on a boolean key deletes it rather than disabling the stage.
+
+    bool(None) is False, so if the null reached the boolean validation the
+    stage would be switched off - a silent disable instead of an unset.
+    """
+    pipeline = training_ui_app.singing_conversion_pipeline
+
+    update = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_hf_detonalize": True},
+    )
+    assert update.status_code == 200
+    assert pipeline._explicit_settings["fork_hq_hf_detonalize"] is True
+
+    unset = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_hf_detonalize": None},
+    )
+    assert unset.status_code == 200
+    assert "fork_hq_hf_detonalize" not in pipeline._explicit_settings
+
+
+def test_app_settings_null_unset_leaves_other_keys_alone(training_ui_app, training_ui_client):
+    """An unset must not clear the rest of the store."""
+    update = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={
+            "fork_hq_air_cap_db": 20.0,
+            "multi_speaker_backing_gain": 1.4,
+        },
+    )
+    assert update.status_code == 200
+
+    unset = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_air_cap_db": None},
+    )
+    assert unset.status_code == 200
+    payload = unset.get_json()
+    assert payload["multi_speaker_backing_gain"] == 1.4
+    assert training_ui_app.singing_conversion_pipeline._explicit_settings[
+        "multi_speaker_backing_gain"
+    ] == 1.4
+
+
+def test_app_settings_null_on_a_non_setting_key_is_rejected(training_ui_app, training_ui_client):
+    """Only the runtime pipeline knobs can be unset.
+
+    A null on a key that is not a pipeline setting is not a supported
+    operation, so the request must fail rather than silently doing nothing.
+    """
+    response = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"not_a_real_setting": None},
+    )
+    assert response.status_code == 400
