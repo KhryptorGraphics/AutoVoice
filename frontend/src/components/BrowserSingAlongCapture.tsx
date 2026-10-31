@@ -692,7 +692,14 @@ export function BrowserSingAlongCapture({
 
       const mimeType = getSupportedRecordingMimeType()
       chunksRef.current = []
-      const recorder = new MediaRecorder(activeStream, mimeType ? { mimeType } : undefined)
+      // Pin the bitrate. Opus picks its bandwidth from it, and left to its own
+      // devices the browser can select medium-band (~6 kHz) or wide-band
+      // (~8 kHz) - measured ceilings of 6034 and 7980 Hz in real takes. Voice
+      // needs fullband; 128 kbps is the rate Opus reaches it at.
+      const recorder = new MediaRecorder(
+        activeStream,
+        mimeType ? { mimeType, audioBitsPerSecond: 128000 } : { audioBitsPerSecond: 128000 },
+      )
       recorderRef.current = recorder
 
       recorder.ondataavailable = (event) => {
@@ -1218,6 +1225,17 @@ export function BrowserSingAlongCapture({
           data-testid="browser-capture-quality-status"
         >
           <div className="font-medium">Local take check: {takeQuality.status}</div>
+          {(takeQuality.sampleRate !== undefined || takeQuality.bandwidthHz !== undefined) && (
+            <div className="mt-1 text-xs" data-testid="browser-capture-bandwidth">
+              Capture:{' '}
+              {takeQuality.sampleRate !== undefined
+                ? `${(takeQuality.sampleRate / 1000).toFixed(1)} kHz`
+                : 'unknown rate'}
+              {takeQuality.bandwidthHz !== undefined
+                ? ` · real content to ${(takeQuality.bandwidthHz / 1000).toFixed(1)} kHz`
+                : ''}
+            </div>
+          )}
           {takeQuality.issues.length > 0 && (
             <div className="mt-1 text-xs">
               Issues: {takeQuality.issues.join(', ')}

@@ -275,3 +275,209 @@ def detonalize_hf(converted: np.ndarray, sr: int, *,
                 float(cut[touched].mean()) if touched.any() else 0.0,
                 above_hz, 100.0 * float((cut.max(axis=0) > 0).mean()))
     return out
+
+
+def restore_air(source: np.ndarray, converted: np.ndarray, sr: int, *,
+                cap_db: float = 12.0,
+                lo_hz: float = 5000.0,
+                smooth_oct: float = 0.5) -> np.ndarray:
+    """Undo the decoder's HF deficit against the SOURCE - "needs to get brighter".
+
+    The deficit is real and it is NOT the decoder inventing a dull voice; it is
+    in the training data. Median LTAS, each file anchored 300-3000 Hz:
+
+                                  3-5k    5-8k   8-12k  12-16k   fmax
+        source stem (Mariah)      -2.1    -2.2    -2.8    -5.3   22.1 kHz
+        Brandy's training samples -6.6   -11.8   -20.0   -24.3   22.1 kHz
+        converted (G_389)         -2.8    -3.1   -13.9   -14.7
+        WORLD +12 augmented      -10.8    -8.7   -23.8   -28.2   16.1 kHz
+
+    Her corpus is 17 dB darker than the source at 8-12 kHz, so the model learned
+    a dark voice and reproduces it faithfully. No retrain fixes that; the data
+    is dark. (The augmentation is darker STILL and truncates fmax to 16.1 kHz,
+    which is a constraint on any future synthetic data.)
+
+    A FIXED SHELF IS THE WRONG SHAPE and was tried first. The deficit is roughly
+    flat to 8 kHz then falls off a cliff (-2.8, -3.1, -13.9, -14.7, -23.1), so
+    any single taper either under-corrects the top or overshoots 5-8 kHz - the
+    best fixed shelf still left 9.1 dB of worst-band error while pushing 5-8 kHz
+    +3.8 dB BRIGHTER than the source.
+
+    So this measures the deviation and undoes it, exactly as the 1.2-5 kHz
+    correction above does, with three guards:
+
+      * heavily octave-SMOOTHED (median, +-0.5 oct), so it is a tilt and cannot
+        manufacture a narrow resonance - see the LTAS-anchor failure in
+        `_resonance_excess`'s note;
+      * one-sided - it only ever LIFTS toward the source, never cuts, so it
+        cannot fight `detonalize_hf` or re-darken anything;
+      * bounded by `cap_db`, and applied only above `lo_hz` with a one-octave
+        fade-in, so the formant region that carries identity is untouched.
+
+    Deviation from the source per band, and identity, on the Hero render:
+
+        cap    3-5k   5-8k  8-12k 12-16k 16-20k  centroid  identity
+        none   -2.8   -3.1  -13.9  -14.7  -23.1   3598 Hz   1.0000
+        8 dB   -2.8   -0.7   -6.4   -6.4  -15.0   4858 Hz   0.9969
+       12 dB   -2.7   -0.4   -2.6   -2.3  -10.9   5644 Hz   0.9925  <- shipped
+       16 dB   -2.7   -0.3   -1.2   +1.4   -6.8   6348 Hz   0.9884
+
+    (source centroid 5293 Hz, identity floor 0.88)
+
+    `docs/handover-fork-output-chain.md` had ruled this band off-limits -
+    "matching the source undoes the conversion; matching her catalogue chases a
+    mastering difference" - and left the question open pending an ear A/B. The
+    user asked for brighter, which settles it in the other direction. This is an
+    EAR CALL, so `cap_db` is meant to be tuned by them, not derived from a
+    metric. Runs AFTER `detonalize_hf`: a smoothed tilt raises peak and floor
+    together, so the ring does not return (measured 8.1 % at every lift).
+
+    # ponytail: median over +-0.5 oct. Narrower smoothing starts tracking
+    # individual partials, which is how the fake 8 kHz resonance was invented.
+    """
+    import librosa
+
+    y = np.asarray(converted, dtype=np.float32)
+    s = np.asarray(source, dtype=np.float32)
+    if cap_db <= 0.0 or y.size < 4096 or s.size < 4096 or not np.any(y) or not np.any(s):
+        return y
+    # BANDWIDTH GATE. Never lift above the render's own wall: a band-limited
+    # voice (Bluetooth mic, lossy codec) has only a noise floor up there, and
+    # gain on noise is what made Patrick's first render sound "electronic" -
+    # this stage hit its +12 dB cap over a band holding 0.49 % of his energy.
+    # `extend_bandwidth` is the right tool above the wall; this one stops at it.
+    wall = effective_fmax(y, sr)
+    if wall < sr / 2 * 0.8:
+        logger.info("fork air restore: capped at the render's own wall (%.0f Hz)", wall)
+    dc, f = _ltas(y, sr)
+    ds, _ = _ltas(s[: len(y)] if len(s) > len(y) else s, sr)
+    deficit = _octave_smooth(ds - dc, f, smooth_oct)
+    ramp = np.clip(np.log2(np.maximum(f, 1.0) / lo_hz), 0.0, 1.0)
+    gain = np.clip(deficit, 0.0, cap_db) * ramp
+    gain[f > wall] = 0.0          # nothing to lift beyond the wall
+    out = _apply_gain(y, sr, gain)
+    peak = float(np.abs(out).max())
+    if peak > 1.0:
+        out = (out / peak * 0.999).astype(np.float32)
+    logger.info("fork air restore: up to %+.1f dB above %.0f Hz (cap %.0f)",
+                float(gain.max()), lo_hz, cap_db)
+    return out
+
+
+def effective_fmax(y: np.ndarray, sr: int, min_drop_db: float = 18.0) -> float:
+    """Find the CLIFF - where a band-limited capture stops - not a level.
+
+    An absolute threshold ("last bin above -60 dB") is fooled the moment
+    anything has lifted the noise floor: Patrick's chain-processed render read
+    19.8 kHz that way, when his actual capture walls at 7.2 kHz. A brickwall
+    has a signature an amplifier cannot fake - a sharp DROP - so look for that
+    instead: the steepest fall, in dB per octave, above 3 kHz.
+
+    Returns Nyquist when no cliff is found, which is the safe answer: callers
+    treat "not band-limited" as "do nothing".
+    """
+    import librosa
+
+    z = np.asarray(y, dtype=np.float32)
+    S = np.abs(librosa.stft(z, n_fft=8192, hop_length=2048))
+    r = librosa.feature.rms(y=z, frame_length=8192, hop_length=2048)[0][:S.shape[1]]
+    d = 20 * np.log10(r + 1e-9)
+    if not (d > d.max() - 25).any():
+        return float(sr / 2)
+    S = S[:, d > d.max() - 25]
+    f = librosa.fft_frequencies(sr=sr, n_fft=8192)
+    a = 20 * np.log10(np.median(S, axis=1) + 1e-12)
+    a -= a.max()
+    # octave-spaced probes: how far does the level fall from f to 1.4*f?
+    best_f, best_drop = float(sr / 2), 0.0
+    lo = 3000.0
+    while lo * 1.4 < sr / 2:
+        b0 = (f >= lo * 0.85) & (f < lo * 1.05)
+        b1 = (f >= lo * 1.30) & (f < lo * 1.55)
+        if b0.any() and b1.any():
+            drop = float(np.median(a[b0]) - np.median(a[b1]))
+            if drop > best_drop:
+                best_drop, best_f = drop, lo * 1.15
+        lo *= 1.15
+    return best_f if best_drop >= min_drop_db else float(sr / 2)
+
+
+def extend_bandwidth(converted: np.ndarray, sr: int, *,
+                     wall_hz: float | None = None,
+                     top_hz: float = 16000.0,
+                     tilt_db: float = -6.0,
+                     noise_mix: float = 0.5,
+                     n_fft: int = 2048,
+                     hop: int = 512) -> np.ndarray:
+    """Synthesise the band a band-limited source never captured.
+
+    The user on Patrick's first render: "it sounds like were listening to the
+    conversion through a pipe", "needs to be brighter ... less electronic".
+
+    His recordings wall at 7.2 kHz - `input_device_label: AirPods`, and a
+    Bluetooth headset used as a MICROPHONE forces HFP/SCO, 16 kHz sampling,
+    Nyquist 8 kHz. Stored at 48 kHz, but nothing above 7.2 kHz was ever
+    captured, and the model reproduces that faithfully.
+
+    `restore_air` made this WORSE, which is the important part: it hit its
+    +12 dB cap trying to reach the source's 8-12 kHz level, but only 0.49 % of
+    his energy is up there, so it amplified a NOISE FLOOR. That is what read as
+    "electronic". Gain cannot create brightness where there is no signal.
+
+    So translate the real harmonic content from one octave below the wall up
+    into the empty band, decaying `tilt_db` per octave, blended with noise so it
+    is not a sterile duplicate, and with randomised phase above the wall so the
+    copies do not comb. Measured on Stitches, spectrum relative to own peak:
+
+                        7.2-9k   9-12k  12-16k
+        before          -58.0    -58.6   -59.9
+        after           -38.6    -43.7   -49.1
+        source track    -41.1    -41.9   -46.6
+
+    i.e. within ~2 dB of the real thing across the whole band, and identity
+    holds at 0.9981.
+
+    This is a repair for damaged capture, not a general brightener. It is gated
+    on `effective_fmax` being well below Nyquist and does nothing to a
+    full-band render.
+
+    # ponytail: one octave of source material, copied up. A learned bandwidth
+    # extender would do better; this costs nothing and fixes "through a pipe".
+    """
+    import librosa
+
+    y = np.asarray(converted, dtype=np.float32)
+    if y.size < n_fft or not np.any(y):
+        return y
+    # 12 kHz, not a fraction of Nyquist: the failure this repairs is a capture
+    # sampled at 16 kHz or less (Bluetooth HFP walls at 7-8 kHz), and a real
+    # full-band vocal reaches 20 kHz+ (Brandy's measure 22.1). Anything above
+    # 12 kHz is a real recording that needs no invented band.
+    wall = float(wall_hz) if wall_hz else effective_fmax(y, sr)
+    if wall >= 12000.0 or wall < 3000.0:
+        logger.info("fork bandwidth extend: skipped (fmax %.0f Hz needs no repair)", wall)
+        return y
+    S = librosa.stft(y, n_fft=n_fft, hop_length=hop)
+    mag, ph = np.abs(S), np.angle(S)
+    f = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+    df = float(f[1] - f[0])
+    out = mag.copy()
+    lo_i, hi_i = int((wall / 2) / df), int(wall / df)
+    top_i = min(int(top_hz / df), len(f))
+    width = max(1, hi_i - lo_i)
+    rng = np.random.default_rng(0)
+    for k, start in enumerate(range(hi_i, top_i, width)):
+        end = min(start + width, top_i)
+        w = end - start
+        rep = mag[lo_i:lo_i + w] * 10 ** ((tilt_db * (k + 1)) / 20.0)
+        nz = rng.random(rep.shape) * rep.mean(axis=0, keepdims=True)
+        out[start:end] = np.maximum(out[start:end], (1 - noise_mix) * rep + noise_mix * nz)
+    ph2 = ph.copy()
+    ph2[hi_i:top_i] = rng.uniform(-np.pi, np.pi, ph2[hi_i:top_i].shape)
+    res = librosa.istft(out * np.exp(1j * ph2), hop_length=hop, length=len(y)).astype(np.float32)
+    peak = float(np.abs(res).max())
+    if peak > 1.0:
+        res = (res / peak * 0.999).astype(np.float32)
+    logger.info("fork bandwidth extend: wall %.0f Hz -> %.0f Hz (tilt %.1f dB/oct)",
+                wall, top_hz, tilt_db)
+    return res

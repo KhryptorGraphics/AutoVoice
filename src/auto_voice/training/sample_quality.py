@@ -21,6 +21,11 @@ MIN_VOICED_RATIO = 0.02
 MIN_PEAK_AMPLITUDE = 1e-4
 MIN_SPEAKER_PURITY = 0.75
 MIN_TRAINABLE_SAMPLES = 5
+# Where a recording's real content stops. Voice needs the 8-16 kHz octave for
+# presence, sibilance and "air"; below this the model can only learn a dull,
+# band-limited timbre. Warn rather than reject: the sample is still usable, and
+# the render chain's `extend_bandwidth` reconstructs the missing band.
+MIN_TRAINING_BANDWIDTH_HZ = 10000.0
 
 
 def _merge_quality_metadata(
@@ -100,6 +105,31 @@ def analyze_training_sample(
         issues.append("insufficient_pitch_coverage")
         recommendations.append("Add sung material with clear voiced notes across the target range.")
 
+    # Bandwidth. A sample can be long, loud, pitch-rich and clip-free while
+    # carrying nothing above ~7 kHz - a Bluetooth HFP capture, or a 16 kHz
+    # laptop mic array - and then every check above passes it. That is how five
+    # 7.2 kHz takes came to report "pass" and the model learned a narrow voice.
+    # Reuses the render chain's own cliff detector so upload time and render
+    # time agree on what "band-limited" means; a level threshold would not, and
+    # would read a band-limited capture as full band once anything lifted its
+    # noise floor.
+    bandwidth_hz = float(sample_rate / 2)
+    if len(audio_np) >= sample_rate:
+        try:
+            from auto_voice.inference.fork_voice_polish import effective_fmax
+
+            bandwidth_hz = float(
+                effective_fmax(audio_np[: min(len(audio_np), int(sample_rate * 60))], sample_rate)
+            )
+        except Exception:
+            bandwidth_hz = float(sample_rate / 2)
+    if bandwidth_hz < MIN_TRAINING_BANDWIDTH_HZ:
+        issues.append("band_limited_capture")
+        recommendations.append(
+            f"This sample stops at {bandwidth_hz / 1000:.1f} kHz. Record at 48 kHz on a "
+            "device that offers it - training on this teaches the model a narrow voice."
+        )
+
     sidecar_metadata = _load_sidecar_metadata(path)
     sidecar_quality = sidecar_metadata.get("quality_metadata")
     candidate_quality = (
@@ -114,6 +144,7 @@ def analyze_training_sample(
             "peak_amplitude": peak_amplitude,
             "active_ratio": active_ratio,
             "voiced_ratio": voiced_ratio,
+            "bandwidth_hz": bandwidth_hz,
             "provenance": provenance or str(path),
         },
         candidate_quality,
