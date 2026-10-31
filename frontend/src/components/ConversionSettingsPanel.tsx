@@ -20,7 +20,7 @@ interface ConversionSettingsPanelProps {
   leadProfileId?: string | null
 }
 
-const PRESET_ORDER: QualityPreset[] = ['draft', 'fast', 'balanced', 'high', 'studio']
+const PRESET_ORDER: QualityPreset[] = ['draft', 'fast', 'balanced', 'high', 'studio', 'band_limited']
 
 const VOCAL_REGISTERS: { key: keyof RegisterProfiles; label: string }[] = [
   { key: 'female', label: 'Female singer' },

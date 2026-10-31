@@ -9,7 +9,7 @@ import { StatusBanner } from '../components/StatusBanner'
 
 interface FilterOptions {
   timeRange: 'all' | 'today' | 'week' | 'month'
-  quality: 'all' | 'draft' | 'fast' | 'balanced' | 'high' | 'studio'
+  quality: 'all' | 'draft' | 'fast' | 'balanced' | 'high' | 'studio' | 'band_limited'
   favorites: boolean
   voice: string
 }
@@ -335,6 +335,7 @@ export function ConversionHistoryPage() {
                   <option value="balanced">Balanced</option>
                   <option value="high">High</option>
                   <option value="studio">Studio</option>
+                  <option value="band_limited">Band-limited Source</option>
                 </select>
               </div>
 

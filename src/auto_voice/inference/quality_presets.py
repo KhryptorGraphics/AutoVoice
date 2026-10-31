@@ -125,6 +125,44 @@ QUALITY_PRESETS: Dict[str, Dict[str, Any]] = {
         'fork_hq_match_source_bandwidth': True,
         'fork_hq_vocal_true_peak_dbfs': -1.5,
     },
+    # A source captured through a band-limited mic (Bluetooth HFP gives 16 kHz
+    # sampling, a laptop mic array 16 kHz) walls at ~6-8 kHz and no gain can
+    # brighten an empty band. Two stages exist for exactly this and they have
+    # to be allowed to work together:
+    #
+    #   - extend_bandwidth synthesises the octave above the wall (copies a
+    #     band of the source up, tilted down 6 dB/octave, blended with 50 %
+    #     noise and randomised phase above the wall).
+    #   - restore_air lifts the presence band up to the wall.
+    #
+    # CRITICAL: match_source_bandwidth must be OFF here. It low-passes the
+    # converted vocal to the SOURCE's wall, and it runs AFTER the chain, so it
+    # undoes the extension. Measured in order on a real render: wall 6939 Hz
+    # -> extend_bandwidth -> 22050 Hz -> _lowpass_to(7000) -> 7980 Hz. On a
+    # full-band source the filter is a no-op and everything else is unchanged,
+    # which is why 'balanced' leaves it on.
+    #
+    # The trade-off being accepted: the filter was written to remove content
+    # the decoder extrapolates above the source's wall ("invented content no
+    # input evidence supports"). With it off, that extrapolation is kept as
+    # well as the deliberate extension. On a band-limited source there is no
+    # way to get top end without inventing something, so the choice is a
+    # narrow voice or a bright one.
+    #
+    # The extension is partly noise (50 % mix, randomised phase), so the air
+    # band measure will rise without harmonic content following. Always
+    # report harmonic_ratio and noise_floor_dbfs beside any air gain when
+    # judging this preset's output.
+    'band_limited': {
+        'fork_hq_hum_suppress': True,
+        'fork_hq_subharmonic_suppress': True,
+        'fork_hq_voice_polish': True,
+        'fork_hq_hf_detonalize': True,
+        'fork_hq_air_cap_db': 18.0,
+        'fork_hq_extend_bandwidth': True,
+        'fork_hq_match_source_bandwidth': False,
+        'fork_hq_vocal_true_peak_dbfs': -1.0,
+    },
 }
 
 PRESET_NAMES = tuple(QUALITY_PRESETS)

@@ -878,7 +878,7 @@ def test_convert_song_embedding_list_to_array(
 
 def test_presets_exist():
     """Test all expected presets exist."""
-    expected_presets = ['draft', 'fast', 'balanced', 'high', 'studio']
+    expected_presets = ['draft', 'fast', 'balanced', 'high', 'studio', 'band_limited']
     for preset in expected_presets:
         assert preset in QUALITY_PRESETS
 

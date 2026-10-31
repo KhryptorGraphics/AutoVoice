@@ -137,9 +137,9 @@ and asynchronous processing modes.
                                     },
                                     "output_quality": {
                                         "type": "string",
-                                        "enum": ["draft", "fast", "balanced", "high", "studio"],
+                                        "enum": ["draft", "fast", "balanced", "high", "studio", "band_limited"],
                                         "default": "balanced",
-                                        "description": "Output quality preset"
+                                        "description": "Output quality preset. 'band_limited' is for sources that wall at 6-8 kHz (a Bluetooth or laptop mic): it keeps the bandwidth extension that the bandwidth-match filter would otherwise low-pass away."
                                     },
                                     "adapter_type": {
                                         "type": "string",

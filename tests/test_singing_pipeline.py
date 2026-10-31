@@ -32,7 +32,9 @@ class TestPresets:
 
     @pytest.mark.smoke
     def test_all_presets_exist(self):
-        assert set(QUALITY_PRESETS) == {'draft', 'fast', 'balanced', 'high', 'studio'}
+        assert set(QUALITY_PRESETS) == {
+            'draft', 'fast', 'balanced', 'high', 'studio', 'band_limited',
+        }
         assert PRESET_NAMES == tuple(QUALITY_PRESETS)
 
     def test_preset_has_required_keys(self):
@@ -68,6 +70,24 @@ class TestPresets:
         assert cfg['fork_hq_air_cap_db'] == 12.0
         assert cfg['fork_hq_extend_bandwidth'] is True
         assert cfg['fork_hq_match_source_bandwidth'] is True
+
+    def test_band_limited_keeps_the_extension_alive(self):
+        """The whole point of this preset: match_source_bandwidth low-passes
+        the extension away (measured: 6939 -> 22050 -> 7980 Hz), so it must
+        be off here or the preset does nothing for a band-limited source.
+        """
+        cfg = QUALITY_PRESETS['band_limited']
+        assert cfg['fork_hq_match_source_bandwidth'] is False
+        assert cfg['fork_hq_extend_bandwidth'] is True
+        assert cfg['fork_hq_air_cap_db'] > 0.0
+
+    def test_band_limited_turns_off_no_other_correction(self):
+        """Only the bandwidth-match filter is off; every correction stays on."""
+        cfg = QUALITY_PRESETS['band_limited']
+        assert cfg['fork_hq_hum_suppress'] is True
+        assert cfg['fork_hq_subharmonic_suppress'] is True
+        assert cfg['fork_hq_voice_polish'] is True
+        assert cfg['fork_hq_hf_detonalize'] is True
 
 
 class TestSingingConversionPipeline:

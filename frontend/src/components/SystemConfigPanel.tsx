@@ -391,6 +391,7 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       <option value="balanced">Balanced</option>
                       <option value="high">High Quality</option>
                       <option value="studio">Studio</option>
+                      <option value="band_limited">Band-limited Source</option>
                     </select>
                   </div>
                 </div>
@@ -990,6 +991,108 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       <span>Wide (1.0)</span>
                     </div>
                     <p className="mt-1 text-xs text-gray-500">0.0 keeps the historical hard-centred vocal. Costs two extra conversion passes. Above ~0.5 the side channel reads as a second, phasey take rather than width.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Air restore ceiling</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={24}
+                      step={0.5}
+                      value={dragValue('forkHqAirCapDb', appSettings.fork_hq_air_cap_db ?? 12.0)}
+                      onChange={onDrag('forkHqAirCapDb')}
+                      onPointerUp={onCommit('forkHqAirCapDb', v => updateAppSettingsMutation.mutate({ fork_hq_air_cap_db: v }))}
+                      onKeyUp={onCommit('forkHqAirCapDb', v => updateAppSettingsMutation.mutate({ fork_hq_air_cap_db: v }))}
+                      className="mt-1 w-full"
+                      data-testid="forkHqAirCapDb-slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Off (0)</span>
+                      <span data-testid="forkHqAirCapDb-value">{dragValue('forkHqAirCapDb', appSettings.fork_hq_air_cap_db ?? 12.0).toFixed(1)} dB</span>
+                      <span>Max (24)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">How much air the chain restores above 5 kHz toward the source. 12 is what the chain has always used; 0 disables the air restore entirely. On a band-limited source this is the only thing that lifts the presence band.</p>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-gray-400">Vocal true-peak ceiling</label>
+                    <input
+                      type="range"
+                      min={-3}
+                      max={0}
+                      step={0.1}
+                      value={dragValue('forkHqVocalTruePeakDbfs', appSettings.fork_hq_vocal_true_peak_dbfs ?? -1.0)}
+                      onChange={onDrag('forkHqVocalTruePeakDbfs')}
+                      onPointerUp={onCommit('forkHqVocalTruePeakDbfs', v => updateAppSettingsMutation.mutate({ fork_hq_vocal_true_peak_dbfs: v }))}
+                      onKeyUp={onCommit('forkHqVocalTruePeakDbfs', v => updateAppSettingsMutation.mutate({ fork_hq_vocal_true_peak_dbfs: v }))}
+                      className="mt-1 w-full"
+                      data-testid="forkHqVocalTruePeakDbfs-slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>−3.0</span>
+                      <span data-testid="forkHqVocalTruePeakDbfs-value">{dragValue('forkHqVocalTruePeakDbfs', appSettings.fork_hq_vocal_true_peak_dbfs ?? -1.0).toFixed(1)} dBTP</span>
+                      <span>0.0</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">True-peak ceiling (4× oversampled) for the converted vocal stem. −1.0 is the streaming target; a sample peak of 0.00 dBFS measures +0.16 dBTP once inter-sample peaks are reconstructed and the stem clips.</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-sm text-gray-400">Correction chain stages</p>
+                    <label className="flex items-center gap-2 text-sm text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={appSettings.fork_hq_hum_suppress ?? true}
+                        onChange={e => updateAppSettingsMutation.mutate({ fork_hq_hum_suppress: e.target.checked })}
+                        data-testid="forkHqHumSuppress-checkbox"
+                      />
+                      Hum suppression
+                    </label>
+                    <p className="mt-0.5 text-xs text-gray-500">Removes between-word hum the decoder voices where the source is unvoiced. Measured: −11.5 → −20.4 dB by level.</p>
+
+                    <label className="flex items-center gap-2 text-sm text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={appSettings.fork_hq_subharmonic_suppress ?? true}
+                        onChange={e => updateAppSettingsMutation.mutate({ fork_hq_subharmonic_suppress: e.target.checked })}
+                        data-testid="forkHqSubharmonicSuppress-checkbox"
+                      />
+                      Subharmonic suppression
+                    </label>
+                    <p className="mt-0.5 text-xs text-gray-500">Removes period doubling on belted notes (3–5× energy at half-integer partials). Measured: 0.515 → 0.172 at 600–900 Hz.</p>
+
+                    <label className="flex items-center gap-2 text-sm text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={appSettings.fork_hq_voice_polish ?? true}
+                        onChange={e => updateAppSettingsMutation.mutate({ fork_hq_voice_polish: e.target.checked })}
+                        data-testid="forkHqVoicePolish-checkbox"
+                      />
+                      Voice polish
+                    </label>
+                    <p className="mt-0.5 text-xs text-gray-500">Matches the source's 1.2–5 kHz balance and notches the decoder's ringing.</p>
+
+                    <label className="flex items-center gap-2 text-sm text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={appSettings.fork_hq_hf_detonalize ?? true}
+                        onChange={e => updateAppSettingsMutation.mutate({ fork_hq_hf_detonalize: e.target.checked })}
+                        data-testid="forkHqHfDetonalize-checkbox"
+                      />
+                      HF de-tonalize
+                    </label>
+                    <p className="mt-0.5 text-xs text-gray-500">Cuts the decoder's high-band tonal ringing ("double buzzing around the voice"). Measured: 10.1 % tonal frames → 8.6 %.</p>
+
+                    <label className="flex items-center gap-2 text-sm text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={appSettings.fork_hq_extend_bandwidth ?? true}
+                        onChange={e => updateAppSettingsMutation.mutate({ fork_hq_extend_bandwidth: e.target.checked })}
+                        data-testid="forkHqExtendBandwidth-checkbox"
+                      />
+                      Bandwidth extension
+                    </label>
+                    <p className="mt-0.5 text-xs text-gray-500">Synthesises the octave above a band-limited source's wall. Self-gating: a no-op on a full-band render. The synthesised band is partly noise (50 % mix), so air rises without harmonic content following.</p>
                   </div>
                 </div>
               )}

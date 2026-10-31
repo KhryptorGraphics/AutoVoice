@@ -320,10 +320,18 @@ def _init_components(app: Flask, socketio: SocketIO, config: Optional[Dict]):
                 # flattened a decomposed harmony stack back into one voice.
                 from ..runtime_contract import PIPELINE_SETTING_KEYS
                 stored = app.state_store.get_app_settings() or {}
+                explicit = {}
                 for key in PIPELINE_SETTING_KEYS:
                     if stored.get(key) is not None:
                         singing_pipeline.config[key] = stored[key]
+                        explicit[key] = stored[key]
                         logger.info(f"Applied stored app setting {key}={stored[key]}")
+                # Same reasoning as the PATCH handler: an operator's tuning
+                # must survive a restart AND win over a quality preset.
+                # Without this the explicit set is empty after a boot and the
+                # preset silently takes over again.
+                if explicit:
+                    singing_pipeline.set_explicit_settings(explicit)
             except Exception as e:
                 logger.warning(f"Could not apply stored multi-speaker settings: {e}")
         except Exception as e:

@@ -349,7 +349,7 @@ class TestPerTrackOutputCorrection:
         One f0 contour cannot describe two singers."""
         keys = []
 
-        def spy(source, converted, sr):
+        def spy(source, converted, sr, overrides=None):
             keys.append(np.asarray(source, dtype=np.float32).copy())
             return converted
 

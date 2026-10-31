@@ -371,6 +371,26 @@ def get_app_settings():
             'multi_speaker_karaoke_leak_voiced_min',
             float(cfg.get('multi_speaker_karaoke_leak_voiced_min',
                           cfg.get('multi_speaker_merge_voiced_min', 0.65))))
+        # Same reasoning for the fork HQ chain: surface the effective value so
+        # the sliders show what a conversion will actually use, not blank.
+        payload.setdefault('fork_hq_stereo_width',
+                           float(cfg.get('fork_hq_stereo_width', 0.0)))
+        payload.setdefault('fork_hq_match_source_bandwidth',
+                           bool(cfg.get('fork_hq_match_source_bandwidth', True)))
+        payload.setdefault('fork_hq_hum_suppress',
+                           bool(cfg.get('fork_hq_hum_suppress', True)))
+        payload.setdefault('fork_hq_subharmonic_suppress',
+                           bool(cfg.get('fork_hq_subharmonic_suppress', True)))
+        payload.setdefault('fork_hq_voice_polish',
+                           bool(cfg.get('fork_hq_voice_polish', True)))
+        payload.setdefault('fork_hq_hf_detonalize',
+                           bool(cfg.get('fork_hq_hf_detonalize', True)))
+        payload.setdefault('fork_hq_extend_bandwidth',
+                           bool(cfg.get('fork_hq_extend_bandwidth', True)))
+        payload.setdefault('fork_hq_air_cap_db',
+                           float(cfg.get('fork_hq_air_cap_db', 12.0)))
+        payload.setdefault('fork_hq_vocal_true_peak_dbfs',
+                           float(cfg.get('fork_hq_vocal_true_peak_dbfs', -1.0)))
         return jsonify(payload)
     except Exception as exc:
         root.logger.error("Error reading app settings: %s", exc, exc_info=True)
@@ -543,6 +563,12 @@ def update_app_settings():
             for key in PIPELINE_SETTING_KEYS:
                 if key in updates:
                     pipeline.config[key] = updates[key]
+            # Record which keys the operator explicitly chose, so they win
+            # over a quality preset's per-request profile. Without this a
+            # PATCH'd value is written to pipeline.config and then overwritten
+            # by preset_overrides() on the next conversion.
+            pipeline.set_explicit_settings(
+                {k: updates[k] for k in PIPELINE_SETTING_KEYS if k in updates})
 
         return jsonify(root._normalize_app_settings_payload(settings))
     except Exception as exc:

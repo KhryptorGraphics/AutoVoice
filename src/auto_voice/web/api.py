@@ -364,8 +364,10 @@ def _normalize_preset_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]
     if pipeline_type == 'quality_seedvc' and normalized.get('vocoder_type') == 'hifigan':
         raise ValueError('quality_seedvc presets cannot force the HiFiGAN vocoder')
 
-    if pipeline_type == 'quality_shortcut' and normalized.get('preset') == 'studio':
-        raise ValueError('quality_shortcut presets do not support the studio preset tier')
+    if pipeline_type == 'quality_shortcut' and normalized.get('preset') in ('studio', 'band_limited'):
+        raise ValueError(
+            f"quality_shortcut presets do not support the {normalized.get('preset')} preset tier"
+        )
 
     if pipeline_type == 'realtime' and normalized.get('return_stems') is True:
         raise ValueError('Realtime presets cannot request offline stems')

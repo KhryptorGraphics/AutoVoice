@@ -482,6 +482,22 @@ export interface AppSettings {
   // Fork HQ vocal lane (not multi-speaker).
   fork_hq_stereo_width?: number
   fork_hq_match_source_bandwidth?: boolean
+  // The correction chain's individual stages and knobs. All of these were
+  // read from the pipeline config with no settings key, so the only way to
+  // change any of them was to edit source. Keep in step with
+  // PIPELINE_SETTING_KEYS in runtime_contract.py.
+  fork_hq_hum_suppress?: boolean
+  fork_hq_subharmonic_suppress?: boolean
+  fork_hq_voice_polish?: boolean
+  fork_hq_hf_detonalize?: boolean
+  fork_hq_extend_bandwidth?: boolean
+  // Ceiling on the air the chain restores above 5 kHz, in dB. 0 disables the
+  // air restore; 12 is what the chain has always used.
+  fork_hq_air_cap_db?: number
+  // True-peak ceiling for the converted vocal stem, in dBTP. A sample peak
+  // of 0.00 dBFS measures +0.16 dBTP once the inter-sample peaks are
+  // reconstructed, and the stem clips. -1.0 is the streaming target.
+  fork_hq_vocal_true_peak_dbfs?: number
   last_updated?: string | null
 }
 
@@ -750,7 +766,7 @@ export interface GPUMetrics {
 }
 
 // Conversion configuration for song conversion
-export type QualityPreset = 'draft' | 'fast' | 'balanced' | 'high' | 'studio'
+export type QualityPreset = 'draft' | 'fast' | 'balanced' | 'high' | 'studio' | 'band_limited'
 export type EncoderBackend = 'hubert' | 'contentvec'
 export type VocoderType = 'hifigan' | 'bigvgan'
 
@@ -826,6 +842,7 @@ export const QUALITY_PRESETS: Record<QualityPreset, { airCapDb: number; label: s
   balanced: { airCapDb: 12, label: 'Balanced', detail: 'full chain, +12 dB air' },
   high: { airCapDb: 18, label: 'High Quality', detail: 'full chain, +18 dB air' },
   studio: { airCapDb: 18, label: 'Studio', detail: 'full chain, +18 dB air, −1.5 dBTP ceiling' },
+  band_limited: { airCapDb: 18, label: 'Band-limited Source', detail: 'for mics that wall 6–8 kHz: keeps the bandwidth extension' },
 }
 
 // Training sample for voice profile

@@ -448,6 +448,13 @@ class SingingConversionPipeline:
         import torch
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.config = config or {}
+        # Settings the operator explicitly set via PATCH /settings/app (or that
+        # were reapplied from the store on restart). They win over a quality
+        # preset: a preset is a per-request profile, an explicit setting is a
+        # deliberate choice about every request. Without this distinction,
+        # preset_overrides() returns all 8 chain keys for every preset and the
+        # stored config is never consulted, so a PATCH'd air cap has no effect.
+        self._explicit_settings: Dict[str, Any] = {}
         self._separator = None
         self._diarizer = None
         self._voice_cloner = voice_cloner
@@ -476,6 +483,47 @@ class SingingConversionPipeline:
             )
             logger.info("Vocal separator loaded")
         return self._separator
+
+    def set_explicit_settings(self, updates: Dict[str, Any]) -> None:
+        """Record settings the operator explicitly chose.
+
+        Called from the PATCH /settings/app handler and from the restart
+        reapplication loop. Keys recorded here win over a quality preset in
+        ``_chain_config``, so a PATCH'd air cap is not silently replaced by
+        a preset's value on the next conversion.
+        """
+        # getattr, not self._explicit_settings: a partially-constructed
+        # instance (object.__new__, a test double) has no __init__ run, and a
+        # missing attribute here would break the conversion that called it.
+        current = getattr(self, '_explicit_settings', None) or {}
+        self._explicit_settings = {**current, **dict(updates)}
+
+    def _chain_config(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Resolve the config the fork HQ chain should read for one request.
+
+        Precedence, lowest to highest:
+
+        1. ``self.config`` — code defaults merged with anything the yaml
+           config carries. Cannot tell a default from a deliberate value.
+        2. ``overrides`` — the quality preset's per-request profile. A preset
+           is a context-dependent choice ("this source is band-limited"),
+           so it fills in what the operator did not express an opinion about.
+        3. ``self._explicit_settings`` — what the operator set via
+           PATCH /settings/app. A deliberate choice about every request,
+           so it wins over any preset.
+
+        Every stage reads this rather than ``self.config`` directly, so the
+        precedence is decided in one place.
+        """
+        cfg = dict(self.config)
+        if overrides:
+            cfg.update(overrides)
+        # getattr, not self._explicit_settings: a partially-constructed
+        # instance (object.__new__, a test double) has no __init__ run.
+        explicit = getattr(self, '_explicit_settings', None) or {}
+        if explicit:
+            cfg.update(explicit)
+        return cfg
 
     def _separate_vocals(self, audio: np.ndarray, sr: int) -> Dict[str, np.ndarray]:
         """Separate vocals from instrumental using Demucs model.
@@ -1868,7 +1916,7 @@ class SingingConversionPipeline:
         Returns:
             The corrected converted audio.
         """
-        cfg = overrides if overrides else self.config
+        cfg = self._chain_config(overrides)
 
         # 1. Between-word hum: the decoder voices ~14 % of frames where the
         # source is unvoiced. Measured on Hero: -11.5 -> -20.4 dB by level.
@@ -2594,7 +2642,7 @@ class SingingConversionPipeline:
         # separately is equivalent to filtering L and R, and preserves
         # ``L + R == 2 * mid`` exactly.
         match_bandwidth = bool(
-            (overrides or self.config).get('fork_hq_match_source_bandwidth', True))
+            self._chain_config(overrides).get('fork_hq_match_source_bandwidth', True))
         source_bandwidth_hz = None
         applied_bandwidth_hz = None
         if match_bandwidth:
@@ -2686,7 +2734,7 @@ class SingingConversionPipeline:
         # envelope of the entire vocal to remove it. The trim is applied to
         # the vocal stem only, so the mix is untouched.
         vocal_true_peak_dbfs = float(
-            (overrides or self.config).get('fork_hq_vocal_true_peak_dbfs', -1.0))
+            self._chain_config(overrides).get('fork_hq_vocal_true_peak_dbfs', -1.0))
         vocal_gain_db = 0.0
         if vocal_true_peak_dbfs is not None and vocal_true_peak_dbfs <= 0.0:
             from ..audio.true_peak import limit_true_peak
