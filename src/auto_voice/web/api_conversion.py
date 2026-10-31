@@ -442,6 +442,7 @@ def convert_song():
         'balanced': 'balanced',
         'high': 'high',
         'studio': 'studio',
+        'band_limited': 'band_limited',
     }
 
     try:

@@ -171,3 +171,67 @@ class TestSeparatorThreadCap:
         env = _clean_env()
         for key in ('PYTHONPATH', 'PYTHONHOME', 'PYTHONNOUSERSITE'):
             assert key not in env
+
+
+class TestChainConfigPrecedence:
+    """Operator-set settings must win over a quality preset.
+
+    A preset's overrides contain all 8 chain keys, so if the preset wins
+    outright the stored config is never consulted and a PATCH'd air cap has
+    no effect. The precedence is: code defaults < preset < explicit operator
+    setting.
+    """
+
+    def _pipeline(self):
+        from auto_voice.inference.singing_conversion_pipeline import (
+            SingingConversionPipeline,
+        )
+        return SingingConversionPipeline(config={'fork_hq_air_cap_db': 12.0})
+
+    def test_preset_wins_over_code_default(self):
+        """With no explicit setting, the preset's value applies."""
+        from auto_voice.inference.quality_presets import preset_overrides
+        p = self._pipeline()
+        cfg = p._chain_config(preset_overrides('high'))
+        assert cfg['fork_hq_air_cap_db'] == 18.0
+
+    def test_explicit_setting_wins_over_preset(self):
+        """An operator's PATCH beats the preset's profile."""
+        from auto_voice.inference.quality_presets import preset_overrides
+        p = self._pipeline()
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        cfg = p._chain_config(preset_overrides('high'))
+        assert cfg['fork_hq_air_cap_db'] == 20.0
+
+    def test_explicit_setting_persists_across_requests(self):
+        """The explicit set is not consumed by one conversion."""
+        from auto_voice.inference.quality_presets import preset_overrides
+        p = self._pipeline()
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        p._chain_config(preset_overrides('high'))
+        p._chain_config(preset_overrides('balanced'))
+        assert p._chain_config(preset_overrides('high'))['fork_hq_air_cap_db'] == 20.0
+
+    def test_preset_fills_keys_the_operator_never_set(self):
+        """An explicit setting on one key must not silence the preset's others."""
+        from auto_voice.inference.quality_presets import preset_overrides
+        p = self._pipeline()
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        cfg = p._chain_config(preset_overrides('band_limited'))
+        assert cfg['fork_hq_air_cap_db'] == 20.0          # explicit wins
+        assert cfg['fork_hq_match_source_bandwidth'] is False  # preset still applies
+
+    def test_no_preset_uses_config(self):
+        """With no preset and no explicit setting, the config is unchanged."""
+        p = self._pipeline()
+        cfg = p._chain_config(None)
+        assert cfg['fork_hq_air_cap_db'] == 12.0
+
+    def test_set_explicit_settings_merges(self):
+        """Recording settings twice does not drop the first batch."""
+        p = self._pipeline()
+        p.set_explicit_settings({'fork_hq_air_cap_db': 20.0})
+        p.set_explicit_settings({'fork_hq_vocal_true_peak_dbfs': -2.0})
+        cfg = p._chain_config(None)
+        assert cfg['fork_hq_air_cap_db'] == 20.0
+        assert cfg['fork_hq_vocal_true_peak_dbfs'] == -2.0
