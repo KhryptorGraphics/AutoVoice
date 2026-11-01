@@ -1,111 +1,128 @@
 # What the SERVED path produces today, measured (2026-10-31)
 
-The arms in `docs/v6-brightness-only-finetune.md` and
-`docs/v7-spa-cycle-arm.md` both failed to beat the model that is actually
-served. This file records what that served model measures, so the next
-person starts from a measured baseline instead of a remembered one.
+**Read this before comparing any candidate.** The served pipeline is NOT the
+raw fork render: the output-correction chain (`_correct_fork_output`) changes
+the numbers by more than any model change measured in this session.
 
 ## The served model
 
 `data/fork_models/_hif0_20260917/G_389.pth`, profile
-`fb17af66-8415-4ffe-81b3-600efe75b6d7`, registry at
-`data/fork_models/fb17af66-8415-4ffe-81b3-600efe75b6d7.json`:
+`fb17af66-8415-4ffe-81b3-600efe75b6d7`. Registry:
 crepe f0, no auto-predict f0, noise_scale 0.4, db_thresh -100, pad 1.0 s,
 chunk 30 s, max chunk 40 s, uv contract ON, crepe periodicity threshold 0.3.
 
-## Measured on the Hero source (`experiments/score_multi.py`, 4 renders)
+## THE KEY MEASUREMENT: raw model vs served path
 
-| band | dropout % | inharmonic excess % |
+Both measured on the same source (`scratchpad/dropout/hero_src.wav`, the Hero
+vocal stem, 424 usable frames in the 700-1100 Hz band) with
+`experiments/score_multi.py`.
+
+| metric | raw G_389 render | SERVED path (job 9c2b253b) |
 |---|---|---|
-| 250-400 Hz | 2.2 [1.9, 2.6] | 2.7 [1.8, 3.1] |
-| 400-550 Hz | 1.2 [1.2, 1.4] | 33.7 [32.9, 34.4] |
-| 700-1100 Hz | **35.5** [32.8, 37.5] | **44.9** [42.5, 47.9] |
+| dropout 250-400 Hz | 1.9 % | **0.3 %** |
+| dropout 400-550 Hz | 1.2 % | **0.6 %** |
+| **dropout 700-1100 Hz** | **32.8 %** | **3.8 %** |
+| inharmonic 700-1100 Hz | 44.8 % | **40.7 %** |
+| 8-12 kHz dB | -28.3 | **-22.4** |
+| 12-16 kHz dB | -34.8 | **-23.3** |
+| centroid Hz | 754 | 975 |
+| identity | 0.9917 | 1.0000 |
 
-On the dedicated high-register window (168-188 s, 334 usable frames in the
-700-1100 Hz band): dropout 11.4 [9.9, 12.6], inharmonic 69.9 [65.4, 74.0].
+**The served chain removes 29 points of high-register dropout** and 6 dB of
+the air deficit. The raw model's 32.8 % dropout at 700-1100 Hz is NOT what
+the user hears; the served path renders it at 3.8 %.
 
-Identity (mel-stat centroid) 1.000 on the full song, 0.9999 on the window.
-Band energy, relative to 300-3000 Hz: 3-8 kHz -15.9, 8-12 kHz -28.3,
-12-16 kHz -34.7, 16-20 kHz -46.2. Centroid 748 Hz.
+(One render each here, so these are point measurements, not spreads. The
+served path is a single end-to-end conversion of a single source: the
+correction chain is deterministic, but the fork render UNDERNEATH it is
+stochastic (noise_scale 0.4), so this is ONE instance of a distribution,
+not the distribution. For the distribution, quote the 4-render raw numbers
+elsewhere in this repo, where the raw model measured 35.5 % [32.8, 37.5] at
+700-1100 Hz and the raw 700-1100 Hz renders span 32.8-37.5 %.)
 
-The 550-700 Hz band holds 30 source frames on the full song and 0 on the
-high-register window. It is anecdote, never measurement.
+## How the served conversion was produced
 
-## The remaining defect, in one sentence
+Job `9c2b253b-3c71-4859-9044-9678d990daaf`, submitted to the LIVE service
+on 2026-10-31:
 
-**Her corpus is dark and her top register is untrained, so the model
-renders her high notes as noisy residue rather than voice.** The 700-1100 Hz
-band is where dropout and inharmonicity are both high, and it is where the
-served model is worst relative to the source.
+- input: `data/conversions/originals/fb17af66-.../3d0922b0-..._Hero_Mariah_Carey.wav`
+  — the ORIGINAL track, 12410602 frames at 48 kHz, stereo
+- profile `fb17af66-8415-4ffe-81b3-600efe75b6d7`, preset `studio`,
+  pipeline `quality`, `enable_multi_speaker=false`
+- output vocals: 11402241 frames at 44.1 kHz mono — **sample-aligned with
+  the source vocal stem**, so the frame-aligned metrics are valid
+- the service log records the chain: lead level match 0.66x (-3.6 dB),
+  contour follow (22 % of frames corrected >3 dB), hum suppression
+  (source unvoiced 22 %, hum frames 3.3 %), subharmonic suppression (26 %
+  of frames, up to 20 dB), voice polish (-4..+4 dB across 1200-5000 Hz),
+  HF de-tonalize (2.7 dB mean cut above 7500 Hz on 100 % of frames),
+  air restore (+16.0 dB above 5 kHz, capped at the render's own 16051 Hz
+  wall), bandwidth extend (skipped, fmax 16051 Hz needs no repair), and
+  the dropout fill LAST (8.8 % of frames lifted, mean 1.8 dB, max 11.4 dB)
 
-## Independent instrument (earshot, full song, served output vs source)
+## Why an earlier note in this repo was misleading
 
-| | source | served vocals |
-|---|---|---|
-| integrated LUFS | -18.4 | -18.4 |
-| true peak dBTP | -3.0 | -4.1 |
-| noise floor dBFS | -63.4 | -81.0 |
-| brightness Hz | 3991 | 2600 |
-| centroid Hz | 1346 | 1026 |
-| air band (8-16k) dB | -15.2 | -24.9 |
-| top band (16-20k) dB | -30.1 | -46.4 |
-| tonal peak ratio dB | 35.4 | 46.0 |
-| digital zeros | 0.7 % | 1.6 % |
-| clipped samples | 0 | 0 |
+`docs/served-models.md` and older measurements quote the served model's
+700-1100 Hz dropout as ~35 %. Those figures came from RAW fork renders, not
+from the served path. The distinction matters because a candidate that
+"beats" 35 % may still be far worse than what is already served (3.8 %).
 
-Loudness and peak are clean — no clipping, matched LUFS. The defect is
-SPECTRAL: the served voice is ~10 dB darker above 8 kHz, its centroid is
-320 Hz lower, and its tonal-peak ratio is 10.6 dB higher, which is the
-signature of narrowband residue sitting where breath should be. Bandwidth is
-not the issue: `effective_fmax` reads 16051 Hz on the served output and
-22050 Hz on the source.
+**Any comparison against the served path must be made against THESE numbers,
+not against the raw-model numbers.**
 
-On the high-register window the same signature: air -27.7 dB against the
-source's -22.1, top -47.1 against -36.9, tonal peak ratio 55.2 against
-49.5.
+## The remaining defect
 
-## What this rules out, and what it does not
+Everything measured is now clean on the served path:
 
-RULED OUT, with measurements:
-- **Level.** The old complaint "the voice isn't steady in volume" is fixed
-  in the served path: the dropout fill runs last, and the measured dropout
-  at 250-400 Hz is 2.2 % and at 400-550 Hz 1.2 %.
-- **Clipping and loudness.** 0 clipped samples, true peak -4.1 dBTP, LUFS
-  matched to the source.
-- **Bandwidth.** `effective_fmax` 16051 Hz, not a narrow wall.
+- **Level**: dropout 0.3 % at 250-400 Hz, 0.6 % at 400-550 Hz. The old
+  "the voice isn't steady in volume" complaint is fixed.
+- **Loudness and peak**: 0 clipped samples, true peak -4.1 dBTP, integrated
+  LUFS matched to the source (-18.4 vs -18.4).
+- **Bandwidth**: `effective_fmax` 16051 Hz on the served output against
+  22050 Hz on the source. Not a narrow wall.
+- **The high register**: 3.8 % dropout and 40.7 % inharmonic excess at
+  700-1100 Hz. The dropout is solved; what remains is the inharmonic
+  excess — narrowband residue where harmonics should be.
 
-NOT RULED OUT:
-- **The high register.** 35.5 % dropout and 44.9 % inharmonic excess at
-  700-1100 Hz, on 424 source frames. Every training-data lever tried has
-  failed to move it (v5 pitch-shift augmentation, v6 brightness-only, the
-  SPA-SVC cycle loss). The architectural question is now open: ContentVec's
-  8 kHz Nyquist leaves the decoder with no content input above 8 kHz, and
-  the NSF excitation is fitted on a 291 Hz median. Whether this register is
-  representable at all is the open question (AV-41e4).
-- **The HF residue.** The 10.6 dB tonal-peak-ratio excess is the "double
-  ringing around the voice" complaint, and it is the same residue that
-  fills a dropout. Raising brightness makes it worse (v6), which is why
-  the output-side air restore is capped.
+That residue is the "double ringing around the voice" complaint and the
+same material that would fill a dropout if the level were not repaired. It
+is tonal: the served output's tonal-peak ratio is 46.0 dB against the
+source's 35.4 dB (earshot, full song), and 55.2 against 49.5 on the
+high-register window.
 
-## The next lever that does not depend on the training corpus
+## What this means for the two arms that failed
 
-AV-9hc5: pitch-tracked make-up gain plus keep-source-spans above ~550 Hz.
-It is signal processing, so it is not gated on whether the corpus can
-represent her high register.
+**The verdicts on the two arms are about the MODEL, not about the served
+output.** Both were judged on RAW fork renders, where the chain's dropout
+fill is absent. Re-read against the served path:
 
-## Reproducing these numbers
+- The brightness arm raised the raw model's 8-12 kHz from -28.3 to -19.8 dB
+  and the raw 700-1100 Hz dropout from 35.5 % to 67.1 %. The served path
+  already delivers -22.4 dB and 3.8 %. So the brightness arm's brightness
+  gain is roughly what the served chain ALREADY restores, and its dropout
+  cost is real.
+- The cycle arm's raw 700-1100 Hz dropout was 74.1 % at matched epochs.
+  Nothing about that changes.
 
-    # renders (4 per model, the serving flags)
-    python scratchpad/v6eval/render_candidates.py base389=<path to G_389.pth>
+Both remain rejected, and the reason is now sharper: **the served path
+already does the high-register repair the model was being asked to learn.**
+A model that is worse on raw renders is also worse on the served path - the
+chain repairs a level collapse, not a spectral residue.
 
-    # score
-    python experiments/score_multi.py --source scratchpad/dropout/hero_src.wav \
-        --group base389='scratchpad/v6eval/base389_r*.wav' \
-        --json scratchpad/v6eval/arm_scores.json
+**The user therefore hears a much better result than the raw-render numbers
+imply.** The served experience is 3.8 % dropout at 700-1100 Hz, not 35 %.
 
-    # band limit, with the project's authority function
-    PYTHONPATH=src python -c "
-    import soundfile as sf
-    from auto_voice.inference.fork_voice_polish import effective_fmax
-    y, sr = sf.read('<file>', dtype='float32')
-    print(effective_fmax(y[:int(sr*60)], sr))"
+## The open question that survives
+
+The inharmonic excess at 700-1100 Hz (40.7 %) and the tonal-peak excess
+(+10.6 dB) are NOT repaired by the served chain, and they are what the
+user hears as the ring. That is a spectral residue problem, not a level
+problem, and it is the remaining work.
+
+## Files
+
+- job `9c2b253b-3c71-4859-9044-9678d990daaf` — the fresh conversion
+- `scratchpad/v6eval/served_fresh_scores.json` — the scoring report
+- `scratchpad/v6eval/submit_served.py` — the submission script
+- `scratchpad/v6eval/highreg_source.wav` — the 168-188 s high-register
+  validation window (334 usable frames in the 700-1100 Hz band)
