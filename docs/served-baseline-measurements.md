@@ -179,13 +179,34 @@ imply.** The served experience is 4.36 % dropout at 700-1100 Hz, not 35 %.
 The inharmonic excess at 700-1100 Hz (40.69 %) and the tonal-peak excess
 (+10.6 dB) are NOT repaired by the served chain, and they are what the
 user hears as the ring. That is a spectral residue problem, not a level
-problem, and it is the remaining work.
+problem.
 
-`docs/av9hc5-level-vs-timbre.md` establishes why it cannot be fixed
-output-side: a make-up gain moves the level and leaves the spectrum
-untouched, and the only thing that removes the residue is replacing the
-render's high register with the source's own audio - which trades the
-target voice's identity away and is not shippable as a conversion.
+A measured output-side lever now exists for it (below). The open question
+is whether it is what the user wants, and that is a listening question,
+not a measurement.
+
+`docs/av9hc5-level-vs-timbre.md` establishes why a plain make-up gain
+cannot fix it: the gain moves the level and leaves the spectrum untouched.
+
+**But it CAN be fixed output-side, and there is now a measured lever.**
+`docs/inharmonic-notch-lever.md` documents it: a notch keyed on the
+SOURCE's f0 that cuts the off-harmonic energy down to the source's own
+off-harmonic fraction. Measured on all four served draws, full song:
+
+| band | inharmonic excess (served → lever) |
+|---|---|
+| 250-400 Hz | 2.44 % → 2.44 % |
+| 400-550 Hz | 31.09 % → 31.06 % |
+| 550-700 Hz | 61.38 % → 0.53 % |
+| **700-1100 Hz** | **40.69 % → 11.27 %** |
+
+with level dropout at 700-1100 Hz going 4.36 % → 1.18 %, the low register
+untouched, identity unchanged at 1.000, and every stem at exactly -1.50
+dBTP with zero clipped samples.
+
+**It is NOT promoted.** It is measured, not shipped; the registry still
+serves G_389 unchanged; and nobody has listened to it. The ear is the only
+thing that can say whether the remaining 11 % is audible.
 
 ## Files
 
