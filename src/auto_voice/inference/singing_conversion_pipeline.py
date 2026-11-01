@@ -2018,15 +2018,15 @@ class SingingConversionPipeline:
             from .fork_voice_polish import extend_bandwidth
             converted = extend_bandwidth(converted, sr)
 
-        # 7. High-register inharmonic residue: the "double ringing". Above
-        #    ~550 Hz the decoder extrapolates (Brandy's corpus has 0.00 % of
-        #    frames above 700 Hz) and emits narrowband residue where
-        #    harmonics should be. This stage cuts that residue against the
-        #    SOURCE's harmonic series and restores the level the cut took.
-        #    Measured on four served conversions (n=4), full song: the
-        #    inharmonic excess at 700-1100 Hz goes 40.69 % -> 11.27 %, the
-        #    550-700 Hz band 61.38 % -> 0.53 %, the low register is untouched
-        #    to two decimals, and the identity vector does not move.
+        # 7. High-register inharmonic residue: the "double ringing".
+        #    n=4 offline threshold testing on the Hero stems reduced
+        #    400-550 Hz inharmonic excess from 31.1 % to 5.4 % at f0_lo=400,
+        #    without resolved changes in the 250-400 or 700-1100 Hz bands.
+        #    The 550-700 Hz band has only 30 scored frames and is anecdotal.
+        #    Four served draws at the 400 Hz default reduced full-song
+        #    700-1100 Hz excess from 11.2 % to 7.7 % (p=0.029); dropout
+        #    changed from 1.1 % to 0.8 % with overlapping ranges. This is
+        #    progress, not resolution. The 550-700 Hz estimate is anecdotal.
         #
         #    BEFORE the dropout fill: the fill has to be the last thing that
         #    touches level, and this stage's make-up gain touches level. A
@@ -2041,7 +2041,7 @@ class SingingConversionPipeline:
                                          12.0)),
                 max_gain_db=float(cfg.get('fork_hq_inharmonic_notch_gain_db',
                                           12.0)),
-                f0_lo=float(cfg.get('fork_hq_inharmonic_notch_f0_lo', 550.0)),
+                f0_lo=float(cfg.get('fork_hq_inharmonic_notch_f0_lo', 400.0)),
                 passes=int(cfg.get('fork_hq_inharmonic_notch_passes', 3)))
 
         # 8. Short dropout fill, LAST. The slow contour follower in

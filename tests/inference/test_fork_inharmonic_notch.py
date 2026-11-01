@@ -188,9 +188,8 @@ class TestLowRegister:
 
 class TestVoicedFrameGate:
     def test_gate_rejects_unvoiced_frames(self):
-        """The metric's gate rejects a frame whose peak at 2*f0 is above its
-        peak at f0 (an octave error). The stage must use the same gate."""
-        source = _harmonic_tone(200.0)
+        """The metric gate accepts voiced frames with the expected harmonic ratio."""
+        source = _harmonic_tone(300.0)
         f0, good = source_voiced_frames(source, SR)
         assert good.any()
         assert np.isfinite(f0[good]).all()
@@ -260,6 +259,35 @@ class TestPipelineIntegration:
             assert called, "the stage did not run with the flag on"
         finally:
             mod.suppress_inharmonic = original
+
+    def test_pipeline_default_gate_covers_400_to_550(self):
+        """The production gate must correct the newly validated 400-550 band."""
+        from auto_voice.inference.singing_conversion_pipeline import (
+            SingingConversionPipeline,
+        )
+
+        pipeline = SingingConversionPipeline.__new__(SingingConversionPipeline)
+        pipeline.config = {
+            'fork_hq_hum_suppress': False,
+            'fork_hq_subharmonic_suppress': False,
+            'fork_hq_voice_polish': False,
+            'fork_hq_hf_detonalize': False,
+            'fork_hq_air_cap_db': 0.0,
+            'fork_hq_extend_bandwidth': False,
+            'fork_hq_inharmonic_notch': True,
+        }
+        pipeline._explicit_settings = {}
+        pipeline._fill_lead_dropouts = lambda converted, source, sr: converted
+        f0 = 450.0
+        source = _harmonic_tone(f0)
+        converted = _inharmonic_tone(f0, level=0.8)
+
+        before = _off_harmonic_fraction(converted, f0)
+        corrected = pipeline._correct_fork_output(source, converted, SR)
+        after = _off_harmonic_fraction(corrected, f0)
+
+        assert before > 0.05
+        assert after < before * 0.5
 
 
 if __name__ == "__main__":

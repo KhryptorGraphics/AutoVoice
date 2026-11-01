@@ -4,10 +4,10 @@
 The October 31 offline n=4 results below are historical; fresh current-checkout
 n=4 results are included later.
 
-## The result
+## The result (offline lever, f0_lo=550 Hz, 2026-10-31)
 
-Settings: cut 12 dB max, make-up gain 12 dB max, f0_lo 550 Hz, 3
-correction passes, true-peak ceiling -1.5 dBTP.
+Settings: cut 12 dB max, make-up gain 12 dB max, 3 correction passes,
+true-peak ceiling -1.5 dBTP.
 
 | band | inharmonic excess (served → lever) | level dropout (served → lever) |
 |---|---|---|
@@ -199,11 +199,12 @@ side by side on all four draws:
 
 So the numbers in this document describe the shipped code.
 
-## Current-checkout end-to-end result (2026-11-01)
+## Current-checkout result before f0 gate retune (f0_lo=550 Hz)
 
 Four fresh full-song draws used the current checkout, notch enabled and the
 shared vocal/mix true-peak guard. Baseline figures are the four no-notch
-draws from 2026-10-31; all vocals are aligned to the same Hero source.
+draws from 2026-10-31; all vocals align to the same Hero source. These four
+draws used the former 550 Hz gate; the 400 Hz gate is being validated below.
 
 | band | no-notch baseline (n=4) | current checkout (n=4) |
 |---|---|---|
@@ -254,16 +255,36 @@ in both outputs. The 20 s high-register A/B had cosine 1.00 and no
 measurable feature change. This is not an n=4 strength test and does not
 justify raising the 12 dB / 3-pass default.
 
-A separate one-draw `f0_lo=400 Hz` probe reduced the 400-550 Hz inharmonic
-metric from 30.9 % to 5.4 % and dropout from 0.6 % to 0.0 %, while leaving
-700-1100 Hz at 11.9 % and 250-400 Hz at 3.1 %. This is not an n=4
-validation and is not shipped; the production gate remains 550 Hz.
+A 4v4 offline comparison on the same no-notch baseline stems varied only
+`f0_lo`. Lowering the gate from 550 to 400 Hz changed 400-550 Hz inharmonic
+excess from 31.1 % [30.3, 31.7] to 5.4 % [5.1, 5.7] (disjoint ranges;
+rank-sum p=0.029). Dropout changed 0.4 % [0.0, 0.6] to 0.3 % [0.0, 0.6];
+250-400 Hz stayed 2.4 % and 700-1100 Hz stayed 11.3 %. The 550-700 Hz
+result is based on 30 source frames and is anecdotal. All eight offline
+vocal outputs were -1.5 dBTP with zero clipped samples. Broad Earshot
+measurements showed no material change in LUFS, harmonic share, or noise
+floor.
 
-The target profile's corpus has 0.48 % of frames at or above 550 Hz and
-less than 0.01 % at or above 700 Hz (AV-41e4), while the source reaches
-1031 Hz. The notch only attenuates off-harmonic energy; the architecture
-needs genuine target-voice high-register training data or a different
-content/decoder model to restore missing harmonics.
+Four sequential current-checkout conversions then used the 400 Hz pipeline
+default. Compared with four prior 550 Hz-gate renders, 400-550 Hz inharmonic
+excess fell from 31.0 % [29.9, 31.9] to 15.9 % [14.8, 16.8] (disjoint
+ranges; rank-sum p=0.029). At 700-1100 Hz it fell from 11.2 % [9.6, 12.6]
+to 7.7 % [6.5, 9.2] (also disjoint; p=0.029); dropout changed from 1.1 %
+[0.7, 1.2] to 0.8 % [0.7, 0.9], with overlapping ranges. The 550-700 Hz
+estimate is still based on only 30 frames and shifts from -0.3 % to -5.3 %,
+so collateral there is unresolved. The 400 Hz default is justified for this
+tested profile/source, not as a general or artifact-free result. Mixes were
+-1.5 dBTP with zero clipped samples; no human has listened.
+
+The historical G_389 training audit (AV-41e4) covered 10 singing files and
+168,079 voiced frames: 0.48 % were at or above 550 Hz and less than 0.01 %
+at or above 700 Hz, while the source reaches 1031 Hz. A separate local
+profile-sample audit found seven singing-labeled recordings with 71 scorer-
+valid 700-1100 Hz frames total (about 0.82 s); the 64 short local-video clips
+contained none. The v6 fine-tune corpus included 78 samples and still failed
+the high-register acceptance gate. Existing authentic material is sparse;
+the notch only attenuates off-harmonic energy and cannot synthesize missing
+target-voice harmonics.
 
 Current-checkout jobs: `126dec49`, `1beb9645`, `2b82af9c`, `ba27fa99`.
 No-notch baseline jobs: `9c2b253b`, `b1d3295a`, `adfde124`, `50696749`.
@@ -275,5 +296,8 @@ Reports:
 - `scratchpad/v6eval/notch/cut24/full_draw1_matched_scores.json`
 - `scratchpad/v6eval/notch/f0lo400/full_draw1_scores.json`
 
-**Status: the notch is shipped, but the user's no-residual / no-artifact
-goal is not met and no human has listened.** AV-4aqs remains open.
+**Status: the notch is shipped and its default f0 gate is now 400 Hz.**
+The user’s no-residual / no-artifact goal is not met: the latest served n=4
+still has 7.7 % full-song high-register inharmonic excess, possible
+550-700 Hz collateral is unresolved, and no human has listened. AV-4aqs
+remains open.

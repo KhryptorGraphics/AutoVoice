@@ -221,17 +221,74 @@ Neither raw candidate is a reason to replace the current checkpoint.
   current vs no-notch n=4 scoring.
 - `scratchpad/v6eval/current_truepeak_guard_n4_scores.json` — per-draw rows.
 - `scratchpad/v6eval/highreg_current_guard_n4/` — current 168-188 s crops.
+## Follow-up: production f0 gate lowered to 400 Hz
+
+Four sequential end-to-end conversions with the pipeline's default gate at
+400 Hz were scored against the four prior 550 Hz-gate conversions, using the
+same Hero source and scorer. The full-song 700-1100 Hz comparison remains
+the critical outcome; this change targets the previously untreated 400-550
+Hz band.
+
+| band / metric | f0_lo=550 Hz (n=4) | f0_lo=400 Hz (n=4) |
+|---|---|---|
+| 400-550 Hz inharmonic excess | 31.0 % [29.9, 31.9] | **15.9 % [14.8, 16.8]** |
+| 400-550 Hz dropout | 0.5 % [0.2, 1.0] | 0.1 % [0.0, 0.4] |
+| 250-400 Hz inharmonic excess | 2.2 % [1.8, 2.8] | 2.2 % [1.8, 2.8] |
+| 700-1100 Hz inharmonic excess | 11.2 % [9.6, 12.6] | **7.7 % [6.5, 9.2]** |
+| 700-1100 Hz dropout | 1.1 % [0.7, 1.2] | 0.8 % [0.7, 0.9] |
+
+At 400-550 Hz, the ranges are disjoint and the scorer reports rank-sum
+p=0.029. At 700-1100 Hz, inharmonic excess also improves with disjoint
+ranges (p=0.029), but the reduction is modest; dropout ranges overlap. The
+168-188 s window's 700-1100 Hz dropout is 0 % in both groups; its inharmonic
+ranges overlap (11.6 % [9.1, 14.0] at 550 Hz; 7.6 % [5.8, 9.4] at 400 Hz).
+The 550-700 Hz full-song estimate is based on only 30 frames and is
+anecdotal; it shifts from −0.3 % to −5.3 %, so possible collateral there is
+unresolved. Broad Earshot measures show no material change in loudness,
+harmonic share, or noise floor.
+
+All four new mixes measured −1.5 dBTP with zero clipped samples; mix LUFS
+was −18.1 to −17.8. Vocals measured −20.0 to −19.7 LUFS and −4.6 to
+−3.5 dBTP, with zero clipped samples. This validates the narrower 400 Hz
+default for this profile and source, but does not establish near-perfect
+conversion: 7.7 % high-band inharmonic excess and 0.8 % dropout remain, and
+no human has listened.
+
+The four f0_lo=400 jobs are `720b64b0`, `cafcddda`, `bd7731b2`, and
+`3fde1c2d`; comparison report:
+`scratchpad/v6eval/f0lo_threshold_n4/current_vs_f0lo400.json`.
+The four f0_lo=550 comparison jobs are `126dec49`, `1beb9645`, `2b82af9c`,
+and `ba27fa99`.
+
+The local sample audit found 71 scorer-valid 700-1100 Hz frames across
+seven singing-labeled profile recordings (~0.82 s); 64 short local-video
+clips contributed none. This is authentic material, but too sparse to
+establish high-register articulation coverage. The v6 fine-tune candidate
+trained on 78 samples and still failed its high-register acceptance gate.
+
+## Earlier current-checkout results (550 Hz gate)
+
+The preceding n=4 values in this document and the original listening
+candidate refer to the former 550 Hz default. Use the four jobs above for
+listening to the current 400 Hz default:
+
+    data/conversions/720b64b0-4681-4f6a-bfa7-9992660bc0a1/mix.wav
+
+AV-4aqs remains open for human listening. Neither the 400 Hz change nor
+these objective measures prove the absence of ringing, artifacting, or
+distortion.
 
 ## Listening and next requirement
 
-No human has listened to any current render. The output-side notch leaves
-11.15 % full-song high-register inharmonic excess and 1.06 % dropout; the
+No human has listened to any current render. The f0_lo=400 path leaves
+7.7 % full-song high-register inharmonic excess and 0.8 % dropout; the
 user's goal of near-perfect conversion is therefore not met. The remaining
-architectural path requires real high-register recordings of the target
-voice or a changed content/decoder model. The existing target corpus has
-insufficient coverage above 700 Hz; a synthetic pitch-shifted copy is not
-evidence of authentic target-voice articulation.
+architectural path requires substantially more authentic high-register
+recordings of the target voice or a changed content/decoder model. The
+existing local target corpus has only 71 scorer-valid frames above 700 Hz
+across seven singing-labeled profile recordings (~0.82 s); a synthetic
+pitch-shifted copy is not evidence of authentic target-voice articulation.
 
-Use a current-checkout listening candidate, for example:
+Use the current-checkout listening candidate from the 400 Hz gate:
 
-    data/conversions/126dec49-bc8f-48c3-8d5d-a23a5de671b8/mix.wav
+    data/conversions/720b64b0-4681-4f6a-bfa7-9992660bc0a1/mix.wav
