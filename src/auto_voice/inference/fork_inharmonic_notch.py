@@ -256,9 +256,25 @@ def _make_up_gain(source, converted, sr, f0, good, max_gain_db, f0_lo):
     delta_db = 20 * np.log10((src_band + 1e-9) / (out_band + 1e-9))
     delta_db = np.clip(delta_db, 0.0, max_gain_db)
     gain = np.where(high, 10 ** (delta_db / 20.0), 1.0)
+
+    # Smooth so the gain is not a per-frame zipper.
+    #
+    # EDGE PADDING, not zero padding. ``np.convolve`` zero-pads, so a
+    # gain array of all ones comes back DILUTED at the edges - the missing
+    # neighbours count as zero and drag the weighted average down to 0.625,
+    # which is a 4 dB ATTENUATION of audio that needed no change at all.
+    # Measured on a clean source: the un-smoothed gain array is all ones,
+    # and the smoothed one dips to 0.625 in the first and last four frames.
+    #
+    # The gain must never be below 1.0: it exists to RESTORE level the
+    # notch took, so a value under 1 means it is removing level that was
+    # never lost. Pad with the edge value instead, so an all-ones gain
+    # array stays exactly all ones.
     kernel = np.hanning(9)
     kernel /= kernel.sum()
-    gain = np.convolve(gain, kernel, mode="same")
+    pad = len(kernel) // 2
+    padded = np.pad(gain, pad, mode="edge")
+    gain = np.convolve(padded, kernel, mode="valid")
     gain = np.where(high, gain, 1.0)
 
     S_out = S_out * gain[None, :]
