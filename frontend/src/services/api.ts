@@ -490,13 +490,14 @@ export interface AppSettings {
   fork_hq_subharmonic_suppress?: boolean
   fork_hq_voice_polish?: boolean
   fork_hq_hf_detonalize?: boolean
+  fork_hq_inharmonic_notch?: boolean
   fork_hq_extend_bandwidth?: boolean
   // Ceiling on the air the chain restores above 5 kHz, in dB. 0 disables the
   // air restore; 12 is what the chain has always used.
   fork_hq_air_cap_db?: number
-  // True-peak ceiling for the converted vocal stem, in dBTP. A sample peak
-  // of 0.00 dBFS measures +0.16 dBTP once the inter-sample peaks are
-  // reconstructed, and the stem clips. -1.0 is the streaming target.
+  // True-peak ceiling for the converted vocal stem and final stereo mix, in
+  // dBTP. Sample peak is not enough: reconstructed inter-sample peaks can
+  // still exceed 0 dBFS.
   fork_hq_vocal_true_peak_dbfs?: number
   last_updated?: string | null
 }

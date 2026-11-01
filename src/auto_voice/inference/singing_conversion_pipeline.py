@@ -2739,13 +2739,60 @@ class SingingConversionPipeline:
                     "Fork HQ bandwidth match failed, keeping full-band vocal: %s", exc)
                 applied_bandwidth_hz = None
 
+        # This ceiling governs both the standalone vocal stem and the final
+        # mix. Trim the vocal before summation so the mix is built from the
+        # same vocal the API returns in `stems['vocals']`.
+        vocal_true_peak_dbfs = self._chain_config(overrides).get(
+            'fork_hq_vocal_true_peak_dbfs', -1.0)
+        if vocal_true_peak_dbfs is not None:
+            vocal_true_peak_dbfs = float(vocal_true_peak_dbfs)
+        vocal_gain_db = 0.0
+        if vocal_true_peak_dbfs is not None and vocal_true_peak_dbfs <= 0.0:
+            from ..audio.true_peak import limit_true_peak
+            conv, vocal_gain_db = limit_true_peak(
+                conv, target_dbfs=vocal_true_peak_dbfs)
+            if vocal_gain_db:
+                logger.info(
+                    "Fork HQ: trimmed converted vocal by %.2f dB to hold "
+                    "its true peak at %.1f dBTP",
+                    vocal_gain_db, vocal_true_peak_dbfs)
         if side is not None:
-            mixed = np.stack([inst[0] + conv + side, inst[1] + conv - side], axis=-1)
+            mixed = np.stack([inst[0] + conv + side,
+                              inst[1] + conv - side], axis=-1)
         else:
-            mixed = np.stack([inst[0] + conv, inst[1] + conv], axis=-1)  # (n, 2) stereo
-        peak = float(np.abs(mixed).max())
-        if peak > 0.95:
-            mixed = mixed * (0.95 / peak)
+            mixed = np.stack([inst[0] + conv, inst[1] + conv],
+                             axis=-1)  # (n, 2) stereo
+        sample_peak = float(np.abs(mixed).max())
+        sample_peak_gain = (
+            min(1.0, 0.95 / sample_peak) if sample_peak > 0.0 else 1.0
+        )
+        if sample_peak_gain < 1.0:
+            mixed = mixed * sample_peak_gain
+
+        # Sample-peak limiting does not prevent inter-sample overs. The
+        # delivered mix previously measured +0.3 dBTP despite sample peaks
+        # below full scale. Limit after summing, with the same ceiling as the
+        # standalone vocal stem; a constant trim preserves mix balance.
+        mix_trim_db = 0.0
+        mix_gain = 1.0
+        if vocal_true_peak_dbfs is not None and vocal_true_peak_dbfs <= 0.0:
+            mixed, mix_trim_db = limit_true_peak(
+                mixed, target_dbfs=vocal_true_peak_dbfs)
+        if mix_trim_db:
+            logger.info(
+                "Fork HQ: trimmed mixed output by %.2f dB to hold true peak "
+                "at %.1f dBTP", mix_trim_db, vocal_true_peak_dbfs)
+            mix_gain = 10.0 ** (mix_trim_db / 20.0)
+        # Apply both post-sum constant trims to the stems too, keeping the
+        # exported vocal/instrumental sum aligned with the delivered mix.
+        stem_mix_gain = sample_peak_gain * mix_gain
+        if stem_mix_gain != 1.0:
+            conv = conv * stem_mix_gain
+            inst = inst * stem_mix_gain
+            if side is not None:
+                side = side * stem_mix_gain
+            if backing_only is not None:
+                backing_only = backing_only * stem_mix_gain
 
         duration = n / sr
         f0_original = self._extract_pitch(voc_mono, sr)
@@ -2761,6 +2808,12 @@ class SingingConversionPipeline:
                 'lead_level_gain_db': getattr(self, '_last_lead_gain_db', 0.0),
                 'instrumental_volume': instrumental_volume,
                 'processing_time': time.time() - start_time,
+                'mix_true_peak_dbfs': vocal_true_peak_dbfs,
+                'mix_trim_db': mix_trim_db,
+                'mix_sample_peak_trim_db': (
+                    20.0 * np.log10(sample_peak_gain)
+                    if sample_peak_gain < 1.0 else 0.0
+                ),
                 'target_profile_id': target_profile_id,
                 'active_model_type': 'svc_fork',
                 'speaker_id': target_profile_id,
@@ -2786,31 +2839,6 @@ class SingingConversionPipeline:
         if multi_speaker_info:
             result['metadata']['multi_speaker_info'] = multi_speaker_info
 
-        # True-peak ceiling on the converted vocal stem.
-        #
-        # The guards above compare a SAMPLE peak against 0.95, so a stem can
-        # measure 0.00 dBFS as a sample peak and still be +0.16 dBTP once the
-        # waveform between the samples is reconstructed - which is what a DAC
-        # reproduces, and what clips. Measured on a Brandy conversion of a
-        # full-band female source: the vocal stem came out at 0.00 dBFS
-        # sample peak, +0.16 dBTP, 5 samples at or above 0.999, while the
-        # mix was clean at -0.44 dBTP because the instrumental sat under it.
-        #
-        # A constant trim, not a compressor: the defect is a handful of
-        # samples at full scale, and a dynamic limiter would change the level
-        # envelope of the entire vocal to remove it. The trim is applied to
-        # the vocal stem only, so the mix is untouched.
-        vocal_true_peak_dbfs = float(
-            self._chain_config(overrides).get('fork_hq_vocal_true_peak_dbfs', -1.0))
-        vocal_gain_db = 0.0
-        if vocal_true_peak_dbfs is not None and vocal_true_peak_dbfs <= 0.0:
-            from ..audio.true_peak import limit_true_peak
-            conv, vocal_gain_db = limit_true_peak(conv, target_dbfs=vocal_true_peak_dbfs)
-            if vocal_gain_db:
-                logger.info(
-                    f"Fork HQ: trimmed converted vocal by {vocal_gain_db:.2f} dB to "
-                    f"hold its true peak at {vocal_true_peak_dbfs:.1f} dBTP"
-                )
         result['metadata']['vocal_true_peak_dbfs'] = vocal_true_peak_dbfs
         result['metadata']['vocal_trim_db'] = vocal_gain_db
 

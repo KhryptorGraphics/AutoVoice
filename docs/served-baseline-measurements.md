@@ -1,4 +1,4 @@
-# What the SERVED path produces today, measured (2026-10-31)
+# What the SERVED path produces today, measured (2026-11-01)
 
 **Read this before comparing any candidate.** The served pipeline is NOT the
 raw fork render: the output-correction chain (`_correct_fork_output`) changes
@@ -23,6 +23,10 @@ Hero track through the live service, scored on their paired vocal stems
 (jobs `9c2b253b`, `b1d3295a`, `adfde124`, `50696749` — all frame-aligned to
 the source at 11402241 frames / 258.55 s).
 
+In this scorer, `identity` means cosine similarity of a mel-centroid vector
+to the first reference group; it is **not** speaker verification and cannot
+certify target-voice identity.
+
 | metric | raw G_389 (n=4) | SERVED path (n=4) |
 |---|---|---|
 | dropout 250-400 Hz | 1.9 % | **0.3 %** |
@@ -32,7 +36,7 @@ the source at 11402241 frames / 258.55 s).
 | 8-12 kHz dB | -28.3 | **-22.5** |
 | 12-16 kHz dB | -34.8 | **-23.2** |
 | centroid Hz | 754 | 966 |
-| identity | 0.9917 | 0.9999 |
+| mel-centroid cosine to raw reference | 0.9917 | 0.9999 |
 
 **The chain removes 31.1 points of high-register dropout** (35.50 % ->
 4.36 %), a reduction of 87.7 %, and the two distributions do not overlap:
@@ -78,7 +82,7 @@ the same window.
 | dropout 700-1100 Hz | 11.38 % | **2.54 % [1.50, 4.19]** |
 | inharmonic excess 700-1100 Hz | 69.92 % | **45.08 % [41.90, 50.54]** |
 | centroid Hz | — | 1316-1381 |
-| identity | — | 0.9994-1.0000 |
+| mel-centroid cosine to reference | — | 0.9994-1.0000 |
 
 The same pattern as the full song, and sharper: the chain takes the level
 dropout down by 4.5x, and takes the inharmonic excess down by only 24.8
@@ -131,125 +135,100 @@ at n=4).
 **Any comparison against the served path must be made against THESE numbers,
 not against the raw-model numbers.**
 
-## The remaining defect
 
-Everything measured is now clean on the served path:
+## The remaining defect after the current n=4 run
 
-- **Level**: dropout 0.3 % at 250-400 Hz, 0.5 % at 400-550 Hz. The old
-  "the voice isn't steady in volume" complaint is fixed.
-- **Loudness and peak**: 0 clipped samples, true peak -4.1 dBTP, integrated
-  LUFS matched to the source (-18.4 vs -18.4).
-- **Bandwidth**: `effective_fmax` 16051 Hz on the served output against
-  22050 Hz on the source. Not a narrow wall.
-- **The high register**: 4.36 % dropout [3.07, 6.37] and 40.69 % inharmonic
-  excess [37.14, 45.54] at 700-1100 Hz. The level dropout is fixed; what
-  remains is the inharmonic excess — narrowband residue where harmonics
-  should be.
+Fresh 2026-11-01 draws used the current checkout, with the notch enabled and
+the shared vocal/mix true-peak guard. `score_multi.py` scored their aligned
+vocal stems against the same Hero source:
 
-That residue is the "double ringing around the voice" complaint and the
-same material that would fill a dropout if the level were not repaired. It
-is tonal: the served output's tonal-peak ratio is 46.0 dB against the
-source's 35.4 dB (earshot, full song), and 55.2 against 49.5 on the
-high-register window.
+| band | without notch (n=4) | current checkout (n=4) |
+|---|---|---|
+| 250-400 Hz inharmonic excess | 2.44 % [2.02, 3.08] | 2.23 % [1.81, 2.83] |
+| 400-550 Hz inharmonic excess | 31.09 % [30.31, 31.79] | 31.04 % [29.92, 31.93] |
+| 550-700 Hz inharmonic excess | 61.38 % [58.19, 65.06] | −0.32 % [−1.25, 1.09]† |
+| **700-1100 Hz inharmonic excess** | **40.69 % [37.14, 45.54]** | **11.15 % [9.61, 12.61]** |
+| dropout 250-400 Hz | 0.31 % [0.22, 0.48] | 0.37 % [0.29, 0.46] |
+| dropout 400-550 Hz | 0.40 % [0.00, 0.59] | 0.54 % [0.20, 0.98] |
+| **dropout 700-1100 Hz** | **4.36 % [3.07, 6.37]** | **1.06 % [0.71, 1.18]** |
+
+† Only 30 usable frames; the 550-700 Hz inharmonic figure is anecdotal.
+At 700-1100 Hz the distributions do not overlap: the worst current draw
+(12.61 %) is 24.53 points below the best no-notch draw (37.14 %). All four
+draws improve. This is substantial, but 11.15 % residual inharmonic excess
+and 1.06 % level dropout are not near-perfect.
+
+The high-register window (168-188 s) also improved across all four draws:
+
+| 168-188 s metric | without notch (n=4) | current checkout (n=4) |
+|---|---|---|
+| dropout 700-1100 Hz | 2.54 % [1.50, 4.19] | 0.00 % [0.00, 0.00] |
+| inharmonic excess 700-1100 Hz | 45.1 % [41.9, 50.5] | 11.6 % [9.1, 14.0] |
+| spectral centroid | 1343 Hz [1317, 1381] | 1525 Hz [1409, 1654] |
+| mel-centroid cosine to reference | 0.9998 [0.9997, 0.9999] | 0.9976 [0.9966, 0.9989] |
+
+All four current mixes measured −1.5 dBTP with zero clipped samples. Their
+integrated loudness ranged from −19.2 to −17.8 LUFS; vocal stems ranged from
+−21.8 to −19.7 LUFS and −4.3 to −3.8 dBTP, also with zero clipped samples.
+The original track measured −15.3 LUFS, +0.2 dBTP, and one clipped sample.
+The mix and vocal trim amounts are reported separately:
+`mix_sample_peak_trim_db`, `mix_trim_db`, and `vocal_trim_db`.
+
+The notch is a measured output-side reduction, not a harmonic generator.
+The model is trained almost entirely below this register (AV-41e4 records
+0.48 % of target training frames at or above 550 Hz and less than 0.01 % at
+or above 700 Hz, while the source reaches 1031 Hz). The filter can remove
+off-harmonic energy; it cannot synthesize the missing target-voice
+harmonics.
+
+The correction strength was not increased: on one matched full-song draw,
+raising `max_cut_db` from 12 to 24 dB changed inharmonic excess from 11.9 %
+to 11.7 % and left dropout at 1.2 %. In the 20 s high-register A/B, the
+12/24 dB variants had cosine 1.00 and no measurable feature difference.
+This is one draw, not an n=4 strength comparison; it does not justify
+changing the 12 dB / 3-pass default.
+
+## What the current earshot diagnostics say
+
+Earshot A/B on draw 1's 168-188 s vocal window found the processed and
+no-notch stems nearly identical (cosine 0.98; current stem about 1.5 dB
+quieter). The corresponding mix A/B was also nearly identical (cosine
+0.987; current mix about 0.8 dB quieter). Realness estimates were p_real
+0.956 for the vocal and 0.944 for the mix, with no window leaning
+synthesized; the calibration is weak and does not prove absence of a
+synthetic layer. The quality tags were weak and similar for both arms.
+Nobody has listened to a render. AV-4aqs remains open for that human check.
 
 ## What this means for the two arms that failed
 
-**The verdicts on the two arms are about the MODEL, not about the served
-output.** Both were judged on RAW fork renders, where the chain's dropout
-fill is absent. Re-read against the served path:
-
-- The brightness arm raised the raw model's 8-12 kHz from -28.3 to -19.8 dB
-  and the raw 700-1100 Hz dropout from 35.5 % to 49.2 %. The served path
-  already delivers -22.5 dB and 4.36 %. So the brightness arm's brightness
-  gain is roughly what the served chain ALREADY restores, and its dropout
-  cost is real.
-- The cycle arm's raw 700-1100 Hz dropout was 74.1 % at matched epochs.
-  Nothing about that changes.
-
-Both remain rejected, and the reason is now sharper: **the served path
-already does the high-register repair the model was being asked to learn.**
-A model that is worse on raw renders is also worse on the served path - the
-chain repairs a level collapse, not a spectral residue.
-
-**The user therefore hears a much better result than the raw-render numbers
-imply.** The served experience is 4.36 % dropout at 700-1100 Hz, not 35 %.
-
-## The open question that survives
-
-The inharmonic excess at 700-1100 Hz (40.69 %) and the tonal-peak excess
-(+10.6 dB) are NOT repaired by the served chain, and they are what the
-user hears as the ring. That is a spectral residue problem, not a level
-problem.
-
-A measured output-side lever now exists for it (below). The open question
-is whether it is what the user wants, and that is a listening question,
-not a measurement.
-
-`docs/av9hc5-level-vs-timbre.md` establishes why a plain make-up gain
-cannot fix it: the gain moves the level and leaves the spectrum untouched.
-
-**But it CAN be fixed output-side, and the fix is now IN THE PIPELINE.**
-`docs/inharmonic-notch-lever.md` documents it: a notch keyed on the
-SOURCE's f0 that cuts the off-harmonic energy down to the source's own
-off-harmonic fraction. `src/auto_voice/inference/fork_inharmonic_notch.py`,
-wired into `_correct_fork_output` as stage 7.
-
-Measured on all four served draws, full song:
-
-| band | inharmonic excess (served → lever) |
-|---|---|
-| 250-400 Hz | 2.44 % → 2.44 % |
-| 400-550 Hz | 31.09 % → 31.06 % |
-| 550-700 Hz | 61.38 % → 0.53 % |
-| **700-1100 Hz** | **40.69 % → 11.27 %** |
-
-with level dropout at 700-1100 Hz going 4.36 % → 1.18 %, the low register
-untouched, identity unchanged at 1.000, and every stem at exactly -1.50
-dBTP with zero clipped samples.
-
-**And end-to-end through the live service, n=4 both ways** — four
-independent conversions of the same original Hero track with the stage and
-four without:
-
-| band | inharmonic excess WITHOUT (n=4) | WITH (n=4) |
-|---|---|---|
-| 250-400 Hz | 2.44 % [2.02, 3.08] | 1.84 % [1.62, 2.14] |
-| 400-550 Hz | 31.09 % [30.31, 31.79] | 30.36 % [29.32, 31.35] |
-| 550-700 Hz | 61.38 % [58.19, 65.06] | −0.80 % [−3.29, 0.65] |
-| **700-1100 Hz** | **40.69 % [37.14, 45.54]** | **11.17 % [9.62, 13.45]** |
-| level dropout 700-1100 Hz | 4.36 % | **1.83 % [0.94, 2.36]** |
-
-Every draw improves and the distributions do not overlap: the worst draw
-with the stage is 23.7 points below the best draw without it.
-
-**The registry still serves G_389 unchanged** - the model is the same, only
-the output chain changed. And nobody has listened to it: the ear is the
-only thing that can say whether the remaining 11 % is audible.
+The brightness and cycle arms were judged on raw fork renders, before the
+output-correction chain. The current served n=4 results do not change their
+raw verdicts. The brightness arm's 700-1100 Hz dropout was 49.2 %; the cycle
+arm's was 74.1 %. Both are worse than the current served mean of 1.06 %.
+Neither raw candidate is a reason to replace the current checkpoint.
 
 ## Files
 
-- jobs `9c2b253b`, `b1d3295a`, `adfde124`, `50696749` — the four fresh
-  conversions
-- `scratchpad/v6eval/served_n4_scores.json` — the n=4 scoring report
-- `scratchpad/v6eval/served_fresh_scores.json` — the first (n=1) report
-- `scratchpad/v6eval/submit_served.py` — the submission script
-- `scratchpad/v6eval/av9hc5_probe.py` + `scratchpad/v6eval/av9hc5_scores.json`
-  — the level-vs-timbre probe
-- `scratchpad/v6eval/highreg_source.wav` — the 168-188 s high-register
-  validation window (334 usable frames in the 700-1100 Hz band)
-- `scratchpad/v6eval/highreg_n4_scores.json` — the n=4 high-register window
-  report
-- `scratchpad/v6eval/cut_highreg.py` — cuts the window from each draw
+- No-notch draws: jobs `9c2b253b`, `b1d3295a`, `adfde124`, `50696749`.
+- Current-checkout draws: jobs `126dec49`, `1beb9645`, `2b82af9c`,
+  `ba27fa99`.
+- `scratchpad/v6eval/current_truepeak_guard_n4_aggregate.json` — full-song
+  current vs no-notch n=4 scoring.
+- `scratchpad/v6eval/current_truepeak_guard_highreg_n4.json` — 168-188 s
+  current vs no-notch n=4 scoring.
+- `scratchpad/v6eval/current_truepeak_guard_n4_scores.json` — per-draw rows.
+- `scratchpad/v6eval/highreg_current_guard_n4/` — current 168-188 s crops.
 
-## Note on what was NOT done this session
+## Listening and next requirement
 
-Nobody listened to any render. Every number here is a measurement, not a
-judgement, and the user judges by ear. Four served conversions exist and
-any of them is a natural candidate for a listening pass, e.g.:
+No human has listened to any current render. The output-side notch leaves
+11.15 % full-song high-register inharmonic excess and 1.06 % dropout; the
+user's goal of near-perfect conversion is therefore not met. The remaining
+architectural path requires real high-register recordings of the target
+voice or a changed content/decoder model. The existing target corpus has
+insufficient coverage above 700 Hz; a synthetic pitch-shifted copy is not
+evidence of authentic target-voice articulation.
 
-    data/conversions/9c2b253b-3c71-4859-9044-9678d990daaf/mix.wav
+Use a current-checkout listening candidate, for example:
 
-The remaining defect - the inharmonic excess at 700-1100 Hz and the tonal
-residue that makes the "double ringing" - is a SPECTRAL problem that the
-correction chain does not touch. That, not the training corpus, is where the
-next effort belongs.
+    data/conversions/126dec49-bc8f-48c3-8d5d-a23a5de671b8/mix.wav

@@ -1016,7 +1016,7 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                   </div>
 
                   <div>
-                    <label className="text-sm text-gray-400">Vocal true-peak ceiling</label>
+                    <label className="text-sm text-gray-400">Vocal and mix true-peak ceiling</label>
                     <input
                       type="range"
                       min={-3}
@@ -1034,7 +1034,7 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       <span data-testid="forkHqVocalTruePeakDbfs-value">{dragValue('forkHqVocalTruePeakDbfs', appSettings.fork_hq_vocal_true_peak_dbfs ?? -1.0).toFixed(1)} dBTP</span>
                       <span>0.0</span>
                     </div>
-                    <p className="mt-1 text-xs text-gray-500">True-peak ceiling (4× oversampled) for the converted vocal stem. −1.0 is the streaming target; a sample peak of 0.00 dBFS measures +0.16 dBTP once inter-sample peaks are reconstructed and the stem clips.</p>
+                    <p className="mt-1 text-xs text-gray-500">Shared true-peak ceiling (4× oversampled) for the converted vocal stem and final stereo mix. −1.0 dBTP is the streaming target; set toward 0 to permit a louder delivery.</p>
                   </div>
 
                   <div className="space-y-2">
@@ -1082,6 +1082,19 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       HF de-tonalize
                     </label>
                     <p className="mt-0.5 text-xs text-gray-500">Cuts the decoder's high-band tonal ringing ("double buzzing around the voice"). Measured: 10.1 % tonal frames → 8.6 %.</p>
+
+                    <label className="flex items-center gap-2 text-sm text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={appSettings.fork_hq_inharmonic_notch ?? true}
+                        onChange={e => updateAppSettingsMutation.mutate({ fork_hq_inharmonic_notch: e.target.checked })}
+                        data-testid="forkHqInharmonicNotch-checkbox"
+                      />
+                      High-register inharmonic notch
+                    </label>
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      Reduces off-harmonic residue above 550 Hz. Measured on Hero: 40.69% → 11.17% at 700–1100 Hz (n=4). Turn off to A/B the original output.
+                    </p>
 
                     <label className="flex items-center gap-2 text-sm text-gray-400">
                       <input

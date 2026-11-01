@@ -1,8 +1,8 @@
-# The inharmonic notch: an output-side fix for the high-register timbre defect (2026-10-31)
+# The inharmonic notch: an output-side reduction for high-register residue (2026-11-01)
 
-**This is the lever that closes the defect `docs/av9hc5-level-vs-timbre.md`
-proved was spectral.** Measured on all four served draws (n=4) of the
-original Hero track, on the FULL song.
+**The source-referenced notch reduces high-register residue but does not close it.**
+The October 31 offline n=4 results below are historical; fresh current-checkout
+n=4 results are included later.
 
 ## The result
 
@@ -22,8 +22,9 @@ Every draw improves by 25-33 points; none regresses. Level dropout after
 the lever: 1.18 / 1.18 / 1.42 / 0.94 %.
 
 Other metrics: spectral centroid 966 → 1147 Hz, 3-8 kHz -15.6 → -13.6 dB,
-8-12 kHz -22.5 → -21.1 dB, 12-16 kHz -23.2 → -21.4 dB, identity vector
-unchanged at 1.000.
+8-12 kHz -22.5 → -21.1 dB, 12-16 kHz -23.2 → -21.4 dB. The score's
+mel-centroid cosine to its reference group was 1.000; this is not a
+speaker-identity measure.
 
 **The low register is untouched** (250-400 Hz identical to two decimals,
 400-550 Hz within 0.03 points) even though the lever runs over the whole
@@ -141,8 +142,8 @@ with a pure off-harmonic tone at 1.5*f0: the off-harmonic energy falls
 3.7x (660.9 -> 177.6) and the harmonic energy RISES by 53 % (1225 ->
 1879), leaving the fraction at 1.26x the source's instead of 1.0x.
 
-This is why the real-data result is 11.27 % and not 0 %. The stage removes
-the residue; it cannot put back the harmonics.
+The offline October 31 result was 11.27 %; the fresh current-checkout n=4
+result is 11.15 %. The stage removes residue but cannot restore harmonics.
 
 ## The headroom problem, and why the ceiling is a TRUE peak
 
@@ -165,17 +166,17 @@ samples at full scale, and a dynamic limiter would change the level
 envelope of the entire vocal to remove them. Same reasoning as the repo's
 existing `fork_hq_vocal_true_peak_dbfs`.
 
+In the current API path, the standalone vocal ceiling runs before summing;
+the sample-peak and post-sum true-peak trims then scale the returned stems.
+The metadata keeps `vocal_trim_db`, `mix_sample_peak_trim_db`, and
+`mix_trim_db` separate. Final mixes measured -1.5 dBTP; final vocal stems
+measured -3.8 to -4.3 dBTP.
+
 ## What it does NOT fix
 
-The lever removes the RESIDUE - energy sitting between the harmonics. It
-cannot put back the harmonics themselves. The 11 % that remains is the
-decoder's high register still not matching the source's harmonic
-structure, and a notch can only remove, never synthesise.
-
-**And nobody has listened to it.** Every number here is a measurement. The
-user judges by ear, and the ear is the only thing that can say whether the
-remaining residue is audible as the "double ringing" they complained
-about.
+The lever removes some energy between harmonics. It cannot synthesize the
+missing target-voice harmonics, and the fresh n=4 result still has 11.15 %
+full-song high-register inharmonic excess.
 
 ## Shipped: the stage is in the pipeline
 
@@ -196,82 +197,81 @@ side by side on all four draws:
 
 So the numbers in this document describe the shipped code.
 
-## End-to-end proof through the live service
+## Current-checkout end-to-end result (2026-11-01)
 
-**n=4 both ways.** Four independent end-to-end conversions of the same
-original Hero track through the live service, with the stage and without,
-scored on their paired vocal stems. Same profile, same preset; the only
-variable is whether the stage ran.
+Four fresh full-song draws used the current checkout, notch enabled and the
+shared vocal/mix true-peak guard. Baseline figures are the four no-notch
+draws from 2026-10-31; all vocals are aligned to the same Hero source.
 
-| band | inharmonic excess WITHOUT (n=4) | WITH (n=4) |
+| band | no-notch baseline (n=4) | current checkout (n=4) |
 |---|---|---|
-| 250-400 Hz | 2.44 % [2.02, 3.08] | **1.84 % [1.62, 2.14]** |
-| 400-550 Hz | 31.09 % [30.31, 31.79] | **30.36 % [29.32, 31.35]** |
-| 550-700 Hz | 61.38 % [58.19, 65.06] | **−0.80 % [−3.29, 0.65]** |
-| **700-1100 Hz** | **40.69 % [37.14, 45.54]** | **11.17 % [9.62, 13.45]** |
+| 250-400 Hz inharmonic excess | 2.44 % [2.02, 3.08] | 2.23 % [1.81, 2.83] |
+| 400-550 Hz inharmonic excess | 31.09 % [30.31, 31.79] | 31.04 % [29.92, 31.93] |
+| 550-700 Hz inharmonic excess | 61.38 % [58.19, 65.06] | −0.32 % [−1.25, 1.09]† |
+| **700-1100 Hz inharmonic excess** | **40.69 % [37.14, 45.54]** | **11.15 % [9.61, 12.61]** |
+| 700-1100 Hz level dropout | 4.36 % [3.07, 6.37] | **1.06 % [0.71, 1.18]** |
 
-| band | level dropout WITHOUT | WITH |
+† Only 30 source frames; this band is anecdotal. At 700-1100 Hz the
+current distribution does not overlap the baseline; every draw improves,
+but 11.15 % residual is not near-perfect.
+
+The 168-188 s high-register window also improves:
+
+| 168-188 s metric | no-notch baseline (n=4) | current checkout (n=4) |
 |---|---|---|
-| 250-400 Hz | 0.32 % | 0.33 % [0.22, 0.48] |
-| 400-550 Hz | 0.39 % | 0.39 % [0.00, 0.79] |
-| 700-1100 Hz | 4.36 % | **1.83 % [0.94, 2.36]** |
+| 700-1100 Hz dropout | 2.54 % [1.50, 4.19] | 0.00 % [0.00, 0.00] |
+| 700-1100 Hz inharmonic excess | 45.1 % [41.9, 50.5] | 11.6 % [9.1, 14.0] |
+| spectral centroid | 1343 Hz [1317, 1381] | 1525 Hz [1409, 1654] |
+| mel-centroid cosine to no-notch reference | 0.9998 [0.9997, 0.9999] | 0.9976 [0.9966, 0.9989] |
 
-Spectral centroid 966 → 1086 Hz, 8-12 kHz -22.5 → -21.6 dB, identity
-1.000 both ways.
+Every current mix measured -1.5 dBTP with zero clipped samples. Vocal
+stems measured -3.8 to -4.3 dBTP, also without clipping.
 
-Per draw, inharmonic excess at 700-1100 Hz:
-**without** 40.73 / 45.54 / 39.34 / 37.14 →
-**with** 9.62 / 11.88 / 13.45 / 9.73.
+| draw | mix LUFS | mix dBTP | sample-peak trim | post-sum TP trim | vocal LUFS | vocal dBTP |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | -17.8 | -1.5 | -0.98 dB | -1.06 dB | -19.7 | -3.8 |
+| 2 | -19.2 | -1.5 | -1.50 dB | -1.06 dB | -21.8 | -4.0 |
+| 3 | -19.1 | -1.5 | -1.83 dB | -1.06 dB | -21.5 | -4.3 |
+| 4 | -18.1 | -1.5 | -1.10 dB | -1.27 dB | -20.0 | -4.3 |
 
-**Every draw improves, and the two distributions do not overlap**: the
-worst draw with the stage (13.45 %) is 23.7 points below the best draw
-without it (37.14 %). That is a 72.5 % reduction in the defect.
+The source measured -15.3 LUFS, +0.2 dBTP and one clipped sample. The
+true-peak ceiling is a safety limit, not a loudness-match target.
 
-The 550-700 Hz band reads −0.80 % with the stage, i.e. marginally cleaner
-than the source. That band has only 30 usable source frames, so
-`score_multi` itself warns it is anecdote, not measurement; read it as
-"the residue there is gone", not as a precise number. The band with
-enough frames to measure is 700-1100 Hz, 424 frames.
+## Diagnostics and remaining limit
 
-Jobs without the stage: `9c2b253b`, `b1d3295a`, `adfde124`, `50696749`.
-Jobs with it: `fb8e5c1e`, `be420860`, `9403b4a5`, `3c58e282`. The service
-log for each reads:
+Earshot A/B on draw 1 found current and baseline high-register vocals nearly
+identical (cosine 0.98; current about 1.5 dB quieter); the corresponding
+mixes were also nearly identical (cosine 0.987; current about 0.8 dB
+quieter). Realness estimates were p_real 0.956 for the vocal and 0.944 for
+the mix, but the calibration is weak. These are machine diagnostics, not a
+human listening result.
 
-    fork inharmonic notch: 2.4 dB mean cut on 6% of scored frames
-    (3 passes, f0 >= 550 Hz); make-up gain on 2% of frames, max 12.0 dB
+A one-draw full-song cap check (same pre-notch input) changed inharmonic
+excess from 11.9 % at a 12 dB cap to 11.7 % at 24 dB, with dropout 1.2 %
+in both outputs. The 20 s high-register A/B had cosine 1.00 and no
+measurable feature change. This is not an n=4 strength test and does not
+justify raising the 12 dB / 3-pass default.
 
-and the stage runs BEFORE the dropout fill, as intended.
+A separate one-draw `f0_lo=400 Hz` probe reduced the 400-550 Hz inharmonic
+metric from 30.9 % to 5.4 % and dropout from 0.6 % to 0.0 %, while leaving
+700-1100 Hz at 11.9 % and 250-400 Hz at 3.1 %. This is not an n=4
+validation and is not shipped; the production gate remains 550 Hz.
 
-## Files
+The target profile's corpus has 0.48 % of frames at or above 550 Hz and
+less than 0.01 % at or above 700 Hz (AV-41e4), while the source reaches
+1031 Hz. The notch only attenuates off-harmonic energy; the architecture
+needs genuine target-voice high-register training data or a different
+content/decoder model to restore missing harmonics.
 
-- `src/auto_voice/inference/fork_inharmonic_notch.py` - the shipped stage
-- `scratchpad/v6eval/inharm_notch2.py` - the offline lever it was
-  developed in (metric-exact f0, exact correction, iterated, true-peak
-  limited)
-- `scratchpad/v6eval/notch/full/scores_lever3.json` - the n=4 full-song
-  report for the shipped settings
-- `scratchpad/v6eval/notch/full/lever3_draw{1..4}.wav` - the levered stems
-- `scratchpad/v6eval/notch/exact/sweep.json` - the parameter sweep
-- `scratchpad/v6eval/pipeline_equiv/scores.json` - the offline-vs-production
-  equivalence report
-- `scratchpad/v6eval/e2e_notch_scores.json` - the end-to-end report
-- `scratchpad/v6eval/served_n4_notch/scores.json` - the n=4 served
-  with-vs-without report
-- `scratchpad/v6eval/score_served_n4_notch.py` - the n=4 scorer
-- `scratchpad/v6eval/full_song_check.py` - the full-song runner
+Current-checkout jobs: `126dec49`, `1beb9645`, `2b82af9c`, `ba27fa99`.
+No-notch baseline jobs: `9c2b253b`, `b1d3295a`, `adfde124`, `50696749`.
+Reports:
 
-## Status
+- `scratchpad/v6eval/current_truepeak_guard_n4_aggregate.json`
+- `scratchpad/v6eval/current_truepeak_guard_highreg_n4.json`
+- `scratchpad/v6eval/current_truepeak_guard_n4_scores.json`
+- `scratchpad/v6eval/notch/cut24/full_draw1_matched_scores.json`
+- `scratchpad/v6eval/notch/f0lo400/full_draw1_scores.json`
 
-**Shipped and measured at n=4, but NOT LISTENED TO.** The stage is in the
-served pipeline. The registry still serves G_389 unchanged - the model is
-the same, only the output chain changed.
-
-Nobody has listened to a render with the stage in it. Every number here is
-a measurement. The 11 % of residual inharmonic excess it leaves is still
-there, and only an ear can say whether the remaining residue is audible as
-the "double ringing" the user complained about.
-
-The listening candidates are the served mixes:
-`data/conversions/fb8e5c1e-4bf9-4d93-bd9b-51651949fabd/mix.wav` (with the
-stage) against `data/conversions/9c2b253b-3c71-4859-9044-9678d990daaf/mix.wav`
-(without).
+**Status: the notch is shipped, but the user's no-residual / no-artifact
+goal is not met and no human has listened.** AV-4aqs remains open.

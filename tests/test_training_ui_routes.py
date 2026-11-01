@@ -398,6 +398,32 @@ def test_app_settings_null_unsets_a_bool_key(training_ui_app, training_ui_client
     assert "fork_hq_hf_detonalize" not in pipeline._explicit_settings
 
 
+
+def test_inharmonic_notch_is_reachable_and_unsettable(
+        training_ui_app, training_ui_client):
+    """The shipped spectral correction must be A/B-able without editing code."""
+    pipeline = training_ui_app.singing_conversion_pipeline
+
+    disabled = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_inharmonic_notch": False},
+    )
+    assert disabled.status_code == 200
+    assert pipeline._explicit_settings["fork_hq_inharmonic_notch"] is False
+    assert pipeline._chain_config()["fork_hq_inharmonic_notch"] is False
+    assert disabled.get_json()["fork_hq_inharmonic_notch"] is False
+    assert (
+        training_ui_client.get("/api/v1/settings/app").get_json()
+        ["fork_hq_inharmonic_notch"] is False
+    )
+
+    unset = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_inharmonic_notch": None},
+    )
+    assert unset.status_code == 200
+    assert "fork_hq_inharmonic_notch" not in pipeline._explicit_settings
+
 def test_app_settings_null_unset_leaves_other_keys_alone(training_ui_app, training_ui_client):
     """An unset must not clear the rest of the store."""
     update = training_ui_client.patch(

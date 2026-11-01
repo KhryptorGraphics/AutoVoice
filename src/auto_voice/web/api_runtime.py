@@ -387,6 +387,8 @@ def get_app_settings():
                            bool(cfg.get('fork_hq_hf_detonalize', True)))
         payload.setdefault('fork_hq_extend_bandwidth',
                            bool(cfg.get('fork_hq_extend_bandwidth', True)))
+        payload.setdefault('fork_hq_inharmonic_notch',
+                           bool(cfg.get('fork_hq_inharmonic_notch', True)))
         payload.setdefault('fork_hq_air_cap_db',
                            float(cfg.get('fork_hq_air_cap_db', 12.0)))
         payload.setdefault('fork_hq_vocal_true_peak_dbfs',
@@ -551,6 +553,7 @@ def update_app_settings():
                          'fork_hq_subharmonic_suppress',
                          'fork_hq_voice_polish',
                          'fork_hq_hf_detonalize',
+                         'fork_hq_inharmonic_notch',
                          'fork_hq_extend_bandwidth'):
             if bool_key in data and bool_key not in unset_keys:
                 if not isinstance(data[bool_key], bool):
