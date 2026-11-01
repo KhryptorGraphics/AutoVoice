@@ -166,11 +166,13 @@ samples at full scale, and a dynamic limiter would change the level
 envelope of the entire vocal to remove them. Same reasoning as the repo's
 existing `fork_hq_vocal_true_peak_dbfs`.
 
-In the current API path, the standalone vocal ceiling runs before summing;
-the sample-peak and post-sum true-peak trims then scale the returned stems.
-The metadata keeps `vocal_trim_db`, `mix_sample_peak_trim_db`, and
-`mix_trim_db` separate. Final mixes measured -1.5 dBTP; final vocal stems
-measured -3.8 to -4.3 dBTP.
+In the current API path, the vocal is limited before summing; the mix's
+sample-peak and post-sum true-peak trims then scale the returned stems.
+`vocal_true_peak_dbfs` and `mix_true_peak_dbfs` report the measured exported
+signals; the separate `*_ceiling_dbfs` fields report the configured targets.
+`vocal_pre_mix_trim_db` is the vocal-only trim; `vocal_trim_db` is the
+cumulative vocal trim including the post-sum gains. Final mixes measured
+-1.5 dBTP; vocal stems measured -3.8 to -4.3 dBTP.
 
 ## What it does NOT fix
 

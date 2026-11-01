@@ -2746,9 +2746,9 @@ class SingingConversionPipeline:
             'fork_hq_vocal_true_peak_dbfs', -1.0)
         if vocal_true_peak_dbfs is not None:
             vocal_true_peak_dbfs = float(vocal_true_peak_dbfs)
+        from ..audio.true_peak import limit_true_peak, true_peak_dbfs
         vocal_gain_db = 0.0
         if vocal_true_peak_dbfs is not None and vocal_true_peak_dbfs <= 0.0:
-            from ..audio.true_peak import limit_true_peak
             conv, vocal_gain_db = limit_true_peak(
                 conv, target_dbfs=vocal_true_peak_dbfs)
             if vocal_gain_db:
@@ -2783,8 +2783,13 @@ class SingingConversionPipeline:
                 "Fork HQ: trimmed mixed output by %.2f dB to hold true peak "
                 "at %.1f dBTP", mix_trim_db, vocal_true_peak_dbfs)
             mix_gain = 10.0 ** (mix_trim_db / 20.0)
-        # Apply both post-sum constant trims to the stems too, keeping the
-        # exported vocal/instrumental sum aligned with the delivered mix.
+        mix_sample_peak_trim_db = (
+            20.0 * np.log10(sample_peak_gain)
+            if sample_peak_gain < 1.0 else 0.0
+        )
+        # Exported stems are mono. Their sum reconstructs the mix's mono
+        # downmix: stereo instrumental side remains in the delivered mix.
+        # Apply both post-sum constant trims to every exported component.
         stem_mix_gain = sample_peak_gain * mix_gain
         if stem_mix_gain != 1.0:
             conv = conv * stem_mix_gain
@@ -2793,6 +2798,9 @@ class SingingConversionPipeline:
                 side = side * stem_mix_gain
             if backing_only is not None:
                 backing_only = backing_only * stem_mix_gain
+        vocal_total_trim_db = (
+            vocal_gain_db + mix_sample_peak_trim_db + mix_trim_db
+        )
 
         duration = n / sr
         f0_original = self._extract_pitch(voc_mono, sr)
@@ -2808,12 +2816,10 @@ class SingingConversionPipeline:
                 'lead_level_gain_db': getattr(self, '_last_lead_gain_db', 0.0),
                 'instrumental_volume': instrumental_volume,
                 'processing_time': time.time() - start_time,
-                'mix_true_peak_dbfs': vocal_true_peak_dbfs,
+                'mix_true_peak_dbfs': true_peak_dbfs(mixed),
+                'mix_true_peak_ceiling_dbfs': vocal_true_peak_dbfs,
                 'mix_trim_db': mix_trim_db,
-                'mix_sample_peak_trim_db': (
-                    20.0 * np.log10(sample_peak_gain)
-                    if sample_peak_gain < 1.0 else 0.0
-                ),
+                'mix_sample_peak_trim_db': mix_sample_peak_trim_db,
                 'target_profile_id': target_profile_id,
                 'active_model_type': 'svc_fork',
                 'speaker_id': target_profile_id,
@@ -2839,8 +2845,10 @@ class SingingConversionPipeline:
         if multi_speaker_info:
             result['metadata']['multi_speaker_info'] = multi_speaker_info
 
-        result['metadata']['vocal_true_peak_dbfs'] = vocal_true_peak_dbfs
-        result['metadata']['vocal_trim_db'] = vocal_gain_db
+        result['metadata']['vocal_true_peak_dbfs'] = true_peak_dbfs(conv)
+        result['metadata']['vocal_true_peak_ceiling_dbfs'] = vocal_true_peak_dbfs
+        result['metadata']['vocal_pre_mix_trim_db'] = vocal_gain_db
+        result['metadata']['vocal_trim_db'] = vocal_total_trim_db
 
         if return_stems:
             result['stems'] = {

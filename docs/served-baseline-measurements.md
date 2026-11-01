@@ -171,8 +171,11 @@ All four current mixes measured −1.5 dBTP with zero clipped samples. Their
 integrated loudness ranged from −19.2 to −17.8 LUFS; vocal stems ranged from
 −21.8 to −19.7 LUFS and −4.3 to −3.8 dBTP, also with zero clipped samples.
 The original track measured −15.3 LUFS, +0.2 dBTP, and one clipped sample.
-The mix and vocal trim amounts are reported separately:
-`mix_sample_peak_trim_db`, `mix_trim_db`, and `vocal_trim_db`.
+The metadata distinguishes measured `vocal_true_peak_dbfs` and
+`mix_true_peak_dbfs` from the configured `*_ceiling_dbfs` fields. It reports
+the vocal-only trim as `vocal_pre_mix_trim_db`, cumulative vocal attenuation
+as `vocal_trim_db`, and the sample-peak and mix true-peak trims separately as
+`mix_sample_peak_trim_db` and `mix_trim_db`.
 
 The notch is a measured output-side reduction, not a harmonic generator.
 The model is trained almost entirely below this register (AV-41e4 records

@@ -49,13 +49,16 @@ def test_fork_hq_lane_is_stereo_and_mirrors_contract(tmp_path, monkeypatch):
               "f0_contour", "f0_original", "f0_sample_rate", "stems"):
         assert k in res, f"missing result key {k}"
     mx = res["mixed_audio"]
+    assert isinstance(mx, np.ndarray) and mx.ndim == 2 and mx.shape[1] == 2
+    assert res["sample_rate"] == p._output_sample_rate
     # Both sample peak and reconstructed inter-sample peak are constrained.
     from auto_voice.audio.true_peak import true_peak_dbfs
     assert float(np.abs(mx).max()) <= 0.95 + 1e-6
     assert true_peak_dbfs(mx) <= -1.0 + 0.01
-    assert res["metadata"]["mix_true_peak_dbfs"] == -1.0
-    assert res["metadata"]["mix_trim_db"] <= 0.0
     md = res["metadata"]
+    assert md["mix_true_peak_dbfs"] == pytest.approx(true_peak_dbfs(mx), abs=0.01)
+    assert md["mix_true_peak_ceiling_dbfs"] == -1.0
+    assert md["mix_trim_db"] <= 0.0
     for k in ("active_model_type", "speaker_id", "quality_post_processing",
               "target_profile_id", "vocal_volume", "instrumental_volume"):
         assert k in md
@@ -93,7 +96,7 @@ def test_fork_hq_mix_is_true_peak_limited_after_summing(tmp_path, monkeypatch):
     class FakeSep:
         def separate(self, audio, sr, mono=True):
             vocals = np.stack([wave * 1.0, wave * 1.0])
-            instrumental = np.stack([wave * 0.6, wave * 0.6])
+            instrumental = np.stack([wave * 0.6, wave * 0.4])
             return {"vocals": vocals, "instrumental": instrumental}
 
     class FakeMM:
@@ -109,14 +112,28 @@ def test_fork_hq_mix_is_true_peak_limited_after_summing(tmp_path, monkeypatch):
     result = p._convert_song_fork_hq(
         str(song), "prof-1", 1.0, 1.0, True, "balanced", 0.0)
     mixed = result["mixed_audio"]
-
     assert float(np.abs(mixed).max()) <= 0.95 + 1e-6
     assert true_peak_dbfs(mixed) <= -1.0 + 0.01
     assert result["metadata"]["vocal_trim_db"] < 0.0
+    assert result["metadata"]["vocal_trim_db"] == pytest.approx(
+        result["metadata"]["vocal_pre_mix_trim_db"]
+        + result["metadata"]["mix_sample_peak_trim_db"]
+        + result["metadata"]["mix_trim_db"],
+        abs=0.01,
+    )
     assert result["metadata"]["mix_trim_db"] < 0.0
     assert result["metadata"]["mix_sample_peak_trim_db"] < 0.0
+    assert result["metadata"]["vocal_true_peak_dbfs"] == pytest.approx(
+        true_peak_dbfs(result["stems"]["vocals"]), abs=0.01)
+    assert result["metadata"]["mix_true_peak_dbfs"] == pytest.approx(
+        true_peak_dbfs(mixed), abs=0.01)
+    assert result["metadata"]["vocal_true_peak_ceiling_dbfs"] == -1.0
+    assert result["metadata"]["mix_true_peak_ceiling_dbfs"] == -1.0
+    # Mono stem sum reconstructs the downmix; stereo instrumental side remains
+    # represented in the two-channel delivery, not in the mono stems.
+    assert not np.allclose(mixed[:, 0], mixed[:, 1])
     assert np.allclose(
-        mixed[:, 0],
+        mixed.mean(axis=1),
         result["stems"]["vocals"] + result["stems"]["instrumental"],
         atol=1e-6,
     )
