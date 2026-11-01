@@ -168,7 +168,7 @@ existing `fork_hq_vocal_true_peak_dbfs`.
 ## What it does NOT fix
 
 The lever removes the RESIDUE - energy sitting between the harmonics. It
-cannot put back the harmonics themselves. The 11-15 % that remains is the
+cannot put back the harmonics themselves. The 11 % that remains is the
 decoder's high register still not matching the source's harmonic
 structure, and a notch can only remove, never synthesise.
 
@@ -198,33 +198,49 @@ So the numbers in this document describe the shipped code.
 
 ## End-to-end proof through the live service
 
-Two conversions of the same original Hero track through the live service,
-same profile, same preset, one variable: whether the stage ran. The first
-was submitted before the service was restarted onto the new code, so it
-carried the old chain.
+**n=4 both ways.** Four independent end-to-end conversions of the same
+original Hero track through the live service, with the stage and without,
+scored on their paired vocal stems. Same profile, same preset; the only
+variable is whether the stage ran.
 
-| | without the stage | with the stage |
+| band | inharmonic excess WITHOUT (n=4) | WITH (n=4) |
 |---|---|---|
-| inharmonic excess 700-1100 Hz | 40.3 % | **9.6 %** |
-| inharmonic excess 550-700 Hz | 59.8 % | **−0.5 %** |
-| inharmonic excess 250-400 Hz | 2.0 % | 1.6 % |
-| level dropout 700-1100 Hz | 5.90 % | **1.18 %** |
-| identity | 1.0000 | 1.0000 |
+| 250-400 Hz | 2.44 % [2.02, 3.08] | **1.84 % [1.62, 2.14]** |
+| 400-550 Hz | 31.09 % [30.31, 31.79] | **30.36 % [29.32, 31.35]** |
+| 550-700 Hz | 61.38 % [58.19, 65.06] | **−0.80 % [−3.29, 0.65]** |
+| **700-1100 Hz** | **40.69 % [37.14, 45.54]** | **11.17 % [9.62, 13.45]** |
 
-Jobs `c0b293f1` (without) and `fb8e5c1e` (with, on the fixed code). The
-service log for the second reads:
+| band | level dropout WITHOUT | WITH |
+|---|---|---|
+| 250-400 Hz | 0.32 % | 0.33 % [0.22, 0.48] |
+| 400-550 Hz | 0.39 % | 0.39 % [0.00, 0.79] |
+| 700-1100 Hz | 4.36 % | **1.83 % [0.94, 2.36]** |
+
+Spectral centroid 966 → 1086 Hz, 8-12 kHz -22.5 → -21.6 dB, identity
+1.000 both ways.
+
+Per draw, inharmonic excess at 700-1100 Hz:
+**without** 40.73 / 45.54 / 39.34 / 37.14 →
+**with** 9.62 / 11.88 / 13.45 / 9.73.
+
+**Every draw improves, and the two distributions do not overlap**: the
+worst draw with the stage (13.45 %) is 23.7 points below the best draw
+without it (37.14 %). That is a 72.5 % reduction in the defect.
+
+The 550-700 Hz band reads −0.80 % with the stage, i.e. marginally cleaner
+than the source. That band has only 30 usable source frames, so
+`score_multi` itself warns it is anecdote, not measurement; read it as
+"the residue there is gone", not as a precise number. The band with
+enough frames to measure is 700-1100 Hz, 424 frames.
+
+Jobs without the stage: `9c2b253b`, `b1d3295a`, `adfde124`, `50696749`.
+Jobs with it: `fb8e5c1e`, `be420860`, `9403b4a5`, `3c58e282`. The service
+log for each reads:
 
     fork inharmonic notch: 2.4 dB mean cut on 6% of scored frames
     (3 passes, f0 >= 550 Hz); make-up gain on 2% of frames, max 12.0 dB
 
 and the stage runs BEFORE the dropout fill, as intended.
-
-**A note on the 550-700 Hz band reading −0.5 %.** That band has only 30
-usable source frames, so `score_multi` itself warns it is anecdote, not
-measurement. A negative value means the render is marginally cleaner than
-the source there, which is within the noise of 30 frames. The band with
-enough frames to measure (700-1100 Hz, 424 frames) is the one to read:
-40.3 % → 9.6 %.
 
 ## Files
 
@@ -239,20 +255,23 @@ enough frames to measure (700-1100 Hz, 424 frames) is the one to read:
 - `scratchpad/v6eval/pipeline_equiv/scores.json` - the offline-vs-production
   equivalence report
 - `scratchpad/v6eval/e2e_notch_scores.json` - the end-to-end report
+- `scratchpad/v6eval/served_n4_notch/scores.json` - the n=4 served
+  with-vs-without report
+- `scratchpad/v6eval/score_served_n4_notch.py` - the n=4 scorer
 - `scratchpad/v6eval/full_song_check.py` - the full-song runner
 
 ## Status
 
-**Shipped and measured, but NOT LISTENED TO.** The stage is in the served
-pipeline. The registry still serves G_389 unchanged - the model is the
-same, only the output chain changed.
+**Shipped and measured at n=4, but NOT LISTENED TO.** The stage is in the
+served pipeline. The registry still serves G_389 unchanged - the model is
+the same, only the output chain changed.
 
 Nobody has listened to a render with the stage in it. Every number here is
-a measurement. The 11-15 % of residual inharmonic excess it leaves is
-still there, and only an ear can say whether the remaining residue is
-audible as the "double ringing" the user complained about.
+a measurement. The 11 % of residual inharmonic excess it leaves is still
+there, and only an ear can say whether the remaining residue is audible as
+the "double ringing" the user complained about.
 
 The listening candidates are the served mixes:
-`data/conversions/fb8e5c1e-4bf9-4d93-bd9b-51651949fabd/mix.wav` (with
-the stage) against `data/conversions/c0b293f1-3765-4941-a9b0-caff0efebbda/mix.wav`
+`data/conversions/fb8e5c1e-4bf9-4d93-bd9b-51651949fabd/mix.wav` (with the
+stage) against `data/conversions/9c2b253b-3c71-4859-9044-9678d990daaf/mix.wav`
 (without).

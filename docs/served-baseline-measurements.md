@@ -207,16 +207,24 @@ with level dropout at 700-1100 Hz going 4.36 % → 1.18 %, the low register
 untouched, identity unchanged at 1.000, and every stem at exactly -1.50
 dBTP with zero clipped samples.
 
-**And end-to-end through the live service**, two conversions of the same
-original Hero track with the stage on and off (jobs `fb8e5c1e` and
-`c0b293f1`): inharmonic excess at 700-1100 Hz 40.3 % → 9.6 %, at
-550-700 Hz 59.8 % → −0.5 % (30 source frames, anecdote), at
-250-400 Hz 2.0 % → 1.6 %, level dropout 5.90 % → 1.18 %, identity 1.0000
-both ways.
+**And end-to-end through the live service, n=4 both ways** — four
+independent conversions of the same original Hero track with the stage and
+four without:
+
+| band | inharmonic excess WITHOUT (n=4) | WITH (n=4) |
+|---|---|---|
+| 250-400 Hz | 2.44 % [2.02, 3.08] | 1.84 % [1.62, 2.14] |
+| 400-550 Hz | 31.09 % [30.31, 31.79] | 30.36 % [29.32, 31.35] |
+| 550-700 Hz | 61.38 % [58.19, 65.06] | −0.80 % [−3.29, 0.65] |
+| **700-1100 Hz** | **40.69 % [37.14, 45.54]** | **11.17 % [9.62, 13.45]** |
+| level dropout 700-1100 Hz | 4.36 % | **1.83 % [0.94, 2.36]** |
+
+Every draw improves and the distributions do not overlap: the worst draw
+with the stage is 23.7 points below the best draw without it.
 
 **The registry still serves G_389 unchanged** - the model is the same, only
 the output chain changed. And nobody has listened to it: the ear is the
-only thing that can say whether the remaining 11-15 % is audible.
+only thing that can say whether the remaining 11 % is audible.
 
 ## Files
 
