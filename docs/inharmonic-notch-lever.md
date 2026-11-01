@@ -64,7 +64,7 @@ writing the attenuated off-harmonic energy as `off * g`:
 `g < 1` is the cut; `g > 1` would be a boost and is never wanted. `g` is
 bounded below by `10**(-max_cut_db/20)` and never exceeds 1.
 
-## Three things that had to be right, each found by measurement
+## Four things that had to be right, each found by measurement
 
 **1. The f0 must be the METRIC's f0.** The metric gates frames with
 `voiced_flag`, `voiced_prob > 0.8`, a level gate of `esn > -25` dB, AND an
@@ -93,7 +93,7 @@ the notch also fired on low frames, and the 250-400 Hz band went from
 the singer's breath noise in the low register. With the gate at 550 Hz the
 low band is bit-identical.
 
-## The collateral is structurally zero
+## The collateral is structurally zero — but only after a fix
 
 Run on the SOURCE itself (source as both key and input), the notch changes
 the source's 550-6000 Hz band energy by **-0.00 dB** and its harmonic
@@ -101,8 +101,48 @@ energy by **-0.00 dB**. That is not tuning: the correction is referenced to
 the source's own off-harmonic fraction, so a clean source is already at its
 target and the required gain is exactly 1.
 
+**This was only true of the NOTCH. The make-up gain had a bug that the
+offline measurement could not see**, because the offline lever and the
+production stage share the bug and therefore agreed with each other.
+
+`np.convolve` zero-pads, so smoothing a gain array of all ones with a
+9-tap Hannian kernel returns values as low as **0.625** in the first and
+last four frames — a 4 dB ATTENUATION of audio that needed no change at
+all. The gain exists to restore level the notch took; a value below 1.0
+means it is removing level that was never lost.
+
+The fix is edge padding: `np.pad(gain, pad, mode="edge")` before the
+convolution, so an all-ones gain array stays exactly all ones.
+
+Two things are worth stating plainly:
+
+- **The real-data measurements were unaffected.** Re-measured on all four
+  served draws after the fix, every metric is identical to within 0.005
+  (inharm_700-1100 11.272 -> 11.272, inharm_550-700 0.533 -> 0.531,
+  inharm_250-400 2.440 -> 2.435, dropout_700-1100 1.179 -> 1.179). The
+  dilution only affected the first and last ~90 ms of the song, where
+  there is no scored high-register frame.
+- **A synthetic test found it, and a synthetic test is what it took.**
+  The real-data measurement could not see it, because the defect is
+  invisible in an aggregate and the offline/production agreement test
+  compared two implementations that shared the defect.
+
 This is the benchmark `detonalize_hf` set for itself ("clean-source
-residual"), and the notch meets it exactly.
+residual"), and the stage now meets it exactly — for the notch AND for the
+gain.
+
+## What the correction cannot reach
+
+The correction targets the source's off-harmonic fraction, but the
+achievable floor is set by the STFT round trip: attenuating off-harmonic
+bins redistributes some energy into the harmonic bins, so the result lands
+ABOVE the target rather than exactly on it. Measured on a synthetic case
+with a pure off-harmonic tone at 1.5*f0: the off-harmonic energy falls
+3.7x (660.9 -> 177.6) and the harmonic energy RISES by 53 % (1225 ->
+1879), leaving the fraction at 1.26x the source's instead of 1.0x.
+
+This is why the real-data result is 11.27 % and not 0 %. The stage removes
+the residue; it cannot put back the harmonics.
 
 ## The headroom problem, and why the ceiling is a TRUE peak
 
