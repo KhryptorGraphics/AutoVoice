@@ -174,6 +174,37 @@ Env vars:
 | `SVCFORK_SPA_CYCLE_WEIGHT` | 0 (off) | weight of the cycle term |
 | `SVCFORK_SPA_F0_CEILING_HZ` | 1100 | upper bound for the shifted contour |
 | `SVCFORK_SPA_MAX_SAMPLES` | 4 | cycle samples per step (memory bound) |
+| `SVCFORK_SPA_ENCODER_DEVICE` | cpu | device the frozen ContentVec encoder runs on |
+
+### Two deviations from the paper, and why
+
+**MSE instead of SSIM.** The paper takes `1 - SSIM(mel(original), mel(cycled))`.
+This uses MSE. The paper's own table has its MSE variant beating SSIM on the
+metric that matters here - the large-range-gap target, 3.60 vs 3.56 (a
+difference WITHIN the stated CI, so "no SSIM advantage there" rather than
+"MSE wins"). SSIM also costs more per step and adds a second hyperparameter
+to a run whose weight was already the delicate part.
+
+**The encoder device is measured, not chosen.** A canary epoch took **157 s**
+with the encoder on CPU and **171 s** with it on CUDA; without the cycle term
+an epoch is 29 s. The GPU encoder is SLOWER here because this box's GPU
+memory IS system RAM, so the encoder competes with the two extra generator
+forwards for it. The encoder therefore stays on CPU by default.
+
+### The gradient really crosses the bridge
+
+The first generator pass reaches the loss ONLY through the ContentVec
+re-extraction. If that bridge carried no gradient, the cycle loss would be a
+function of the second pass alone and the F0 shift would be pointless.
+Measured on a real batch: the input content's own gradient norm is **13.25**
+and **111 `enc_p` parameters** carry gradient (norm sum 1752), alongside all
+**305 decoder parameters** (norm sum 1222). The shift therefore reaches the
+loss.
+
+The cycle term was also observed DECREASING during training (raw MSE
+5.13 -> 1.97 over 199 steps) while the mel term stayed flat (27.37 ->
+27.70): the objective is optimised without trading away mel fidelity, which
+is what a mis-scaled weight would do.
 
 The sample cap is not cosmetic: with Brandy's corpus nearly every sample has
 positive headroom, so an uncapped cycle path would run two extra generator

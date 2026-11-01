@@ -55,17 +55,18 @@ import sys, os, glob
 import numpy as np, librosa, soundfile as sf, pyworld as pw
 
 SR, CHUNK_S, MIN_RMS = 44100, 10.0, 1e-3
-# Pitch shifts, in semitones, applied to each chunk. The v6 brightness-only
-# corpus used NO shifts (SHIFTS=[]), and that run FAILED its bar - the HF lift
-# raised the inharmonic residue that fills a dropout, doubling the high-register
-# dropout (docs/v6-brightness-only-finetune.md). The v5 run that DID shift
-# failed the same way. So this is configurable rather than fixed: an empty
-# list means "plain copies only", and the shift set is a parameter of the
-# experiment, not a constant of the builder.
+# Pitch shifts, in semitones, applied to each chunk. The DEFAULT is no
+# shifts, and that is a measured decision, not a preference: the v6
+# brightness-only corpus (no shifts) and the v5 corpus (+4..+20 st) FAILED the
+# same pre-registered bar in the same way - the HF brightness lift raises the
+# inharmonic residue that fills a dropout, so the high register collapses
+# (docs/v6-brightness-only-finetune.md). Shift-freeness was not what killed
+# v6; the lift was. Shifting is therefore opt-in, and the shift set is a
+# parameter of an experiment rather than a constant of the builder.
 #
 # Override without editing the file:
-#   SHIFTS_OVERRIDE=""    python build_corpus_v4.py <out_dir>   # no shifts
 #   SHIFTS_OVERRIDE="4,8" python build_corpus_v4.py <out_dir>   # two shifts
+#   SHIFTS_OVERRIDE=""    python build_corpus_v4.py <out_dir>   # no shifts
 def _shifts_from_env(default):
     raw = os.environ.get("SHIFTS_OVERRIDE")
     if raw is None:
@@ -76,7 +77,7 @@ def _shifts_from_env(default):
     return [int(part) for part in raw.split(",") if part.strip()]
 
 
-SHIFTS = _shifts_from_env([4, 8, 12, 16, 20])
+SHIFTS = _shifts_from_env([])
 FORMANT_EXP, FORMANT_CAP = 0.0, 1.0   # see note below
 # energy per band relative to 300-3000 Hz, measured on the source stems
 TARGET = {(8000, 12000): -16.2, (12000, 16000): -20.5}
