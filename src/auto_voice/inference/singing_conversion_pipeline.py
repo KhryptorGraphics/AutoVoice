@@ -2019,20 +2019,14 @@ class SingingConversionPipeline:
             converted = extend_bandwidth(converted, sr)
 
         # 7. High-register inharmonic residue: the "double ringing".
-        #    n=4 offline threshold testing on the Hero stems reduced
-        #    400-550 Hz inharmonic excess from 31.1 % to 5.4 % at f0_lo=400,
-        #    without resolved changes in the 250-400 or 700-1100 Hz bands.
-        #    The 550-700 Hz band has only 30 scored frames and is anecdotal.
-        #    Four served draws at the 400 Hz default reduced full-song
-        #    700-1100 Hz excess from 11.2 % to 7.7 % (p=0.029); dropout
-        #    changed from 1.1 % to 0.8 % with overlapping ranges. This is
-        #    progress, not resolution. The 550-700 Hz estimate is anecdotal.
-        #
-        #    BEFORE the dropout fill: the fill has to be the last thing that
-        #    touches level, and this stage's make-up gain touches level. A
-        #    uniform level lift does not change the inharmonic FRACTION the
-        #    measurement is based on, so the fill running after it does not
-        #    undo the correction.
+        #    Four served draws at f0_lo=400, with this stage before fill,
+        #    reduced full-song 700-1100 Hz excess from 11.2 % to 7.7 %.
+        #    The 400-550 Hz excess fell from 31.0 % to 15.9 %, while the
+        #    550-700 Hz estimate became negative (-5.3 %, only 30 frames).
+        #    Moving this stage after fill did not transfer the offline
+        #    5.4 % result: the served n=4 was 26.7 % in 400-550 Hz, so keep
+        #    the measured pre-fill order. Neither configuration solves the
+        #    remaining high-register residue.
         if bool(cfg.get('fork_hq_inharmonic_notch', True)):
             from .fork_inharmonic_notch import suppress_inharmonic
             converted = suppress_inharmonic(
@@ -2044,12 +2038,8 @@ class SingingConversionPipeline:
                 f0_lo=float(cfg.get('fork_hq_inharmonic_notch_f0_lo', 400.0)),
                 passes=int(cfg.get('fork_hq_inharmonic_notch_passes', 3)))
 
-        # 8. Short dropout fill, LAST. The slow contour follower in
-        #    _match_lead_level runs before this chain, so anything it lifts is
-        #    partially undone by stages 1-4 (the hum gate attenuates, the polish
-        #    and de-tonalize reshape). Measured on Hero: the fill mid-chain
-        #    leaves 2.64 % of sung frames >6 dB under the source, the same fill
-        #    last leaves 1.23 %. It has to be the final thing that touches level.
+        # 8. Apply the final level/dropout fill after the spectral stages;
+        #    later stages would otherwise undo its corrected contour.
         converted = self._fill_lead_dropouts(converted, source, sr)
         return converted
 

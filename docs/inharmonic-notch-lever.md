@@ -180,24 +180,28 @@ The lever removes some energy between harmonics. It cannot synthesize the
 missing target-voice harmonics, and the fresh n=4 result still has 11.15 %
 full-song high-register inharmonic excess.
 
-## Shipped: the stage is in the pipeline
+## Production stage at the former 550 Hz gate
 
-`src/auto_voice/inference/fork_inharmonic_notch.py`, wired into
-`_correct_fork_output` as stage 7, before the dropout fill. Default on;
-`fork_hq_inharmonic_notch: false` turns it off, and the cut depth, make-up
-gain, f0 threshold and pass count are all config keys.
+The notch remains in `_correct_fork_output` BEFORE the dropout fill. The
+table below compares the offline stage to the then-current production order,
+at `f0_lo=550`; the current pipeline gate is 400 Hz and its served results
+are reported below. The stage is enabled by default and
+`fork_hq_inharmonic_notch: false` disables it.
 
-**The production stage reproduces the offline lever exactly.** Measured
-side by side on all four draws:
+**The historical production stage reproduced the offline lever exactly.**
+Measured side by side on all four draws:
 
-| metric | offline lever | production stage | delta |
+| metric | offline lever | historical production stage | delta |
 |---|---|---|---|
 | inharm_700-1100 | 11.272 | 11.272 | -0.000 |
 | inharm_550-700 | 0.533 | 0.531 | -0.002 |
 | inharm_250-400 | 2.440 | 2.435 | -0.005 |
 | dropout_700-1100 | 1.179 | 1.179 | +0.000 |
 
-So the numbers in this document describe the shipped code.
+The helper function's direct-call default remains `f0_lo=550` for existing
+offline callers. The production pipeline passes its own explicit configured
+threshold, whose fallback is 400 Hz; the two defaults are intentionally
+different.
 
 ## Current-checkout result before f0 gate retune (f0_lo=550 Hz)
 
@@ -266,15 +270,43 @@ measurements showed no material change in LUFS, harmonic share, or noise
 floor.
 
 Four sequential current-checkout conversions then used the 400 Hz pipeline
-default. Compared with four prior 550 Hz-gate renders, 400-550 Hz inharmonic
-excess fell from 31.0 % [29.9, 31.9] to 15.9 % [14.8, 16.8] (disjoint
-ranges; rank-sum p=0.029). At 700-1100 Hz it fell from 11.2 % [9.6, 12.6]
-to 7.7 % [6.5, 9.2] (also disjoint; p=0.029); dropout changed from 1.1 %
-[0.7, 1.2] to 0.8 % [0.7, 0.9], with overlapping ranges. The 550-700 Hz
-estimate is still based on only 30 frames and shifts from -0.3 % to -5.3 %,
-so collateral there is unresolved. The 400 Hz default is justified for this
-tested profile/source, not as a general or artifact-free result. Mixes were
--1.5 dBTP with zero clipped samples; no human has listened.
+default with the notch BEFORE the dropout fill. Compared with four prior
+550 Hz-gate renders, 400-550 Hz inharmonic excess fell from 31.0 % [29.9,
+31.9] to 15.9 % [14.8, 16.8]. At 700-1100 Hz it fell from 11.2 % [9.6,
+12.6] to 7.7 % [6.5, 9.2]. The 550-700 Hz estimate has only 30 frames and
+shifted from -0.3 % to -5.3 %; it is not a stable estimate, but the negative
+values were consistent across the four draws and warrant caution.
+
+The 4v4 offline `f0_lo=400` result and the served pre-fill result differ:
+5.4 % [5.1, 5.7] versus 15.9 % [14.8, 16.8] at 400-550 Hz. The offline
+probe applied the notch to finished vocal WAVs with `hero_src.wav` as the
+source key; the served stage acts on an intermediate decoder output with the
+pipeline's `hum_key`, before subsequent output stages. The cause of the gap
+is not established.
+
+The attempted production reorder (dropout fill, then notch) was tested with
+four fresh served conversions and rejected. At f0_lo=400, 400-550 Hz
+inharmonic excess was 26.7 % [25.3, 27.8] versus 15.9 % [14.8, 16.8] in the
+retained pre-fill order. 700-1100 Hz was 8.4 % [7.1, 10.4] versus 7.7 %
+[6.5, 9.2]. The 550-700 Hz estimate remained anecdotal (-4.6 % [-8.7, 1.8],
+30 frames). Current production code therefore keeps the notch before fill.
+
+A second application to already-corrected finished stems gave 2.3 % / 4.1 %
+at 400-550 / 700-1100 Hz, but worsened the thin 550-700 estimate to -6.0 %
+and changed centroid/HF balance. This is repeated correction, not evidence
+that moving the pipeline stage after fill works; it is not selected.
+
+The helper API's default remains `f0_lo=550` for direct callers; the
+production pipeline explicitly supplies its own 400 Hz fallback. These
+defaults are intentionally different.
+
+Historical gate jobs: `126dec49`, `1beb9645`, `2b82af9c`, `ba27fa99`.
+Retained 400 Hz pre-fill jobs: `720b64b0`, `cafcddda`, `bd7731b2`,
+`3fde1c2d`. Rejected after-fill jobs: `7a929665`, `5153aa77`, `505d9406`,
+`9bc1d2cc`. Reports:
+`scratchpad/v6eval/post_fill_order_n4/scores_n4.json`,
+`scratchpad/v6eval/post_fill_notch_f0lo400/scores_final.json`, and
+`scratchpad/v6eval/post_fill_notch_f0lo400/from550_scores.json`.
 
 The historical G_389 training audit (AV-41e4) covered 10 singing files and
 168,079 voiced frames: 0.48 % were at or above 550 Hz and less than 0.01 %

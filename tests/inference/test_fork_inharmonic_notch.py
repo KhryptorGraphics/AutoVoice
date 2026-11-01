@@ -187,12 +187,38 @@ class TestLowRegister:
 
 
 class TestVoicedFrameGate:
-    def test_gate_rejects_unvoiced_frames(self):
-        """The metric gate accepts voiced frames with the expected harmonic ratio."""
+    def test_gate_accepts_confident_voiced_frames(self):
+        """The scorer gate accepts a clear voiced frame."""
         source = _harmonic_tone(300.0)
         f0, good = source_voiced_frames(source, SR)
         assert good.any()
         assert np.isfinite(f0[good]).all()
+
+    def test_gate_rejects_octave_error(self):
+        """Reject frames where the 2*f0 peak exceeds the candidate f0 peak."""
+        from unittest.mock import patch
+
+        import librosa
+
+        t = np.arange(SR) / SR
+        source = (
+            0.1 * np.sin(2 * np.pi * 300.0 * t)
+            + np.sin(2 * np.pi * 600.0 * t)
+        ).astype(np.float32)
+        n_frames = librosa.stft(
+            source, n_fft=2048, hop_length=512
+        ).shape[1]
+        f0 = np.full(n_frames, 300.0)
+        voiced = np.ones(n_frames, dtype=bool)
+        voiced_prob = np.full(n_frames, 0.99)
+
+        with patch(
+            "librosa.pyin",
+            return_value=(f0, voiced, voiced_prob),
+        ):
+            _, good = source_voiced_frames(source, SR)
+
+        assert not good.any()
 
     def test_gate_rejects_silence(self):
         source = np.zeros(SR, dtype=np.float32)

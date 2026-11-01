@@ -221,13 +221,11 @@ Neither raw candidate is a reason to replace the current checkpoint.
   current vs no-notch n=4 scoring.
 - `scratchpad/v6eval/current_truepeak_guard_n4_scores.json` — per-draw rows.
 - `scratchpad/v6eval/highreg_current_guard_n4/` — current 168-188 s crops.
-## Follow-up: production f0 gate lowered to 400 Hz
+## Current production order: notch before fill; f0_lo=400
 
-Four sequential end-to-end conversions with the pipeline's default gate at
-400 Hz were scored against the four prior 550 Hz-gate conversions, using the
-same Hero source and scorer. The full-song 700-1100 Hz comparison remains
-the critical outcome; this change targets the previously untreated 400-550
-Hz band.
+Four sequential end-to-end conversions used the retained pipeline order:
+the notch runs BEFORE dropout fill. These are the current served results,
+compared with four 550 Hz-gate renders on the same Hero source.
 
 | band / metric | f0_lo=550 Hz (n=4) | f0_lo=400 Hz (n=4) |
 |---|---|---|
@@ -247,12 +245,28 @@ anecdotal; it shifts from −0.3 % to −5.3 %, so possible collateral there is
 unresolved. Broad Earshot measures show no material change in loudness,
 harmonic share, or noise floor.
 
-All four new mixes measured −1.5 dBTP with zero clipped samples; mix LUFS
-was −18.1 to −17.8. Vocals measured −20.0 to −19.7 LUFS and −4.6 to
-−3.5 dBTP, with zero clipped samples. This validates the narrower 400 Hz
-default for this profile and source, but does not establish near-perfect
-conversion: 7.7 % high-band inharmonic excess and 0.8 % dropout remain, and
-no human has listened.
+All four current-order mixes measured −1.5 dBTP with zero clipped samples;
+mix LUFS was −18.1 to −17.8. Vocals measured −20.0 to −19.7 LUFS and
+−4.6 to −3.5 dBTP, with zero clipped samples.
+
+The paired offline 5.4 % result does not reproduce the served pipeline:
+the offline notch was applied to finished vocal WAVs using `hero_src.wav`
+as the source key; the service applies it to an intermediate decoder output
+using `hum_key`, before later output stages. The cause of this discrepancy
+is not established.
+
+An attempted after-fill production order was tested with four fresh served
+conversions and rejected. Its 400-550 Hz inharmonic excess was 26.7 %
+[25.3, 27.8] versus 15.9 % [14.8, 16.8] in the retained order; 700-1100 Hz
+was 8.4 % [7.1, 10.4] versus 7.7 % [6.5, 9.2]. The 550-700 Hz figure is
+anecdotal at 30 source frames (-4.6 % [-8.7, 1.8]). Production therefore
+remains notch-before-fill.
+
+The direct helper API keeps its historical `f0_lo=550` default; the
+pipeline passes its own `f0_lo=400` fallback explicitly.
+
+Rejected after-fill jobs: `7a929665`, `5153aa77`, `505d9406`, `9bc1d2cc`.
+Report: `scratchpad/v6eval/post_fill_order_n4/scores_n4.json`.
 
 The four f0_lo=400 jobs are `720b64b0`, `cafcddda`, `bd7731b2`, and
 `3fde1c2d`; comparison report:
@@ -266,29 +280,22 @@ clips contributed none. This is authentic material, but too sparse to
 establish high-register articulation coverage. The v6 fine-tune candidate
 trained on 78 samples and still failed its high-register acceptance gate.
 
-## Earlier current-checkout results (550 Hz gate)
+## Listening and current-order status
 
-The preceding n=4 values in this document and the original listening
-candidate refer to the former 550 Hz default. Use the four jobs above for
-listening to the current 400 Hz default:
+The current f0_lo=400 served n=4 leaves 7.7 % full-song high-register
+inharmonic excess and 0.8 % dropout; the goal of near-perfect conversion
+remains unmet. This includes no human listening result and does not prove
+the absence of ringing, artifacting, or distortion. Genuine high-register
+target-voice coverage or a changed content/decoder model remains necessary.
 
-    data/conversions/720b64b0-4681-4f6a-bfa7-9992660bc0a1/mix.wav
+The local sample audit found only 71 scorer-valid frames above 700 Hz across
+seven singing-labeled profile recordings (~0.82 s); 64 short local-video
+clips contributed none. The v6 fine-tune candidate used 78 samples and
+still failed the high-register acceptance gate. Synthetic pitch-shifted
+copies are not evidence of authentic target-voice articulation.
 
-AV-4aqs remains open for human listening. Neither the 400 Hz change nor
-these objective measures prove the absence of ringing, artifacting, or
-distortion.
-
-## Listening and next requirement
-
-No human has listened to any current render. The f0_lo=400 path leaves
-7.7 % full-song high-register inharmonic excess and 0.8 % dropout; the
-user's goal of near-perfect conversion is therefore not met. The remaining
-architectural path requires substantially more authentic high-register
-recordings of the target voice or a changed content/decoder model. The
-existing local target corpus has only 71 scorer-valid frames above 700 Hz
-across seven singing-labeled profile recordings (~0.82 s); a synthetic
-pitch-shifted copy is not evidence of authentic target-voice articulation.
-
-Use the current-checkout listening candidate from the 400 Hz gate:
+Use this retained-order listening candidate:
 
     data/conversions/720b64b0-4681-4f6a-bfa7-9992660bc0a1/mix.wav
+
+AV-4aqs remains open for human listening.
