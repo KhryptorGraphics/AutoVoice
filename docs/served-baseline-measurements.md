@@ -126,3 +126,17 @@ problem, and it is the remaining work.
 - `scratchpad/v6eval/submit_served.py` — the submission script
 - `scratchpad/v6eval/highreg_source.wav` — the 168-188 s high-register
   validation window (334 usable frames in the 700-1100 Hz band)
+
+## Note on what was NOT done this session
+
+Nobody listened to any render. Every number here is a measurement, not a
+judgement, and the user judges by ear. The served conversion
+`9c2b253b-3c71-4859-9044-9678d990daaf` exists and is the natural candidate
+for a listening pass:
+
+    data/conversions/9c2b253b-3c71-4859-9044-9678d990daaf/mix.wav
+
+The remaining defect - the inharmonic excess at 700-1100 Hz and the tonal
+residue that makes the "double ringing" - is a SPECTRAL problem that the
+correction chain does not touch. That, not the training corpus, is where the
+next effort belongs.
