@@ -128,32 +128,85 @@ existing `fork_hq_vocal_true_peak_dbfs`.
 ## What it does NOT fix
 
 The lever removes the RESIDUE - energy sitting between the harmonics. It
-cannot put back the harmonics themselves. The 11.27 % that remains is the
-decoder's high register still not matching the source's harmonic structure,
-and a notch can only remove, never synthesise.
+cannot put back the harmonics themselves. The 11-15 % that remains is the
+decoder's high register still not matching the source's harmonic
+structure, and a notch can only remove, never synthesise.
 
 **And nobody has listened to it.** Every number here is a measurement. The
-user judges by ear, and the ear is the only thing that can say whether a
-11 % excess of narrowband residue is audible as the "double ringing" they
-complained about.
+user judges by ear, and the ear is the only thing that can say whether the
+remaining residue is audible as the "double ringing" they complained
+about.
+
+## Shipped: the stage is in the pipeline
+
+`src/auto_voice/inference/fork_inharmonic_notch.py`, wired into
+`_correct_fork_output` as stage 7, before the dropout fill. Default on;
+`fork_hq_inharmonic_notch: false` turns it off, and the cut depth, make-up
+gain, f0 threshold and pass count are all config keys.
+
+**The production stage reproduces the offline lever exactly.** Measured
+side by side on all four draws:
+
+| metric | offline lever | production stage | delta |
+|---|---|---|---|
+| inharm_700-1100 | 11.272 | 11.272 | -0.000 |
+| inharm_550-700 | 0.533 | 0.531 | -0.002 |
+| inharm_250-400 | 2.440 | 2.435 | -0.005 |
+| dropout_700-1100 | 1.179 | 1.179 | +0.000 |
+
+So the numbers in this document describe the shipped code.
+
+## End-to-end proof through the live service
+
+Two conversions of the same original Hero track through the live service,
+same profile, same preset, one variable: whether the stage ran. The first
+was submitted before the service was restarted onto the new code, so it
+carried the old chain.
+
+| | without the stage | with the stage |
+|---|---|---|
+| inharmonic excess 700-1100 Hz | 40.32 % | **14.64 %** |
+| inharmonic excess 550-700 Hz | 59.8 % | **0.3 %** |
+| inharmonic excess 250-400 Hz | 2.02 % | 2.00 % |
+| level dropout 700-1100 Hz | 5.90 % | **1.18 %** |
+| spectral centroid | 965 Hz | 1127 Hz |
+| identity | 1.0000 | 1.0000 |
+
+Jobs `c0b293f1` (without) and `baa9153b` (with). The service log for the
+second reads:
+
+    fork inharmonic notch: 2.4 dB mean cut on 6% of scored frames
+    (3 passes, f0 >= 550 Hz); make-up gain on 2% of frames, max 12.0 dB
+
+and the stage runs BEFORE the dropout fill, as intended.
 
 ## Files
 
-- `scratchpad/v6eval/inharm_notch2.py` - the lever (metric-exact f0, exact
-  correction, iterated, true-peak limited)
+- `src/auto_voice/inference/fork_inharmonic_notch.py` - the shipped stage
+- `scratchpad/v6eval/inharm_notch2.py` - the offline lever it was
+  developed in (metric-exact f0, exact correction, iterated, true-peak
+  limited)
 - `scratchpad/v6eval/notch/full/scores_lever3.json` - the n=4 full-song
   report for the shipped settings
 - `scratchpad/v6eval/notch/full/lever3_draw{1..4}.wav` - the levered stems
 - `scratchpad/v6eval/notch/exact/sweep.json` - the parameter sweep
+- `scratchpad/v6eval/pipeline_equiv/scores.json` - the offline-vs-production
+  equivalence report
+- `scratchpad/v6eval/e2e_notch_scores.json` - the end-to-end report
 - `scratchpad/v6eval/full_song_check.py` - the full-song runner
 
 ## Status
 
-**NOT PROMOTED.** The lever is measured, not shipped. It is not in the
-served pipeline, the registry still serves G_389 unchanged, and nobody has
-listened to it. The 11.27 % of residual inharmonic excess it leaves is
+**Shipped and measured, but NOT LISTENED TO.** The stage is in the served
+pipeline. The registry still serves G_389 unchanged - the model is the
+same, only the output chain changed.
+
+Nobody has listened to a render with the stage in it. Every number here is
+a measurement. The 11-15 % of residual inharmonic excess it leaves is
 still there, and only an ear can say whether the remaining residue is
 audible as the "double ringing" the user complained about.
 
-The candidate for a listening pass is
-`scratchpad/v6eval/notch/full/lever3_draw1.wav` (vocal stem, 258 s).
+The listening candidates are the served mixes:
+`data/conversions/baa9153b-a7ca-4d81-b99c-f59dc0aed724/mix.wav` (with
+the stage) against `data/conversions/c0b293f1-3765-4941-a9b0-caff0efebbda/mix.wav`
+(without).

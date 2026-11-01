@@ -188,10 +188,13 @@ not a measurement.
 `docs/av9hc5-level-vs-timbre.md` establishes why a plain make-up gain
 cannot fix it: the gain moves the level and leaves the spectrum untouched.
 
-**But it CAN be fixed output-side, and there is now a measured lever.**
+**But it CAN be fixed output-side, and the fix is now IN THE PIPELINE.**
 `docs/inharmonic-notch-lever.md` documents it: a notch keyed on the
 SOURCE's f0 that cuts the off-harmonic energy down to the source's own
-off-harmonic fraction. Measured on all four served draws, full song:
+off-harmonic fraction. `src/auto_voice/inference/fork_inharmonic_notch.py`,
+wired into `_correct_fork_output` as stage 7.
+
+Measured on all four served draws, full song:
 
 | band | inharmonic excess (served → lever) |
 |---|---|
@@ -204,9 +207,15 @@ with level dropout at 700-1100 Hz going 4.36 % → 1.18 %, the low register
 untouched, identity unchanged at 1.000, and every stem at exactly -1.50
 dBTP with zero clipped samples.
 
-**It is NOT promoted.** It is measured, not shipped; the registry still
-serves G_389 unchanged; and nobody has listened to it. The ear is the only
-thing that can say whether the remaining 11 % is audible.
+**And end-to-end through the live service**, two conversions of the same
+original Hero track with the stage on and off (jobs `baa9153b` and
+`c0b293f1`): inharmonic excess at 700-1100 Hz 40.32 % → 14.64 %, at
+550-700 Hz 59.8 % → 0.3 %, at 250-400 Hz 2.02 % → 2.00 % (untouched),
+level dropout 5.90 % → 1.18 %, identity 1.0000 both ways.
+
+**The registry still serves G_389 unchanged** - the model is the same, only
+the output chain changed. And nobody has listened to it: the ear is the
+only thing that can say whether the remaining 11-15 % is audible.
 
 ## Files
 
