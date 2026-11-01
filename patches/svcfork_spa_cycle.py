@@ -360,6 +360,9 @@ def _apply_to_source(train_path: Path, source: str, module_path: Path,
     os.chmod(module_path, 0o644)
     try:
         _atomic_write(train_path, patched)
+        # mkstemp creates 0600; the fork's files are 0644, and a
+        # world-unreadable train.py breaks any other user running the env.
+        os.chmod(train_path, 0o644)
     except BaseException:
         module_path.unlink(missing_ok=True)
         raise
