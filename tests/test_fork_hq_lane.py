@@ -60,9 +60,19 @@ def test_fork_hq_lane_is_stereo_and_mirrors_contract(tmp_path, monkeypatch):
     assert md["mix_true_peak_ceiling_dbfs"] == -1.0
     assert md["mix_trim_db"] <= 0.0
     for k in ("active_model_type", "speaker_id", "quality_post_processing",
-              "target_profile_id", "vocal_volume", "instrumental_volume"):
+              "target_profile_id", "vocal_volume", "instrumental_volume",
+              "librosa_version", "numpy_version", "scipy_version",
+              "inharmonic_notch_enabled", "inharmonic_notch_f0_lo_hz"):
         assert k in md
     assert md["active_model_type"] == "svc_fork"
+    import librosa
+    import scipy
+    assert md["librosa_version"] == librosa.__version__
+    assert md["numpy_version"] == np.__version__
+    assert md["scipy_version"] == scipy.__version__
+    assert md["inharmonic_notch_enabled"] is True
+    assert md["inharmonic_notch_f0_lo_hz"] == 400.0
+
 
 def test_fork_hq_mix_is_true_peak_limited_after_summing(tmp_path, monkeypatch):
     """The instrumental + converted vocal can overshoot between samples.

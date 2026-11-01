@@ -37,6 +37,7 @@ import sys
 
 import librosa
 import numpy as np
+import scipy
 import soundfile as sf
 from math import comb
 
@@ -260,7 +261,11 @@ def score(groups, source_wav, reference=None, inharm_frames=INHARM_FRAMES,
         ident = [float(np.dot(ref_c, c)) for c in cents[label]]
         models[label]["metrics"]["identity"] = _agg(ident)
 
-    report = {"source": source_wav, "reference": reference,
+    report = {"environment": {"python": sys.version.split()[0],
+                              "librosa": librosa.__version__,
+                              "numpy": np.__version__,
+                              "scipy": scipy.__version__},
+              "source": source_wav, "reference": reference,
               "f0_bands": [_band_key(b) for b in F0_BANDS],
               "band_frames": {_band_key(b): int(len(src["band_idx"][b])) for b in F0_BANDS},
               "identity_floor": IDENTITY_FLOOR,

@@ -11,11 +11,13 @@ the numbers by more than any model change measured in this session.
 crepe f0, no auto-predict f0, noise_scale 0.4, db_thresh -100, pad 1.0 s,
 chunk 30 s, max chunk 40 s, uv contract ON, crepe periodicity threshold 0.3.
 
-## THE KEY MEASUREMENT: raw model vs served path
+## Historical raw-model vs served comparison (librosa 0.10.2)
 
-Both measured on the same source (`scratchpad/dropout/hero_src.wav`, the Hero
-vocal stem, 424 usable frames in the 700-1100 Hz band) with
-`experiments/score_multi.py`.
+This saved analysis used the `autovoice-thor` scorer environment
+(Python 3.12 / librosa 0.10.2 / SciPy 1.17.1) and found 424 usable source
+frames in the 700-1100 Hz band. The pinned production scorer now uses
+librosa 0.11.0 and finds 509 frames there; do not compare these historical
+percentages directly with the runtime-matched table below.
 
 **Both columns are n=4.** The raw column is 4 raw fork renders of G_389; the
 served column is 4 independent end-to-end conversions of the same original
@@ -221,62 +223,44 @@ Neither raw candidate is a reason to replace the current checkpoint.
   current vs no-notch n=4 scoring.
 - `scratchpad/v6eval/current_truepeak_guard_n4_scores.json` — per-draw rows.
 - `scratchpad/v6eval/highreg_current_guard_n4/` — current 168-188 s crops.
-## Current production order: notch before fill; f0_lo=400
+## Runtime-matched served comparison (librosa 0.11.0)
 
-Four sequential end-to-end conversions used the retained pipeline order:
-the notch runs BEFORE dropout fill. These are the current served results,
-compared with four 550 Hz-gate renders on the same Hero source.
+Four sequential end-to-end conversions with the retained notch-before-fill
+order used `f0_lo=400`; four served 550 Hz-gate renders are the control.
+Scores use the same Python 3.13.5 / librosa 0.11.0 / NumPy 2.2.6 / SciPy
+1.15.3 environment as the serving process. The source gate has 2,223 /
+212 / 26 / 509 frames in bands 250-400 / 400-550 / 550-700 / 700-1100 Hz.
 
-Source identity was checked by SHA-256 across the 550 Hz jobs, the retained
-400 Hz jobs, and the rejected after-fill jobs. All uploaded source WAVs match
-(`831b9b06554bc6af68fad6e6e5b66a7d97f02cad5060f4f77cf255905a93d344`).
+| metric | served f0_lo=550 (n=4) | served f0_lo=400 (n=4) |
+|---|---:|---:|
+| 400-550 Hz inharmonic excess | 23.9 % [22.5, 24.6] | **13.5 % [9.9, 15.6]** |
+| 400-550 Hz dropout | 0.7 % [0.0, 1.4] | 0.1 % [0.0, 0.5] |
+| 250-400 Hz inharmonic excess | 1.7 % [1.4, 2.2] | 1.1 % [0.6, 2.1] |
+| 550-700 Hz inharmonic excess† | 7.3 % [3.5, 9.3] | 2.3 % [1.0, 3.2] |
+| **700-1100 Hz inharmonic excess** | **12.5 % [10.2, 14.1]** | **10.3 % [9.1, 11.5]** |
+| 700-1100 Hz dropout | 1.1 % [1.0, 1.2] | 0.4 % [0.0, 0.8] |
 
-| band / metric | f0_lo=550 Hz (n=4) | f0_lo=400 Hz (n=4) |
-|---|---|---|
-| 400-550 Hz inharmonic excess | 31.0 % [29.9, 31.9] | **15.9 % [14.8, 16.8]** |
-| 400-550 Hz dropout | 0.5 % [0.2, 1.0] | 0.1 % [0.0, 0.4] |
-| 250-400 Hz inharmonic excess | 2.2 % [1.8, 2.8] | 2.2 % [1.8, 2.8] |
-| 700-1100 Hz inharmonic excess | 11.2 % [9.6, 12.6] | **7.7 % [6.5, 9.2]** |
-| 700-1100 Hz dropout | 1.1 % [0.7, 1.2] | 0.8 % [0.7, 0.9] |
+The 400-550 Hz inharmonic ranges are disjoint (p=0.029). The 700-1100 Hz
+inharmonic ranges overlap, so that reduction is unresolved. The dropout
+ranges at 700-1100 Hz are disjoint but differ by only 0.7 percentage points.
+†Only 26 source frames; treat the 550-700 Hz cell as anecdotal.
 
-At 400-550 Hz, the ranges are disjoint and the scorer reports rank-sum
-p=0.029. At 700-1100 Hz, inharmonic excess also improves with disjoint
-ranges (p=0.029), but the reduction is modest; dropout ranges overlap. The
-168-188 s window's 700-1100 Hz dropout is 0 % in both groups; its inharmonic
-ranges overlap (11.6 % [9.1, 14.0] at 550 Hz; 7.6 % [5.8, 9.4] at 400 Hz).
-The 550-700 Hz full-song estimate is based on only 30 frames and is
-anecdotal; it shifts from −0.3 % to −5.3 %, so possible collateral there is
-unresolved. Broad Earshot measures show no material change in loudness,
-harmonic share, or noise floor.
+All four 400 Hz-gate mixes measured -1.5 dBTP with zero clipped samples.
+Their source files are byte-identical to the 550 Hz controls (SHA-256
+`831b9b06554bc6af68fad6e6e5b66a7d97f02cad5060f4f77cf255905a93d344`).
+The 400 Hz setting improves the mid register; 10.3 % high-register
+inharmonic excess remains and no human has listened.
 
-All four current-order mixes measured −1.5 dBTP with zero clipped samples;
-mix LUFS was −18.1 to −17.8. Vocals measured −20.0 to −19.7 LUFS and
-−4.6 to −3.5 dBTP, with zero clipped samples.
+An after-fill order experiment was rejected under the same librosa 0.11.0
+scorer. Its 400-550 Hz inharmonic excess was 18.6 % [17.2, 20.9], worse
+than retained order's 13.5 % [9.9, 15.6]; 700-1100 Hz was 10.0 %
+[8.6, 11.0] versus 10.3 % [9.1, 11.5] (overlapping). It does not justify
+moving the stage.
 
-The paired offline 5.4 % result does not reproduce the served pipeline:
-the offline notch was applied to finished vocal WAVs using `hero_src.wav`
-as the source key; the service applies it to an intermediate decoder output
-using `hum_key`, before later output stages. The cause of this discrepancy
-is not established.
-
-An attempted after-fill production order was tested with four fresh served
-conversions and rejected. Its 400-550 Hz inharmonic excess was 26.7 %
-[25.3, 27.8] versus 15.9 % [14.8, 16.8] in the retained order; 700-1100 Hz
-was 8.4 % [7.1, 10.4] versus 7.7 % [6.5, 9.2]. The 550-700 Hz figure is
-anecdotal at 30 source frames (-4.6 % [-8.7, 1.8]). Production therefore
-remains notch-before-fill.
-
-The direct helper API keeps its historical `f0_lo=550` default; the
-pipeline passes its own `f0_lo=400` fallback explicitly.
-
-Rejected after-fill jobs: `7a929665`, `5153aa77`, `505d9406`, `9bc1d2cc`.
-Report: `scratchpad/v6eval/post_fill_order_n4/scores_n4.json`.
-
-The four f0_lo=400 jobs are `720b64b0`, `cafcddda`, `bd7731b2`, and
-`3fde1c2d`; comparison report:
-`scratchpad/v6eval/f0lo_threshold_n4/current_vs_f0lo400.json`.
-The four f0_lo=550 comparison jobs are `126dec49`, `1beb9645`, `2b82af9c`,
-and `ba27fa99`.
+The earlier 15.9 % / 7.7 % served values and 5.4 % offline value came from
+librosa 0.10.2, whose pyin gate selected different source frames. Current
+serving and score reports use librosa 0.11.0; report metadata now records
+the library versions and effective notch threshold.
 
 The local sample audit found 71 scorer-valid 700-1100 Hz frames across
 seven singing-labeled profile recordings (~0.82 s); 64 short local-video

@@ -2019,14 +2019,12 @@ class SingingConversionPipeline:
             converted = extend_bandwidth(converted, sr)
 
         # 7. High-register inharmonic residue: the "double ringing".
-        #    Four served draws at f0_lo=400, with this stage before fill,
-        #    reduced full-song 700-1100 Hz excess from 11.2 % to 7.7 %.
-        #    The 400-550 Hz excess fell from 31.0 % to 15.9 %, while the
-        #    550-700 Hz estimate became negative (-5.3 %, only 30 frames).
-        #    Moving this stage after fill did not transfer the offline
-        #    5.4 % result: the served n=4 was 26.7 % in 400-550 Hz, so keep
-        #    the measured pre-fill order. Neither configuration solves the
-        #    remaining high-register residue.
+        #    In the production librosa 0.11.0 environment, served n=4 at
+        #    f0_lo=400 reduced 400-550 Hz excess from 23.9 % to 13.5 %
+        #    (disjoint; p=0.029), and 700-1100 Hz from 12.5 % to 10.3 %
+        #    (overlapping). The 550-700 Hz band has only 26 source frames.
+        #    Moving this stage after fill worsened 400-550 Hz to 18.6 %.
+        #    Retain the pre-fill order; the 10.3 % high-band residue remains.
         if bool(cfg.get('fork_hq_inharmonic_notch', True)):
             from .fork_inharmonic_notch import suppress_inharmonic
             converted = suppress_inharmonic(
@@ -2499,6 +2497,7 @@ class SingingConversionPipeline:
         convert_song's result contract.
         """
         import librosa
+        import scipy
         import soundfile as sf
         start_time = time.time()
         target_sr = int(self._output_sample_rate)
@@ -2795,6 +2794,7 @@ class SingingConversionPipeline:
         duration = n / sr
         f0_original = self._extract_pitch(voc_mono, sr)
         f0_contour = self._extract_pitch(converted[:n], sr)
+        chain_config = self._chain_config(overrides)
         result = {
             'mixed_audio': mixed,
             'sample_rate': sr,
@@ -2813,6 +2813,13 @@ class SingingConversionPipeline:
                 'target_profile_id': target_profile_id,
                 'active_model_type': 'svc_fork',
                 'speaker_id': target_profile_id,
+                'librosa_version': getattr(librosa, '__version__', 'unknown'),
+                'numpy_version': np.__version__,
+                'scipy_version': getattr(scipy, '__version__', 'unknown'),
+                'inharmonic_notch_enabled': bool(
+                    chain_config.get('fork_hq_inharmonic_notch', True)),
+                'inharmonic_notch_f0_lo_hz': float(
+                    chain_config.get('fork_hq_inharmonic_notch_f0_lo', 400.0)),
                 # Report what actually ran. This key previously always read
                 # 'svc_fork_hq_stereo' while no such processing existed
                 # anywhere in the codebase.

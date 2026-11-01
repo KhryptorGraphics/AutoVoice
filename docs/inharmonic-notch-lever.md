@@ -174,11 +174,10 @@ signals; the separate `*_ceiling_dbfs` fields report the configured targets.
 cumulative vocal trim including the post-sum gains. Final mixes measured
 -1.5 dBTP; vocal stems measured -3.8 to -4.3 dBTP.
 
-## What it does NOT fix
-
-The lever removes some energy between harmonics. It cannot synthesize the
-missing target-voice harmonics, and the fresh n=4 result still has 11.15 %
-full-song high-register inharmonic excess.
+The retained production notch reduces residue, but the runtime-matched
+librosa 0.11.0 served n=4 still has 10.3 % [9.1, 11.5] full-song
+700-1100 Hz inharmonic excess and 0.4 % [0.0, 0.8] dropout. It cannot
+synthesize the missing target-voice harmonics.
 
 ## Production stage at the former 550 Hz gate
 
@@ -203,12 +202,13 @@ offline callers. The production pipeline passes its own explicit configured
 threshold, whose fallback is 400 Hz; the two defaults are intentionally
 different.
 
-## Current-checkout result before f0 gate retune (f0_lo=550 Hz)
+## Historical analysis at the former f0_lo=550 Hz gate
 
-Four fresh full-song draws used the current checkout, notch enabled and the
-shared vocal/mix true-peak guard. Baseline figures are the four no-notch
-draws from 2026-10-31; all vocals align to the same Hero source. These four
-draws used the former 550 Hz gate; the 400 Hz gate is being validated below.
+These saved 550 Hz results used the `autovoice-thor` scoring environment
+(librosa 0.10.2 / scipy 1.17.1; 424 source frames in 700-1100 Hz). The
+production runtime used librosa 0.11.0 / scipy 1.15.3 and yields 509 such
+frames. The old table remains historical; use the runtime-matched results
+below for current comparisons.
 
 | band | no-notch baseline (n=4) | current checkout (n=4) |
 |---|---|---|
@@ -259,61 +259,61 @@ in both outputs. The 20 s high-register A/B had cosine 1.00 and no
 measurable feature change. This is not an n=4 strength test and does not
 justify raising the 12 dB / 3-pass default.
 
-A 4v4 offline comparison on the same no-notch baseline stems varied only
-`f0_lo`. Lowering the gate from 550 to 400 Hz changed 400-550 Hz inharmonic
-excess from 31.1 % [30.3, 31.7] to 5.4 % [5.1, 5.7] (disjoint ranges;
-rank-sum p=0.029). Dropout changed 0.4 % [0.0, 0.6] to 0.3 % [0.0, 0.6];
-250-400 Hz stayed 2.4 % and 700-1100 Hz stayed 11.3 %. The 550-700 Hz
-result is based on 30 source frames and is anecdotal. All eight offline
-vocal outputs were -1.5 dBTP with zero clipped samples. Broad Earshot
-measurements showed no material change in LUFS, harmonic share, or noise
-floor.
+## Runtime-matched served comparison (librosa 0.11.0)
 
+Runtime-matched scores were produced with Python 3.13.5, librosa 0.11.0,
+NumPy 2.2.6, and SciPy 1.15.3. `requirements-runtime.txt` pins librosa
+0.11.0; score and conversion metadata record the installed versions.
+The source gate yields 2,223 / 212 / 26 / 509 frames in the 250-400 /
+400-550 / 550-700 / 700-1100 Hz bands.
 
-The 550 Hz jobs (`126dec49`, `1beb9645`, `2b82af9c`, `ba27fa99`), the
-retained 400 Hz jobs (`720b64b0`, `cafcddda`, `bd7731b2`, `3fde1c2d`), and
-the rejected after-fill jobs (`7a929665`, `5153aa77`, `505d9406`,
-`9bc1d2cc`) used byte-identical source uploads. SHA-256:
-`831b9b06554bc6af68fad6e6e5b66a7d97f02cad5060f4f77cf255905a93d344`.
-The stage-order difference is not a different input asset.
-Four sequential current-checkout conversions then used the 400 Hz pipeline
-default with the notch BEFORE the dropout fill. Compared with four prior
-550 Hz-gate renders, 400-550 Hz inharmonic excess fell from 31.0 % [29.9,
-31.9] to 15.9 % [14.8, 16.8]. At 700-1100 Hz it fell from 11.2 % [9.6,
-12.6] to 7.7 % [6.5, 9.2]. The 550-700 Hz estimate has only 30 frames and
-shifted from -0.3 % to -5.3 %; it is not a stable estimate, but the negative
-values were consistent across the four draws and warrant caution.
+| band / metric | served f0_lo=550 (n=4) | served f0_lo=400 (n=4) |
+|---|---:|---:|
+| 250-400 Hz inharmonic excess | 1.7 % [1.4, 2.2] | 1.1 % [0.6, 2.1] |
+| 400-550 Hz inharmonic excess | 23.9 % [22.5, 24.6] | **13.5 % [9.9, 15.6]** |
+| 400-550 Hz dropout | 0.7 % [0.0, 1.4] | 0.1 % [0.0, 0.5] |
+| 550-700 Hz inharmonic excess† | 7.3 % [3.5, 9.3] | 2.3 % [1.0, 3.2] |
+| **700-1100 Hz inharmonic excess** | **12.5 % [10.2, 14.1]** | **10.3 % [9.1, 11.5]** |
+| 700-1100 Hz dropout | 1.1 % [1.0, 1.2] | 0.4 % [0.0, 0.8] |
 
-The 4v4 offline `f0_lo=400` result and the served pre-fill result differ:
-5.4 % [5.1, 5.7] versus 15.9 % [14.8, 16.8] at 400-550 Hz. The offline
-probe applied the notch to finished vocal WAVs with `hero_src.wav` as the
-source key; the served stage acts on an intermediate decoder output with the
-pipeline's `hum_key`, before subsequent output stages. The cause of the gap
-is not established.
+The 400-550 Hz inharmonic ranges are disjoint (rank-sum p=0.029); the
+700-1100 Hz inharmonic ranges overlap, so that improvement is unresolved.
+The 700-1100 Hz dropout ranges are disjoint (p=0.029), but the absolute
+reduction is 0.7 percentage points. †The 550-700 Hz band contains only 26
+source frames and remains anecdotal. This is a mid-register improvement,
+not a near-perfect high-register conversion.
 
-The attempted production reorder (dropout fill, then notch) was tested with
-four fresh served conversions and rejected. At f0_lo=400, 400-550 Hz
-inharmonic excess was 26.7 % [25.3, 27.8] versus 15.9 % [14.8, 16.8] in the
-retained pre-fill order. 700-1100 Hz was 8.4 % [7.1, 10.4] versus 7.7 %
-[6.5, 9.2]. The 550-700 Hz estimate remained anecdotal (-4.6 % [-8.7, 1.8],
-30 frames). Current production code therefore keeps the notch before fill.
+All four 400 Hz-gate mixes measured -1.5 dBTP with zero clipped samples.
+Their source WAVs are byte-identical to the 550 Hz group
+(SHA-256 `831b9b06554bc6af68fad6e6e5b66a7d97f02cad5060f4f77cf255905a93d344`).
 
-A second application to already-corrected finished stems gave 2.3 % / 4.1 %
-at 400-550 / 700-1100 Hz, but worsened the thin 550-700 estimate to -6.0 %
-and changed centroid/HF balance. This is repeated correction, not evidence
-that moving the pipeline stage after fill works; it is not selected.
+## Offline probe and rejected after-fill order
 
-The helper API's default remains `f0_lo=550` for direct callers; the
-production pipeline explicitly supplies its own 400 Hz fallback. These
-defaults are intentionally different.
+With the same librosa 0.11.0 runtime, applying the helper once to the four
+no-notch finished stems changed 400-550 Hz inharmonic excess from 24.3 %
+[22.5, 27.2] to 6.1 % [3.3, 9.2] (disjoint; p=0.029); 700-1100 Hz stayed
+10.9 % [9.5, 12.0]. This remains a stem-level probe using `hero_src.wav`
+as the source key, not a replacement for the served result.
 
-Historical gate jobs: `126dec49`, `1beb9645`, `2b82af9c`, `ba27fa99`.
-Retained 400 Hz pre-fill jobs: `720b64b0`, `cafcddda`, `bd7731b2`,
-`3fde1c2d`. Rejected after-fill jobs: `7a929665`, `5153aa77`, `505d9406`,
-`9bc1d2cc`. Reports:
-`scratchpad/v6eval/post_fill_order_n4/scores_n4.json`,
-`scratchpad/v6eval/post_fill_notch_f0lo400/scores_final.json`, and
-`scratchpad/v6eval/post_fill_notch_f0lo400/from550_scores.json`.
+The attempted after-fill production order was also rescored with librosa
+0.11.0. It yielded 18.6 % [17.2, 20.9] inharmonic excess at 400-550 Hz,
+worse than the retained order's 13.5 % [9.9, 15.6]. At 700-1100 Hz it was
+10.0 % [8.6, 11.0] vs 10.3 % [9.1, 11.5] (overlapping). The code therefore
+retains notch-before-fill. The earlier librosa 0.10.2 output (26.7 %)
+was not a valid production comparison; version mismatch changed the pyin
+mask and frame counts.
+
+The helper API keeps its direct-call default at `f0_lo=550`; the pipeline
+explicitly supplies its 400 Hz fallback. Job reports record `librosa_version`
+and `inharmonic_notch_f0_lo_hz` so future service runs identify the gate used.
+
+Retained pre-fill 400 Hz jobs: `720b64b0`, `cafcddda`, `bd7731b2`,
+`3fde1c2d`. Retained 550 Hz jobs: `126dec49`, `1beb9645`, `2b82af9c`,
+`ba27fa99`. Rejected after-fill jobs: `7a929665`, `5153aa77`, `505d9406`,
+`9bc1d2cc`. Runtime-matched reports:
+`scratchpad/v6eval/runtime_librosa011_stem_probe/scores.json`,
+`served_pair.json`, `offline_pair.json`,
+`scratchpad/v6eval/post_fill_order_n4/scores_base_librosa011.json`.
 
 The historical G_389 training audit (AV-41e4) covered 10 singing files and
 168,079 voiced frames: 0.48 % were at or above 550 Hz and less than 0.01 %
@@ -325,18 +325,20 @@ the high-register acceptance gate. Existing authentic material is sparse;
 the notch only attenuates off-harmonic energy and cannot synthesize missing
 target-voice harmonics.
 
-Current-checkout jobs: `126dec49`, `1beb9645`, `2b82af9c`, `ba27fa99`.
-No-notch baseline jobs: `9c2b253b`, `b1d3295a`, `adfde124`, `50696749`.
-Reports:
+Historical 550 Hz jobs: `126dec49`, `1beb9645`, `2b82af9c`, `ba27fa99`.
+Retained 400 Hz served jobs: `720b64b0`, `cafcddda`, `bd7731b2`,
+`3fde1c2d`. Rejected after-fill jobs: `7a929665`, `5153aa77`, `505d9406`,
+`9bc1d2cc`.
 
-- `scratchpad/v6eval/current_truepeak_guard_n4_aggregate.json`
-- `scratchpad/v6eval/current_truepeak_guard_highreg_n4.json`
-- `scratchpad/v6eval/current_truepeak_guard_n4_scores.json`
-- `scratchpad/v6eval/notch/cut24/full_draw1_matched_scores.json`
-- `scratchpad/v6eval/notch/f0lo400/full_draw1_scores.json`
+Runtime-matched reports (Python 3.13.5, librosa 0.11.0):
 
-**Status: the notch is shipped and its default f0 gate is now 400 Hz.**
-The user’s no-residual / no-artifact goal is not met: the latest served n=4
-still has 7.7 % full-song high-register inharmonic excess, possible
-550-700 Hz collateral is unresolved, and no human has listened. AV-4aqs
-remains open.
+- `scratchpad/v6eval/runtime_librosa011_stem_probe/scores.json`
+- `scratchpad/v6eval/runtime_librosa011_stem_probe/served_pair.json`
+- `scratchpad/v6eval/runtime_librosa011_stem_probe/offline_pair.json`
+- `scratchpad/v6eval/runtime_librosa011_stem_probe/order_pair.json`
+- `scratchpad/v6eval/post_fill_order_n4/scores_base_librosa011.json`
+
+**Status: the retained notch runs before fill with a 400 Hz pipeline fallback.**
+Runtime-matched served n=4 still has 10.3 % [9.1, 11.5] 700-1100 Hz
+inharmonic excess and 0.4 % [0.0, 0.8] dropout. The user's no-residual /
+no-artifact goal is unmet, and no human has listened. AV-4aqs remains open.
