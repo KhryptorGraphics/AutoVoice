@@ -170,3 +170,68 @@ def test_lora_is_injected_at_inference_too():
     assert inject_at < load_at, (
         "inject_lora must run BEFORE load_checkpoint or the deltas load as nothing")
 
+
+
+SPA_HELPER = SYNTH.parent.parent / "autovoice_spa_cycle.py"
+SPA_TRAIN = SYNTH.parent.parent / "train.py"
+
+
+@pytest.mark.skipif(
+    not SPA_HELPER.exists(), reason="svcfork env not installed on this machine"
+)
+def test_spa_cycle_helper_is_installed_and_current():
+    """The SPA cycle objective lives in site-packages as a SEPARATE file from
+    train.py, so it can drift from the repo source while train.py still looks
+    patched. The installed fork would then train different semantics than this
+    repo describes, with no error anywhere. Compare the bytes.
+    """
+    repo_source = (
+        Path(__file__).resolve().parents[1]
+        / "patches" / "svcfork_spa_cycle_runtime.py"
+    )
+    assert repo_source.is_file(), "patches/svcfork_spa_cycle_runtime.py is missing"
+    assert SPA_HELPER.read_text() == repo_source.read_text(), (
+        "the installed SPA cycle helper differs from "
+        "patches/svcfork_spa_cycle_runtime.py - reapply via "
+        "patches/svcfork_spa_cycle.py"
+    )
+
+
+@pytest.mark.skipif(
+    not SPA_TRAIN.exists(), reason="svcfork env not installed on this machine"
+)
+def test_spa_cycle_patch_is_applied_and_default_off():
+    """The cycle loss must be present in the installed fork and must be off
+    unless SVCFORK_SPA_CYCLE_WEIGHT says otherwise - an experiment that
+    silently trains the wrong objective looks exactly like one that worked.
+    """
+    text = SPA_TRAIN.read_text()
+    assert "SVCFORK_SPA_CYCLE_WEIGHT" in text, (
+        "the SPA cycle patch is missing from the installed train.py - reapply "
+        "via patches/svcfork_spa_cycle.py"
+    )
+    assert "from .autovoice_spa_cycle import SPACycleObjective" in text
+    assert "loss_spa_cycle" in text
+    # The disabled arm must be upstream arithmetic, and the enabled arm must be
+    # behind the objective's presence, never behind a plain truthy check.
+    assert "if self.spa_cycle_objective is None:" in text, (
+        "the cycle loss must be gated on the objective being absent"
+    )
+
+
+@pytest.mark.skipif(
+    not SPA_TRAIN.exists(), reason="svcfork env not installed on this machine"
+)
+def test_spa_cycle_patch_keeps_the_upstream_loss_lf0_assignment():
+    """The SPA patch replaces the fork's two-line loss block. An earlier
+    replacement re-emitted only the SUM and dropped
+    `loss_lf0 = F.mse_loss(pred_lf0, lf0)`, so the patched file raised
+    NameError at the first training step - which a syntax check cannot see and
+    a test that supplies the name locally cannot see either.
+    """
+    text = SPA_TRAIN.read_text()
+    assert "loss_lf0 = F.mse_loss(pred_lf0, lf0)" in text, (
+        "the installed train.py no longer defines loss_lf0 - the SPA patch is "
+        "broken and training dies with NameError at the first step"
+    )
+    assert "loss_gen + loss_fm + loss_mel + loss_kl + loss_lf0" in text

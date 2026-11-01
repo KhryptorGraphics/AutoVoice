@@ -23,13 +23,14 @@ Env-gated so an unset variable is exactly upstream behaviour:
     SVCFORK_HIF0_WEIGHT   max weight at/above HI (default 1 = off)
     SVCFORK_HIF0_LO/HI    ramp start/end in Hz (default 400 / 800)
 
-Unvoiced frames carry f0 = 0, which clamps to weight 1.0.
+F0 is interpolated before training; the paired UV mask is authoritative.
+Unvoiced frames (uv=0) must retain baseline weight 1.
 """
 import re, sys, pathlib
 
 TARGET = "            loss_mel = F.l1_loss(y_mel, y_hat_mel) * self.hparams.train.c_mel\n"
-REPL = '''            # SVCFORK_HIF0_WEIGHT: weight the mel loss up where the source
-            # sings high. Unset/1.0 = upstream behaviour, exactly.
+REPL = '''            # SVCFORK_HIF0_WEIGHT: weight mel loss up where the source sings high.
+            # Mask interpolated f0 by uv so unvoiced frames retain weight 1.
             _hif0_w = float(os.environ.get("SVCFORK_HIF0_WEIGHT", "1") or 1)
             if _hif0_w > 1.0:
                 _hif0_lo = float(os.environ.get("SVCFORK_HIF0_LO", "400"))
@@ -37,6 +38,12 @@ REPL = '''            # SVCFORK_HIF0_WEIGHT: weight the mel loss up where the so
                 _f0_seg = commons.slice_segments(
                     f0, ids_slice, y_hat_mel.shape[-1]
                 ).to(y_hat_mel.dtype)
+                _uv_seg = commons.slice_segments(
+                    uv, ids_slice, y_hat_mel.shape[-1]
+                )
+                _f0_seg = torch.where(
+                    _uv_seg > 0, _f0_seg, torch.zeros_like(_f0_seg)
+                )
                 _ramp = ((_f0_seg - _hif0_lo) / max(_hif0_hi - _hif0_lo, 1e-6)).clamp(0.0, 1.0)
                 _w = (1.0 + (_hif0_w - 1.0) * _ramp).unsqueeze(1)
                 _l1 = F.l1_loss(y_mel, y_hat_mel, reduction="none")
@@ -51,7 +58,10 @@ def main(path):
     p = pathlib.Path(path)
     src = p.read_text()
     if "SVCFORK_HIF0_WEIGHT" in src:
-        print("already patched"); return 0
+        if "_uv_seg = commons.slice_segments(" in src:
+            print("already patched with uv mask"); return 0
+        print("existing HIF0 patch lacks uv mask - refusing to skip it", file=sys.stderr)
+        return 4
     if TARGET not in src:
         print("ANCHOR NOT FOUND - refusing to patch", file=sys.stderr); return 2
     if not re.search(r"^import os$", src, re.M):

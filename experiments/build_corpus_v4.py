@@ -137,8 +137,13 @@ def _jobs(srcs):
         except Exception:
             continue
         for j in range(0, max(1, n - step // 2), step):
-            picks = rng.choice(SHIFTS, size=2, replace=False,
-                               p=np.array([1.0, 1.5, 2.0, 2.5, 3.0]) / 10.0)
+            if SHIFTS:
+                picks = rng.choice(
+                    SHIFTS, size=2, replace=False,
+                    p=np.array([1.0, 1.5, 2.0, 2.5, 3.0]) / 10.0,
+                )
+            else:
+                picks = []
             out.append((p, j, sorted(int(x) for x in picks)))
     return out
 
@@ -180,10 +185,13 @@ def _init(out):
 
 def main(out_dir):
     import multiprocessing as mp
-    print("  GATE: verifying the shifter against a 300 Hz ground-truth tone", flush=True)
-    if not verify_shifter():
-        sys.exit("  SHIFTER WRONG - refusing to build a corpus")
-    print("  shifter verified\n", flush=True)
+    if SHIFTS:
+        print("  GATE: verifying the shifter against a 300 Hz ground-truth tone", flush=True)
+        if not verify_shifter():
+            sys.exit("  SHIFTER WRONG - refusing to build a corpus")
+        print("  shifter verified\n", flush=True)
+    else:
+        print("  no pitch shifts requested; shifter verification skipped", flush=True)
     spk = os.path.join(out_dir, "dataset_raw", "spk_fb17af66")
     os.makedirs(spk, exist_ok=True)
     # sample_*/vocals.wav ONLY. A **/*.wav glob also matches instrumental.wav -

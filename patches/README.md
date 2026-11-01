@@ -131,3 +131,61 @@ behaviour, all parameters train.
 Rationale: every full fine-tune of this ~80 min corpus degraded after ~epoch 150
 (four runs, 2026-09-04/05). Constraining the update is the standard remedy.
 Serving a LoRA checkpoint needs this patch present at inference too.
+
+## svcfork_spa_cycle (2026-10-31)
+
+Targets `so_vits_svc_fork/train.py` and installs
+`so_vits_svc_fork/autovoice_spa_cycle.py` beside it. A research transfer of
+SPA-SVC (arXiv 2406.05692, Bai/Wang/Gao/Li, Interspeech 2024) to this fork -
+not a production fix, and the paper's own evidence is MOS-only from 13
+listeners.
+
+The mechanism, per training step:
+
+1. Sample a semitone shift per training sample (6-18 st, capped so the
+   shifted contour stays under 1100 Hz). The WHOLE interpolated F0 contour
+   moves by one uniform factor, not only its voiced frames: the fork feeds
+   the interpolated contour to `f0_to_coarse`, so shifting only the voiced
+   frames would put a step of up to 2.8x at every voiced/unvoiced boundary
+   and the pitch embedding would read that sawtooth as the singer's contour.
+2. First pass: `net_g.infer` with the SHIFTED f0, `noice_scale=0`.
+3. Re-extract ContentVec from that render. This needs the audio gradient, so
+   it cannot go through `utils.get_content` (which wraps its model call in
+   `torch.no_grad`); the helper calls the encoder directly. The encoder is
+   kept on CPU and OUTSIDE the module registry - a registered child would be
+   moved to the accelerator by the trainer and would appear in
+   `.parameters()`.
+4. Second pass: `net_g.infer` at the ORIGINAL f0 with the re-extracted
+   content.
+5. Cycle loss = MSE between the cycle mel and the real target mel. It is
+   weighted `raw * SVCFORK_SPA_CYCLE_WEIGHT * c_mel`, so the weight has to be
+   calibrated against the measured mel term or the cycle becomes the
+   objective instead of a regulariser.
+
+**Default OFF.** `SVCFORK_SPA_CYCLE_WEIGHT` unset (or 0) leaves the
+objective unconstructed and the loss arithmetic exactly upstream - verified
+by executing the patched block's disabled arm against the upstream
+expression and comparing the tensors for equality, not by reading the source.
+
+Env vars:
+
+| var | default | meaning |
+|---|---|---|
+| `SVCFORK_SPA_CYCLE_WEIGHT` | 0 (off) | weight of the cycle term |
+| `SVCFORK_SPA_F0_CEILING_HZ` | 1100 | upper bound for the shifted contour |
+| `SVCFORK_SPA_MAX_SAMPLES` | 4 | cycle samples per step (memory bound) |
+
+The sample cap is not cosmetic: with Brandy's corpus nearly every sample has
+positive headroom, so an uncapped cycle path would run two extra generator
+forwards with the graph retained for the whole batch of 48.
+
+Apply:
+
+    python patches/svcfork_spa_cycle.py \
+        /home/kp/anaconda3/envs/svcfork/lib/python3.12/site-packages/so_vits_svc_fork/train.py
+
+The patcher compiles the patched source before writing it, and on a re-run it
+compares the installed helper BYTE FOR BYTE with
+`patches/svcfork_spa_cycle_runtime.py` and refreshes it when they differ. A
+changed helper would otherwise leave the installed fork training different
+semantics than this repo describes, with no error anywhere.
