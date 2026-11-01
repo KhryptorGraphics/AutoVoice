@@ -28,17 +28,25 @@ vocal stem, 424 usable frames in the 700-1100 Hz band) with
 | centroid Hz | 754 | 975 |
 | identity | 0.9917 | 1.0000 |
 
-**The served chain removes 29 points of high-register dropout** and 6 dB of
-the air deficit. The raw model's 32.8 % dropout at 700-1100 Hz is NOT what
-the user hears; the served path renders it at 3.8 %.
+**This suggests the chain removes ~29 points of high-register dropout** and
+6 dB of the air deficit. It is NOT yet established: the served column is
+**one** end-to-end draw (the correction chain is deterministic, but the fork
+render underneath it is stochastic at noise_scale 0.4), while the raw column
+is 4 renders. The project's own rule is that one render is one draw and a
+result needs ≥4. The number is DESCRIPTIVE of this render, not a measured
+distribution, and no claim of "dropout solved" rests on it.
 
-(One render each here, so these are point measurements, not spreads. The
-served path is a single end-to-end conversion of a single source: the
-correction chain is deterministic, but the fork render UNDERNEATH it is
-stochastic (noise_scale 0.4), so this is ONE instance of a distribution,
-not the distribution. For the distribution, quote the 4-render raw numbers
-elsewhere in this repo, where the raw model measured 35.5 % [32.8, 37.5] at
-700-1100 Hz and the raw 700-1100 Hz renders span 32.8-37.5 %.)
+What is established either way: the raw model's 32.8 % dropout at
+700-1100 Hz is NOT what the user hears. The served path renders it at 3.8 %
+on this draw, and the correction chain's own log line confirms the mechanism
+("Lead dropout fill: 8.8 % of frames lifted, mean 1.8 dB, max 11.4 dB").
+
+(The raw column is 4 renders: the raw model measured 35.5 % [32.8, 37.5] at
+700-1100 Hz across them, and the 32.8 % here is that group's first take.
+The served column is ONE draw. To put a spread on the served path, run ≥4
+independent conversions of the same original source through the service and
+score their paired vocal stems — the conversion is the same job each time, so
+it is ~5 min per draw.)
 
 ## How the served conversion was produced
 
