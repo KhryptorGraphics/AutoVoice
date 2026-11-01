@@ -39,10 +39,11 @@ block against the upstream expression and comparing tensors.
 The 550-700 Hz band holds 30 source frames on Hero — anecdote, not
 measurement, excluded from every verdict.
 
-## The cycle term works
+## What the arm shows — and what it does not
 
 With the same seed, corpus and mel weighting, adding the cycle term moved
-the 700-1100 Hz band on BOTH metrics, with disjoint ranges:
+the 700-1100 Hz band on BOTH metrics, with disjoint ranges, RELATIVE TO THE
+EPOCH-UNMATCHED v6 CONTROLS:
 
     dropout    82.4 -> 57.9   (-24.5 points)
     inharmonic 92.5 -> 54.2   (-38.3 points)
@@ -50,8 +51,21 @@ the 700-1100 Hz band on BOTH metrics, with disjoint ranges:
 and it was better than the served baseline in the modal range too
 (250-400 Hz inharmonic excess 3.9 -> -0.1 %, 400-550 Hz 38.6 -> 28.0 %).
 
-**This is the first measured evidence in this project that changing the
-training objective moves the 700-1100 Hz band.** Every previous lever
+**Relative to the SERVED baseline it REGRESSES, with disjoint ranges:**
+
+    700-1100 Hz dropout    spa 57.9  vs  served 35.5   (+22.4 worse)
+    700-1100 Hz inharmonic spa 54.2  vs  served 44.9   (+9.3 worse)
+    400-550 Hz dropout     spa  7.8  vs  served  1.2   (6.5x worse)
+
+So the supported statement is: **the cycle term beats the epoch-unmatched
+v6 controls and regresses the served baseline.** Whether the recovery is
+attributable to the cycle term or to the shorter training run is NOT
+established by this measurement — the epochs differ (arm 411, controls
+491/500) and the arm is less bright, which is a second unresolved
+confound.
+
+What IS established: **this is the first training-objective change in this
+project that moved the 700-1100 Hz band at all.** Every previous lever
 (pitch-shift augmentation, brightness-in-data, output-side air) either did
 nothing to that band or made it worse.
 

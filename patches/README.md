@@ -196,10 +196,14 @@ forwards for it. The encoder therefore stays on CPU by default.
 The first generator pass reaches the loss ONLY through the ContentVec
 re-extraction. If that bridge carried no gradient, the cycle loss would be a
 function of the second pass alone and the F0 shift would be pointless.
-Measured on a real batch: the input content's own gradient norm is **13.25**
-and **111 `enc_p` parameters** carry gradient (norm sum 1752), alongside all
-**305 decoder parameters** (norm sum 1222). The shift therefore reaches the
-loss.
+
+The input CONTENT's own gradient is the clean proof: content feeds the
+FIRST pass only, so a non-zero gradient on it can only have arrived through
+the bridge. Measured on a real batch: **13.25**. The decoder also receives
+gradient (all 305 decoder parameters, norm sum 1222).
+
+(`enc_p` is NOT evidence either way: it runs in BOTH generator passes, so
+its gradient does not isolate the bridge.)
 
 The cycle term was also observed DECREASING during training (raw MSE
 5.13 -> 1.97 over 199 steps) while the mel term stayed flat (27.37 ->
