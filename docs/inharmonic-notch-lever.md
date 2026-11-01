@@ -205,20 +205,26 @@ carried the old chain.
 
 | | without the stage | with the stage |
 |---|---|---|
-| inharmonic excess 700-1100 Hz | 40.32 % | **14.64 %** |
-| inharmonic excess 550-700 Hz | 59.8 % | **0.3 %** |
-| inharmonic excess 250-400 Hz | 2.02 % | 2.00 % |
+| inharmonic excess 700-1100 Hz | 40.3 % | **9.6 %** |
+| inharmonic excess 550-700 Hz | 59.8 % | **−0.5 %** |
+| inharmonic excess 250-400 Hz | 2.0 % | 1.6 % |
 | level dropout 700-1100 Hz | 5.90 % | **1.18 %** |
-| spectral centroid | 965 Hz | 1127 Hz |
 | identity | 1.0000 | 1.0000 |
 
-Jobs `c0b293f1` (without) and `baa9153b` (with). The service log for the
-second reads:
+Jobs `c0b293f1` (without) and `fb8e5c1e` (with, on the fixed code). The
+service log for the second reads:
 
     fork inharmonic notch: 2.4 dB mean cut on 6% of scored frames
     (3 passes, f0 >= 550 Hz); make-up gain on 2% of frames, max 12.0 dB
 
 and the stage runs BEFORE the dropout fill, as intended.
+
+**A note on the 550-700 Hz band reading −0.5 %.** That band has only 30
+usable source frames, so `score_multi` itself warns it is anecdote, not
+measurement. A negative value means the render is marginally cleaner than
+the source there, which is within the noise of 30 frames. The band with
+enough frames to measure (700-1100 Hz, 424 frames) is the one to read:
+40.3 % → 9.6 %.
 
 ## Files
 
@@ -247,6 +253,6 @@ still there, and only an ear can say whether the remaining residue is
 audible as the "double ringing" the user complained about.
 
 The listening candidates are the served mixes:
-`data/conversions/baa9153b-a7ca-4d81-b99c-f59dc0aed724/mix.wav` (with
+`data/conversions/fb8e5c1e-4bf9-4d93-bd9b-51651949fabd/mix.wav` (with
 the stage) against `data/conversions/c0b293f1-3765-4941-a9b0-caff0efebbda/mix.wav`
 (without).

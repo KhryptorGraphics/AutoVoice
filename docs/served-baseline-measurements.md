@@ -208,10 +208,11 @@ untouched, identity unchanged at 1.000, and every stem at exactly -1.50
 dBTP with zero clipped samples.
 
 **And end-to-end through the live service**, two conversions of the same
-original Hero track with the stage on and off (jobs `baa9153b` and
-`c0b293f1`): inharmonic excess at 700-1100 Hz 40.32 % → 14.64 %, at
-550-700 Hz 59.8 % → 0.3 %, at 250-400 Hz 2.02 % → 2.00 % (untouched),
-level dropout 5.90 % → 1.18 %, identity 1.0000 both ways.
+original Hero track with the stage on and off (jobs `fb8e5c1e` and
+`c0b293f1`): inharmonic excess at 700-1100 Hz 40.3 % → 9.6 %, at
+550-700 Hz 59.8 % → −0.5 % (30 source frames, anecdote), at
+250-400 Hz 2.0 % → 1.6 %, level dropout 5.90 % → 1.18 %, identity 1.0000
+both ways.
 
 **The registry still serves G_389 unchanged** - the model is the same, only
 the output chain changed. And nobody has listened to it: the ear is the
