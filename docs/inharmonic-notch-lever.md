@@ -269,6 +269,13 @@ vocal outputs were -1.5 dBTP with zero clipped samples. Broad Earshot
 measurements showed no material change in LUFS, harmonic share, or noise
 floor.
 
+
+The 550 Hz jobs (`126dec49`, `1beb9645`, `2b82af9c`, `ba27fa99`), the
+retained 400 Hz jobs (`720b64b0`, `cafcddda`, `bd7731b2`, `3fde1c2d`), and
+the rejected after-fill jobs (`7a929665`, `5153aa77`, `505d9406`,
+`9bc1d2cc`) used byte-identical source uploads. SHA-256:
+`831b9b06554bc6af68fad6e6e5b66a7d97f02cad5060f4f77cf255905a93d344`.
+The stage-order difference is not a different input asset.
 Four sequential current-checkout conversions then used the 400 Hz pipeline
 default with the notch BEFORE the dropout fill. Compared with four prior
 550 Hz-gate renders, 400-550 Hz inharmonic excess fell from 31.0 % [29.9,

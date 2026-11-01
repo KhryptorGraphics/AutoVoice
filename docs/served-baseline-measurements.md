@@ -227,6 +227,10 @@ Four sequential end-to-end conversions used the retained pipeline order:
 the notch runs BEFORE dropout fill. These are the current served results,
 compared with four 550 Hz-gate renders on the same Hero source.
 
+Source identity was checked by SHA-256 across the 550 Hz jobs, the retained
+400 Hz jobs, and the rejected after-fill jobs. All uploaded source WAVs match
+(`831b9b06554bc6af68fad6e6e5b66a7d97f02cad5060f4f77cf255905a93d344`).
+
 | band / metric | f0_lo=550 Hz (n=4) | f0_lo=400 Hz (n=4) |
 |---|---|---|
 | 400-550 Hz inharmonic excess | 31.0 % [29.9, 31.9] | **15.9 % [14.8, 16.8]** |
