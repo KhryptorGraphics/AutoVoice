@@ -369,6 +369,27 @@ def build_app(data_dir: Path):
 
     web_api.torch = _HarnessTorch()
 
+    # Serve deterministic benchmark evidence: the System page fetches
+    # /reports/benchmarks/latest, and a 404 leaves an unavoidable browser
+    # console error that fails the zero-console-error acceptance check.
+    import json as _json
+
+    reports_dir = data_dir / "reports"
+    latest_dir = reports_dir / "benchmarks" / "latest"
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    _now = _iso_now()
+    (latest_dir / "benchmark_dashboard.json").write_text(_json.dumps({
+        "generated_at": _now,
+        "target_hardware": "deterministic-harness",
+        "pipelines": {},
+    }), encoding="utf-8")
+    (latest_dir / "release_evidence.json").write_text(_json.dumps({
+        "generated_at": _now,
+        "ready": True,
+        "notes": "deterministic harness fixture",
+    }), encoding="utf-8")
+    web_api._reports_dir = lambda: reports_dir
+
     app, socketio = create_app(
         config={
             "TESTING": True,

@@ -18,6 +18,9 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
+          # CPU torch first: hosted runners have no GPU, and PyPI torch drags
+          # the multi-GB nvidia-*-cu13 wheel stack that fills the runner disk.
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install -e .[dev]
 
       - name: Compile backend sources
@@ -77,6 +80,9 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
+          # CPU torch first: hosted runners have no GPU, and PyPI torch drags
+          # the multi-GB nvidia-*-cu13 wheel stack that fills the runner disk.
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install -e .[dev]
 
       - name: Run critical-module coverage gate
@@ -109,6 +115,9 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
+          # CPU torch first: hosted runners have no GPU, and PyPI torch drags
+          # the multi-GB nvidia-*-cu13 wheel stack that fills the runner disk.
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install -e .[dev]
 
       - name: Generate canonical benchmark dashboard fixture
@@ -203,6 +212,9 @@ jobs:
       - name: Install backend dependencies and security tooling
         run: |
           python -m pip install --upgrade pip
+          # CPU torch first: hosted runners have no GPU, and PyPI torch drags
+          # the multi-GB nvidia-*-cu13 wheel stack that fills the runner disk.
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install -e .[dev]
           pip install pip-audit cyclonedx-bom
 
@@ -258,6 +270,9 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
+          # CPU torch first: hosted runners have no GPU, and PyPI torch drags
+          # the multi-GB nvidia-*-cu13 wheel stack that fills the runner disk.
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install -e .[dev]
 
       - name: Prepare compose environment
@@ -324,6 +339,9 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
+          # CPU torch first: hosted runners have no GPU, and PyPI torch drags
+          # the multi-GB nvidia-*-cu13 wheel stack that fills the runner disk.
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install -e .[dev]
 
       - name: Install frontend dependencies
