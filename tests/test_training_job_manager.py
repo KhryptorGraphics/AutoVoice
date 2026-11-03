@@ -63,9 +63,15 @@ def mock_training_samples():
 
 @pytest.fixture
 def job_manager(temp_job_storage):
-    """TrainingJobManager instance for testing."""
+    """TrainingJobManager instance for testing.
+
+    GPU availability is stubbed so the queue/persistence logic under test
+    runs on CPU-only machines (hosted CI); the GPU gate itself is covered by
+    tests/test_gpu_enforcement.py.
+    """
     from auto_voice.training.job_manager import TrainingJobManager
-    return TrainingJobManager(storage_path=temp_job_storage)
+    with patch("torch.cuda.is_available", return_value=True):
+        return TrainingJobManager(storage_path=temp_job_storage)
 
 
 # ============================================================================
@@ -200,7 +206,8 @@ class TestTrainingJobManagerInit:
         """TrainingJobManager initializes with storage path."""
         from auto_voice.training.job_manager import TrainingJobManager
 
-        manager = TrainingJobManager(storage_path=temp_job_storage)
+        with patch("torch.cuda.is_available", return_value=True):
+            manager = TrainingJobManager(storage_path=temp_job_storage)
         assert manager.storage_path == temp_job_storage
         assert manager.is_initialized
 
@@ -209,7 +216,8 @@ class TestTrainingJobManagerInit:
         from auto_voice.training.job_manager import TrainingJobManager
 
         new_path = temp_job_storage / "jobs"
-        manager = TrainingJobManager(storage_path=new_path)
+        with patch("torch.cuda.is_available", return_value=True):
+            manager = TrainingJobManager(storage_path=new_path)
         assert new_path.exists()
 
     def test_job_manager_has_empty_queue_initially(self, job_manager):

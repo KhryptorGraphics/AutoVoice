@@ -301,10 +301,73 @@ def _seed_profile(store: VoiceProfileStore, *, profile_id: str, name: str, train
         )
 
 
+class _HarnessCuda:
+    """CPU-safe stand-in reporting one fake GPU.
+
+    The production readiness probe (and the gpu/system-info endpoints)
+    require CUDA; this deterministic harness must present a ready backend on
+    CPU-only machines (hosted CI) too. Everything not overridden proxies to
+    the real torch.cuda.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(torch.cuda, name)
+
+    @staticmethod
+    def is_available() -> bool:
+        return True
+
+    @staticmethod
+    def device_count() -> int:
+        return 1
+
+    @staticmethod
+    def get_device_name(index: int = 0) -> str:
+        return "Deterministic Harness GPU"
+
+    @staticmethod
+    def get_device_properties(index: int = 0) -> Any:
+        import types as _types
+        return _types.SimpleNamespace(
+            name="Deterministic Harness GPU",
+            total_memory=8 * 1024 ** 3,
+            major=8,
+            minor=7,
+            multi_processor_count=1,
+        )
+
+    @staticmethod
+    def memory_allocated(index: int = 0) -> int:
+        return 0
+
+    @staticmethod
+    def memory_reserved(index: int = 0) -> int:
+        return 0
+
+    @staticmethod
+    def empty_cache() -> None:
+        return None
+
+    @staticmethod
+    def synchronize() -> None:
+        return None
+
+
+class _HarnessTorch:
+    """torch proxy whose .cuda is the harness fake; all else is real."""
+
+    cuda = _HarnessCuda()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(torch, name)
+
+
 def build_app(data_dir: Path):
     from auto_voice.web import api as web_api
     from auto_voice.web import karaoke_api
     import auto_voice.web.audio_router as audio_router
+
+    web_api.torch = _HarnessTorch()
 
     app, socketio = create_app(
         config={

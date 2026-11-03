@@ -78,8 +78,20 @@ def load_percent_covered(path: str, files: dict[str, dict[str, object]]) -> floa
 
 
 def main() -> int:
+    # On CUDA-less machines (hosted CI) deselect @pytest.mark.cuda tests: they
+    # need real GPU hardware. The Jetson runs the full set, so its coverage
+    # numbers remain the canonical ones.
+    pytest_args = ["-q"]
+    try:
+        import torch
+        cuda_ok = torch.cuda.is_available()
+    except Exception:
+        cuda_ok = False
+    if not cuda_ok:
+        pytest_args = ["-m", "not cuda", "-q"]
+
     run([sys.executable, "-m", "coverage", "erase"])
-    run([sys.executable, "-m", "coverage", "run", "-m", "pytest", "-p", "no:cov", *TEST_PATHS, "-q"])
+    run([sys.executable, "-m", "coverage", "run", "-m", "pytest", "-p", "no:cov", *TEST_PATHS, *pytest_args])
     run([sys.executable, "-m", "coverage", "json", "-o", str(COVERAGE_JSON)])
     report_include = ",".join(MODULE_THRESHOLDS)
     run([sys.executable, "-m", "coverage", "report", "-m", f"--include={report_include}"])

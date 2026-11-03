@@ -1,8 +1,13 @@
 import { defineConfig } from '@playwright/test'
+import { existsSync } from 'node:fs'
 
 const FRONTEND_PORT = Number(process.env.AUTOVOICE_PLAYWRIGHT_PORT ?? 4273)
 const BACKEND_PORT = Number(process.env.AUTOVOICE_LIVE_BACKEND_PORT ?? 5051)
-const BACKEND_PYTHON = process.env.AUTOVOICE_PYTHON ?? '/home/kp/anaconda3/envs/autovoice-thor/bin/python'
+// Canonical Jetson interpreter when present; plain python3 elsewhere (hosted
+// CI runners), overridable via AUTOVOICE_PYTHON either way.
+const JETSON_PYTHON = '/home/kp/anaconda3/envs/autovoice-thor/bin/python'
+const BACKEND_PYTHON =
+  process.env.AUTOVOICE_PYTHON ?? (existsSync(JETSON_PYTHON) ? JETSON_PYTHON : 'python3')
 const HOST = '127.0.0.1'
 
 export default defineConfig({

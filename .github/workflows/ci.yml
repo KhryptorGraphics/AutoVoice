@@ -26,6 +26,7 @@ jobs:
       - name: Run backend contract lane
         run: |
           PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest \
+            -m "not cuda" \
             tests/test_web_utils.py \
             tests/test_web_api.py \
             tests/test_pipeline_status_api.py \
