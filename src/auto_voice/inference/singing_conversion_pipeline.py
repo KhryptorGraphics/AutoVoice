@@ -1863,10 +1863,13 @@ class SingingConversionPipeline:
         crepe/pyin voiced gate (2.75 %): a voiced gate excludes consonants, and
         dropouts happen there too. It also keeps this stage off the GPU.
 
-        It does NOT simply make the residue louder - the point of the dropouts
-        is that the decoder emits inharmonic junk there. Inharmonic fraction is
-        unchanged, 0.572 -> 0.572 over all sung frames and 0.555 -> 0.556 over
-        the lifted frames alone. Broadband level moves +0.21 dB.
+        The decoder emits inharmonic junk in its dropouts, and a gain cannot
+        change a frame's inharmonic FRACTION: the 0.572 -> 0.572 (all sung
+        frames) and 0.555 -> 0.556 (lifted frames) measured here show only
+        that, not that the lifted content is clean. It is not clean: the
+        frames this stage lifts carry an off-harmonic share of 0.44-0.45
+        against 0.33 on sung frames overall (2026-11-02, Hero replays), so it
+        does make some residue louder. Broadband level moves +0.21 dB.
 
         `smooth_s` is a tremolo/dropout trade and 0.15 s is deliberately on the
         conservative side of it, because the complaint being fixed IS unsteady
@@ -1885,9 +1888,10 @@ class SingingConversionPipeline:
         (2026-11-02, paired served-path replay, n=4): 700-1100 Hz dropout
         4/3/4/5 -> 3/3/3/3 frames of 424, but the frames it newly lifts are the
         decoder's junk - off-harmonic share 0.63-0.74 where the source's is
-        0.19-0.25 (sung frames overall: 0.33), and ~220 per render where the
-        source has no f0. Filling them makes noise louder, which is exactly
-        what this stage must not do: the blind spot is protective.
+        0.19-0.25 (frames this stage already lifts: 0.44-0.45; sung frames
+        overall: 0.33), and ~220 per render where the source has no f0.
+        Extending the lift to them makes noise louder; leaving those dips
+        unlifted is the safer side.
 
         # ponytail: level gate, no pitch tracking. If it ever lifts something
         # it should not, gate on the hum stage's existing voicing rather than

@@ -18,7 +18,9 @@ where the original singer was actually singing:
 2. duck  - the frames that are still voiced in the output while unvoiced in the
    source are, by definition, the residual hum: -14 dB on exactly those.
    -> -20.4 dB. Never where pyin hears the source sing: crepe's periodicity
-   collapses on some high belts, and the duck cut those notes 14 dB.
+   collapses on some high belts, and the duck cut those notes 14 dB. pyin runs
+   over the notch's 120-1100 Hz range, so below 120 Hz the guard sees nothing
+   and the duck behaves as it did before the guard.
 3. gate  - a soft level gate keyed on the source envelope for the long gaps,
    with a floor (never zeros: hard-zeroed chunks were the edge-bleed defect).
 
