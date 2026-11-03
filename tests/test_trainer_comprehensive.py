@@ -337,8 +337,13 @@ class TestTrainerInitialization:
         assert trainer.early_stopping_patience == 3
         assert trainer.early_stopping_min_delta == 0.001
 
+    @pytest.mark.cuda
     def test_cuda_device_auto_selection(self):
-        """Trainer auto-selects CUDA if available."""
+        """Trainer auto-selects CUDA if available.
+
+        Marked cuda: Trainer.__init__ moves internal modules to the selected
+        device, so with is_available stubbed True this still needs a real GPU.
+        """
         from auto_voice.training.trainer import Trainer
 
         model = MockModel()

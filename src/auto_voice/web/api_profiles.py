@@ -1399,7 +1399,7 @@ def add_sample_from_path(profile_id: str):
 
             from auto_voice.audio.separation import VocalSeparator
 
-            if _dep('torch_available'):
+            if _dep('torch_available') and _dep('torch').cuda.is_available():
                 _dep('torch').cuda.empty_cache()
                 _dep('torch').cuda.synchronize()
 

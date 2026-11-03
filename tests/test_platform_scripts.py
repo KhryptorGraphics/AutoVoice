@@ -106,7 +106,14 @@ def test_dependency_contract_enforces_high_critical_audit_policy(tmp_path):
     assert report["audits"]["npm-audit"]["ok"] is False
 
 
-def test_common_env_prefers_canonical_python_over_stale_python():
+def test_common_env_prefers_canonical_python_over_stale_python(tmp_path):
+    # A fake HOME carrying the canonical env makes this deterministic on
+    # machines without the real autovoice-thor conda env (hosted CI).
+    fake_home = tmp_path / "home"
+    canonical = fake_home / "anaconda3" / "envs" / "autovoice-thor" / "bin" / "python"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("#!/bin/sh\n")
+    canonical.chmod(0o755)
     command = (
         "export PYTHON=/tmp/not-autovoice-python; "
         "source scripts/common_env.sh && "
@@ -119,7 +126,7 @@ def test_common_env_prefers_canonical_python_over_stale_python():
         capture_output=True,
         text=True,
         env={
-            "HOME": os.environ.get("HOME", ""),
+            "HOME": str(fake_home),
             "PATH": os.environ.get("PATH", ""),
             "AUTOVOICE_ENV_NAME": "autovoice-thor",
         },
@@ -737,6 +744,7 @@ def test_preflight_full_hardware_rc_accepts_explicit_benchmark_report(tmp_path):
             "--no-require-jetson",
             "--no-require-docker",
             "--no-require-tensorrt-suite",
+            "--no-require-gitnexus",
         ],
         cwd=PROJECT_ROOT,
         capture_output=True,

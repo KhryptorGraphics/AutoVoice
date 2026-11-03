@@ -100,11 +100,17 @@ def _fake_training_modules(*, fail_in_train: bool = False):
 
     decoder_module = types.ModuleType("auto_voice.models.svc_decoder")
     decoder_module.CoMoSVCDecoder = FakeModel
+    # The diffusion_mel architecture (the default) imports DiffusionMelDecoder
+    # inside run_training and moves it to the CUDA device; fake it so these
+    # queue-orchestration tests run on CPU-only machines (hosted CI) too.
+    diffusion_module = types.ModuleType("auto_voice.models.diffusion_decoder")
+    diffusion_module.DiffusionMelDecoder = FakeModel
     trainer_module = types.ModuleType("auto_voice.training.trainer")
     trainer_module.Trainer = FakeTrainer
 
     return {
         "auto_voice.models.svc_decoder": decoder_module,
+        "auto_voice.models.diffusion_decoder": diffusion_module,
         "auto_voice.training.trainer": trainer_module,
     }, trainer_instances
 

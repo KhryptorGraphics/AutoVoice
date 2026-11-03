@@ -511,14 +511,16 @@ def upload_song():
         secure_name = secure_filename(song_file.filename)
         file_ext = os.path.splitext(secure_name)[1].lower()
 
+        # Ensure the temp directory exists before handing it to
+        # NamedTemporaryFile (it does not create missing parents).
+        upload_dir = '/tmp/autovoice_karaoke'
+        os.makedirs(upload_dir, exist_ok=True)
+
         tmp_file = tempfile.NamedTemporaryFile(
             suffix=file_ext,
             delete=False,
-            dir='/tmp/autovoice_karaoke'
+            dir=upload_dir
         )
-
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(tmp_file.name), exist_ok=True)
 
         song_file.save(tmp_file.name)
         tmp_file.close()

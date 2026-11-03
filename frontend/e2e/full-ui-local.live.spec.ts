@@ -105,6 +105,9 @@ test.describe('Local full UI workflow coverage', () => {
       mimeType: 'audio/wav',
       buffer: createWavBuffer(24_000, 4),
     })
+    // Workflows no longer auto-submit: generation starts from the explicit
+    // button (f74d4c7).
+    await page.getByTestId('start-generation-button').click()
     await expect(page.getByText('Ready for Conversion').first()).toBeVisible({ timeout: 20_000 })
     await page.getByRole('button', { name: /Convert Workflow Song/ }).click()
     await expect(page.getByText('Conversion complete', { exact: true })).toBeVisible({ timeout: 15_000 })

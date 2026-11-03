@@ -5,12 +5,12 @@
   "backend": {
     "requirements_runtime": {
       "path": "requirements-runtime.txt",
-      "sha256": "a2e2fc3c1448ddd6b1caf661daa56a6b37086c36aba586b4e3a2f29a0a916133",
-      "line_count": 31
+      "sha256": "c013d714111e1198048b2a47bbdf7a05b706ae5e5cb05f3686877ed957726f56",
+      "line_count": 32
     },
     "frontend_lock": {
       "path": "frontend/package-lock.json",
-      "sha256": "558b5c2635ba523d61778d507ad4103c2454455f89d884e863bc96f8dbec0980"
+      "sha256": "7c3533742d66c2192afe519fb6b605c140f05ba0663a60af412aa3f7de8dfe39"
     }
   },
   "images": {
