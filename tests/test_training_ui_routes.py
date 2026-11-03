@@ -424,6 +424,38 @@ def test_inharmonic_notch_is_reachable_and_unsettable(
     assert unset.status_code == 200
     assert "fork_hq_inharmonic_notch" not in pipeline._explicit_settings
 
+
+def test_effort_follow_strength_is_bounded_and_unsettable(
+        training_ui_app, training_ui_client):
+    """Effort following is a 0..1 strength: values outside are refused and
+    leave the stored value alone, and a null hands it back to the default."""
+    pipeline = training_ui_app.singing_conversion_pipeline
+
+    half = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_effort_follow_strength": 0.5},
+    )
+    assert half.status_code == 200
+    assert pipeline._chain_config()["fork_hq_effort_follow_strength"] == 0.5
+    assert (
+        training_ui_client.get("/api/v1/settings/app").get_json()
+        ["fork_hq_effort_follow_strength"] == 0.5
+    )
+
+    too_far = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_effort_follow_strength": 1.5},
+    )
+    assert too_far.status_code == 400
+    assert pipeline._chain_config()["fork_hq_effort_follow_strength"] == 0.5
+
+    unset = training_ui_client.patch(
+        "/api/v1/settings/app",
+        json={"fork_hq_effort_follow_strength": None},
+    )
+    assert unset.status_code == 200
+    assert "fork_hq_effort_follow_strength" not in pipeline._explicit_settings
+
 def test_app_settings_null_unset_leaves_other_keys_alone(training_ui_app, training_ui_client):
     """An unset must not clear the rest of the store."""
     update = training_ui_client.patch(

@@ -492,6 +492,9 @@ export interface AppSettings {
   fork_hq_hf_detonalize?: boolean
   fork_hq_inharmonic_notch?: boolean
   fork_hq_extend_bandwidth?: boolean
+  // How far the converted voice follows the source's soft-versus-belted
+  // spectral balance, 0..1. 0 disables the stage; 1.0 follows fully.
+  fork_hq_effort_follow_strength?: number
   // Ceiling on the air the chain restores above 5 kHz, in dB. 0 disables the
   // air restore; 12 is what the chain has always used.
   fork_hq_air_cap_db?: number

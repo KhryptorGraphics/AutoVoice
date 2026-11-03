@@ -99,11 +99,14 @@ PIPELINE_SETTING_KEYS: Tuple[str, ...] = (
     "fork_hq_voice_polish",
     "fork_hq_hf_detonalize",
     "fork_hq_extend_bandwidth",
-    # Ceiling on the air the chain restores above 5 kHz, in dB. 12 is what the
-    # chain has always used; 0 disables the air restore.
     # Disable the source-keyed high-register residue reduction when the
     # operator wants a direct A/B against the historical fork output.
     "fork_hq_inharmonic_notch",
+    # How far the converted voice follows the source's soft-versus-belted
+    # spectral balance, 0..1. 0 disables the stage; 1.0 follows fully.
+    "fork_hq_effort_follow_strength",
+    # Ceiling on the air the chain restores above 5 kHz, in dB. 12 is what the
+    # chain has always used; 0 disables the air restore.
     "fork_hq_air_cap_db",
     # True-peak ceiling for the converted vocal stem, in dBTP.
     "fork_hq_vocal_true_peak_dbfs",

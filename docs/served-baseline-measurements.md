@@ -13,11 +13,13 @@ chunk 30 s, max chunk 40 s, uv contract ON, crepe periodicity threshold 0.3.
 
 ## Historical raw-model vs served comparison (librosa 0.10.2)
 
-This saved analysis used the `autovoice-thor` scorer environment
-(Python 3.12 / librosa 0.10.2 / SciPy 1.17.1) and found 424 usable source
-frames in the 700-1100 Hz band. The pinned production scorer now uses
-librosa 0.11.0 and finds 509 frames there; do not compare these historical
-percentages directly with the runtime-matched table below.
+This analysis used the SERVING interpreter (`autovoice-thor`: Python 3.12 /
+librosa 0.10.2 / SciPy 1.17.1), so it is runtime-matched: it finds 424
+usable source frames in the 700-1100 Hz band. The sections below labelled
+"librosa 0.11.0" were scored with the offline interpreter (Python 3.13 /
+librosa 0.11.0), whose pyin keeps 509 frames there - consistent within
+themselves, but not the serving gate (see "Correction: the serving runtime
+is librosa 0.10.2" at the end).
 
 **Both columns are n=4.** The raw column is 4 raw fork renders of G_389; the
 served column is 4 independent end-to-end conversions of the same original
@@ -223,12 +225,12 @@ Neither raw candidate is a reason to replace the current checkpoint.
   current vs no-notch n=4 scoring.
 - `scratchpad/v6eval/current_truepeak_guard_n4_scores.json` — per-draw rows.
 - `scratchpad/v6eval/highreg_current_guard_n4/` — current 168-188 s crops.
-## Runtime-matched served comparison (librosa 0.11.0)
+## Offline-interpreter served comparison (librosa 0.11.0 - not the serving runtime)
 
 Four sequential end-to-end conversions with the retained notch-before-fill
 order used `f0_lo=400`; four served 550 Hz-gate renders are the control.
-Scores use the same Python 3.13.5 / librosa 0.11.0 / NumPy 2.2.6 / SciPy
-1.15.3 environment as the serving process. The source gate has 2,223 /
+Scores use the OFFLINE interpreter (Python 3.13.5 / librosa 0.11.0 / NumPy
+2.2.6 / SciPy 1.15.3), not the serving one. The source gate has 2,223 /
 212 / 26 / 509 frames in bands 250-400 / 400-550 / 550-700 / 700-1100 Hz.
 
 | metric | served f0_lo=550 (n=4) | served f0_lo=400 (n=4) |
@@ -257,10 +259,10 @@ than retained order's 13.5 % [9.9, 15.6]; 700-1100 Hz was 10.0 %
 [8.6, 11.0] versus 10.3 % [9.1, 11.5] (overlapping). It does not justify
 moving the stage.
 
-The earlier 15.9 % / 7.7 % served values and 5.4 % offline value came from
-librosa 0.10.2, whose pyin gate selected different source frames. Current
-serving and score reports use librosa 0.11.0; report metadata now records
-the library versions and effective notch threshold.
+The 15.9 % / 7.7 % served values (and the 5.4 % offline value) came from
+librosa 0.10.2 - the serving runtime - and are the runtime-matched ones (see
+the correction at the end). Conversion metadata records the library versions
+and the effective notch threshold.
 
 The local sample audit found 71 scorer-valid 700-1100 Hz frames across
 seven singing-labeled profile recordings (~0.82 s); 64 short local-video
@@ -270,20 +272,110 @@ trained on 78 samples and still failed its high-register acceptance gate.
 
 ## Listening and current-order status
 
-The current f0_lo=400 served n=4 leaves 7.7 % full-song high-register
-inharmonic excess and 0.8 % dropout; the goal of near-perfect conversion
-remains unmet. This includes no human listening result and does not prove
-the absence of ringing, artifacting, or distortion. Genuine high-register
-target-voice coverage or a changed content/decoder model remains necessary.
+The f0_lo=400 served n=4, scored with the serving interpreter (librosa
+0.10.2), leaves 7.7 % [6.5, 9.2] full-song 700-1100 Hz inharmonic excess and
+0.83 % [0.71, 0.94] dropout. The 10.3 % / 0.4 % figures were the offline
+librosa 0.11.0 scorer.
 
-The local sample audit found only 71 scorer-valid frames above 700 Hz across
-seven singing-labeled profile recordings (~0.82 s); 64 short local-video
-clips contributed none. The v6 fine-tune candidate used 78 samples and
-still failed the high-register acceptance gate. Synthetic pitch-shifted
-copies are not evidence of authentic target-voice articulation.
+The user listened to the retained-order candidate
+(`data/conversions/720b64b0-4681-4f6a-bfa7-9992660bc0a1/mix.wav`) on
+2026-11-02: "better but not perfect", "minorly staticy around the voice
+itself", and the source's soft-versus-belted contrast is easier to hear
+than the conversion's. The near-perfect goal therefore remains unmet;
+AV-4aqs stays open.
 
-Use this retained-order listening candidate:
+## Correction: the serving runtime is librosa 0.10.2 (2026-11-02)
 
-    data/conversions/720b64b0-4681-4f6a-bfa7-9992660bc0a1/mix.wav
+The service is systemd `autovoice`, which runs
+`/home/kp/anaconda3/envs/autovoice-thor/bin/python` - Python 3.12.12,
+librosa 0.10.2, NumPy 2.2.6, SciPy 1.17.1 - and its jobs record
+`librosa_version: 0.10.2` in their conversion metadata. An earlier note in
+this repo claimed the service ran librosa 0.11.0; that was the offline
+interpreter (`/home/kp/anaconda3/bin/python`, Python 3.13.5), checked by
+mistake. The pyin gate - in the scorer and in the notch stage itself -
+depends on the version, so served numbers must be scored with the serving
+interpreter. `requirements-runtime.txt` is back to `librosa>=0.10` (the
+`==0.11.0` pin had broken the dependency-contract hash).
 
-AV-4aqs remains open for human listening.
+Served n=4 per cohort, all byte-identical uploads of the same original
+(SHA-256 `831b9b06554bc6af...`), studio preset, scored with the serving
+interpreter (`scratchpad/runtime010/scores.json`):
+
+| metric | no notch | notch, 400 Hz (retained) |
+|---|---|---|
+| 700-1100 Hz inharmonic excess | 40.7 % [37.1, 45.5] | **7.7 % [6.5, 9.2]** |
+| 700-1100 Hz level dropout | 4.36 % [3.07, 6.37] | **0.83 % [0.71, 0.94]** |
+| 400-550 Hz inharmonic excess | 31.1 % [30.3, 31.8] | **15.9 % [14.8, 16.8]** |
+| 250-400 Hz inharmonic excess | 2.4 % [2.0, 3.1] | 2.3 % [1.7, 2.7] |
+
+## Effort follower (stage 8) and the served dropout gap (2026-11-02)
+
+Stage 8, `fork_effort_follow.follow_effort`, runs after the notch and before
+the dropout fill (`fork_hq_effort_follow_strength`, default 1.0; 0 disables
+it). Its docstring carries the full offline and served-path tables.
+
+Served n=4 per cohort, unpaired, serving interpreter
+(`scratchpad/runtime010_v2/scores4.json`), 700-1100 Hz level dropout:
+retained (no follower) 0.83 % [0.71, 0.94], follower first version 2.12 %
+[1.42, 2.83], current follower 1.77 % [1.42, 2.12]. That gap is NOT the
+follower:
+
+- The extra frames are the same few events in every cohort: 154.90-154.91,
+  168.93-169.19, 177.02-177.08 and 192.17-192.26 s
+  (`scratchpad/effort/dropout_frames.py`).
+- Not the input. All 46 Hero uploads are byte-identical (SHA-256
+  `831b9b06...a93d344`). Four fresh htdemucs_ft separations - the
+  service's separator, `config/gpu_config.yaml` - match `hero_src.wav`
+  within 0.1 dB at those frames (`scratchpad/effort/sep_ft.py`); the served
+  instrumental stems of retained, follower and no-notch jobs agree there
+  within 0.3 dB; every render is time-aligned (lag 0, `lag_probe.py`).
+- Every served job draws its own separation (demucs `shifts=1` takes a
+  random offset per call; htdemucs_ft run to run, frame level |diff| median
+  0.075 dB, p99 1.6 dB, max 9.9 dB) and its own render (noise_scale 0.4),
+  so served cohorts cannot be paired.
+
+Paired served-path replay (`scratchpad/effort/ft_replay.py`,
+`score_ftab.sh`): four htdemucs_ft separations of the original upload, each
+rendered through the fork bridge, then the production `_match_lead_level` +
+`_correct_fork_output` (studio preset) on that SAME render with the follower
+off and on. `chain_ab.py`'s replay and `_correct_fork_output` are
+bit-identical on the same input. Serving interpreter, render minus source:
+
+| metric | follower off | follower on |
+|---|---|---|
+| 700-1100 Hz level dropout | 2.06 % [1.65, 2.36] | 2.24 % [1.65, 2.83] |
+| dropout frames per render (of 424) | 8 / 7 / 10 / 10 | 8 / 7 / 11 / 12 |
+| 700-1100 Hz inharmonic excess | 11.4 % [8.9, 12.4] | 7.3 % [4.5, 10.2] |
+| 250-400 Hz inharmonic excess | 2.4 % [2.1, 2.6] | **5.0 % [4.7, 5.5]** |
+| harmonic tilt contrast ratio | 0.57 | **1.00** |
+| sung-frame centroid | +231 Hz | **+12 Hz** |
+| 10-16 kHz share, soft / belt frames | +6.8 / +5.3 dB | **+0.4 / +1.0 dB** |
+| 6-10 kHz share, soft / belt frames | -8.5 / +0.2 dB | -3.7 / -1.7 dB |
+| long-term 10-16 kHz | +2.3 dB | -0.1 dB |
+
+- On the same render the follower adds 0, 0, 1 and 2 dropout frames:
+  frames already within 0.4 dB of the scorer's 6 dB threshold (192.20-192.26
+  s) tip over. Its frame RMS change through the fill is p99 0.37 dB, max
+  1.9 dB; the first version's was p99 1.1 dB, max 3.4 dB
+  (`norm_v1_vs_cur.py`).
+- With the follower OFF the replays still drop 7-10 frames, at 154.90-154.91
+  s in three of four renders: whether that event survives depends on the
+  render draw (raw dip about -8 dB vs -5 dB), and the fill's 0.15 s
+  smoothing cannot lift a 2-3 frame dip.
+- The retained cohort's 0.71-0.94 % is the low end of the 16 notch-on
+  renders measured so far (the other twelve, served and replayed:
+  1.42-2.83 %). It
+  was the only cohort run one job at a time; concurrency was not tested as
+  a cause.
+- The follower's real cost is 250-400 Hz inharmonic excess, 2.4 % -> 5.0 %
+  (disjoint; offline paired 1.6 % -> 4.2 %, served 2.3 % -> 4.5 %). It comes
+  with the deviation following, not the matched top band: with no match
+  bands it is 5.5 %, and the match bands are what remove the 10-16 kHz bed
+  (no match: soft frames +3.7 dB, centroid +49 Hz). Cause not isolated.
+- A post-ISTFT frame-RMS lock (`lock_proto.py`) was prototyped and not
+  shipped: it put the replays' dropout back to 8/7/10/10 but cut the frame
+  RMS change only from p99 0.37 to 0.30 dB - the residue sits inside the
+  frame, where a frame-rate gain cannot reach it.
+
+Nobody has listened to the follower yet. The served candidates are jobs
+`4623a6cc`, `8493aa3d`, `094d5f8f` and `c926d400`.

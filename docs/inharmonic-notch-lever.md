@@ -174,10 +174,10 @@ signals; the separate `*_ceiling_dbfs` fields report the configured targets.
 cumulative vocal trim including the post-sum gains. Final mixes measured
 -1.5 dBTP; vocal stems measured -3.8 to -4.3 dBTP.
 
-The retained production notch reduces residue, but the runtime-matched
-librosa 0.11.0 served n=4 still has 10.3 % [9.1, 11.5] full-song
-700-1100 Hz inharmonic excess and 0.4 % [0.0, 0.8] dropout. It cannot
-synthesize the missing target-voice harmonics.
+The retained production notch reduces residue, but served n=4 scored with
+the serving interpreter (librosa 0.10.2) still has 7.7 % [6.5, 9.2]
+full-song 700-1100 Hz inharmonic excess and 0.83 % [0.71, 0.94] dropout. It
+cannot synthesize the missing target-voice harmonics.
 
 ## Production stage at the former 550 Hz gate
 
@@ -205,10 +205,10 @@ different.
 ## Historical analysis at the former f0_lo=550 Hz gate
 
 These saved 550 Hz results used the `autovoice-thor` scoring environment
-(librosa 0.10.2 / scipy 1.17.1; 424 source frames in 700-1100 Hz). The
-production runtime used librosa 0.11.0 / scipy 1.15.3 and yields 509 such
-frames. The old table remains historical; use the runtime-matched results
-below for current comparisons.
+(librosa 0.10.2 / scipy 1.17.1; 424 source frames in 700-1100 Hz) - the
+serving runtime. The offline interpreter (librosa 0.11.0 / scipy 1.15.3)
+yields 509 such frames; the librosa 0.11.0 sections below are consistent
+within themselves but are not the serving gate.
 
 | band | no-notch baseline (n=4) | current checkout (n=4) |
 |---|---|---|
@@ -259,11 +259,11 @@ in both outputs. The 20 s high-register A/B had cosine 1.00 and no
 measurable feature change. This is not an n=4 strength test and does not
 justify raising the 12 dB / 3-pass default.
 
-## Runtime-matched served comparison (librosa 0.11.0)
+## Offline-interpreter served comparison (librosa 0.11.0 - not the serving runtime)
 
-Runtime-matched scores were produced with Python 3.13.5, librosa 0.11.0,
-NumPy 2.2.6, and SciPy 1.15.3. `requirements-runtime.txt` pins librosa
-0.11.0; score and conversion metadata record the installed versions.
+These scores were produced with the offline interpreter (Python 3.13.5,
+librosa 0.11.0, NumPy 2.2.6, SciPy 1.15.3). The service runs librosa 0.10.2
+(`autovoice-thor`); conversion metadata records the installed versions.
 The source gate yields 2,223 / 212 / 26 / 509 frames in the 250-400 /
 400-550 / 550-700 / 700-1100 Hz bands.
 
@@ -289,7 +289,7 @@ Their source WAVs are byte-identical to the 550 Hz group
 
 ## Offline probe and rejected after-fill order
 
-With the same librosa 0.11.0 runtime, applying the helper once to the four
+With the same offline librosa 0.11.0 interpreter, applying the helper once to the four
 no-notch finished stems changed 400-550 Hz inharmonic excess from 24.3 %
 [22.5, 27.2] to 6.1 % [3.3, 9.2] (disjoint; p=0.029); 700-1100 Hz stayed
 10.9 % [9.5, 12.0]. This remains a stem-level probe using `hero_src.wav`
@@ -297,11 +297,13 @@ as the source key, not a replacement for the served result.
 
 The attempted after-fill production order was also rescored with librosa
 0.11.0. It yielded 18.6 % [17.2, 20.9] inharmonic excess at 400-550 Hz,
-worse than the retained order's 13.5 % [9.9, 15.6]. At 700-1100 Hz it was
-10.0 % [8.6, 11.0] vs 10.3 % [9.1, 11.5] (overlapping). The code therefore
-retains notch-before-fill. The earlier librosa 0.10.2 output (26.7 %)
-was not a valid production comparison; version mismatch changed the pyin
-mask and frame counts.
+worse than the retained order's 13.5 % [9.9, 15.6]; with the serving
+interpreter (librosa 0.10.2) the same comparison is 26.7 % [25.3, 27.8]
+against 15.9 % [14.8, 16.8]. At 700-1100 Hz (0.11.0) it was 10.0 %
+[8.6, 11.0] vs 10.3 % [9.1, 11.5] (overlapping). The code therefore
+retains notch-before-fill. The librosa 0.10.2 figures (26.7 % vs 15.9 %)
+are the serving runtime's; an earlier note here called them invalid on the
+mistaken belief that the service ran 0.11.0.
 
 The helper API keeps its direct-call default at `f0_lo=550`; the pipeline
 explicitly supplies its 400 Hz fallback. Job reports record `librosa_version`
@@ -310,7 +312,7 @@ and `inharmonic_notch_f0_lo_hz` so future service runs identify the gate used.
 Retained pre-fill 400 Hz jobs: `720b64b0`, `cafcddda`, `bd7731b2`,
 `3fde1c2d`. Retained 550 Hz jobs: `126dec49`, `1beb9645`, `2b82af9c`,
 `ba27fa99`. Rejected after-fill jobs: `7a929665`, `5153aa77`, `505d9406`,
-`9bc1d2cc`. Runtime-matched reports:
+`9bc1d2cc`. Offline-interpreter (librosa 0.11.0) reports:
 `scratchpad/v6eval/runtime_librosa011_stem_probe/scores.json`,
 `served_pair.json`, `offline_pair.json`,
 `scratchpad/v6eval/post_fill_order_n4/scores_base_librosa011.json`.
@@ -330,7 +332,7 @@ Retained 400 Hz served jobs: `720b64b0`, `cafcddda`, `bd7731b2`,
 `3fde1c2d`. Rejected after-fill jobs: `7a929665`, `5153aa77`, `505d9406`,
 `9bc1d2cc`.
 
-Runtime-matched reports (Python 3.13.5, librosa 0.11.0):
+Offline-interpreter reports (Python 3.13.5, librosa 0.11.0):
 
 - `scratchpad/v6eval/runtime_librosa011_stem_probe/scores.json`
 - `scratchpad/v6eval/runtime_librosa011_stem_probe/served_pair.json`
@@ -338,7 +340,14 @@ Runtime-matched reports (Python 3.13.5, librosa 0.11.0):
 - `scratchpad/v6eval/runtime_librosa011_stem_probe/order_pair.json`
 - `scratchpad/v6eval/post_fill_order_n4/scores_base_librosa011.json`
 
+Serving-interpreter reports (Python 3.12.12, librosa 0.10.2):
+
+- `scratchpad/runtime010/scores.json` - no-notch / retained / effort n=4
+- `scratchpad/runtime010/afterfill_scores.json` - retained vs after-fill
+
 **Status: the retained notch runs before fill with a 400 Hz pipeline fallback.**
-Runtime-matched served n=4 still has 10.3 % [9.1, 11.5] 700-1100 Hz
-inharmonic excess and 0.4 % [0.0, 0.8] dropout. The user's no-residual /
-no-artifact goal is unmet, and no human has listened. AV-4aqs remains open.
+Served n=4 scored with the serving interpreter (librosa 0.10.2) has 7.7 %
+[6.5, 9.2] 700-1100 Hz inharmonic excess and 0.83 % [0.71, 0.94] dropout.
+The user listened on 2026-11-02 ("better but not perfect", "minorly staticy
+around the voice itself"); the no-residual / no-artifact goal is unmet and
+AV-4aqs remains open.

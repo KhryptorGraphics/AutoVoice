@@ -16,6 +16,13 @@ The chain stages, in the order they run (all in ``_correct_fork_output``):
 5. ``fork_hq_air_cap_db`` — lift air above 5 kHz toward the source.
 6. ``fork_hq_extend_bandwidth`` — synthesise the band a band-limited source
    never captured.
+7. ``fork_hq_inharmonic_notch`` — cut the decoder's off-harmonic residue
+   where the source sings above 400 Hz.
+8. ``fork_hq_effort_follow_strength`` — move each frame's spectral balance
+   with the source's soft and belted singing; with air work on, also hold
+   the band above 5 kHz to the source's level note by note.
+
+The dropout fill runs last and has no key.
 
 Every stage except 6 is a *correction* of a decoder defect, so turning one
 off does not make the voice worse, it makes the defect audible again. Stage

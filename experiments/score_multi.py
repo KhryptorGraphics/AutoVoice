@@ -238,6 +238,11 @@ def score(groups, source_wav, reference=None, inharm_frames=INHARM_FRAMES,
         raise RuntimeError(f"reference {reference!r} is not one of {list(groups)}")
 
     src = prep_source(source_wav, inharm_frames=inharm_frames, seed=seed, verbose=verbose)
+    # The source's own sung-frame spectrum, measured exactly as a render's
+    # is: the centroid and band-energy columns only mean something against it.
+    src_met, _ = score_render(source_wav, src, len_tol_hops=len_tol_hops)
+    source_spectrum = {k: src_met[k] for k in
+                       ["centroid_hz"] + [f"band_{_energy_key(b)}_db" for b in ENERGY_BANDS]}
 
     models, cents = {}, {}
     for label, paths in groups.items():
@@ -266,6 +271,7 @@ def score(groups, source_wav, reference=None, inharm_frames=INHARM_FRAMES,
                               "numpy": np.__version__,
                               "scipy": scipy.__version__},
               "source": source_wav, "reference": reference,
+              "source_spectrum": source_spectrum,
               "f0_bands": [_band_key(b) for b in F0_BANDS],
               "band_frames": {_band_key(b): int(len(src["band_idx"][b])) for b in F0_BANDS},
               "identity_floor": IDENTITY_FLOOR,
@@ -302,6 +308,10 @@ def print_report(report):
     print(f"\n  overall (sung frames)  -  band energy dB re {ENERGY_REF[0]}-{ENERGY_REF[1]} Hz")
     print(f"  {'model':<{w}} n  {'centroid Hz':^18}" +
           "".join(f"{k[5:]:^18}" for k in ekeys) + f"{'identity':^18}")
+    ref = report.get("source_spectrum")
+    if ref:
+        print(f"  {'(source)':<{w}}    " +
+              "".join(f"{ref[k]:^18.1f}" for k in ["centroid_hz"] + ekeys))
     for label, m in models.items():
         row = "".join(_cell(m["metrics"][k]) + " " for k in ["centroid_hz"] + ekeys)
         row += _cell(m["metrics"]["identity"], p=4)

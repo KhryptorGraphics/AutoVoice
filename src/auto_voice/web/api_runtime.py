@@ -389,6 +389,8 @@ def get_app_settings():
                            bool(cfg.get('fork_hq_extend_bandwidth', True)))
         payload.setdefault('fork_hq_inharmonic_notch',
                            bool(cfg.get('fork_hq_inharmonic_notch', True)))
+        payload.setdefault('fork_hq_effort_follow_strength',
+                           float(cfg.get('fork_hq_effort_follow_strength', 1.0)))
         payload.setdefault('fork_hq_air_cap_db',
                            float(cfg.get('fork_hq_air_cap_db', 12.0)))
         payload.setdefault('fork_hq_vocal_true_peak_dbfs',
@@ -527,6 +529,9 @@ def update_app_settings():
             # from the pipeline config and no settings key carried it, so the
             # only way to change it was to edit source.
             ('fork_hq_air_cap_db', 0.0, 24.0),
+            # How far the converted voice follows the source's soft-versus-
+            # belted spectral balance. 0 disables the stage; 1.0 follows fully.
+            ('fork_hq_effort_follow_strength', 0.0, 1.0),
             # True-peak ceiling for the converted vocal stem, in dBTP. A
             # sample peak of 0.00 dBFS measured +0.16 dBTP once the
             # inter-sample peaks were reconstructed, and the stem clipped.

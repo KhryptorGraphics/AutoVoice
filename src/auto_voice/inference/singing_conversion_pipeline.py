@@ -2019,12 +2019,11 @@ class SingingConversionPipeline:
             converted = extend_bandwidth(converted, sr)
 
         # 7. High-register inharmonic residue: the "double ringing".
-        #    In the production librosa 0.11.0 environment, served n=4 at
-        #    f0_lo=400 reduced 400-550 Hz excess from 23.9 % to 13.5 %
-        #    (disjoint; p=0.029), and 700-1100 Hz from 12.5 % to 10.3 %
-        #    (overlapping). The 550-700 Hz band has only 26 source frames.
-        #    Moving this stage after fill worsened 400-550 Hz to 18.6 %.
-        #    Retain the pre-fill order; the 10.3 % high-band residue remains.
+        #    Served n=4, scored with the serving interpreter's librosa
+        #    (0.10.2; the pyin gate depends on the version): 700-1100 Hz
+        #    excess 40.7 % -> 7.7 % and level dropout 4.4 % -> 0.8 %;
+        #    400-550 Hz 31.1 % -> 15.9 %. Moving this stage after the fill
+        #    was measured and rejected (400-550 Hz 26.7 %). Pre-fill order.
         if bool(cfg.get('fork_hq_inharmonic_notch', True)):
             from .fork_inharmonic_notch import suppress_inharmonic
             converted = suppress_inharmonic(
@@ -2036,7 +2035,25 @@ class SingingConversionPipeline:
                 f0_lo=float(cfg.get('fork_hq_inharmonic_notch_f0_lo', 400.0)),
                 passes=int(cfg.get('fork_hq_inharmonic_notch_passes', 3)))
 
-        # 8. Apply the final level/dropout fill after the spectral stages;
+        # 8. Effort following: the decoder flattens soft and belted singing
+        #    into one middle timbre - its belt-minus-soft harmonic tilt
+        #    contrast is 0.68 of the source's after stages 1-7. Each frame's
+        #    spectral balance follows the source's deviation from its own
+        #    mean (0.68 -> 1.03). With air work on, the band above 5 kHz is
+        #    instead matched to the source's per-frame share: the air restore
+        #    matches the long-term average, which sibilants and the loudest
+        #    belts dominate, and so lifts held notes +7 dB above the source
+        #    at 10-16 kHz - the "static around the voice" (-> +0.7 dB). With
+        #    air work off the top band keeps the render's own level. Before
+        #    the fill, which keeps the last word on level.
+        effort = float(cfg.get('fork_hq_effort_follow_strength', 1.0) or 0.0)
+        if effort > 0.0:
+            from .fork_effort_follow import follow_effort
+            converted = follow_effort(
+                source, converted, sr, strength=effort,
+                match_above_hz=5000.0 if air_cap_db > 0.0 else None)
+
+        # 9. Apply the final level/dropout fill after the spectral stages;
         #    later stages would otherwise undo its corrected contour.
         converted = self._fill_lead_dropouts(converted, source, sr)
         return converted
@@ -2820,6 +2837,9 @@ class SingingConversionPipeline:
                     chain_config.get('fork_hq_inharmonic_notch', True)),
                 'inharmonic_notch_f0_lo_hz': float(
                     chain_config.get('fork_hq_inharmonic_notch_f0_lo', 400.0)),
+                'effort_follow_strength': float(
+                    chain_config.get('fork_hq_effort_follow_strength', 1.0)
+                    or 0.0),
                 # Report what actually ran. This key previously always read
                 # 'svc_fork_hq_stereo' while no such processing existed
                 # anywhere in the codebase.

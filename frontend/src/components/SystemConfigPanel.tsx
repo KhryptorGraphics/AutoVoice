@@ -1016,6 +1016,28 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                   </div>
 
                   <div>
+                    <label className="text-sm text-gray-400">Effort following (soft ↔ belted)</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={dragValue('forkHqEffortFollowStrength', appSettings.fork_hq_effort_follow_strength ?? 1.0)}
+                      onChange={onDrag('forkHqEffortFollowStrength')}
+                      onPointerUp={onCommit('forkHqEffortFollowStrength', v => updateAppSettingsMutation.mutate({ fork_hq_effort_follow_strength: v }))}
+                      onKeyUp={onCommit('forkHqEffortFollowStrength', v => updateAppSettingsMutation.mutate({ fork_hq_effort_follow_strength: v }))}
+                      className="mt-1 w-full"
+                      data-testid="forkHqEffortFollowStrength-slider"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Off (0)</span>
+                      <span data-testid="forkHqEffortFollowStrength-value">{dragValue('forkHqEffortFollowStrength', appSettings.fork_hq_effort_follow_strength ?? 1.0).toFixed(2)}</span>
+                      <span>Full (1.0)</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">How far the converted voice follows the original singer between soft, breathy passages and belted ones. The decoder flattens both into one middle timbre (brightness contrast 0.57 of the original's; 1.0 follows fully, measured 1.00). With the air restore on, it also holds the top band to the original's level note by note: 10-16 kHz on soft notes goes from +6.8 dB over the original to +0.4 dB. Measured cost: low notes (250-400 Hz) carry more off-harmonic energy, 5.0% over the original instead of 2.4%.</p>
+                  </div>
+
+                  <div>
                     <label className="text-sm text-gray-400">Vocal and mix true-peak ceiling</label>
                     <input
                       type="range"
@@ -1093,7 +1115,7 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       High-register inharmonic notch
                     </label>
                     <p className="mt-0.5 text-xs text-gray-500">
-                      Reduces off-harmonic residue above 550 Hz. Measured on Hero: 40.69% → 11.17% at 700–1100 Hz (n=4). Turn off to A/B the original output.
+                      Reduces off-harmonic residue where the source sings above 400 Hz. Measured on Hero (n=4 served): inharmonic excess 40.7% → 7.7% and level dropout 4.4% → 0.8% at 700–1100 Hz; 31.1% → 15.9% at 400–550 Hz. Turn off to A/B the original output.
                     </p>
 
                     <label className="flex items-center gap-2 text-sm text-gray-400">

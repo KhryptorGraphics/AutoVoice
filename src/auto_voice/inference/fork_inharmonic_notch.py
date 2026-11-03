@@ -38,6 +38,14 @@ Per draw at 700-1100 Hz: 40.73 / 45.54 / 39.34 / 37.14 before, and
 11.92 / 12.99 / 11.51 / 8.68 after. Every draw improves by 25-33 points;
 none regresses. The identity vector is unchanged at 1.000.
 
+That table is the stage's original 550 Hz gate. The pipeline now gates at
+400 Hz; four served conversions per arm, scored with the serving
+interpreter's librosa (0.10.2 - the pyin gate depends on the version):
+
+    band          inharmonic excess                level dropout
+    400-550 Hz   31.1 % -> 15.9 % [14.8, 16.8]
+    700-1100 Hz  40.7 % ->  7.7 % [6.5, 9.2]     4.36 % -> 0.83 % [0.71, 0.94]
+
 The low register is untouched to two decimals even though the stage runs
 over the whole song, because the cut is gated on the source's pitch. That
 gate is not optional: without it the 250-400 Hz band went from +27.5 % to
@@ -70,11 +78,13 @@ re-analyses the signal it actually produced and corrects again. The mean
 cut converges 5.17 -> 1.58 -> 0.93 dB over three passes; a fourth pass
 does not help.
 
-Where it runs: after the de-tonalizer and the air restore, and BEFORE the
-dropout fill. The fill has to stay the last thing that touches level, and
-this stage's make-up gain touches level. A uniform level lift does not
-change the inharmonic FRACTION the metric measures, so the fill running
-after this stage does not undo it.
+Where it runs: after the de-tonalizer, the air restore and the bandwidth
+extension, and BEFORE the effort follower and the dropout fill. The fill has
+to stay the last thing that touches level, and this stage's make-up gain
+touches level. A uniform level lift does not change the inharmonic FRACTION
+the metric measures, so the fill running after this stage does not undo it;
+moving this stage after the fill was measured and rejected (400-550 Hz
+excess 13.5 % -> 18.6 %).
 
 Keyed on the source, like every other stage in the chain: the render's own
 f0 is unreliable exactly where the render is broken, and the source is
