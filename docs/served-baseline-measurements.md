@@ -461,7 +461,22 @@ What survives, 4 frames per render on average:
   count as dropouts because the reference separation kept the note
   (AV-08tj).
 - 192.20-192.26 s on some draws: dips already in the raw render that the
-  fill cannot lift (AV-a4dv).
+  fill only partly lifts (AV-a4dv, closed - see below).
+
+Rejected: a faster dropout fill (2026-11-02). Taking the larger of the
+shipped lift and a fast one (median 3, max 5, box 5) on the same four
+pre-fill signals (`prefill_cache.py`, bit-exact to the shipped renders) gave
+700-1100 Hz dropout 4/3/4/5 -> 3/3/3/3 frames and 250-400 Hz 9/11/9/9 ->
+4/2/3/1, and on the true time grid (`fill_mod.py`: each live run band-passed
+on its own) cut the output's 3-8 Hz level error against the source 1.20 ->
+1.10 dB on every draw, with no measurable new overshoot, peak or inharmonic
+excess (`fill_variants.py`, `fill_overshoot.py`). It is not shipped because
+of what it lifts (`fill_harm.py`): the frames it newly fills carry an
+off-harmonic share of 0.63-0.74 where the source sings cleanly (0.19-0.25),
+against 0.44-0.45 on the frames the shipped fill lifts and 0.33 on sung
+frames overall, and about 220 more per render have no source f0 at all. The
+short dips are where the decoder emits junk; lifting them trades a dip for
+louder noise.
 
 Served confirmation (service restarted on `44236b55`): four conversions of
 the original through the live service, one at a time - jobs `f2dd8582`,

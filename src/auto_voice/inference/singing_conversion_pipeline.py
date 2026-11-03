@@ -1880,6 +1880,15 @@ class SingingConversionPipeline:
         For scale, the SOURCE's own 3-8 Hz level modulation is 2.15 dB rms, so
         what this adds is under a tenth of what her voice does naturally.
 
+        A faster second lift for the 2-10 frame dips this smoothing under-fills
+        (median 3, max 5, box 5, taken where higher) was measured and REJECTED
+        (2026-11-02, paired served-path replay, n=4): 700-1100 Hz dropout
+        4/3/4/5 -> 3/3/3/3 frames of 424, but the frames it newly lifts are the
+        decoder's junk - off-harmonic share 0.63-0.74 where the source's is
+        0.19-0.25 (sung frames overall: 0.33), and ~220 per render where the
+        source has no f0. Filling them makes noise louder, which is exactly
+        what this stage must not do: the blind spot is protective.
+
         # ponytail: level gate, no pitch tracking. If it ever lifts something
         # it should not, gate on the hum stage's existing voicing rather than
         # adding a second crepe pass.
