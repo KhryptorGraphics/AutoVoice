@@ -12,6 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# The default DB backend is the production MySQL server, which does not exist
+# on CI runners (and db.schema reads AUTOVOICE_DB_TYPE at import time) — the
+# deterministic harness always runs on sqlite.
+os.environ.setdefault("AUTOVOICE_DB_TYPE", "sqlite")
+
 import numpy as np
 import torch
 
@@ -368,6 +373,11 @@ def build_app(data_dir: Path):
     import auto_voice.web.audio_router as audio_router
 
     web_api.torch = _HarnessTorch()
+
+    # Keep the harness sqlite DB inside the throwaway data dir (the default
+    # path is relative to the web server's cwd).
+    from auto_voice.db import schema as db_schema
+    db_schema.DATABASE_PATH = data_dir / "autovoice.db"
 
     # Serve deterministic benchmark evidence: the System page fetches
     # /reports/benchmarks/latest, and a 404 leaves an unavoidable browser
