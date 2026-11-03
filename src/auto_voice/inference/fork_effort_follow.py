@@ -52,7 +52,8 @@ serving interpreter (librosa 0.10.2), render minus source:
     sung-frame centroid           +354 Hz  +20 Hz
     700-1100 Hz level dropout     0.53 %   0.53 %
     700-1100 Hz inharmonic excess 15.8 %   12.3 %
-    250-400 Hz inharmonic excess   1.6 %    4.2 %
+    250-400 Hz inharmonic excess   1.6 %    4.2 %   (score_multi window)
+    same, off share, 1-bin window  0.402    0.383   (source 0.310)
 
 Served path, paired - four htdemucs_ft separations of the original upload
 (the service's separator; each call draws its own random demucs shift),
@@ -69,11 +70,16 @@ source, n=4:
     700-1100 Hz level dropout     2.06 %   2.24 %  (frames of 424 per
                                                     render: 8/7/10/10 ->
                                                     8/7/11/12)
-    250-400 Hz inharmonic excess   2.4 %    5.0 %   (disjoint; OPEN COST)
+    250-400 Hz inharmonic excess   2.4 %    5.0 %   (score_multi window)
+    same, off share, 1-bin window  0.406    0.386   (source 0.310)
 
-The dropout difference is frames already within 0.4 dB of the scorer's 6 dB
-threshold tipping over. The 250-400 Hz cost comes with the deviation
-following, not the matched top band: with no match bands it is 5.5 %.
+The dropout difference is frames close to the scorer's 6 dB gate tipping
+over; the scorer calls it noise. The 250-400 Hz row depends on the scorer's
+harmonic window: +-3 % of k*f0 is narrower than one FFT bin for the lowest
+harmonics at these pitches, so most of their energy reads as off-harmonic
+(the source itself scores 0.533 off). Floored at one bin, the off-harmonic
+share falls toward the source's instead. Neither reading has been checked
+by ear.
 
 Band layout: octaves to 4 kHz, third-octaves above. The resolution matters
 up top: the source's soft passages carry breath noise at 6-8 kHz that the

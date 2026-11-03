@@ -1034,7 +1034,7 @@ export function SystemConfigPanel({ onConfigChange }: SystemConfigPanelProps) {
                       <span data-testid="forkHqEffortFollowStrength-value">{dragValue('forkHqEffortFollowStrength', appSettings.fork_hq_effort_follow_strength ?? 1.0).toFixed(2)}</span>
                       <span>Full (1.0)</span>
                     </div>
-                    <p className="mt-1 text-xs text-gray-500">How far the converted voice follows the original singer between soft, breathy passages and belted ones. The decoder flattens both into one middle timbre (brightness contrast 0.57 of the original's; 1.0 follows fully, measured 1.00). With the air restore on, it also holds the top band to the original's level note by note: 10-16 kHz on soft notes goes from +6.8 dB over the original to +0.4 dB. Measured cost: low notes (250-400 Hz) carry more off-harmonic energy, 5.0% over the original instead of 2.4%.</p>
+                    <p className="mt-1 text-xs text-gray-500">How far the converted voice follows the original singer between soft, breathy passages and belted ones. The decoder flattens both into one middle timbre (brightness contrast 0.57 of the original's); at full strength the stage measures 1.00, i.e. it follows fully. With the air restore on, it also holds the top band to the original's level note by note: 10-16 kHz on soft notes goes from +6.8 dB over the original to +0.4 dB.</p>
                   </div>
 
                   <div>

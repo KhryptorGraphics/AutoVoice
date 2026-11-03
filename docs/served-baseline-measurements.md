@@ -317,18 +317,21 @@ it). Its docstring carries the full offline and served-path tables.
 Served n=4 per cohort, unpaired, serving interpreter
 (`scratchpad/runtime010_v2/scores4.json`), 700-1100 Hz level dropout:
 retained (no follower) 0.83 % [0.71, 0.94], follower first version 2.12 %
-[1.42, 2.83], current follower 1.77 % [1.42, 2.12]. That gap is NOT the
-follower:
+[1.42, 2.83], current follower 1.77 % [1.42, 2.12]. Paired, the follower
+accounts for a small part of that gap (below); the cause of the rest is not
+established.
 
 - The extra frames are the same few events in every cohort: 154.90-154.91,
   168.93-169.19, 177.02-177.08 and 192.17-192.26 s
   (`scratchpad/effort/dropout_frames.py`).
-- Not the input. All 46 Hero uploads are byte-identical (SHA-256
-  `831b9b06...a93d344`). Four fresh htdemucs_ft separations - the
-  service's separator, `config/gpu_config.yaml` - match `hero_src.wav`
-  within 0.1 dB at those frames (`scratchpad/effort/sep_ft.py`); the served
-  instrumental stems of retained, follower and no-notch jobs agree there
-  within 0.3 dB; every render is time-aligned (lag 0, `lag_probe.py`).
+- The uploads are byte-identical (all 46 Hero uploads, SHA-256
+  `831b9b06...a93d344`). The historical jobs' vocal stems were not saved,
+  so their separations cannot be compared directly. Indirect evidence only:
+  their instrumental stems (same separation pass) agree within 0.3 dB at
+  those frames, four fresh htdemucs_ft separations - the service's
+  separator, `config/gpu_config.yaml` - match `hero_src.wav` within 0.1 dB
+  there (`scratchpad/effort/sep_ft.py`), and every render is time-aligned
+  (lag 0, `lag_probe.py`).
 - Every served job draws its own separation (demucs `shifts=1` takes a
   random offset per call; htdemucs_ft run to run, frame level |diff| median
   0.075 dB, p99 1.6 dB, max 9.9 dB) and its own render (noise_scale 0.4),
@@ -346,36 +349,43 @@ bit-identical on the same input. Serving interpreter, render minus source:
 | 700-1100 Hz level dropout | 2.06 % [1.65, 2.36] | 2.24 % [1.65, 2.83] |
 | dropout frames per render (of 424) | 8 / 7 / 10 / 10 | 8 / 7 / 11 / 12 |
 | 700-1100 Hz inharmonic excess | 11.4 % [8.9, 12.4] | 7.3 % [4.5, 10.2] |
-| 250-400 Hz inharmonic excess | 2.4 % [2.1, 2.6] | **5.0 % [4.7, 5.5]** |
+| 250-400 Hz inharmonic excess, score_multi window | 2.4 % [2.1, 2.6] | 5.0 % [4.7, 5.5] |
+| 250-400 Hz off-harmonic share, 1-bin window (source 0.310) | 0.406 [0.404, 0.408] | 0.386 [0.383, 0.388] |
 | harmonic tilt contrast ratio | 0.57 | **1.00** |
 | sung-frame centroid | +231 Hz | **+12 Hz** |
 | 10-16 kHz share, soft / belt frames | +6.8 / +5.3 dB | **+0.4 / +1.0 dB** |
 | 6-10 kHz share, soft / belt frames | -8.5 / +0.2 dB | -3.7 / -1.7 dB |
 | long-term 10-16 kHz | +2.3 dB | -0.1 dB |
 
-- On the same render the follower adds 0, 0, 1 and 2 dropout frames:
-  frames already within 0.4 dB of the scorer's 6 dB threshold (192.20-192.26
-  s) tip over. Its frame RMS change through the fill is p99 0.37 dB, max
-  1.9 dB; the first version's was p99 1.1 dB, max 3.4 dB
-  (`norm_v1_vs_cur.py`).
+- On the same render the follower adds 0, 0, 1 and 2 dropout frames
+  (+0.18 pp; the scorer calls it noise): frames close to the scorer's 6 dB
+  gate at 192.20-192.26 s tip over. Its frame RMS change through the fill
+  is p99 0.37 dB, max 1.9 dB; the first version's was p99 1.1 dB, max
+  3.4 dB (`norm_v1_vs_cur.py`).
 - With the follower OFF the replays still drop 7-10 frames, at 154.90-154.91
-  s in three of four renders: whether that event survives depends on the
-  render draw (raw dip about -8 dB vs -5 dB), and the fill's 0.15 s
-  smoothing cannot lift a 2-3 frame dip.
+  s in three of four renders: that event follows the render draw (raw dip
+  about -8 dB on some draws, -5 dB on others). The fill's 5-frame median
+  erases a 1-2 frame deficit entirely and its 0.15 s smoothing delivers
+  4.6 of 12 dB to a 3-frame one (AV-a4dv).
 - The retained cohort's 0.71-0.94 % is the low end of the 16 notch-on
   renders measured so far (the other twelve, served and replayed:
-  1.42-2.83 %). It
-  was the only cohort run one job at a time; concurrency was not tested as
-  a cause.
-- The follower's real cost is 250-400 Hz inharmonic excess, 2.4 % -> 5.0 %
-  (disjoint; offline paired 1.6 % -> 4.2 %, served 2.3 % -> 4.5 %). It comes
-  with the deviation following, not the matched top band: with no match
-  bands it is 5.5 %, and the match bands are what remove the 10-16 kHz bed
-  (no match: soft frames +3.7 dB, centroid +49 Hz). Cause not isolated.
+  1.42-2.83 %). It was the only cohort run one job at a time; neither
+  concurrency nor the historical stems were tested as a cause.
+- The 250-400 Hz result depends on the scorer's harmonic window.
+  score_multi counts +-3 % of k*f0 as harmonic, narrower than one FFT bin
+  (21.5 Hz) for the lowest harmonics at these pitches, so most of their
+  energy reads as off-harmonic (the source itself scores 0.533 off). On
+  that window the follower reads 2.4 % -> 5.0 % (offline paired 1.6 % ->
+  4.2 %, served unpaired 2.3 % -> 4.5 %). Floored at one bin, the
+  off-harmonic share FALLS toward the source's: served-path 0.406 -> 0.386,
+  offline 0.402 -> 0.383, source 0.310 (`ftab_floor.py`). Not a confirmed
+  cost, and not checked by ear (AV-n6o4).
+- The match bands are what remove the 10-16 kHz bed: without them the soft
+  frames stay +3.7 dB over the source and the centroid +49 Hz.
 - A post-ISTFT frame-RMS lock (`lock_proto.py`) was prototyped and not
   shipped: it put the replays' dropout back to 8/7/10/10 but cut the frame
-  RMS change only from p99 0.37 to 0.30 dB - the residue sits inside the
-  frame, where a frame-rate gain cannot reach it.
+  RMS change only from p99 0.37 to 0.30 dB - a frame-rate gain cannot
+  remove a change that sits inside the frame.
 
 Nobody has listened to the follower yet. The served candidates are jobs
 `4623a6cc`, `8493aa3d`, `094d5f8f` and `c926d400`.
