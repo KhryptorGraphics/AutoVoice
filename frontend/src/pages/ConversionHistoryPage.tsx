@@ -34,7 +34,12 @@ function coerceDate(...values: unknown[]): Date {
       return value
     }
     if (typeof value === 'string' || typeof value === 'number') {
-      const date = new Date(value)
+      // Conversion jobs stamp epoch SECONDS (time.time()): `new Date(1793668912)`
+      // reads that as milliseconds and dated every row 1/21/1970. Same rule as
+      // ConversionHistoryTable's formatter.
+      const date = typeof value === 'number'
+        ? new Date(value < 1e11 ? value * 1000 : value)
+        : new Date(value)
       if (Number.isFinite(date.getTime())) {
         return date
       }
