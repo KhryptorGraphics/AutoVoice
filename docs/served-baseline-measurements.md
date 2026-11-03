@@ -450,9 +450,16 @@ dip got 3.8 dB of fill instead of 2.9 dB, and the two raw-render frames
 What survives, 4 frames per render on average:
 
 - 177.02-177.08 s, 3 frames on every draw and every arm: no duck fires
-  there. The hum stage's source gate (stage 3, -30/-42 dB re the source's
-  peak) reads this quiet sung passage (-24 dB re the loud median) as a gap
-  and takes it about 8 dB down; nothing later lifts it.
+  there. The scorer's reference separation (`hero_src.wav`) holds a quiet
+  sung note there (-23.7 to -24.7 dB re its loud median, pyin voicing
+  0.76-0.95, ~790 Hz); every htdemucs_ft service key has the same frames
+  4-6 dB quieter (-28.2 to -31.1 dB) and unvoiced (0.03-0.09), and the fork
+  render is already 9-12 dB under the reference before any stage. The hum
+  stage's source gate (-30/-42 dB re the source's peak) then takes that
+  quiet key region a further 6-10 dB down. On its own input the gate is
+  gating a quiet unvoiced region, not misreading a sung frame; the frames
+  count as dropouts because the reference separation kept the note
+  (AV-08tj).
 - 192.20-192.26 s on some draws: dips already in the raw render that the
   fill cannot lift (AV-a4dv).
 
