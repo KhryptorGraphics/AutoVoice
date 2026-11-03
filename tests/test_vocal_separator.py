@@ -1,4 +1,7 @@
 """Tests for VocalSeparator using Demucs HTDemucs model."""
+import threading
+import time
+
 import numpy as np
 import pytest
 import torch
@@ -90,6 +93,37 @@ class TestVocalSeparatorLoadModel:
         sep._load_model()
 
         sep._get_model.assert_called_once()
+
+    def test_concurrent_first_use_loads_one_model(self):
+        """Threads sharing a separator load Demucs once, not once each.
+
+        AV-auyr: concurrent conversions each saw ``_model`` unset and each put
+        their own copy of the model on the GPU."""
+        from auto_voice.audio.separation import VocalSeparator
+        sep = VocalSeparator(device=torch.device('cpu'))
+        mock_model = MagicMock()
+        mock_model.sources = ['drums', 'bass', 'other', 'vocals']
+        mock_model.samplerate = 44100
+
+        def slow_get_model(name):
+            time.sleep(0.1)  # a real load takes seconds; others arrive meanwhile
+            return mock_model
+
+        sep._get_model = MagicMock(side_effect=slow_get_model)
+        start = threading.Barrier(4)
+
+        def first_use():
+            start.wait()
+            sep._load_model()
+
+        threads = [threading.Thread(target=first_use) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert sep._get_model.call_count == 1
+        assert sep._model is mock_model
 
     def test_load_model_raises_on_failure(self):
         """_load_model raises RuntimeError if get_model fails."""

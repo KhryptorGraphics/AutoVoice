@@ -183,6 +183,37 @@ def test_get_separator_lazy_loads(mock_separator_class):
     assert mock_separator_class.call_count == 1  # Not called again
 
 
+@patch('auto_voice.audio.separation.VocalSeparator')
+def test_get_separator_builds_one_separator_for_concurrent_jobs(mock_separator_class):
+    """Job threads share the pipeline: their first conversions must share one
+    separator. AV-auyr: three concurrent jobs built three, i.e. three Demucs
+    models on the GPU."""
+    import threading
+    import time
+
+    def slow_separator(**kwargs):
+        time.sleep(0.1)  # construction is slow; the other jobs arrive meanwhile
+        return MagicMock()
+
+    mock_separator_class.side_effect = slow_separator
+    pipeline = SingingConversionPipeline()
+    start = threading.Barrier(3)
+    got = []
+
+    def job():
+        start.wait()
+        got.append(pipeline._get_separator())
+
+    threads = [threading.Thread(target=job) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert mock_separator_class.call_count == 1
+    assert len(got) == 3 and all(s is got[0] for s in got)
+
+
 @patch('auto_voice.inference.model_manager.ModelManager')
 def test_get_model_manager_lazy_loads(mock_manager_class):
     """Test _get_model_manager lazy-loads ModelManager."""

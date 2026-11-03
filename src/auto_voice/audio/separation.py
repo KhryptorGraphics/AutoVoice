@@ -4,6 +4,7 @@ No fallback behavior - raises RuntimeError if Demucs is unavailable.
 """
 import logging
 import gc
+import threading
 from typing import Dict, Optional
 
 import numpy as np
@@ -15,6 +16,10 @@ logger = logging.getLogger(__name__)
 # from demucs during ``VocalSeparator`` initialization.
 get_model = None
 apply_model = None
+
+# One Demucs load at a time: threads sharing a separator each saw ``_model``
+# unset and each loaded their own copy onto the GPU (AV-auyr).
+_LOAD_LOCK = threading.Lock()
 
 
 class VocalSeparator:
@@ -95,17 +100,22 @@ class VocalSeparator:
         if self._model is not None:
             return
 
-        try:
-            self._model = self._get_model(self.model_name)
-            self._model.to(self.device)
-            self._model.eval()
+        with _LOAD_LOCK:
+            if self._model is not None:
+                return
+            try:
+                model = self._get_model(self.model_name)
+                model.to(self.device)
+                model.eval()
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to load Demucs model '{self.model_name}': {e}"
+                )
+            # Publish only a model that is on its device and in eval mode.
+            self._model = model
             logger.info(
                 f"Demucs model '{self.model_name}' loaded on {self.device} "
-                f"(sources: {self._model.sources}, samplerate: {self._model.samplerate})"
-            )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to load Demucs model '{self.model_name}': {e}"
+                f"(sources: {model.sources}, samplerate: {model.samplerate})"
             )
 
     def unload(self) -> None:

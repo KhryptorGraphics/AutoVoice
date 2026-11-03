@@ -31,9 +31,15 @@ voice_conversion:
   singing_conversion_enabled: true
   voice_cloning_enabled: true
 
+# One conversion at a time (AV-auyr). Conversions are GPU-bound, so parallel
+# jobs only add footprint: three at once on the shared Thor box (Strata,
+# TensorRT-LLM and ollama resident, ~5 GB free) loaded three Demucs models,
+# and two of their fork renders hit CUDA OOM at model load even with the
+# renders serialized by svc_fork_bridge's lock. One at a time completed
+# under the same load. Extra jobs wait as 'queued'.
 job_manager:
   enabled: true
-  max_workers: 4
+  max_workers: 1
   ttl_seconds: 3600
   in_progress_ttl_seconds: 7200
 

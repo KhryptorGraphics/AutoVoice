@@ -5,6 +5,7 @@ Orchestrates: audio separation -> content encoding -> voice conversion -> vocode
 import logging
 import os
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -15,6 +16,10 @@ import numpy as np
 from .quality_presets import preset_overrides
 
 logger = logging.getLogger(__name__)
+
+# Job threads share one pipeline; without this each built its own separator
+# (three Demucs models on the GPU at once in the AV-auyr run).
+_SEPARATOR_INIT_LOCK = threading.Lock()
 
 
 class SeparationError(Exception):
@@ -482,12 +487,14 @@ class SingingConversionPipeline:
             VocalSeparator instance configured for this device.
         """
         if self._separator is None:
-            from ..audio.separation import VocalSeparator
-            self._separator = VocalSeparator(
-                device=self.device,
-                model_name=self.config.get('separation_model', 'htdemucs'),
-            )
-            logger.info("Vocal separator loaded")
+            with _SEPARATOR_INIT_LOCK:
+                if self._separator is None:
+                    from ..audio.separation import VocalSeparator
+                    self._separator = VocalSeparator(
+                        device=self.device,
+                        model_name=self.config.get('separation_model', 'htdemucs'),
+                    )
+                    logger.info("Vocal separator loaded")
         return self._separator
 
     def set_explicit_settings(self, updates: Dict[str, Any]) -> None:
