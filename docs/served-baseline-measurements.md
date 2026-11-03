@@ -463,4 +463,26 @@ What survives, 4 frames per render on average:
 - 192.20-192.26 s on some draws: dips already in the raw render that the
   fill cannot lift (AV-a4dv).
 
+Served confirmation (service restarted on `44236b55`): four conversions of
+the original through the live service, one at a time - jobs `f2dd8582`,
+`d32130ca`, `4451ea80` and `c7931b4f`, in the web history; the service log
+shows the guard ("0.7% spared where pyin hears singing"). Against the
+previous served cohort (effort follower: `4623a6cc`, `8493aa3d`, `094d5f8f`,
+`c926d400`). These are independent draws, so score_multi's unpaired
+disjoint-range test is the right one here (p = 0.029 at 4 vs 4):
+
+| metric | previous served | this change |
+|---|---|---|
+| 700-1100 Hz dropout | 1.77 % [1.42, 2.12] | **1.00 % [0.94, 1.18]** (disjoint) |
+| 250-400 Hz dropout | 0.31 % [0.24, 0.42] | **0.16 % [0.15, 0.18]** (disjoint) |
+| 700-1100 Hz inharmonic excess | 5.06 % [3.52, 6.57] | 5.86 % [3.52, 7.42] (overlap) |
+| 400-550 Hz inharmonic excess | 14.01 % [13.37, 14.93] | 14.51 % [13.53, 15.38] (overlap) |
+| off-harmonic share, soft / belt | +0.045 / +0.089 | +0.042 / +0.087 |
+| 10-16 kHz on unvoiced frames vs source | +0.31 dB | +0.34 dB (overlap) |
+
+The first attempt submitted all four at once and failed: the fork processes
+exhausted GPU memory on this shared box and every job hit the 900 s svc
+timeout (`e40ab8ca`, `fa9db1a5`, `2a5d80c5`, `15aad00a`, also in the
+history; AV-auyr).
+
 Nobody has listened to this change.
