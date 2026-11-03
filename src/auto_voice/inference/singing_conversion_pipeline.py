@@ -2046,6 +2046,8 @@ class SingingConversionPipeline:
         #    excess 40.7 % -> 7.7 % and level dropout 4.4 % -> 0.8 %;
         #    400-550 Hz 31.1 % -> 15.9 %. Moving this stage after the fill
         #    was measured and rejected (400-550 Hz 26.7 %). Pre-fill order.
+        #    Its voicing floor is 0.5, not the metric's 0.8 (paired replay,
+        #    n=4: 400-550 Hz excess 14.4 % -> 8.4 %, nothing else moved).
         if bool(cfg.get('fork_hq_inharmonic_notch', True)):
             from .fork_inharmonic_notch import suppress_inharmonic
             converted = suppress_inharmonic(

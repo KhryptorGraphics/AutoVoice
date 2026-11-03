@@ -83,6 +83,6 @@ def test_duck_spares_a_note_pyin_hears_sung(monkeypatch):
     pitch = source_pitch(source, SR)
     guarded = suppress_hum(source, converted, SR, pitch=pitch)
     unguarded = suppress_hum(source, converted, SR, pitch=pitch._replace(
-        sung=np.zeros_like(pitch.sung)))
+        prob=np.zeros_like(pitch.prob)))
     assert abs(_rms_db(guarded[note]) - _rms_db(converted[note])) < 1.0
     assert _rms_db(converted[note]) - _rms_db(unguarded[note]) > 10.0

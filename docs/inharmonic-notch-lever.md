@@ -351,3 +351,56 @@ Served n=4 scored with the serving interpreter (librosa 0.10.2) has 7.7 %
 The user listened on 2026-11-02 ("better but not perfect", "minorly staticy
 around the voice itself"); the no-residual / no-artifact goal is unmet and
 AV-4aqs remains open.
+
+## The gate, not the depth: 400-550 Hz (2026-11-03)
+
+After the hum-stage fix the largest measured defect was 400-550 Hz
+inharmonic excess, 14.5 % served. Depth, passes and order were already
+answered (a 24 dB cap moved it 11.9 -> 11.7 %, more passes do not help,
+after-fill was rejected), so the question was which frames carry it.
+`scratchpad/effort/inharm_attr.py` and `inharm_gate.py` reproduce the
+scorer's number exactly on the four served-path replays (+15.0 / +14.8 /
++12.5 / +15.5 %) and split it:
+
+- Measured against the htdemucs_ft key the chain actually follows, the
+  excess is +5.9 to +8.9 %; the key itself is +6.0 to +7.1 % more
+  inharmonic than the scorer's reference separation (`hero_src.wav`). That
+  half is the reference, not the conversion.
+- Where the notch acts (335-339 of the 400 scored frames) it leaves -0.9
+  to +0.7 % against the key. The rest of the excess sat on the frames its
+  gate skipped: none for the voiced flag or the level floor - all voiced,
+  loud (+2.2 to +2.4 dB re the loud median), in tune (399 of the 400 scored
+  frames within 50 cents of the reference f0) and mid-note (6 % at a
+  voiced-run edge) - but pyin's
+  voicing probability on the noisier key was 0.5-0.8 (47-51 frames, render
+  +17 to +23 % over the key) or 0.5 and below (5-7), plus 7-9
+  octave-rejected frames (+72 to +77 %). The metric applies its 0.8 to
+  the cleaner reference; on the key the same frames read less sure.
+- The harmonic-12 mismatch (the metric counts harmonics 1..11, the notch
+  protects 1..12) moves the result by at most 2.3 points either way.
+
+The stage's voicing floor is now 0.5 (`_NOTCH_VOICED_PROB`); the metric's
+and the hum guard's stay 0.8 (`SourcePitch.sung()`), and the octave test
+is unchanged. Paired on the same four pre-notch signals through notch,
+follower and fill (`notch_gate_ab.py`; the stock tail equals the shipped
+renders bit for bit, and the production code equals the measured variant
+bit for bit):
+
+| draw | 400-550 Hz excess, 0.8 floor | 0.5 floor |
+|---|---|---|
+| 0 | 14.96 % | 7.56 % |
+| 1 | 14.78 % | 8.89 % |
+| 2 | 12.52 % | 9.25 % |
+| 3 | 15.48 % | 8.00 % |
+
+Every other score_multi and static metric is unchanged (dropout identical
+in every band and draw, other bands' excess within 0.06, HF bands within
+0.01 dB, off-harmonic share within 0.001). On the ~200 frames per draw it
+newly corrects, harmonic energy holds (median 0.0 dB, 10th percentile -0.6
+to -0.7 dB) while off-harmonic energy falls 0.45-0.72 dB (`nga_cut.py`);
+the previously skipped frames go from +20.5..+25.7 % to +6.7..+7.9 %
+against the key; the ones already corrected move by at most 3.3 points
+(draw 2: +0.7 -> -2.6 %).
+Four paired draws all improve; at n=4 a sign test cannot go below
+p = 0.125. What remains is about the reference's own gap (+6-7 %) and the
+octave-rejected frames, which the octave test keeps out on purpose.

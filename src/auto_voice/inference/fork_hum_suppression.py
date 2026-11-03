@@ -124,13 +124,14 @@ def _silence_mask(source: np.ndarray, sr: int, m: int, *,
 def _sung_frames(pitch: SourcePitch, m: int) -> np.ndarray:
     """Per-10 ms frame True where pyin hears the source sing.
 
-    ``pitch.sung`` read at each crepe frame's time off pyin's own grid, so the
+    ``pitch.sung()`` read at each crepe frame's time off pyin's own grid, so the
     mask indexes like the voicing frames whatever hop pyin ran at.
     """
+    sung = pitch.sung()
     idx = np.round(np.arange(m) * _FRAME_S * pitch.sr / pitch.hop).astype(int)
     out = np.zeros(m, dtype=bool)
-    ok = idx < len(pitch.sung)
-    out[ok] = pitch.sung[idx[ok]]
+    ok = idx < len(sung)
+    out[ok] = sung[idx[ok]]
     return out
 
 

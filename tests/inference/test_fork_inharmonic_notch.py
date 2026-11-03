@@ -225,6 +225,31 @@ class TestVoicedFrameGate:
         f0, good = source_voiced_frames(source, SR)
         assert not good.any()
 
+    def test_gate_takes_frames_pyin_is_less_sure_of(self):
+        """On the service's separation pyin's voicing probability sits at
+        0.5-0.8 on loud, in-tune frames the metric scores (from the cleaner
+        reference, at > 0.8), and the decoder's residue there went
+        uncorrected. The stage takes them; the metric's and the hum guard's
+        floor stays 0.8; below 0.5 nothing is taken."""
+        from unittest.mock import patch
+
+        import librosa
+
+        from auto_voice.inference.fork_inharmonic_notch import source_pitch
+
+        source = _harmonic_tone(450.0)
+        n_frames = librosa.stft(source, n_fft=2048, hop_length=512).shape[1]
+        f0 = np.full(n_frames, 450.0)
+        voiced = np.ones(n_frames, dtype=bool)
+        for prob, notch, sung in ((0.6, True, False), (0.4, False, False)):
+            with patch("librosa.pyin",
+                       return_value=(f0, voiced, np.full(n_frames, prob))):
+                pitch = source_pitch(source, SR)
+                _, good = source_voiced_frames(source, SR, pitch=pitch)
+            assert bool(good.any()) is notch, f"voicing prob {prob}: stage gate"
+            assert bool(pitch.sung().any()) is sung, (
+                f"voicing prob {prob}: metric / hum-guard gate")
+
 
 class TestPipelineIntegration:
     def test_chain_flag_disables_the_stage(self):

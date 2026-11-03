@@ -103,7 +103,8 @@ _NFFT = 2048
 _HOP = 512
 _F0_MIN = 120.0
 _F0_MAX = 1100.0
-_VOICED_PROB = 0.8
+_VOICED_PROB = 0.8         # the metric's voicing floor (and the hum guard's)
+_NOTCH_VOICED_PROB = 0.5   # this stage's: see source_voiced_frames
 _LEVEL_FLOOR_DB = -25.0
 _K_MAX = 12            # harmonics 1..12, as the metric counts them
 _HARMONIC_REL = 0.03   # +-3 % around each harmonic, as the metric does
@@ -125,21 +126,30 @@ def _peak_near(S: np.ndarray, i: int, fc: float, freqs: np.ndarray,
 
 
 class SourcePitch(NamedTuple):
-    """pyin over the source: frame ``i`` is centred on sample ``i * hop``."""
+    """pyin over the source: frame ``i`` is centred on sample ``i * hop``.
+
+    ``f0`` is NaN where pyin hears no voicing, ``prob`` is its voicing
+    probability and ``level`` the frame level in dB relative to the median
+    of the source's loud frames.
+    """
     f0: np.ndarray
-    sung: np.ndarray
+    prob: np.ndarray
+    level: np.ndarray
     hop: int
     sr: int
+
+    def sung(self, min_prob: float = _VOICED_PROB) -> np.ndarray:
+        """Voiced, ``prob > min_prob`` and above the -25 dB level floor: at
+        the default floor, the metric's gate without its octave test."""
+        return (np.isfinite(self.f0) & (self.prob > min_prob)
+                & (self.level > _LEVEL_FLOOR_DB))
 
 
 def source_pitch(source: np.ndarray, sr: int) -> SourcePitch:
     """pyin over the source on the metric's grid.
 
-    ``sung`` is the metric's gate without the octave test: ``voiced_flag``,
-    ``voiced_prob > 0.8`` and a level floor of -25 dB relative to the median
-    of the source's loud frames. pyin is the slow half of this stage and of
-    the hum stage's duck guard, so ``_correct_fork_output`` computes it once
-    and hands it to both.
+    pyin is the slow half of this stage and of the hum stage's duck guard,
+    so ``_correct_fork_output`` computes it once and hands it to both.
     """
     import librosa
 
@@ -150,18 +160,26 @@ def source_pitch(source: np.ndarray, sr: int) -> SourcePitch:
     M = min(len(f0), len(e))
     f0, vf, vp, e = f0[:M], vf[:M], vp[:M], e[:M]
     esn = e - np.median(e[e > e.max() - 30])
-    sung = vf & np.isfinite(f0) & (vp > _VOICED_PROB) & (esn > _LEVEL_FLOOR_DB)
-    return SourcePitch(f0, sung, _HOP, sr)
+    return SourcePitch(np.where(vf, f0, np.nan), vp, esn, _HOP, sr)
 
 
 def source_voiced_frames(source: np.ndarray, sr: int,
                          pitch: SourcePitch | None = None):
-    """The source's f0 and the frames worth scoring, per the metric's gate.
+    """The source's f0 and the frames this stage corrects.
 
-    The gate is the metric's, exactly: ``voiced_flag``, ``voiced_prob >
-    0.8``, a level floor of -25 dB relative to the median of the source's
-    loud frames, AND an octave-error rejection (a frame is kept only if the
-    peak at 2*f0 is not above the peak at f0). ``pitch`` is
+    The metric's gate - voiced, a level floor of -25 dB relative to the
+    median of the source's loud frames, AND an octave-error rejection (a
+    frame is kept only if the peak at 2*f0 is not above the peak at f0) -
+    with one difference: pyin's voicing probability need only exceed 0.5,
+    not the metric's 0.8. The metric applies its 0.8 to the reference
+    separation; on the service's own separation pyin is less sure of the
+    same loud, in-tune, mid-note frames, so 0.8 skipped ~15 % of the
+    400-550 Hz frames the metric scores - and they carried the excess
+    (17-23 % over the source there, -1..+1 % where the stage acted).
+    Paired served-path replay, n=4 (2026-11-03): 400-550 Hz excess
+    14.96/14.78/12.52/15.48 % -> 7.56/8.89/9.25/8.00 %, every other metric
+    unchanged; on the newly corrected frames harmonic energy holds (median
+    0.0 dB) while off-harmonic energy falls 0.45-0.72 dB. ``pitch`` is
     ``source_pitch(source, sr)`` when the caller already has it.
 
     Using a different gate is not a detail. An earlier version of this
@@ -173,7 +191,7 @@ def source_voiced_frames(source: np.ndarray, sr: int,
     import librosa
 
     pitch = source_pitch(source, sr) if pitch is None else pitch
-    f0, sung = pitch.f0, pitch.sung
+    f0, sung = pitch.f0, pitch.sung(_NOTCH_VOICED_PROB)
     S = np.abs(librosa.stft(source, n_fft=_NFFT, hop_length=_HOP))
     M = min(len(f0), S.shape[1])
     f0, sung, S = f0[:M], sung[:M], S[:, :M]
