@@ -189,8 +189,26 @@ to its `final.wav` in `scratchpad/ballads/replay/<song>/`.
 
 ## For listening
 
-The ten YouTube ballads (and a second draw of the *Because You Loved Me* cover)
-were submitted to the live service one at a time on
-2026-11-03 from 13:00 (studio preset, Brandy), so they appear in History; job ids
-in `scratchpad/ballads/served_10/jobs.json`. All of Me (`706cf70f`) and the
-*Because You Loved Me* cover (`65dbffa1`) were converted earlier.
+The ten YouTube ballads, and a second draw of the *Because You Loved Me* cover,
+went through the live service one at a time on 2026-11-03 (studio preset,
+Brandy, 13:00-14:10, about 6 min each); all eleven completed and are in History.
+Every mix lands at -1.5 to -1.8 dBTP with 0 clipped samples, every vocal stem at
+-2.1 to -6.0 dBTP with 0 clipped: the replay finals' +3-4.6 dBFS peaks above are
+before the served path's peak guards.
+
+| song | job |
+|---|---|
+| Whitney Houston - I Will Always Love You | `a2561c15` |
+| Beyoncé - Listen | `0bfd3307` |
+| Celine Dion - My Heart Will Go On | `fa9f173a` |
+| Whitney Houston - I Have Nothing | `dc1103d8` |
+| Alicia Keys - If I Ain't Got You | `240547d4` |
+| Christina Aguilera - Beautiful | `13b034ad` |
+| Adele - Someone Like You | `b1e2bf3b` |
+| Toni Braxton - Un-Break My Heart | `3fd6bff9` |
+| Kelly Clarkson - Because of You | `f687d287` |
+| Celine Dion - Because You Loved Me | `933d3c73` |
+| *Because You Loved Me* R&B cover (second draw) | `38b4614e` |
+
+Converted earlier: All of Me, Samantha Harvey 1 Mic 1 Take (`706cf70f`), and
+the first draw of the cover (`65dbffa1`).
