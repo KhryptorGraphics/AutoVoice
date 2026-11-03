@@ -404,3 +404,13 @@ against the key; the ones already corrected move by at most 3.3 points
 Four paired draws all improve; at n=4 a sign test cannot go below
 p = 0.125. What remains is about the reference's own gap (+6-7 %) and the
 octave-rejected frames, which the octave test keeps out on purpose.
+
+Served confirmation (service restarted on `8bfd192a`; four live
+conversions one at a time: `7e157897`, `51044175`, `4f909e51`,
+`4dfe8b44`) against the previous served cohort (`f2dd8582`, `d32130ca`,
+`4451ea80`, `c7931b4f`), independent draws: 400-550 Hz excess 14.51 %
+[13.53, 15.38] -> 6.65 % [5.39, 7.99] (disjoint). 250-400 Hz excess also
+separated, 4.52 % [4.33, 4.70] -> 5.25 % [5.06, 5.50]; the paired replay
+shows the gate itself does not move that band (within 0.06 on every draw;
+the notch only acts at f0 >= 400 Hz) and its own draws sit at 4.8-5.5 %,
+so that is variation between the two cohorts. Everything else overlaps.
