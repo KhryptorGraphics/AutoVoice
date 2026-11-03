@@ -378,6 +378,7 @@ def build_app(data_dir: Path):
     # path is relative to the web server's cwd).
     from auto_voice.db import schema as db_schema
     db_schema.DATABASE_PATH = data_dir / "autovoice.db"
+    db_schema.init_database("sqlite")
 
     # Serve deterministic benchmark evidence: the System page fetches
     # /reports/benchmarks/latest, and a 404 leaves an unavoidable browser
