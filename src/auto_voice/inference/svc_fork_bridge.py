@@ -13,10 +13,14 @@ Registry: a profile is served by the fork iff ``<data_dir>/fork_models/<id>.json
 exists and points at a real model + config. Every other profile falls through to
 the in-repo decoder unchanged, so this is additive and opt-in per profile.
 """
+import contextlib
+import fcntl
 import json
+import logging
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -28,6 +32,16 @@ DEFAULT_SVC_BIN = os.environ.get(
     "AUTOVOICE_SVCFORK_BIN", "/home/kp/anaconda3/envs/svcfork/bin/svc"
 )
 _INFER_TIMEOUT_S = int(os.environ.get("AUTOVOICE_SVCFORK_TIMEOUT", "900"))
+
+# One fork render at a time per data dir. Every `svc infer` process loads its
+# own model and CUDA context; four at once on the shared Thor box hit
+# NV_ERR_NO_MEMORY and every job then died at the timeout (AV-auyr). An flock
+# bounds the service's job threads AND offline tools that call this bridge
+# from other processes, and the kernel drops it if the holder dies. Waiting
+# for it is outside _INFER_TIMEOUT_S, which still bounds the render alone.
+_INFER_LOCK_NAME = ".infer.lock"
+
+logger = logging.getLogger(__name__)
 
 # Kept identical to svc_fork_trainer._ALLOC_CONF on purpose: training and
 # inference share one GPU with no guard between them, so they must not run it
@@ -132,6 +146,26 @@ def _clean_env(entry: Optional[dict] = None) -> Dict[str, str]:
     return env
 
 
+@contextlib.contextmanager
+def _inference_slot(data_dir: str):
+    """Hold the data dir's fork-inference lock for the duration of the block."""
+    fd = os.open(Path(data_dir) / REGISTRY_DIRNAME / _INFER_LOCK_NAME,
+                 os.O_RDWR | os.O_CREAT, 0o664)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.info("Fork inference: waiting for the GPU slot "
+                        "(another fork render is running)")
+            t0 = time.monotonic()
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            logger.info("Fork inference: GPU slot acquired after %.0f s",
+                        time.monotonic() - t0)
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
+
+
 def convert(audio: np.ndarray, sr: int, profile_id: str,
             data_dir: str = "data") -> np.ndarray:
     """Convert source vocals to the target voice via the fork engine.
@@ -200,10 +234,11 @@ def convert(audio: np.ndarray, sr: int, profile_id: str,
         if cluster_path is not None:
             cmd += ["-k", str(cluster_path),
                     "-r", str(float(entry.get("cluster_infer_ratio", 0.0)))]
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=_INFER_TIMEOUT_S, env=_clean_env(entry),
-        )
+        with _inference_slot(data_dir):
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=_INFER_TIMEOUT_S, env=_clean_env(entry),
+            )
         if not os.path.exists(out_wav):
             # some fork versions append a suffix; take newest wav in the dir
             wavs = sorted(Path(td).glob("*.wav"), key=os.path.getmtime)

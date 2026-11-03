@@ -3,8 +3,12 @@
 The fork engine itself runs in a separate conda env; these tests mock the
 subprocess so they need neither the fork nor a GPU.
 """
+import fcntl
 import json
 import os
+import subprocess
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -108,6 +112,84 @@ def test_convert_raises_when_fork_produces_no_output(tmp_path, monkeypatch):
     monkeypatch.setattr(bridge.subprocess, "run", fake_run)
     with pytest.raises(RuntimeError, match="fork infer produced no output"):
         bridge.convert(np.zeros(1000, dtype=np.float32), 22050, "p1", str(tmp_path))
+
+
+def _registered(tmp_path):
+    mp = tmp_path / "G.pth"; mp.write_text("x")
+    cp = tmp_path / "config.json"; cp.write_text("{}")
+    _write_registry(tmp_path, "p1", mp, cp)
+    return os.path.join(str(tmp_path), bridge.REGISTRY_DIRNAME, bridge._INFER_LOCK_NAME)
+
+
+def _render(cmd):
+    sf.write(cmd[cmd.index("-o") + 1], np.zeros(4410, dtype=np.float32), 44100)
+
+    class _R:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+    return _R()
+
+
+def test_concurrent_jobs_render_one_at_a_time(tmp_path, monkeypatch):
+    # AV-auyr: four job threads each started an `svc infer` at once and the
+    # GPU ran out of memory, failing all four.
+    _registered(tmp_path)
+    active, peak, guard = [0], [0], threading.Lock()
+
+    def fake_run(cmd, **kwargs):
+        with guard:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.1)
+        with guard:
+            active[0] -= 1
+        return _render(cmd)
+
+    monkeypatch.setattr(bridge.subprocess, "run", fake_run)
+    outs = []
+    jobs = [threading.Thread(target=lambda: outs.append(bridge.convert(
+        np.zeros(4410, dtype=np.float32), 44100, "p1", str(tmp_path)))) for _ in range(4)]
+    for j in jobs:
+        j.start()
+    for j in jobs:
+        j.join(timeout=10)
+    assert len(outs) == 4
+    assert peak[0] == 1
+
+
+def test_convert_waits_for_a_render_held_elsewhere(tmp_path, monkeypatch):
+    # An offline tool in another process holds the lock through its own open
+    # file description - flock treats this one exactly like another process.
+    lock_path = _registered(tmp_path)
+    started = threading.Event()
+    monkeypatch.setattr(bridge.subprocess, "run",
+                        lambda cmd, **kw: (started.set(), _render(cmd))[1])
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    job = threading.Thread(target=bridge.convert, args=(
+        np.zeros(4410, dtype=np.float32), 44100, "p1", str(tmp_path)))
+    job.start()
+    assert not started.wait(0.3)       # blocked behind the other render
+    os.close(fd)
+    assert started.wait(10)
+    job.join(timeout=10)
+
+
+def test_a_timed_out_render_frees_the_slot(tmp_path, monkeypatch):
+    lock_path = _registered(tmp_path)
+
+    def timing_out(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(bridge.subprocess, "run", timing_out)
+    with pytest.raises(subprocess.TimeoutExpired):
+        bridge.convert(np.zeros(4410, dtype=np.float32), 44100, "p1", str(tmp_path))
+    fd = os.open(lock_path, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # BlockingIOError if still held
+    finally:
+        os.close(fd)
 
 
 def test_convert_unregistered_profile_raises(tmp_path):
