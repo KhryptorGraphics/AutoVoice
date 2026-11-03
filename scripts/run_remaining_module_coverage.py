@@ -37,6 +37,7 @@ TEST_PATHS = [
     "tests/test_platform_scripts.py",
     "tests/test_quality_upgrades.py",
     "tests/test_web_app_lifecycle.py",
+    "tests/test_web_persistence_store.py",
     "tests/test_web_utils.py",
     "tests/test_web_api_config_endpoints.py",
     "tests/test_web_api_utility.py",
