@@ -17,7 +17,8 @@ where the original singer was actually singing:
    hum level vs voiced: -11.1 -> -17.9 dB
 2. duck  - the frames that are still voiced in the output while unvoiced in the
    source are, by definition, the residual hum: -14 dB on exactly those.
-   -> -20.4 dB
+   -> -20.4 dB. Never where pyin hears the source sing: crepe's periodicity
+   collapses on some high belts, and the duck cut those notes 14 dB.
 3. gate  - a soft level gate keyed on the source envelope for the long gaps,
    with a floor (never zeros: hard-zeroed chunks were the edge-bleed defect).
 
@@ -30,6 +31,8 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+
+from .fork_inharmonic_notch import SourcePitch, source_pitch
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +50,23 @@ def _voicing(y: np.ndarray, sr: int) -> np.ndarray:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = "full" if device == "cuda" else "tiny"
     out = []
-    step = 16000 * 20
+    hop, step = 160, 16000 * 20
     for start in range(0, len(y16), step):
         seg = y16[start:start + step]
         if len(seg) < 1600:
             continue
         t = torch.from_numpy(seg)[None].to(device)
         _, per = torchcrepe.predict(
-            t, 16000, 160, 50.0, 1300.0, model,
+            t, 16000, hop, 50.0, 1300.0, model,
             return_periodicity=True, batch_size=2048, device=device, pad=True)
-        out.append(torchcrepe.filter.median(per, 3).squeeze(0).cpu().numpy())
+        # pad=True centres frame i on sample i * hop, so a full chunk yields
+        # step / hop + 1 frames and its last one sits on the next chunk's
+        # first. Kept, it put every later frame 10 ms late per chunk against
+        # the j * _FRAME_S axis that _to_samples and _silence_mask read: 12
+        # frames (120 ms) by the end of Hero, so the duck meant for a gap
+        # landed on the note after it (168.90-168.96 s, 169.15-169.22 s).
+        per = torchcrepe.filter.median(per, 3).squeeze(0).cpu().numpy()
+        out.append(per[:step // hop])
         del t
         if device == "cuda":
             torch.cuda.empty_cache()
@@ -109,11 +119,26 @@ def _silence_mask(source: np.ndarray, sr: int, m: int, *,
     return db[idx.astype(int)] < silent_db
 
 
+def _sung_frames(pitch: SourcePitch, m: int) -> np.ndarray:
+    """Per-10 ms frame True where pyin hears the source sing.
+
+    ``pitch.sung`` read at each crepe frame's time off pyin's own grid, so the
+    mask indexes like the voicing frames whatever hop pyin ran at.
+    """
+    idx = np.round(np.arange(m) * _FRAME_S * pitch.sr / pitch.hop).astype(int)
+    out = np.zeros(m, dtype=bool)
+    ok = idx < len(pitch.sung)
+    out[ok] = pitch.sung[idx[ok]]
+    return out
+
+
 def suppress_hum(source: np.ndarray, converted: np.ndarray, sr: int, *,
-                 duck_db: float = 14.0, hpss_margin: float = 2.0) -> np.ndarray:
+                 duck_db: float = 14.0, hpss_margin: float = 2.0,
+                 pitch: SourcePitch | None = None) -> np.ndarray:
     """Return ``converted`` with the between-word hum suppressed, keyed on ``source``.
 
     Both inputs are mono float32 at ``sr``; the output keeps ``converted``'s length.
+    ``pitch`` is ``source_pitch(source, sr)`` when the caller already has it.
     """
     import librosa
 
@@ -128,8 +153,10 @@ def suppress_hum(source: np.ndarray, converted: np.ndarray, sr: int, *,
     m = min(len(ps), len(po))
     if m == 0:
         return converted
+    sung = _sung_frames(source_pitch(source, sr) if pitch is None else pitch, m)
     src_unvoiced = (ps[:m] < _VOICED).astype(np.float32)
-    hum_frames = ((ps[:m] < _VOICED) & (po[:m] > _VOICED)).astype(np.float32)
+    mismatch = (ps[:m] < _VOICED) & (po[:m] > _VOICED)
+    hum_frames = (mismatch & ~sung).astype(np.float32)
 
     # 1. strip: percussive-only where the source is unvoiced AND silent.
     # The unvoiced-only mask (2026-09-06, Hero) was collateral-heavy on dry
@@ -150,13 +177,19 @@ def suppress_hum(source: np.ndarray, converted: np.ndarray, sr: int, *,
     _, percussive = librosa.effects.hpss(converted, margin=hpss_margin)
     y = converted * (1.0 - unv) + percussive * unv
 
-    # 2. duck: residual voiced-while-source-unvoiced frames
+    # 2. duck: residual voiced-while-source-unvoiced frames, never where pyin
+    # hears her sing. crepe's periodicity collapses on some high belts - Hero
+    # 154.80-154.88 s at ~990 Hz reads 0.13-0.24 while pyin's voicing prob is
+    # 0.95-1.00, and 192.24-192.29 s at ~970 Hz reads 0.00 - and the duck took
+    # those notes down 14 dB: residual 700-1100 Hz dropouts after the chain.
     hum = _to_samples(hum_frames, n, sr, 0.02)
     y = y * (1.0 - hum * (1.0 - 10 ** (-duck_db / 20)))
 
     # 3. gate: source-keyed soft gate for the long gaps (floor, never zeros)
     y = y * _source_gate(source, n, sr)
 
-    logger.info("fork hum suppression: source unvoiced %.0f%% of frames, hum frames %.1f%%",
-                float(src_unvoiced.mean()) * 100, float(hum_frames.mean()) * 100)
+    logger.info("fork hum suppression: source unvoiced %.0f%% of frames, hum frames %.1f%%, "
+                "%.1f%% spared where pyin hears singing",
+                float(src_unvoiced.mean()) * 100, float(hum_frames.mean()) * 100,
+                float((mismatch & sung).mean()) * 100)
     return y.astype(np.float32)

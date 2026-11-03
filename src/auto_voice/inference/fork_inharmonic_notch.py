@@ -93,6 +93,7 @@ clean.
 from __future__ import annotations
 
 import logging
+from typing import NamedTuple
 
 import numpy as np
 
@@ -123,13 +124,45 @@ def _peak_near(S: np.ndarray, i: int, fc: float, freqs: np.ndarray,
     return float(S[m, i].max())
 
 
-def source_voiced_frames(source: np.ndarray, sr: int):
+class SourcePitch(NamedTuple):
+    """pyin over the source: frame ``i`` is centred on sample ``i * hop``."""
+    f0: np.ndarray
+    sung: np.ndarray
+    hop: int
+    sr: int
+
+
+def source_pitch(source: np.ndarray, sr: int) -> SourcePitch:
+    """pyin over the source on the metric's grid.
+
+    ``sung`` is the metric's gate without the octave test: ``voiced_flag``,
+    ``voiced_prob > 0.8`` and a level floor of -25 dB relative to the median
+    of the source's loud frames. pyin is the slow half of this stage and of
+    the hum stage's duck guard, so ``_correct_fork_output`` computes it once
+    and hands it to both.
+    """
+    import librosa
+
+    f0, vf, vp = librosa.pyin(source, fmin=_F0_MIN, fmax=_F0_MAX, sr=sr,
+                              frame_length=_NFFT, hop_length=_HOP)
+    e = 20 * np.log10(librosa.feature.rms(y=source, frame_length=_NFFT,
+                                          hop_length=_HOP)[0] + 1e-9)
+    M = min(len(f0), len(e))
+    f0, vf, vp, e = f0[:M], vf[:M], vp[:M], e[:M]
+    esn = e - np.median(e[e > e.max() - 30])
+    sung = vf & np.isfinite(f0) & (vp > _VOICED_PROB) & (esn > _LEVEL_FLOOR_DB)
+    return SourcePitch(f0, sung, _HOP, sr)
+
+
+def source_voiced_frames(source: np.ndarray, sr: int,
+                         pitch: SourcePitch | None = None):
     """The source's f0 and the frames worth scoring, per the metric's gate.
 
     The gate is the metric's, exactly: ``voiced_flag``, ``voiced_prob >
     0.8``, a level floor of -25 dB relative to the median of the source's
     loud frames, AND an octave-error rejection (a frame is kept only if the
-    peak at 2*f0 is not above the peak at f0).
+    peak at 2*f0 is not above the peak at f0). ``pitch`` is
+    ``source_pitch(source, sr)`` when the caller already has it.
 
     Using a different gate is not a detail. An earlier version of this
     stage used a -40 dB-from-peak rule, and its mask landed on different
@@ -139,19 +172,13 @@ def source_voiced_frames(source: np.ndarray, sr: int):
     """
     import librosa
 
-    f0, vf, vp = librosa.pyin(source, fmin=_F0_MIN, fmax=_F0_MAX, sr=sr,
-                              frame_length=_NFFT, hop_length=_HOP)
+    pitch = source_pitch(source, sr) if pitch is None else pitch
+    f0, sung = pitch.f0, pitch.sung
     S = np.abs(librosa.stft(source, n_fft=_NFFT, hop_length=_HOP))
-    e = 20 * np.log10(librosa.feature.rms(y=source, frame_length=_NFFT,
-                                          hop_length=_HOP)[0] + 1e-9)
-    M = min(len(f0), S.shape[1], len(e))
-    f0, vf, vp, S, e = f0[:M], vf[:M], vp[:M], S[:, :M], e[:M]
-    esn = e - np.median(e[e > e.max() - 30])
-
-    cand = np.where(vf & np.isfinite(f0) & (vp > _VOICED_PROB) &
-                    (esn > _LEVEL_FLOOR_DB))[0]
+    M = min(len(f0), S.shape[1])
+    f0, sung, S = f0[:M], sung[:M], S[:, :M]
     freqs = librosa.fft_frequencies(sr=sr, n_fft=_NFFT)
-    good = np.array([i for i in cand
+    good = np.array([i for i in np.flatnonzero(sung)
                      if _peak_near(S, i, 2 * f0[i], freqs)
                      <= _peak_near(S, i, f0[i], freqs)], dtype=int)
 
@@ -296,7 +323,8 @@ def suppress_inharmonic(source: np.ndarray, converted: np.ndarray, sr: int, *,
                         max_cut_db: float = 12.0,
                         max_gain_db: float = 12.0,
                         f0_lo: float = 550.0,
-                        passes: int = 3) -> np.ndarray:
+                        passes: int = 3,
+                        pitch: SourcePitch | None = None) -> np.ndarray:
     """Cut the decoder's off-harmonic residue in the high register.
 
     ``source`` is the track that was fed to the decoder (after any pitch
@@ -304,14 +332,15 @@ def suppress_inharmonic(source: np.ndarray, converted: np.ndarray, sr: int, *,
     ``sr``. Returns the corrected audio.
 
     The stage is a no-op if the source never sings above ``f0_lo`` - the
-    decoder is not extrapolating, so there is nothing to correct.
+    decoder is not extrapolating, so there is nothing to correct. ``pitch``
+    is ``source_pitch(source, sr)`` when the caller already has it.
     """
     source = np.asarray(source, dtype=np.float32)
     converted = np.asarray(converted, dtype=np.float32)
     if len(converted) < _NFFT or len(source) < _NFFT:
         return converted
 
-    f0, good = source_voiced_frames(source, sr)
+    f0, good = source_voiced_frames(source, sr, pitch=pitch)
     if not good.any():
         return converted
     if not np.any(np.isfinite(f0) & (f0 >= f0_lo)):

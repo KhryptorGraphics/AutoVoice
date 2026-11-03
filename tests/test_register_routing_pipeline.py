@@ -409,7 +409,8 @@ class TestPerTrackOutputCorrection:
                                lambda c, sr, _f=fn: (seen.append(_f) or c))
                 else:
                     mp.setattr(m, fn,
-                               lambda s, c, sr, _f=fn: (seen.append(_f) or c))
+                               lambda s, c, sr, _f=fn, **_kw:
+                               (seen.append(_f) or c))
             pipeline._correct_fork_output(src, conv, 16000)
 
     def test_correct_fork_output_honours_every_flag(self):

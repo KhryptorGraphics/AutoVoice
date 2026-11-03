@@ -1959,11 +1959,20 @@ class SingingConversionPipeline:
         """
         cfg = self._chain_config(overrides)
 
+        # pyin over the source is the slow half of both the hum stage's duck
+        # guard and the notch (stage 7): computed once, for both.
+        pitch = None
+
         # 1. Between-word hum: the decoder voices ~14 % of frames where the
         # source is unvoiced. Measured on Hero: -11.5 -> -20.4 dB by level.
+        # The duck spares frames pyin hears sung and its crepe grid no longer
+        # drifts 10 ms per 20 s chunk: paired served-path replay, n=4,
+        # 700-1100 Hz dropout 2.24 % -> 0.94 % (every draw), hum not raised.
         if bool(cfg.get('fork_hq_hum_suppress', True)):
             from .fork_hum_suppression import suppress_hum
-            converted = suppress_hum(source, converted, sr)
+            from .fork_inharmonic_notch import source_pitch
+            pitch = source_pitch(source, sr)
+            converted = suppress_hum(source, converted, sr, pitch=pitch)
 
         # 2. Period doubling on belted notes: the decoder emits 3-5x the
         # source's energy at the half-integer partials (f0/2, 3f0/2, 5f0/2),
@@ -2033,7 +2042,8 @@ class SingingConversionPipeline:
                 max_gain_db=float(cfg.get('fork_hq_inharmonic_notch_gain_db',
                                           12.0)),
                 f0_lo=float(cfg.get('fork_hq_inharmonic_notch_f0_lo', 400.0)),
-                passes=int(cfg.get('fork_hq_inharmonic_notch_passes', 3)))
+                passes=int(cfg.get('fork_hq_inharmonic_notch_passes', 3)),
+                pitch=pitch)
 
         # 8. Effort following: the decoder flattens soft and belted singing
         #    into one middle timbre - its belt-minus-soft harmonic tilt

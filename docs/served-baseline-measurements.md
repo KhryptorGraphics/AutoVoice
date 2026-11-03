@@ -389,3 +389,71 @@ bit-identical on the same input. Serving interpreter, render minus source:
 
 Nobody has listened to the follower yet. The served candidates are jobs
 `4623a6cc`, `8493aa3d`, `094d5f8f` and `c926d400`.
+
+## Hum stage (stage 1): crepe grid drift and the duck guard (2026-11-02)
+
+The residual 700-1100 Hz dropouts on the effort-follower chain were not the
+fill's blind spot first: per-stage tracing (`scratchpad/effort/stage_trace.py`)
+showed the hum stage's 14 dB duck deepening 154.90, 168.93 and 169.17 s on
+every draw. Two separate causes, both measured:
+
+- **Grid drift (a bug).** `_voicing` runs crepe in 20 s chunks with
+  `pad=True`, which yields one frame more per full chunk than its duration.
+  Stitched as-is, frame j inside chunk k sat at (j - k) x 10 ms while
+  `_to_samples` and `_silence_mask` read it as j x 10 ms: Hero gave 25868
+  frames for 25856 frames of time, so the duck landed up to 120 ms late - on
+  the note after each gap. Verified on a synthetic burst (7004 frames for
+  7001, centre 2.5 frames late) and on Hero: the full-length array read k
+  frames later equals a single-chunk excerpt in all 101 event rows
+  (`scratchpad/effort/crepe_drift.py`). 168.93 and 169.17 s were drift alone.
+- **crepe misses some high belts.** On the true grid the source's crepe
+  periodicity is 0.13-0.24 at 154.80-154.88 s (~990 Hz) where pyin's voicing
+  probability is 0.95-1.00, and 0.00 at 192.24-192.29 s (~970 Hz) against
+  0.89-0.98.
+
+Fix: each full chunk's duplicated boundary frame is dropped, and the duck
+never fires where pyin hears the source sing. The pyin pass is the notch's
+own (`fork_inharmonic_notch.source_pitch`), computed once in
+`_correct_fork_output` and shared; the notch's voiced gate and output are
+bit-identical to before (full Hero gate, 140-200 s stage output).
+
+Paired served-path replay, the same four htdemucs_ft service separations and
+raw fork renders through the production chain (studio preset, follower on),
+serving interpreter (`scratchpad/effort/hum_fix_ab.py`, `hf_events.py`,
+`score_hf.sh`). 700-1100 Hz dropout frames of 424 per render, 250-400 Hz
+frames, and the hum stage's own target (10 ms RMS over source crepe-unvoiced
+and not-sung frames minus sung frames, one true-grid definition for every
+arm):
+
+| draw | 700-1100 stock | 700-1100 shipped | 250-400 stock | 250-400 shipped | hum vs sung, stock -> shipped |
+|---|---|---|---|---|---|
+| 0 | 8 | 4 | 11 | 9 | -23.2 -> -23.5 dB |
+| 1 | 7 | 3 | 18 | 11 | -24.8 -> -25.0 dB |
+| 2 | 11 | 4 | 15 | 9 | -24.7 -> -25.1 dB |
+| 3 | 12 | 5 | 19 | 9 | -22.9 -> -23.4 dB |
+
+score_multi means: 700-1100 Hz dropout 2.24 % -> 0.94 %, 250-400 Hz 0.35 %
+-> 0.21 %; inharmonic excess, HF bands, centroid, identity and the static
+metrics all within render noise. Every draw improves on both dropout bands
+and none raises the hum. The draws are paired, so the evidence is the four
+paired deltas and the per-event attribution; an exact two-sided sign test on
+four pairs cannot go below p = 0.125 (score_multi's "REAL" is its unpaired
+disjoint-range criterion, p = 0.029 at 4 vs 4).
+
+Grid fix alone (duck unguarded) also reaches 0.94 % mean but keeps 154.90-
+154.91 s; the guard removes those. Its one apparent cost, 192.20-192.21 s on
+draw 3, is the fill: unguarded, the duck also cut 192.24-192.29 s, the wider
+dip got 3.8 dB of fill instead of 2.9 dB, and the two raw-render frames
+(deficit +17.5 dB before any stage) fell under the threshold by accident
+(`stage_trace_hf.py`).
+
+What survives, 4 frames per render on average:
+
+- 177.02-177.08 s, 3 frames on every draw and every arm: no duck fires
+  there. The hum stage's source gate (stage 3, -30/-42 dB re the source's
+  peak) reads this quiet sung passage (-24 dB re the loud median) as a gap
+  and takes it about 8 dB down; nothing later lifts it.
+- 192.20-192.26 s on some draws: dips already in the raw render that the
+  fill cannot lift (AV-a4dv).
+
+Nobody has listened to this change.
