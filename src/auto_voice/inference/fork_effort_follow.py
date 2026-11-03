@@ -52,7 +52,7 @@ serving interpreter (librosa 0.10.2), render minus source:
     sung-frame centroid           +354 Hz  +20 Hz
     700-1100 Hz level dropout     0.53 %   0.53 %
     700-1100 Hz inharmonic excess 15.8 %   12.3 %
-    250-400 Hz inharmonic excess   1.6 %    4.2 %   (score_multi window)
+    250-400 Hz inharmonic excess   1.6 %    4.2 %   (old +-3 % window)
     same, off share, 1-bin window  0.402    0.383   (source 0.310)
 
 Served path, paired - four htdemucs_ft separations of the original upload
@@ -70,16 +70,20 @@ source, n=4:
     700-1100 Hz level dropout     2.06 %   2.24 %  (frames of 424 per
                                                     render: 8/7/10/10 ->
                                                     8/7/11/12)
-    250-400 Hz inharmonic excess   2.4 %    5.0 %   (score_multi window)
+    250-400 Hz inharmonic excess   2.4 %    5.0 %   (old +-3 % window)
     same, off share, 1-bin window  0.406    0.386   (source 0.310)
 
 The dropout difference is frames close to the scorer's 6 dB gate tipping
-over; the scorer calls it noise. The 250-400 Hz row depends on the scorer's
-harmonic window: +-3 % of k*f0 is narrower than one FFT bin for the lowest
-harmonics at these pitches, so most of their energy reads as off-harmonic
-(the source itself scores 0.533 off). Floored at one bin, the off-harmonic
-share falls toward the source's instead. Neither reading has been checked
-by ear.
+over; the scorer calls it noise. The 250-400 Hz rows are not added noise
+(AV-n6o4, settled 2026-11-03). The old +-3 % harmonic window was narrower
+than the STFT main lobe at these pitches, so lifting the fundamental -
+which this stage does on low notes - raised it with nothing added: a
+synthetic tone with +6 dB on its fundamental and no noise reads 0.400 ->
+0.426 at 300 Hz on that window. Captured stage by stage on two ballads,
+this is the only stage that moves the old window below 400 Hz, and on the
+main-lobe window score_multi now uses it LOWERS the between-harmonic share
+(excess vs the key, 150-250 Hz: +59 -> +34 % and +130 -> +73 %; 250-400
+Hz: +35 -> +8 % and +63 -> +50 %). docs/ballad-replay-20261103.md.
 
 Band layout: octaves to 4 kHz, third-octaves above. The resolution matters
 up top: the source's soft passages carry breath noise at 6-8 kHz that the

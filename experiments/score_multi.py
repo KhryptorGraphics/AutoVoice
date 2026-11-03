@@ -15,7 +15,14 @@ Metrics, binned by the SOURCE's f0 (so every model is judged on the same
 frames):
   - level dropout: % of sung frames where the render's normalised envelope is
     more than 6 dB under the source's
-  - inharmonic excess: median inharmonic fraction vs the source's own, as a %
+  - inharmonic excess: median between-harmonic fraction vs the source's own,
+    as a %. A harmonic owns +-max(3 %, 2 bins) of k*f0 for every k up to
+    6 kHz: 2 bins (43 Hz) is the Hann main lobe, the harmonic's own energy.
+    Until 2026-11-03 the window was +-3 % for k <= 11 only, narrower than
+    the main lobe below 1.43 kHz/k, so spectral TILT moved the number with
+    no noise added (a +6 dB fundamental read 0.642 -> 0.702 at 180 Hz,
+    0.248 -> 0.302 at 450 Hz); numbers scored before then are not
+    comparable with these (docs/ballad-replay-20261103.md).
 Plus, over all sung frames: spectral centroid and band energies (3-8k, 8-12k,
 12-16k, 16-20k) relative to 300-3000 Hz.
 
@@ -43,6 +50,7 @@ from math import comb
 
 SR, HOP, NFFT = 44100, 512, 2048
 FREQS = librosa.fft_frequencies(sr=SR, n_fft=NFFT)
+LOBE_HZ = 2.0 * SR / NFFT  # Hann main-lobe half width: a harmonic's own energy
 
 F0_BANDS = [(250, 400), (400, 550), (550, 700), (700, 1100)]
 ENERGY_BANDS = [(3000, 8000), (8000, 12000), (12000, 16000), (16000, 20000)]
@@ -84,8 +92,8 @@ def _inharm(S, idx, f0):
     for i in idx:
         fc = f0[i]
         hm = np.zeros(len(FREQS), bool)
-        for k in range(1, 12):
-            hm |= (FREQS > fc * k * 0.97) & (FREQS < fc * k * 1.03)
+        for k in range(1, int(6000 / fc) + 1):
+            hm |= np.abs(FREQS - fc * k) < max(fc * k * 0.03, LOBE_HZ)
         bd = (FREQS > fc * 0.5) & (FREQS < 6000)
         on = S[hm & bd, i].sum()
         off = S[(~hm) & bd, i].sum()
@@ -429,6 +437,30 @@ def demo(tmpdir=None):
     if sep is not True:
         raise RuntimeError(f"demo: a 20 dB hole vs no hole was not called separable "
                            f"(separable={sep}) - the verdict is broken")
+
+    # The inharmonic fraction must see noise and must NOT see tilt. Before
+    # 2026-11-03 its harmonic window was narrower than the STFT main lobe, so
+    # a louder fundamental alone (no noise added) raised it 0.162 -> 0.179 on
+    # this tone; it now moves < 0.002 while added noise triples it.
+    t = np.arange(len(src)) / SR
+    louder_f1 = (src + 0.3 * (10 ** (6.0 / 20.0) - 1.0)
+                 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+    noisy = src + 10.0 * noise
+    fr = None
+    ih = {}
+    for name, y in (("clean", src), ("louder_f1", louder_f1), ("noisy", noisy)):
+        S = np.abs(librosa.stft(y, n_fft=NFFT, hop_length=HOP))
+        fr = np.arange(8, S.shape[1] - 8) if fr is None else fr
+        ih[name] = _inharm(S, fr, np.full(S.shape[1], 440.0))
+    print(f"  check: inharmonic fraction clean {ih['clean']:.4f}  fundamental +6 dB "
+          f"{ih['louder_f1']:.4f}  noise added {ih['noisy']:.4f}")
+    if abs(ih["louder_f1"] - ih["clean"]) >= 0.005:
+        raise RuntimeError(f"demo: a louder fundamental with no noise moved the inharmonic "
+                           f"fraction {ih['clean']:.4f} -> {ih['louder_f1']:.4f} - the "
+                           f"harmonic window is narrower than the main lobe again")
+    if ih["noisy"] < ih["clean"] + 0.03:
+        raise RuntimeError(f"demo: added noise moved the inharmonic fraction only "
+                           f"{ih['clean']:.4f} -> {ih['noisy']:.4f} - the metric is blind")
     print("  demo OK: dropout detects the punched hole, a clean copy scores ~0, "
           "and the verdict separates them.")
     if ctx:

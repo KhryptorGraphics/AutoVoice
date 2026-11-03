@@ -106,8 +106,16 @@ _F0_MAX = 1100.0
 _VOICED_PROB = 0.8         # the metric's voicing floor (and the hum guard's)
 _NOTCH_VOICED_PROB = 0.5   # this stage's: see source_voiced_frames
 _LEVEL_FLOOR_DB = -25.0
-_K_MAX = 12            # harmonics 1..12, as the metric counts them
-_HARMONIC_REL = 0.03   # +-3 % around each harmonic, as the metric does
+_K_MAX = 12            # harmonics 1..12
+# +-3 % around each harmonic: narrower than the STFT main lobe (2 bins,
+# 43 Hz) below 1.43 kHz / k, so a share of every cut lands on the
+# harmonics' own skirts (26-39 % of the removed energy on four ballads,
+# 2026-11-03). A main-lobe window spares them and lowers fast harmonic AM
+# on 12 of 13 songs, but corrects toward the key's TRUE between-harmonic
+# share and so leaves more of it at 550-700 Hz on 9 of 11 (median +6
+# points): not adopted without a listening verdict. score_multi itself now
+# scores with the main-lobe window (docs/ballad-replay-20261103.md).
+_HARMONIC_REL = 0.03
 _BAND_TOP = 6000.0     # metric's band: f0/2 .. 6 kHz
 
 
