@@ -19,6 +19,10 @@ test.describe('Live backend conversion workflow', () => {
       buffer: createWavBuffer(),
     })
 
+    // Workflows no longer auto-submit: generation starts from the explicit
+    // button (f74d4c7).
+    await page.getByTestId('start-generation-button').click()
+
     await expect(page.getByText('Ready for Conversion').first()).toBeVisible({ timeout: 20_000 })
     await page.getByRole('button', { name: /Convert Workflow Song/ }).click()
 
