@@ -86,29 +86,33 @@ is breathier than these sources. Her profile recordings
 (`data/samples/fb17af66-.../sample_*/vocals.wav`, separated stems - the same kind of
 signal as a key), gated and windowed identically
 (`scratchpad/ballads/target_share_perfile.py`, corrected 2026-11-06), give her own
-level. Only samples recorded as hers count: 001-064 are clips of brandy.mp4 and 065
-is brandy_audio.wav (12.8 min at 16 kHz; 066 is a byte-identical copy). Left out:
-078 is a recording made on the Sing Along page while Hero played and attached to
-her profile (the subharmonic measure does not flag it; who sang it, and whether the
-backing track bleeds in, is not recorded), 067 is a 16 kHz
+level. Only samples recorded as hers count, and they are one performance: 001-064
+are 12 s clips of brandy.mp4 (44.1 kHz, 766.03 s), and 065 is brandy_audio.wav, the
+same performance as a 16 kHz file (same length; level envelopes correlate 0.994 at
+zero lag, and sampled clips sit at their own offsets in it); 066 is a byte-identical
+copy of 065. Left out: 078 is a recording made on the Sing Along page while Hero
+played and attached to her profile (the subharmonic measure does not flag it; who
+sang it, and whether the backing track bleeds in, is not recorded), 067 is a 16 kHz
 "booktalk" file, 068-076 are Video_*/b3 uploads of unrecorded provenance (068 and
-070 yield no usable frames; 070/074 and 076/077 are the same performances). Each of
-her two sources on its own:
+070 yield no usable frames; 070/074 and 076/077 are the same performances; 077 is
+brandysing1.mp4, named as hers but with no provenance record, and counting it moves
+the 250-400 Hz median from 0.148 to 0.151). The one performance at both sample rates
+(a single recording, so a thin reference):
 
-| band | her share, median: brandy.mp4 / brandy_audio.wav | 13 keys, median | 13 finals, median (range) | finals vs her median |
+| band | her share, median: 44.1 kHz clips / 16 kHz copy | 13 keys, median | 13 finals, median (range) | finals vs her median |
 |---|---|---|---|---|
 | 150-250 Hz | 0.143 / 0.146 (756 / 765 frames) | 0.088 | 0.151 (0.132-0.215) | +4 to +6 %; 10-11 of 13 above |
 | 250-400 Hz | 0.148 / 0.150 (4648 / 4722 frames) | 0.117 | 0.178 (0.155-0.203) | +18 to +20 %; 13 of 13 above |
 
 At 150-250 Hz the conversion sits at her own level. At 250-400 Hz about half of the
 excess over the source is her timbre and the rest is the conversion: every final is
-breathier than her own recordings, by about a fifth - inside the spread of her own
-frames (p25-p75 0.111-0.203, both sources) but systematic. (The raw renders already
+breathier than her own recording, by about a fifth - inside the spread of her own
+frames (p25-p75 0.111-0.203, both copies) but systematic. (The raw renders already
 carry it: 0.184 median at 250-400 Hz, before the chain.) The first version of this
 section pooled all 78 samples (0.138 / 0.143) and
 called the whole excess hers; that overstated it.
 
-Above 550 Hz her own recordings give no reference: 8 gated frames at 550-700 Hz and
+Above 550 Hz her own recording gives no reference: 8 gated frames at 550-700 Hz and
 none higher. The full pool's 142 and 73 frames at 550-700 and 700-1100 Hz are mostly
 b3/Video_1, _2 and _5 (129 and 66 of them).
 
