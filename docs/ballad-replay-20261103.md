@@ -89,8 +89,8 @@ signal as a key), gated and windowed identically
 level. Only samples recorded as hers count: 001-064 are clips of brandy.mp4 and 065
 is brandy_audio.wav (12.8 min; 066 is a byte-identical copy). Left out: 078 is a
 recording made on the Sing Along page while Hero played and attached to her profile
-(singer unverified; strong energy an octave from the tracked pitch, which a second
-voice, the backing track or a pitch error could each produce), 067 is a 16 kHz
+(it measures as clean singing; left out on provenance alone, since who sang it is
+not recorded), 067 is a 16 kHz
 "booktalk" file, 068-076 are Video_*/b3 uploads of unrecorded provenance (068 and
 070 yield no usable frames; 070/074 and 076/077 are the same performances). Each of
 her two sources on its own:
