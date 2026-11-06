@@ -80,20 +80,34 @@ above its key anywhere from 400 to 1100 Hz (the lowest, braxton at 550-700 Hz, i
 40 % *cleaner* than its key, as its raw render already was); the inharmonic notch
 does that work (raw renders reach +107 % there).
 
-**The low register's excess is Brandy's own voice, not a defect.** Read against
-the key, 150-400 Hz looks like 1.5-2.4x the source's between-harmonic energy. But
-the target is breathier than these sources. Her 78 profile samples
-(`data/samples/fb17af66-.../sample_*/vocals.wav`, 84 min of separated stems of her
-own singing - the same kind of signal as a key), gated and windowed identically
-(`scratchpad/ballads/target_share.py`):
+**The low register's excess is partly Brandy's own voice.** Read against the key,
+150-400 Hz looks like 1.5-2.4x the source's between-harmonic energy, but the target
+is breathier than these sources. Her profile recordings
+(`data/samples/fb17af66-.../sample_*/vocals.wav`, separated stems - the same kind of
+signal as a key), gated and windowed identically
+(`scratchpad/ballads/target_share_perfile.py`, corrected 2026-11-06), give her own
+level. Only samples recorded as hers count: 001-064 are clips of brandy.mp4 and 065
+is brandy_audio.wav (12.8 min; 066 is a byte-identical copy). Left out: 078 is a
+take of Hero sung on the Sing Along page and attached to her profile, 067 is a 16 kHz
+"booktalk" file, 068-076 are Video_*/b3 uploads of unrecorded provenance (068 and
+070 yield no usable frames; 070/074 and 076/077 are the same performances). Each of
+her two sources on its own:
 
-| band | Brandy's own share, median (p25-p75) | 13 keys, median | 13 finals, median | finals above her p75 |
+| band | her share, median: brandy.mp4 / brandy_audio.wav | 13 keys, median | 13 finals, median (range) | finals vs her median |
 |---|---|---|---|---|
-| 150-250 Hz | 0.138 (0.104-0.188), 3393 frames | 0.088 | 0.151 | 2 of 13 |
-| 250-400 Hz | 0.143 (0.104-0.197), 27070 frames | 0.117 | 0.178 | 1 of 13 |
+| 150-250 Hz | 0.143 / 0.146 (756 / 765 frames) | 0.088 | 0.151 (0.132-0.215) | +4 to +6 %; 10-11 of 13 above |
+| 250-400 Hz | 0.148 / 0.150 (4648 / 4722 frames) | 0.117 | 0.178 (0.155-0.203) | +18 to +20 %; 13 of 13 above |
 
-The conversion carries her timbre there, which is its job. (Above 550 Hz she has
-142 and 73 frames in 2 and 1 files: no reference.)
+At 150-250 Hz the conversion sits at her own level. At 250-400 Hz about half of the
+excess over the source is her timbre and the rest is the conversion: every final is
+breathier than her own recordings, by about a fifth - inside her frame-to-frame
+spread (p25-p75 0.111-0.203) but systematic. (The raw renders carry it already, 0.184
+median.) The first version of this section pooled all 78 samples (0.138 / 0.143) and
+called the whole excess hers; that overstated it.
+
+Above 550 Hz her own recordings give no reference: 8 gated frames at 550-700 Hz and
+none higher. The full pool's 142 and 73 frames at 550-700 and 700-1100 Hz are mostly
+b3/Video_1, _2 and _5 (129 and 66 of them).
 
 Dropout after the chain is <= 1.2 % in every band of every song except 150-250 Hz
 on celine_bylm and cover_bylm (3.1 %: 7 and 15 frames).
