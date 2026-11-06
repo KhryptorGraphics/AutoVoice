@@ -88,7 +88,9 @@ signal as a key), gated and windowed identically
 (`scratchpad/ballads/target_share_perfile.py`, corrected 2026-11-06), give her own
 level. Only samples recorded as hers count: 001-064 are clips of brandy.mp4 and 065
 is brandy_audio.wav (12.8 min; 066 is a byte-identical copy). Left out: 078 is a
-take of Hero sung on the Sing Along page and attached to her profile, 067 is a 16 kHz
+recording made on the Sing Along page while Hero played and attached to her profile
+(singer unverified; strong energy an octave from the tracked pitch, which a second
+voice, the backing track or a pitch error could each produce), 067 is a 16 kHz
 "booktalk" file, 068-076 are Video_*/b3 uploads of unrecorded provenance (068 and
 070 yield no usable frames; 070/074 and 076/077 are the same performances). Each of
 her two sources on its own:
@@ -100,9 +102,10 @@ her two sources on its own:
 
 At 150-250 Hz the conversion sits at her own level. At 250-400 Hz about half of the
 excess over the source is her timbre and the rest is the conversion: every final is
-breathier than her own recordings, by about a fifth - inside her frame-to-frame
-spread (p25-p75 0.111-0.203) but systematic. (The raw renders carry it already, 0.184
-median.) The first version of this section pooled all 78 samples (0.138 / 0.143) and
+breathier than her own recordings, by about a fifth - inside the spread of her own
+frames (p25-p75 0.111-0.203, both sources) but systematic. (The raw renders already
+carry it: 0.184 median at 250-400 Hz, before the chain.) The first version of this
+section pooled all 78 samples (0.138 / 0.143) and
 called the whole excess hers; that overstated it.
 
 Above 550 Hz her own recordings give no reference: 8 gated frames at 550-700 Hz and
