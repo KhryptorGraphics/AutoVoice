@@ -87,10 +87,10 @@ is breathier than these sources. Her profile recordings
 signal as a key), gated and windowed identically
 (`scratchpad/ballads/target_share_perfile.py`, corrected 2026-11-06), give her own
 level. Only samples recorded as hers count: 001-064 are clips of brandy.mp4 and 065
-is brandy_audio.wav (12.8 min; 066 is a byte-identical copy). Left out: 078 is a
-recording made on the Sing Along page while Hero played and attached to her profile
-(it measures as clean singing; left out on provenance alone, since who sang it is
-not recorded), 067 is a 16 kHz
+is brandy_audio.wav (12.8 min at 16 kHz; 066 is a byte-identical copy). Left out:
+078 is a recording made on the Sing Along page while Hero played and attached to
+her profile (the subharmonic measure does not flag it; who sang it, and whether the
+backing track bleeds in, is not recorded), 067 is a 16 kHz
 "booktalk" file, 068-076 are Video_*/b3 uploads of unrecorded provenance (068 and
 070 yield no usable frames; 070/074 and 076/077 are the same performances). Each of
 her two sources on its own:
