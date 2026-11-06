@@ -86,35 +86,40 @@ is breathier than these sources. Her profile recordings
 (`data/samples/fb17af66-.../sample_*/vocals.wav`, separated stems - the same kind of
 signal as a key), gated and windowed identically
 (`scratchpad/ballads/target_share_perfile.py`, corrected 2026-11-06), give her own
-level. Only samples recorded as hers count, and they are one performance: 001-064
-are 12 s clips of brandy.mp4 (44.1 kHz, 766.03 s), and 065 is brandy_audio.wav, the
-same performance as a 16 kHz file (same length; level envelopes correlate 0.994 at
-zero lag, and sampled clips sit at their own offsets in it); 066 is a byte-identical
-copy of 065. Left out: 078 is a recording made on the Sing Along page while Hero
-played and attached to her profile (the subharmonic measure does not flag it; who
-sang it, and whether the backing track bleeds in, is not recorded), 067 is a 16 kHz
-"booktalk" file, 068-076 are Video_*/b3 uploads of unrecorded provenance (068 and
-070 yield no usable frames; 070/074 and 076/077 are the same performances; 077 is
-brandysing1.mp4, named as hers but with no provenance record, and counting it moves
-the 250-400 Hz median from 0.148 to 0.151). The one performance at both sample rates
-(a single recording, so a thin reference):
+level, one copy of each performance. Two sets count as hers, both on the strength of
+a name. brandy.mp4: 001-064 are its clips (12 s each, the last 10 s; 766.03 s at
+44.1 kHz); 065 (brandy_audio.wav) is the same performance as a 16 kHz file (same
+length; level envelopes correlate 0.994 at zero lag, and sampled clips sit at their
+own offsets in it), and 066 is a byte-identical copy of 065. Brandy/singing: 068-070
+are .wav files from `~/Videos/Brandy/singing` (unique names, exact lengths), 071-076
+are its .mov files via byte-identical copies in `~/Videos/b3` (the profile kept short
+relative names), and 077 is brandysing1.mp4. That is six performances - Video_1, _2, _3,
+_4, _5 and _7 (071-076, 23.4 min) - plus four repeat copies (068 and 077 are Video_7,
+069 is Video_5, 070 is Video_4). Left out: 078 is a recording made on the Sing Along
+page while Hero played and attached to her profile (the subharmonic measure does not
+flag it; who sang it, and whether the backing track bleeds in, is not recorded), and
+067 is a 16 kHz "booktalk" file. Not in the profile at all: Brandy/singing/Video
+(192 s; Video_6 is 1.8 s and Video_8 has no audio) and brandy2.mp4 (692 s).
 
-| band | her share, median: 44.1 kHz clips / 16 kHz copy | 13 keys, median | 13 finals, median (range) | finals vs her median |
+| band | her share, median (frames): brandy.mp4 / plus Brandy/singing | keys, median | finals, median (range) | finals vs her: brandy.mp4 / plus Brandy/singing |
 |---|---|---|---|---|
-| 150-250 Hz | 0.143 / 0.146 (756 / 765 frames) | 0.088 | 0.151 (0.132-0.215) | +4 to +6 %; 10-11 of 13 above |
-| 250-400 Hz | 0.148 / 0.150 (4648 / 4722 frames) | 0.117 | 0.178 (0.155-0.203) | +18 to +20 %; 13 of 13 above |
+| 150-250 Hz | 0.143 (756) / 0.140 (933) | 0.088 | 0.151 (0.132-0.215) | +6 / +8 %; 11 of 13 above |
+| 250-400 Hz | 0.148 (4648) / 0.157 (9389) | 0.117 | 0.178 (0.155-0.203) | +20 / +13 %; 13 / 12 of 13 above |
+| 400-550 Hz | 0.204 (66) / 0.231 (542) | 0.154 | 0.155 (0.094-0.187) | -24 / -33 %; 0 of 13 above |
+| 550-700 Hz | 3 frames / 0.321 (132) | 0.181, 11 songs | 0.195 (0.166-0.286) | - / -39 %; 0 of 11 above |
+| 700-1100 Hz | none / 0.328 (71) | 0.264, 7 songs | 0.287 (0.142-0.415) | - / -12 %; 3 of 7 above |
 
-At 150-250 Hz the conversion sits at her own level. At 250-400 Hz about half of the
-excess over the source is her timbre and the rest is the conversion: every final is
-breathier than her own recording, by about a fifth - inside the spread of her own
-frames (p25-p75 0.111-0.203, both copies) but systematic. (The raw renders already
-carry it: 0.184 median at 250-400 Hz, before the chain.) The first version of this
-section pooled all 78 samples (0.138 / 0.143) and
-called the whole excess hers; that overstated it.
-
-Above 550 Hz her own recording gives no reference: 8 gated frames at 550-700 Hz and
-none higher. The full pool's 142 and 73 frames at 550-700 and 700-1100 Hz are mostly
-b3/Video_1, _2 and _5 (129 and 66 of them).
+At 150-250 Hz the conversion sits close to her own level. At 250-400 Hz half to
+two-thirds of the finals' excess over the key is her timbre and the rest is the
+conversion: the finals are 13-20 % breathier than her own singing (12-13 of 13 songs
+above it), inside the spread of her frames (p25-p75 0.110-0.203 and 0.115-0.208) but
+systematic. (The raw renders already carry it: 0.184 median at 250-400 Hz, before the
+chain.) From 400 Hz up the finals sit near the keys and, on median, below her own
+singing. Her reference there is thin: brandy.mp4 has 3 gated frames at 550-700 Hz (5
+in its 16 kHz copy) and none higher, and the Brandy/singing recordings about 1.5 s
+and 0.8 s of gated singing at 550-700 and 700-1100 Hz (Video_1 and _5, then Video_2).
+The first version of this section pooled all 78 samples (0.138 / 0.143) and called
+the whole excess hers; that overstated it.
 
 Dropout after the chain is <= 1.2 % in every band of every song except 150-250 Hz
 on celine_bylm and cover_bylm (3.1 %: 7 and 15 frames).
