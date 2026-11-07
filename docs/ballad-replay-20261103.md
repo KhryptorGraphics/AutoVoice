@@ -213,6 +213,71 @@ Which reads better - production's deeper, skirt-cutting notch or the gentler
 main-lobe one - is a listening question; each song's `final_lobe.wav` sits next
 to its `final.wav` in `scratchpad/ballads/replay/<song>/`.
 
+## 5. What earshot's ears hear, and the delivered mix (2026-11-06)
+
+Every sung 4 s window of the 13 songs (457 windows with >= 60 gated sung frames in
+the key) for the key, raw, replay final, final_lobe and the served vocal: earshot's
+realness p_real (CLAP head + signal head, as shipped), AudioSet class
+probabilities and the CLAP embedding (`scratchpad/listen/ears.py`,
+`summarize_ears.py`, `summarize_ears2.py`; models on the GPU in earshot's own
+dtype, p_real equal to the MCP tool's on a spot check). The ears pass both
+controls: they hear the chain's repairs (raw -> final p_real up on 362 of 457
+windows, median +0.012, +0.046 above 700 Hz on 14 of 17), and two served draws of
+the cover differ by -0.002 (median), Hero's four production draws span 0.017 per
+window (median).
+
+| | key (original singer) | served |
+|---|---|---|
+| p_real, median | 0.978 | 0.964 (lower on 365 of 457) |
+| windows leaning synthesized (p_real < 0.5) | 0 | 0 |
+| AudioSet "Singing", key p90 f0 >= 700 Hz (17 windows) | 0.167 | 0.030 (17 of 17 lower; raw 0.029, final 0.028) |
+| AudioSet "Singing", 550-700 Hz (33) | 0.102 | 0.046 |
+| AudioSet "Singing", < 400 Hz (277) | 0.058 | 0.043 |
+| AudioSet "Synthetic singing" >= 0.10 | 1 window | 7 (raw 9, final 9, final_lobe 8) |
+| CLAP cosine to Brandy's own-singing centroid, >= 700 Hz | 0.740 | 0.656 |
+
+The converted vocal reads as real singing throughout, a little below the
+originals, and the gap is the top notes, where the chain does not move AudioSet's
+"Singing" at all. The listening passages' spectrograms (`scratchpad/listen/specs/`)
+show it: a haze between the harmonics at 2-4.5 kHz on Celine's belt at 3:07,
+harmonics smeared into a blur on her fast run at 3:51-3:53, and on sustained top
+notes (Hero 3:05-3:08 at 991 Hz, Whitney 3:38 at 744 Hz, Celine 3:46 at 938 Hz) a
+2nd or 3rd harmonic 5-11 dB stronger, relative to the note, than the original
+singer's. Of the listening passages only Hero 3:08 is flagged (Synthetic singing
+0.22 served, 0.01 key).
+
+final vs final_lobe (AV-uhkl): median differences 0.000 in p_real, AudioSet
+Synthetic singing and CLAP cosine to Brandy, inside the draw noise. The ears
+cannot tell them apart.
+
+**The delivered mix buries the vocal on four songs.** mix.wav is exactly
+vocals.wav + instrumental.wav (least-squares gains 1.000 / 1.000, R^2 1.0000), so
+its balance reads off the stems. Against the original song's own vocal-to-backing
+ratio (key vs song minus key) in the same sung windows:
+
+| song | vocal re backing, change from the original | vocal-only pre-mix trim |
+|---|---|---|
+| Beyoncé - Listen | -10.8 dB | -4.14 dB |
+| Celine Dion - My Heart Will Go On | -7.0 | -6.06 |
+| Celine Dion - Because You Loved Me | -5.1 | -5.35 |
+| Kelly Clarkson - Because of You | -3.5 | -4.02 |
+| the other nine | -0.6 .. +1.9 | 0 .. -2.69 |
+
+The trim is `limit_true_peak` on the converted vocal alone
+(`fork_hq_vocal_true_peak_dbfs`, -1.5 dBTP, before the sum): one constant gain for
+the whole song, set by transients 11-17 dB over their surroundings (Celine BYLM
++3.85 dBTP at 4:00.90). Holding the same ceiling only where it is exceeded (4x
+oversampled peak, 10 ms gain smoothing; `scratchpad/listen/fix_trim.py`, renders in
+`scratchpad/listen/fix_trim/<song>/`) acts on 0.02-0.97 % of samples, keeps vocal
+and mix at or under -1.5 dBTP, and moves the balance to -0.9 (MHWGO), +0.3 (BYLM), +0.5
+(Clarkson) and -6.7 dB (Beyoncé); the two Whitney songs end up +2.5 and +3.2 dB
+vocal-forward. Beyoncé's remaining -6.7 dB is inside the correction chain (replay
+final 6.2 dB under the key in the same windows), not traced. No backing track
+carries the original singer: AudioSet "Singing" in instrumental.wav is 0.002-0.005
+in sung windows, and its 2-4 kHz envelope is anti-correlated with the key's
+(-0.02..-0.30; shuffled windows -0.12..+0.12). The served mixes are 0.5-9.1 LU
+quieter than the original songs (median 3.6).
+
 ## For listening
 
 The ten YouTube ballads, and a second draw of the *Because You Loved Me* cover,
