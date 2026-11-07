@@ -180,6 +180,11 @@ The metadata distinguishes measured `vocal_true_peak_dbfs` and
 the vocal-only trim as `vocal_pre_mix_trim_db`, cumulative vocal attenuation
 as `vocal_trim_db`, and the sample-peak and mix true-peak trims separately as
 `mix_sample_peak_trim_db` and `mix_trim_db`.
+On the 13-ballad set (2026-11-06) that vocal-only trim was 0 to -6.1 dB, one
+constant gain per song set by a few transients, and it left the delivered vocal
+3.5-10.8 dB under the original song's vocal-to-backing balance on four songs.
+The 13 served mixes were also 0.5-9.1 LU quieter than the original songs.
+docs/ballad-replay-20261103.md section 5, AV-gamn.
 
 The notch is a measured output-side reduction, not a harmonic generator.
 The model is trained almost entirely below this register (AV-41e4 records
