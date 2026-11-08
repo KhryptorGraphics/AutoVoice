@@ -266,13 +266,18 @@ ratio (key vs song minus key) in the same sung windows:
 | Kelly Clarkson - Because of You | -3.5 | -4.02 |
 | the other nine | -0.6 .. +1.9 | 0 .. -2.69 |
 
-The trim is `limit_true_peak` on the converted vocal alone
+The trim was `limit_true_peak` on the converted vocal alone
 (`fork_hq_vocal_true_peak_dbfs`, -1.5 dBTP, before the sum): one constant gain for
 the whole song, set by transients 11-17 dB over their surroundings (Celine BYLM
-+3.85 dBTP at 4:00.90). Holding the same ceiling only where it is exceeded (4x
-oversampled peak, 10 ms gain smoothing; `scratchpad/listen/fix_trim.py`, renders in
-`scratchpad/listen/fix_trim/<song>/`) acts on 0.02-0.97 % of samples, keeps vocal
-and mix at or under -1.5 dBTP, and moves the balance to -0.9 (MHWGO), +0.3 (BYLM), +0.5
++3.85 dBTP at 4:00.90). **Fixed 2026-11-08 (AV-gamn):** the vocal stage is now
+`limit_true_peak_peaks`, which holds the same ceiling only where it is exceeded (4x
+oversampled peak, 10 ms gain smoothing) and leaves every other sample untouched. On
+the pre-trim vocals of the four songs above it held -1.00 dBTP while acting on
+0.17-0.73 % of samples, and their loud passages kept their level (0.00 dB, where the
+constant trim took 3.5-5.6 dB). The mix bus keeps its constant trim. The prototype
+(`scratchpad/listen/fix_trim.py`, renders in `scratchpad/listen/fix_trim/<song>/`)
+acted on 0.02-0.97 % of samples, kept vocal and mix at or under -1.5 dBTP, and moved
+the balance to -0.9 (MHWGO), +0.3 (BYLM), +0.5
 (Clarkson) and -6.7 dB (Beyoncé); the two Whitney songs end up +2.5 and +3.2 dB
 vocal-forward. Beyoncé's remaining -6.7 dB is inside the correction chain (replay
 final 6.2 dB under the key in the same windows), not traced. Neither screen finds

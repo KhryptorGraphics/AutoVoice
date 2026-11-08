@@ -17,6 +17,7 @@ import pytest
 
 from auto_voice.audio.true_peak import (
     limit_true_peak,
+    limit_true_peak_peaks,
     true_peak_dbfs,
 )
 from auto_voice.inference.quality_presets import (
@@ -86,6 +87,51 @@ class TestTruePeak:
         twice, gain_db = limit_true_peak(once, target_dbfs=-1.0)
         assert gain_db == 0.0
         assert np.array_equal(once, twice)
+
+
+class TestPeakOnlyLimiter:
+    @staticmethod
+    def transient():
+        t = np.arange(SR, dtype=np.float64) / SR
+        x = (0.1 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+        start = SR // 2
+        x[start:start + 441] += (1.2 * np.hanning(441)).astype(np.float32)
+        return x
+
+    def test_ceiling_and_distant_bed(self):
+        x = self.transient()
+        limited, stats = limit_true_peak_peaks(x)
+        assert true_peak_dbfs(x) > -1.0
+        assert true_peak_dbfs(limited) <= -1.0 + 0.01
+        assert np.array_equal(limited[:SR // 4], x[:SR // 4])
+        assert stats['max_reduction_db'] < 0.0
+        assert 0.0 < stats['limited_fraction'] < 1.0
+        assert stats['residual_trim_db'] <= 0.0
+
+    def test_below_ceiling_is_unchanged(self):
+        x = _tone(amp=0.1)
+        limited, stats = limit_true_peak_peaks(x)
+        assert np.array_equal(limited, x)
+        assert stats == {'max_reduction_db': 0.0, 'limited_fraction': 0.0,
+                         'residual_trim_db': 0.0}
+
+    def test_stereo_channels_share_gain(self):
+        right = self.transient()
+        left = np.full_like(right, 0.1)
+        x = np.stack([left, right], axis=1)
+        assert true_peak_dbfs(left) < -1.0 < true_peak_dbfs(right)
+        limited, _ = limit_true_peak_peaks(x)
+        mask = np.abs(right) > 0.01
+        np.testing.assert_allclose(limited[mask, 0] / left[mask],
+                                   limited[mask, 1] / right[mask], atol=1e-6)
+        assert true_peak_dbfs(limited) <= -1.0 + 0.01
+
+    def test_second_application_is_noop(self):
+        once, _ = limit_true_peak_peaks(self.transient())
+        twice, stats = limit_true_peak_peaks(once)
+        assert np.array_equal(once, twice)
+        assert stats == {'max_reduction_db': 0.0, 'limited_fraction': 0.0,
+                         'residual_trim_db': 0.0}
 
 
 class TestQualityPresets:

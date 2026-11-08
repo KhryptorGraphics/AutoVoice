@@ -177,14 +177,17 @@ integrated loudness ranged from −19.2 to −17.8 LUFS; vocal stems ranged from
 The original track measured −15.3 LUFS, +0.2 dBTP, and one clipped sample.
 The metadata distinguishes measured `vocal_true_peak_dbfs` and
 `mix_true_peak_dbfs` from the configured `*_ceiling_dbfs` fields. It reports
-the vocal-only trim as `vocal_pre_mix_trim_db`, cumulative vocal attenuation
-as `vocal_trim_db`, and the sample-peak and mix true-peak trims separately as
+the vocal stage's constant residual trim (normally 0) as `vocal_pre_mix_trim_db`,
+its peak-only reduction as `vocal_peak_limit_max_db` and
+`vocal_peak_limited_fraction`, cumulative vocal attenuation as `vocal_trim_db`,
+and the sample-peak and mix true-peak trims separately as
 `mix_sample_peak_trim_db` and `mix_trim_db`.
-On the 13-ballad set (2026-11-06) that vocal-only trim was 0 to -6.1 dB, one
-constant gain per song set by a few transients, and it left the delivered vocal
+On the 13-ballad set (2026-11-06) the vocal-only trim was then one constant gain
+per song, 0 to -6.1 dB, set by a few transients, and it left the delivered vocal
 3.5-10.8 dB under the original song's vocal-to-backing balance on four songs.
 The 13 served mixes were also 0.5-9.1 LU quieter than the original songs.
-docs/ballad-replay-20261103.md section 5, AV-gamn.
+Since 2026-11-08 the vocal is peak-limited only where it exceeds the ceiling
+(AV-gamn; docs/ballad-replay-20261103.md section 5).
 
 The notch is a measured output-side reduction, not a harmonic generator.
 The model is trained almost entirely below this register (AV-41e4 records

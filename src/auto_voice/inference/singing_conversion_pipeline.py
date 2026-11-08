@@ -2777,23 +2777,28 @@ class SingingConversionPipeline:
                     "Fork HQ bandwidth match failed, keeping full-band vocal: %s", exc)
                 applied_bandwidth_hz = None
 
-        # This ceiling governs both the standalone vocal stem and the final
-        # mix. Trim the vocal before summation so the mix is built from the
-        # same vocal the API returns in `stems['vocals']`.
+        # AV-gamn: sparse transients previously turned the entire vocal down
+        # (docs/ballad-replay-20261103.md section 5). Limit peaks before
+        # summation so the mix and returned vocal use the same signal.
         vocal_true_peak_dbfs = self._chain_config(overrides).get(
             'fork_hq_vocal_true_peak_dbfs', -1.0)
         if vocal_true_peak_dbfs is not None:
             vocal_true_peak_dbfs = float(vocal_true_peak_dbfs)
-        from ..audio.true_peak import limit_true_peak, true_peak_dbfs
+        from ..audio.true_peak import limit_true_peak, limit_true_peak_peaks, true_peak_dbfs
         vocal_gain_db = 0.0
+        vocal_peak_max_db = 0.0
+        vocal_peak_fraction = 0.0
         if vocal_true_peak_dbfs is not None and vocal_true_peak_dbfs <= 0.0:
-            conv, vocal_gain_db = limit_true_peak(
-                conv, target_dbfs=vocal_true_peak_dbfs)
-            if vocal_gain_db:
+            conv, peak_stats = limit_true_peak_peaks(
+                conv, target_dbfs=vocal_true_peak_dbfs, sample_rate=sr)
+            vocal_gain_db = peak_stats['residual_trim_db']
+            vocal_peak_max_db = peak_stats['max_reduction_db']
+            vocal_peak_fraction = peak_stats['limited_fraction']
+            if vocal_peak_max_db < 0.0:
                 logger.info(
-                    "Fork HQ: trimmed converted vocal by %.2f dB to hold "
-                    "its true peak at %.1f dBTP",
-                    vocal_gain_db, vocal_true_peak_dbfs)
+                    "Fork HQ: peak-limited vocal to %.1f dBTP, maximum "
+                    "reduction %.2f dB over %.2f%% of samples",
+                    vocal_true_peak_dbfs, vocal_peak_max_db, 100 * vocal_peak_fraction)
         if side is not None:
             mixed = np.stack([inst[0] + conv + side,
                               inst[1] + conv - side], axis=-1)
@@ -2897,6 +2902,8 @@ class SingingConversionPipeline:
         result['metadata']['vocal_true_peak_dbfs'] = true_peak_dbfs(conv)
         result['metadata']['vocal_true_peak_ceiling_dbfs'] = vocal_true_peak_dbfs
         result['metadata']['vocal_pre_mix_trim_db'] = vocal_gain_db
+        result['metadata']['vocal_peak_limit_max_db'] = vocal_peak_max_db
+        result['metadata']['vocal_peak_limited_fraction'] = vocal_peak_fraction
         result['metadata']['vocal_trim_db'] = vocal_total_trim_db
 
         if return_stems:

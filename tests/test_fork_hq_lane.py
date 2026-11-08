@@ -124,7 +124,9 @@ def test_fork_hq_mix_is_true_peak_limited_after_summing(tmp_path, monkeypatch):
     mixed = result["mixed_audio"]
     assert float(np.abs(mixed).max()) <= 0.95 + 1e-6
     assert true_peak_dbfs(mixed) <= -1.0 + 0.01
-    assert result["metadata"]["vocal_trim_db"] < 0.0
+    assert result["metadata"]["vocal_pre_mix_trim_db"] <= 0.0
+    assert result["metadata"]["vocal_peak_limit_max_db"] < 0.0
+    assert 0.0 < result["metadata"]["vocal_peak_limited_fraction"] <= 1.0
     assert result["metadata"]["vocal_trim_db"] == pytest.approx(
         result["metadata"]["vocal_pre_mix_trim_db"]
         + result["metadata"]["mix_sample_peak_trim_db"]
@@ -148,6 +150,48 @@ def test_fork_hq_mix_is_true_peak_limited_after_summing(tmp_path, monkeypatch):
         atol=1e-6,
     )
 
+
+
+def test_fork_hq_transient_preserves_vocal_backing_balance(tmp_path, monkeypatch):
+    sr = 44100
+    t = np.arange(sr, dtype=np.float64) / sr
+    vocal = (0.1 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+    vocal[sr // 2:sr // 2 + 441] += (1.2 * np.hanning(441)).astype(np.float32)
+    instrumental = (0.2 * np.sin(2 * np.pi * 200 * t)).astype(np.float32)
+    song = tmp_path / "transient.wav"
+    sf.write(str(song), np.zeros((sr, 2), dtype=np.float32), sr)
+    p = _pipeline(tmp_path)
+    p.config.update({
+        "fork_hq_match_lead_level": False,
+        "fork_hq_hf_detonalize": False,
+        "fork_hq_air_cap_db": 0.0,
+        "fork_hq_extend_bandwidth": False,
+        "fork_hq_match_source_bandwidth": False,
+        "fork_hq_inharmonic_notch": False,
+    })
+
+    class FakeSep:
+        def separate(self, audio, sr, mono=True):
+            return {"vocals": np.stack([vocal, vocal]),
+                    "instrumental": np.stack([instrumental, instrumental])}
+
+    class FakeMM:
+        def infer(self, audio, spk, emb, sr):
+            return np.asarray(audio, dtype=np.float32)
+
+    monkeypatch.setattr(p, "_get_separator", lambda: FakeSep())
+    monkeypatch.setattr(p, "_get_model_manager", lambda: FakeMM())
+    monkeypatch.setattr(p, "_extract_pitch", lambda audio, sr: np.zeros(8, np.float32))
+    monkeypatch.setattr(p, "_fill_lead_dropouts", lambda converted, source, sr: converted)
+    result = p._convert_song_fork_hq(
+        str(song), "prof-1", 1.0, 1.0, True, "balanced", 0.0)
+
+    def rms(signal):
+        return np.sqrt(np.mean(np.square(signal[:sr // 4], dtype=np.float64)))
+
+    source_ratio = rms(vocal) / rms(instrumental)
+    output_ratio = rms(result["stems"]["vocals"]) / rms(result["stems"]["instrumental"])
+    assert abs(20 * np.log10(output_ratio / source_ratio)) < 0.1
 
 
 def test_convert_song_delegates_to_fork_lane_when_available(tmp_path, monkeypatch):
